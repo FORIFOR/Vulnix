@@ -111,23 +111,103 @@ class AssessmentService:
             self.a.findings[f["id"]] = f
         self._approval_events: dict[str, threading.Event] = {}
         self._thread: threading.Thread | None = None
-
-    # ---- snapshot -----------------------------------------------------------
-    def assets(self) -> list[dict]:
-        risk = self._risk()
-        return [
-            {**self.a.asset, "status": _asset_status(self.a.state), "assessment_id": self.a.id,
-             "risk": risk if self.a.state != "idle" else None,
-             "previous_risk_score": 55,
-             "last_assessed_at": int(time.time() - 86400 * 7)},
+        self._extra_assets: list[dict] = [
             {"id": "api", "name": "api.lab.test", "kind": "API", "environment": "検証環境",
-             "status": "未診断", "assessment_id": None, "risk": None,
-             "previous_risk_score": None, "last_assessed_at": None},
+             "status": "未診断", "assessment_id": self.a.id, "risk": None,
+             "previous_risk_score": None, "last_assessed_at": None,
+             "authorization_ref": "DEMO-AUTH-002", "ownership_verified": True},
             {"id": "staging", "name": "internal-staging", "kind": "検証環境",
              "environment": "社内", "status": "承認待ち", "assessment_id": None, "risk": None,
              "previous_risk_score": None, "last_assessed_at": None,
+             "authorization_ref": "", "ownership_verified": False,
              "note": "書面許可が未登録のため診断できません"},
         ]
+
+    # ---- snapshot -----------------------------------------------------------
+    def assets(self) -> list[dict]:
+        with self._lock:
+            risk = self._risk()
+            primary = {
+                **self.a.asset,
+                "status": _asset_status(self.a.state),
+                "assessment_id": self.a.id,
+                "risk": risk if self.a.state != "idle" else None,
+                "previous_risk_score": 55,
+                "last_assessed_at": int(time.time() - 86400 * 7),
+                "authorization_ref": self.a.engagement.authorization_ref,
+                "ownership_verified": self.a.engagement.ownership_verified,
+            }
+            return [primary, *[dict(x) for x in self._extra_assets]]
+
+    def register_asset(self, *, name: str, kind: str, environment: str,
+                       authorization_ref: str = "", ownership_verified: bool = False,
+                       activate_workspace: bool = False, actor: str = "operator") -> dict:
+        clean_name = (name or "").strip().lower()
+        if not clean_name or len(clean_name) > 120 or " " in clean_name:
+            raise ValueError("有効な対象ドメインまたはホスト名を入力してください")
+        clean_kind = (kind or "Webアプリケーション").strip()[:40]
+        clean_env = (environment or "検証環境").strip()[:40]
+        clean_ref = (authorization_ref or "").strip()[:80]
+        authorized = bool(ownership_verified and clean_ref)
+
+        with self._lock:
+            # Check if updating an existing extra asset (e.g. granting SOW to internal-staging)
+            existing = next((x for x in self._extra_assets if x["name"].lower() == clean_name), None)
+            if existing is not None:
+                existing["kind"] = clean_kind
+                existing["environment"] = clean_env
+                existing["authorization_ref"] = clean_ref
+                existing["ownership_verified"] = authorized
+                if authorized:
+                    existing["status"] = "未診断"
+                    existing["assessment_id"] = self.a.id
+                    existing.pop("note", None)
+                else:
+                    existing["status"] = "承認待ち"
+                    existing["assessment_id"] = None
+                    existing["note"] = "書面許可が未登録のため診断できません"
+                asset_record = dict(existing)
+            else:
+                aid = "asset_" + secrets.token_hex(3)
+                asset_record = {
+                    "id": aid,
+                    "name": clean_name,
+                    "kind": clean_kind,
+                    "environment": clean_env,
+                    "status": "未診断" if authorized else "承認待ち",
+                    "assessment_id": self.a.id if authorized else None,
+                    "risk": None,
+                    "previous_risk_score": None,
+                    "last_assessed_at": None,
+                    "authorization_ref": clean_ref,
+                    "ownership_verified": authorized,
+                    **({} if authorized else {"note": "書面許可が未登録のため診断できません"}),
+                }
+                self._extra_assets.insert(0, asset_record)
+
+            if activate_workspace and authorized and self.a.state in ("idle", "completed"):
+                self.a.asset = {
+                    "id": asset_record["id"],
+                    "name": clean_name,
+                    "kind": clean_kind,
+                    "environment": clean_env,
+                }
+                e = self.a.engagement
+                self.a.engagement = Engagement(
+                    e.id, True, clean_ref, e.not_before, e.not_after, e.targets, e.allowed_actions
+                )
+                self.gateway.engagement = self.a.engagement
+
+        self.audit.record(
+            "asset.registered",
+            actor=actor,
+            name=clean_name,
+            kind=clean_kind,
+            environment=clean_env,
+            authorized=authorized,
+            authorization_ref=clean_ref,
+        )
+        return asset_record
 
     def snapshot(self) -> dict:
         with self._lock:

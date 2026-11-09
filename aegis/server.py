@@ -137,6 +137,8 @@ def make_handler(svc: AssessmentService, ops: OperatorStore):
 
             if p == "/api/auth/login":
                 return self._login(body)
+            if p == "/api/auth/register":
+                return self._register(body)
             if p == "/api/auth/logout":
                 sess = self._session()
                 if sess:
@@ -207,6 +209,24 @@ def make_handler(svc: AssessmentService, ops: OperatorStore):
             return self._json(200, {"session": self._public_session(sess)},
                               [("Set-Cookie", cookie)])
 
+        def _register(self, body):
+            raw_roles = body.get("roles")
+            roles = [str(r) for r in raw_roles] if isinstance(raw_roles, list) else ["operator"]
+            try:
+                sess = ops.register(
+                    str(body.get("name", "")),
+                    str(body.get("password", "")),
+                    display=str(body.get("display", "")),
+                    roles=roles,
+                )
+            except AuthError as e:
+                return self._json(400, {"error": str(e)})
+            svc.audit.record("auth.registered", actor=sess.operator, roles=list(sess.roles))
+            cookie = (f"{COOKIE}={sess.token}; HttpOnly; SameSite=Strict; Path=/; "
+                      f"Max-Age={int(sess.expires - time.time())}")
+            return self._json(200, {"session": self._public_session(sess)},
+                              [("Set-Cookie", cookie)])
+
         def _clear_cookie(self):
             return [("Set-Cookie", f"{COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0")]
 
@@ -214,7 +234,18 @@ def make_handler(svc: AssessmentService, ops: OperatorStore):
             base = f"/api/assessments/{svc.a.id}"
             actor = sess.operator
             try:
-                if p == "/api/system/verify-controls":
+                if p == "/api/assets":
+                    asset = svc.register_asset(
+                        name=str(body.get("name", "")),
+                        kind=str(body.get("kind", "Webアプリケーション")),
+                        environment=str(body.get("environment", "検証環境")),
+                        authorization_ref=str(body.get("authorization_ref", "")),
+                        ownership_verified=bool(body.get("ownership_verified", False)),
+                        activate_workspace=bool(body.get("activate_workspace", False)),
+                        actor=actor,
+                    )
+                    return self._json(200, {"asset": asset, "assets": svc.assets()})
+                elif p == "/api/system/verify-controls":
                     rep = run_live_control_verification()
                     svc.audit.record("system.controls_verified", actor=actor, all_passed=rep["all_passed"])
                     return self._json(200, rep)

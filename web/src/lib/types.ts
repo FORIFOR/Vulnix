@@ -183,6 +183,8 @@ export interface Asset {
   risk: Risk | null;
   previous_risk_score?: number | null;
   last_assessed_at?: number | null;
+  authorization_ref?: string;
+  ownership_verified?: boolean;
   note?: string;
 }
 

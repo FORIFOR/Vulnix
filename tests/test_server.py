@@ -285,6 +285,51 @@ class TestServer(unittest.TestCase):
         self.assertEqual(f_banner_after["verdict"], "not_reproduced")
         self.assertEqual(f_idor_after["verdict"], "not_reproduced")
 
+    def test_operator_registration_and_asset_registration(self):
+        # 1. Register a new account via /api/auth/register
+        code, body = self._req(f"{self.root}/auth/register", {
+            "name": "sec-lead",
+            "display": "セキュリティ責任者",
+            "password": "strong-password-123",
+            "roles": ["operator", "approver"],
+        })
+        self.assertEqual(code, 200)
+        self.assertEqual(body["session"]["operator"], "sec-lead")
+        self.assertIn("approver", body["session"]["roles"])
+
+        # Duplicate username is rejected
+        dup_code, _ = self._req(f"{self.root}/auth/register", {
+            "name": "sec-lead",
+            "password": "strong-password-123",
+        })
+        self.assertEqual(dup_code, 400)
+
+        # 2. Register an authorized target asset via POST /api/assets
+        acode, abody = self._req(f"{self.root}/assets", {
+            "name": "portal.example.com",
+            "kind": "Webアプリケーション",
+            "environment": "検証環境",
+            "authorization_ref": "SOW-2026-999",
+            "ownership_verified": True,
+            "activate_workspace": True,
+        })
+        self.assertEqual(acode, 200)
+        self.assertEqual(abody["asset"]["name"], "portal.example.com")
+        self.assertEqual(abody["asset"]["status"], "未診断")
+        self.assertEqual(abody["asset"]["assessment_id"], "scan_001")
+
+        # 3. Register an asset without SOW -> locked as 承認待ち
+        ucode, ubody = self._req(f"{self.root}/assets", {
+            "name": "unapproved.example.com",
+            "kind": "API",
+            "environment": "本番環境",
+            "authorization_ref": "",
+            "ownership_verified": False,
+        })
+        self.assertEqual(ucode, 200)
+        self.assertEqual(ubody["asset"]["status"], "承認待ち")
+        self.assertIsNone(ubody["asset"]["assessment_id"])
+
 
 if __name__ == "__main__":
     unittest.main()

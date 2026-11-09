@@ -283,6 +283,34 @@ class OperatorStore:
         if removed:
             self._persist_sessions()
 
+    def register(self, name: str, password: str, *, display: str = "",
+                 roles: tuple[str, ...] | list[str] = ("operator",)) -> Session:
+        """Register a new operator account (storing only its scrypt password hash)
+        and return an authenticated session."""
+        clean_name = (name or "").strip()
+        if not clean_name or len(clean_name) < 2 or len(clean_name) > 32:
+            raise AuthError("ユーザー名は2〜32文字で入力してください")
+        if not all(c.isalnum() or c in ("_", "-", ".") for c in clean_name):
+            raise AuthError("ユーザー名には英数字・ハイフン・アンダースコア・ドットのみ使用できます")
+        if len(password or "") < MIN_PASSWORD_LEN:
+            raise AuthError(f"パスワードは{MIN_PASSWORD_LEN}文字以上にしてください")
+        role_set = [r for r in roles if r in ROLES]
+        if "operator" not in role_set:
+            role_set.insert(0, "operator")
+        clean_roles = tuple(dict.fromkeys(role_set))
+        clean_display = (display or "").strip()[:40] or clean_name
+        pw_hash = hash_password(password)
+        now = self._clock()
+        with self._lock:
+            if clean_name in self._ops:
+                raise AuthError("このユーザー名は既に登録されています")
+            self._ops[clean_name] = Operator(clean_name, clean_display, pw_hash, clean_roles)
+            sess = Session(secrets.token_urlsafe(32), clean_name, clean_roles, now, now + SESSION_TTL)
+            self._sessions[sess.token] = sess
+        self._persist_operators()
+        self._persist_sessions()
+        return sess
+
     def operators(self) -> list[Operator]:
         with self._lock:
             return list(self._ops.values())

@@ -6,7 +6,7 @@ export async function getJSON<T>(path: string): Promise<T> {
   return res.json();
 }
 
-export async function command(path: string, body: unknown = {}): Promise<Snapshot | { stop_report: unknown }> {
+export async function postJSON<T>(path: string, body: unknown = {}): Promise<T> {
   const res = await fetch(path, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Aegis-Request": "1" },
@@ -14,5 +14,9 @@ export async function command(path: string, body: unknown = {}): Promise<Snapsho
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
-  return data;
+  return data as T;
+}
+
+export async function command(path: string, body: unknown = {}): Promise<Snapshot | { stop_report: unknown }> {
+  return postJSON<Snapshot | { stop_report: unknown }>(path, body);
 }
