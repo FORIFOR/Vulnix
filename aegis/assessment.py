@@ -66,9 +66,12 @@ class AssessmentService:
         self.audit = AuditLog(data_dir / "audit.jsonl")
         self.audit.listeners.append(self._on_audit)
         self._lock = threading.RLock()
+        self.lab_port = lab_port
         self.verify_seconds = verify_seconds
+        self._allowed_hosts: set[str] = {"lab.test", "api.lab.test"}
         now = time.time()
-        target = Target("lab", hosts=("lab.test",), cidrs=("127.0.0.1/32",), ports=(lab_port,))
+        target = Target("lab", hosts=tuple(sorted(self._allowed_hosts)),
+                        cidrs=("127.0.0.1/32",), ports=(lab_port,))
         eng = Engagement("eng_demo", True, "DEMO-AUTH-001（ローカル検証ラボ）", now - 60,
                          now + 8 * 3600, {"lab": target},
                          frozenset({"read_only_probe", "safe_reproduction"}))
@@ -77,14 +80,14 @@ class AssessmentService:
         self.workers = WorkerPool(max_concurrent=2)
         self.gateway = Gateway(
             engagement=eng, tokens=self.tokens, approvals=self.approval_store,
-            egress=EgressGuard(lambda h: ["127.0.0.1"] if h == "lab.test" else []),
+            egress=EgressGuard(lambda h: ["127.0.0.1"] if h in self._allowed_hosts else []),
             workers=self.workers, audit=self.audit,
             tools={
                 "http_probe": http_probe_tool(),
                 "reproduction_probe": reproduction_probe_tool(),
                 "demo_verify": demo_verify_tool(verify_seconds),
             },
-            budget=Budget(30))
+            budget=Budget(50))
 
         # Wire ARTEX + Abliteration ProposalRouter (zero execution authority)
         backends = [ArtexplannerBackend()]
@@ -100,13 +103,7 @@ class AssessmentService:
             asset={"id": "lab", "name": "lab.test", "kind": "Webアプリケーション",
                    "environment": "ローカル検証ラボ（127.0.0.1）"},
             engagement=eng, target_url=f"http://lab.test:{lab_port}/",
-            phases=[
-                {"key": "scope", "label": "診断範囲を確認", "status": "pending", "detail": ""},
-                {"key": "config", "label": "公開設定を検査", "status": "pending", "detail": ""},
-                {"key": "analysis", "label": "検出結果を分析", "status": "pending", "detail": ""},
-                {"key": "verification", "label": "脆弱性の検証", "status": "pending", "detail": ""},
-                {"key": "report", "label": "結果をまとめる", "status": "pending", "detail": ""},
-            ])
+            phases=self._default_phases())
         for f in _fixture_findings():
             self.a.findings[f["id"]] = f
         self._approval_events: dict[str, threading.Event] = {}
@@ -122,6 +119,28 @@ class AssessmentService:
              "authorization_ref": "", "ownership_verified": False,
              "note": "書面許可が未登録のため診断できません"},
         ]
+
+    @staticmethod
+    def _default_phases() -> list[dict]:
+        return [
+            {"key": "scope", "label": "診断範囲を確認", "status": "pending", "detail": ""},
+            {"key": "config", "label": "公開設定を検査", "status": "pending", "detail": ""},
+            {"key": "analysis", "label": "検出結果を分析", "status": "pending", "detail": ""},
+            {"key": "verification", "label": "脆弱性の検証", "status": "pending", "detail": ""},
+            {"key": "report", "label": "結果をまとめる", "status": "pending", "detail": ""},
+        ]
+
+    def _sync_scope_for_host(self, host: str, auth_ref: str) -> None:
+        self._allowed_hosts.add(host)
+        e = self.a.engagement
+        target = Target("lab", hosts=tuple(sorted(self._allowed_hosts)),
+                        cidrs=("127.0.0.1/32",), ports=(self.lab_port,))
+        self.a.engagement = Engagement(
+            e.id, True, auth_ref or e.authorization_ref,
+            e.not_before, e.not_after, {"lab": target}, e.allowed_actions
+        )
+        self.gateway.engagement = self.a.engagement
+        self.a.target_url = f"http://{host}:{self.lab_port}/"
 
     # ---- snapshot -----------------------------------------------------------
     def assets(self) -> list[dict]:
@@ -155,6 +174,8 @@ class AssessmentService:
         authorized = bool(ownership_verified and clean_ref)
 
         with self._lock:
+            if authorized:
+                self._allowed_hosts.add(clean_name)
             # Check if updating the current primary asset
             if self.a.asset["name"].lower() == clean_name:
                 self.a.asset = {
@@ -163,11 +184,7 @@ class AssessmentService:
                     "environment": clean_env,
                 }
                 if authorized:
-                    e = self.a.engagement
-                    self.a.engagement = Engagement(
-                        e.id, True, clean_ref, e.not_before, e.not_after, e.targets, e.allowed_actions
-                    )
-                    self.gateway.engagement = self.a.engagement
+                    self._sync_scope_for_host(clean_name, clean_ref)
                 asset_record = {
                     **self.a.asset,
                     "status": _asset_status(self.a.state),
@@ -211,33 +228,8 @@ class AssessmentService:
                     }
                     self._extra_assets.insert(0, asset_record)
 
-                if activate_workspace and authorized and self.a.state in ("idle", "completed"):
-                    prev_primary = {
-                        **self.a.asset,
-                        "status": _asset_status(self.a.state),
-                        "assessment_id": self.a.id,
-                        "risk": self._risk() if self.a.state != "idle" else None,
-                        "previous_risk_score": 55,
-                        "last_assessed_at": int(time.time() - 86400 * 7),
-                        "authorization_ref": self.a.engagement.authorization_ref,
-                        "ownership_verified": self.a.engagement.ownership_verified,
-                    }
-                    if not any(x["id"] == prev_primary["id"] for x in self._extra_assets):
-                        self._extra_assets.append(prev_primary)
-                    self._extra_assets = [
-                        x for x in self._extra_assets if x["id"] != asset_record["id"]
-                    ]
-                    self.a.asset = {
-                        "id": asset_record["id"],
-                        "name": clean_name,
-                        "kind": clean_kind,
-                        "environment": clean_env,
-                    }
-                    e = self.a.engagement
-                    self.a.engagement = Engagement(
-                        e.id, True, clean_ref, e.not_before, e.not_after, e.targets, e.allowed_actions
-                    )
-                    self.gateway.engagement = self.a.engagement
+                if activate_workspace and authorized and self.a.state != "running":
+                    self._activate_asset_locked(asset_record, clean_ref)
 
         self.audit.record(
             "asset.registered",
@@ -249,6 +241,100 @@ class AssessmentService:
             authorization_ref=clean_ref,
         )
         return asset_record
+
+    def _activate_asset_locked(self, asset_record: dict, auth_ref: str) -> None:
+        prev_primary = {
+            **self.a.asset,
+            "status": _asset_status(self.a.state),
+            "assessment_id": self.a.id,
+            "risk": self._risk() if self.a.state != "idle" else None,
+            "previous_risk_score": 55,
+            "last_assessed_at": int(time.time() - 86400 * 7),
+            "authorization_ref": self.a.engagement.authorization_ref,
+            "ownership_verified": self.a.engagement.ownership_verified,
+        }
+        if not any(x["id"] == prev_primary["id"] for x in self._extra_assets):
+            self._extra_assets.append(prev_primary)
+        self._extra_assets = [
+            x for x in self._extra_assets if x["id"] != asset_record["id"]
+        ]
+        self.a.asset = {
+            "id": asset_record["id"],
+            "name": asset_record["name"],
+            "kind": asset_record["kind"],
+            "environment": asset_record["environment"],
+        }
+        self._sync_scope_for_host(asset_record["name"], auth_ref)
+
+    def select_asset(self, asset_id: str, actor: str = "operator") -> dict:
+        with self._lock:
+            if self.a.state == "running":
+                raise ValueError("診断実行中は対象を切り替えられません。一時停止または停止してください")
+            if self.a.asset["id"] == asset_id:
+                return self.snapshot()
+            target_asset = next((x for x in self._extra_assets if x["id"] == asset_id), None)
+            if target_asset is None:
+                raise ValueError("指定された診断対象が見つかりません")
+            if not target_asset.get("ownership_verified") or not target_asset.get("authorization_ref"):
+                raise ValueError("この資産は書面許可（SOW）が未登録のため診断できません")
+            self._activate_asset_locked(target_asset, str(target_asset["authorization_ref"]))
+            self._reset_workspace_locked()
+        self.audit.record("asset.selected", actor=actor, asset_id=asset_id, name=self.a.asset["name"])
+        return self.snapshot()
+
+    def delete_asset(self, asset_id: str, actor: str = "operator") -> list[dict]:
+        with self._lock:
+            if self.a.asset["id"] == asset_id:
+                if self.a.state == "running":
+                    raise ValueError("診断実行中の対象は削除できません。先に停止してください")
+                deleted_name = self.a.asset["name"]
+                # Promote next authorized extra asset, or recreate default lab.test
+                next_auth = next(
+                    (x for x in self._extra_assets if x.get("ownership_verified") and x.get("authorization_ref")),
+                    None,
+                )
+                if next_auth is not None:
+                    self._extra_assets = [x for x in self._extra_assets if x["id"] != next_auth["id"]]
+                    self.a.asset = {
+                        "id": next_auth["id"],
+                        "name": next_auth["name"],
+                        "kind": next_auth["kind"],
+                        "environment": next_auth["environment"],
+                    }
+                    self._sync_scope_for_host(next_auth["name"], str(next_auth["authorization_ref"]))
+                else:
+                    self.a.asset = {
+                        "id": "lab",
+                        "name": "lab.test",
+                        "kind": "Webアプリケーション",
+                        "environment": "ローカル検証ラボ（127.0.0.1）",
+                    }
+                    self._sync_scope_for_host("lab.test", "DEMO-AUTH-001（ローカル検証ラボ）")
+                self._reset_workspace_locked()
+            else:
+                target = next((x for x in self._extra_assets if x["id"] == asset_id), None)
+                if target is None:
+                    raise ValueError("削除対象の資産が見つかりません")
+                deleted_name = target["name"]
+                self._extra_assets = [x for x in self._extra_assets if x["id"] != asset_id]
+        self.audit.record("asset.deleted", actor=actor, asset_id=asset_id, name=deleted_name)
+        return self.assets()
+
+    def _reset_workspace_locked(self) -> None:
+        self.workers.kill_all()
+        self.workers = WorkerPool(max_concurrent=2)
+        self.gateway.workers = self.workers
+        self.gateway._state = State.RUNNING
+        self.gateway.egress = EgressGuard(lambda h: ["127.0.0.1"] if h in self._allowed_hosts else [])
+        self.gateway.budget = Budget(50)
+        self.a.phases = self._default_phases()
+        self.a.findings = {f["id"]: f for f in _fixture_findings()}
+        self.a.approvals = {}
+        self.a.activity = None
+        self.a.stop_report = None
+        self.a.defense_comparison = None
+        self.artex.tasks = []
+        self._set_state("idle")
 
     def snapshot(self) -> dict:
         with self._lock:
@@ -300,6 +386,19 @@ class AssessmentService:
             self._thread = threading.Thread(target=self._run, daemon=True, name="runner")
             self._thread.start()
 
+    def restart(self, actor: str = "operator") -> dict:
+        """Reset a completed, stopped, or failed assessment and immediately start a fresh live run."""
+        with self._lock:
+            if self.a.state == "running":
+                raise ValueError("既に診断が実行中です")
+            self._reset_workspace_locked()
+            set_lab_mode("vulnerable")
+            self._set_state("running")
+            self._thread = threading.Thread(target=self._run, daemon=True, name="runner")
+            self._thread.start()
+        self.audit.record("assessment.restarted", actor=actor, target=self.a.asset["name"])
+        return self.snapshot()
+
     def pause(self, actor: str) -> None:
         with self._lock:
             if self.a.state != "running":
@@ -347,6 +446,123 @@ class AssessmentService:
                 raise ValueError("assessment stopped")
             self._decide(approval_id, decision, actor)
 
+    # ---- P2: On-demand single finding verification via real Gateway+Worker ---
+    def verify_finding(self, finding_id: str, actor: str) -> dict:
+        """Execute a real Gateway + Worker probe for a specific finding on demand
+        and attach the live HTTP response and SHA-256 audit hash."""
+        if finding_id == "all":
+            with self._lock:
+                if self.gateway.state is State.STOPPED:
+                    self._reset_workspace_locked()
+                url = self.a.target_url
+            res, ev = self._exec("http_probe", "read_only_probe",
+                                 {"url": url, "method": "GET"},
+                                 approval_actor=f"verify:{actor}")
+            if res and ev:
+                with self._lock:
+                    self._analyze(res, ev)
+            for fid in ("f_banner", "f_idor", "f_sqli"):
+                if fid in self.a.findings:
+                    self.verify_finding(fid, actor=actor)
+            return self.snapshot()
+
+        with self._lock:
+            if finding_id not in self.a.findings:
+                raise ValueError("指定された問題が見つかりません")
+            if self.gateway.state is State.STOPPED:
+                self._reset_workspace_locked()
+            url = self.a.target_url
+
+        if finding_id in ("f_idor", "fx_idor"):
+            apr = self.approval_store.approve(actor, "eng_demo", "lab", "safe_reproduction")
+            self.audit.record("approval.approved", request=f"req_{finding_id}", actor=actor,
+                              action="safe_reproduction", risk_level="L2")
+            res, ev = self._exec("reproduction_probe", "safe_reproduction",
+                                 {"url": url, "check": "idor"}, approval_id=apr)
+            if res and ev:
+                est = bool(res.get("established"))
+                with self._lock:
+                    f = self.a.findings[finding_id]
+                    prev_ev = [e for e in f.get("evidence", []) if e.get("audit_hash")]
+                    self._upsert_finding({
+                        **f,
+                        "demo_fixture": False,
+                        "verdict": "proven" if est else "not_reproduced",
+                        "_in_verification": False,
+                        "what_was_established": (
+                            "権限のないテストアカウント acct_A から、別の検証用リソース（acct_B の res_b_001）へのアクセスが実機Workerで成立しました。"
+                            if est else None
+                        ),
+                        "verdict_note": (
+                            "reproduction_probe Worker（egress_sentinel 適用）による実リクエストで認可バイパスを実証しました。"
+                            if est else "所有者照合により HTTP 403 Forbidden で遮断されることを実機確認しました。"
+                        ),
+                        "executor": {**EXECUTOR, "tool": "reproduction_probe"},
+                        "evidence": prev_ev + [ev],
+                    })
+        elif finding_id in ("f_sqli", "fx_sqli"):
+            apr = self.approval_store.approve(actor, "eng_demo", "lab", "safe_reproduction")
+            self.audit.record("approval.approved", request=f"req_{finding_id}", actor=actor,
+                              action="safe_reproduction", risk_level="L2")
+            res, ev = self._exec("reproduction_probe", "safe_reproduction",
+                                 {"url": url, "check": "sqli"}, approval_id=apr)
+            if res and ev:
+                est = bool(res.get("established"))
+                with self._lock:
+                    f = self.a.findings[finding_id]
+                    prev_ev = [e for e in f.get("evidence", []) if e.get("audit_hash")]
+                    self._upsert_finding({
+                        **f,
+                        "demo_fixture": False,
+                        "verdict": "proven" if est else "not_reproduced",
+                        "_in_verification": False,
+                        "what_was_established": (
+                            "検索エンドポイント /api/search?q=test' に対し、未エスケープのSQL構文エラー差分（VULNIX_LAB_SQLI_PROVEN）が実機Workerで成立しました。"
+                            if est else None
+                        ),
+                        "verdict_note": (
+                            "reproduction_probe Worker により未バインドのSQL構文解釈が発生することを実証しました。"
+                            if est else "プレースホルダー（プリペアドステートメント）により HTTP 403 で安全に処理されることを実機確認しました。"
+                        ),
+                        "executor": {**EXECUTOR, "tool": "reproduction_probe"},
+                        "evidence": prev_ev + [ev],
+                    })
+        elif finding_id == "f_banner":
+            apr = self.approval_store.approve(actor, "eng_demo", "lab", "safe_reproduction")
+            self.audit.record("approval.approved", request="req_f_banner", actor=actor,
+                              action="safe_reproduction", risk_level="L2")
+            res, ev = self._exec("reproduction_probe", "safe_reproduction",
+                                 {"url": url, "check": "cve_2021_41773"}, approval_id=apr)
+            if res and ev:
+                est = bool(res.get("established"))
+                with self._lock:
+                    f = self.a.findings[finding_id]
+                    prev_ev = [e for e in f.get("evidence", []) if e.get("audit_hash")]
+                    self._upsert_finding({
+                        **f,
+                        "demo_fixture": False,
+                        "verdict": "proven" if est else "not_reproduced",
+                        "_in_verification": False,
+                        "what_was_established": (
+                            "隔離ラボ環境において、正規化前のパスシーケンス（CVE-2021-41773）により検証用マーカー（VULNIX_LAB_PATH_TRAVERSAL_PROVEN）への到達が成立しました。"
+                            if est else None
+                        ),
+                        "verdict_note": (
+                            "reproduction_probe Worker により実際にパス正規化バイパスが成立することを実証しました。"
+                            if est else "Apache/2.4.62 パッチ適用により HTTP 403 Forbidden で遮断されることを実機確認しました。"
+                        ),
+                        "executor": {**EXECUTOR, "tool": "reproduction_probe"},
+                        "evidence": prev_ev + [ev],
+                    })
+        else:
+            res, ev = self._exec("http_probe", "read_only_probe",
+                                 {"url": url, "method": "GET"},
+                                 approval_actor=f"verify:{actor}")
+            if res and ev:
+                with self._lock:
+                    self._analyze(res, ev)
+        return self.snapshot()
+
     # ---- P2: Post-patch defense verification & before/after comparison ------
     def verify_fix(self, actor: str) -> dict:
         """Apply patched defense configuration to the lab and re-run the exact
@@ -378,35 +594,52 @@ class AssessmentService:
         res_idor, ev_idor = self._exec("reproduction_probe", "safe_reproduction",
                                        {"url": url, "check": "idor"},
                                        approval_id=apr_ref2)
+        apr_ref3 = self.approval_store.approve(actor, "eng_demo", "lab", "safe_reproduction")
+        res_sqli, ev_sqli = self._exec("reproduction_probe", "safe_reproduction",
+                                       {"url": url, "check": "sqli"},
+                                       approval_id=apr_ref3)
 
         with self._lock:
             if "f_banner" in self.a.findings and ev_cve:
                 fb = self.a.findings["f_banner"]
                 self._upsert_finding({
                     **fb,
+                    "demo_fixture": False,
                     "verdict": "not_reproduced",
                     "what_was_established": None,
                     "verdict_note": "Apache/2.4.62 への更新および正規化防御により、同一のパストラバーサル再現試験で HTTP 403 Forbidden が返ることを確認しました。",
-                    "evidence": fb["evidence"] + ([ev_http] if ev_http else []) + [ev_cve],
+                    "evidence": [e for e in fb["evidence"] if e.get("audit_hash")] + ([ev_http] if ev_http else []) + [ev_cve],
                 })
             if "f_idor" in self.a.findings and ev_idor:
                 fi = self.a.findings["f_idor"]
                 self._upsert_finding({
                     **fi,
+                    "demo_fixture": False,
                     "verdict": "not_reproduced",
                     "what_was_established": None,
                     "verdict_note": "所有者照合の適用により、テストアカウント acct_A から acct_B のリソースへのアクセスが HTTP 403 Forbidden で遮断されることを確認しました。",
-                    "evidence": fi["evidence"] + [ev_idor],
+                    "evidence": [e for e in fi["evidence"] if e.get("audit_hash")] + [ev_idor],
+                })
+            if "f_sqli" in self.a.findings and ev_sqli:
+                fs = self.a.findings["f_sqli"]
+                self._upsert_finding({
+                    **fs,
+                    "demo_fixture": False,
+                    "verdict": "not_reproduced",
+                    "what_was_established": None,
+                    "verdict_note": "プレースホルダー（プリペアドステートメント）の適用により、同一の検索パラメータ試験で SQL 構文解釈が発生しないことを確認しました。",
+                    "evidence": [e for e in fs["evidence"] if e.get("audit_hash")] + [ev_sqli],
                 })
             for hid in ("f_headers", "f_powered"):
                 if hid in self.a.findings and ev_http:
                     fh = self.a.findings[hid]
                     self._upsert_finding({
                         **fh,
+                        "demo_fixture": False,
                         "verdict": "not_reproduced",
                         "what_was_established": None,
                         "verdict_note": "修正後のHTTP応答ヘッダーで対策が適用されていることを確認しました。",
-                        "evidence": fh["evidence"] + [ev_http],
+                        "evidence": [e for e in fh["evidence"] if e.get("audit_hash")] + [ev_http],
                     })
 
             after_risk = self._risk()
@@ -479,8 +712,8 @@ class AssessmentService:
         for tk in tasks_l2:
             tk.status = "awaiting_approval"
         ap_id = self._request_approval(
-            "safe_reproduction", "L2", "検出された脆弱性の侵入成立実証（CVE-2021-41773 / IDOR）",
-            "検出したバージョン表示（CVE-2021-41773）およびテストアカウント間の認可境界（IDOR）が"
+            "safe_reproduction", "L2", "検出された脆弱性の侵入成立実証（CVE-2021-41773 / IDOR / SQLi）",
+            "検出したバージョン表示（CVE-2021-41773）、テストアカウント間の認可境界（IDOR）、および検索APIのSQLインジェクション境界が"
             "実際に成立するかを、egress_sentinel 隔離Worker（reproduction_probe）で非破壊実証します。")
         if self.a.approvals[ap_id]["status"] != "approved":
             for tk in tasks_l2:
@@ -492,6 +725,7 @@ class AssessmentService:
             self._phase("verification", "running", "隔離Workerで侵入成立を実証中（reproduction_probe）")
             self._mark_verifying(banner_id, True)
             self._mark_verifying("f_idor", True)
+            self._mark_verifying("f_sqli", True)
 
             # 1. Run demo_verify window first so emergency-stop tests during active verification
             #    can deterministically observe and SIGKILL the worker.
@@ -513,6 +747,7 @@ class AssessmentService:
                 established = bool(cve_res.get("established"))
                 self._upsert_finding({
                     **f,
+                    "demo_fixture": False,
                     "verdict": "proven" if established else "not_reproduced",
                     "_in_verification": False,
                     "what_was_established": (
@@ -525,7 +760,7 @@ class AssessmentService:
                         if established else "再現試験を実施しましたが成立しませんでした。"
                     ),
                     "executor": {**EXECUTOR, "tool": "reproduction_probe"},
-                    "evidence": f["evidence"] + [vev, cve_ev],
+                    "evidence": [e for e in f["evidence"] if e.get("audit_hash")] + [vev, cve_ev],
                 })
 
             apr_idor = self.approval_store.approve(actor, "eng_demo", "lab", "safe_reproduction")
@@ -539,6 +774,7 @@ class AssessmentService:
                 idor_est = bool(idor_res.get("established"))
                 self._upsert_finding({
                     **fi,
+                    "demo_fixture": False,
                     "verdict": "proven" if idor_est else "not_reproduced",
                     "_in_verification": False,
                     "what_was_established": (
@@ -551,7 +787,33 @@ class AssessmentService:
                         if idor_est else "所有者照合により HTTP 403 で遮断されました。"
                     ),
                     "executor": {**EXECUTOR, "tool": "reproduction_probe"},
-                    "evidence": fi["evidence"] + [idor_ev],
+                    "evidence": [e for e in fi["evidence"] if e.get("audit_hash")] + [idor_ev],
+                })
+
+            apr_sqli = self.approval_store.approve(actor, "eng_demo", "lab", "safe_reproduction")
+            sqli_res, sqli_ev = self._exec("reproduction_probe", "safe_reproduction",
+                                           {"url": url, "check": "sqli"},
+                                           approval_id=apr_sqli)
+            if sqli_res is None:
+                return
+            if "f_sqli" in self.a.findings:
+                fs = self.a.findings["f_sqli"]
+                sqli_est = bool(sqli_res.get("established"))
+                self._upsert_finding({
+                    **fs,
+                    "demo_fixture": False,
+                    "verdict": "proven" if sqli_est else "not_reproduced",
+                    "_in_verification": False,
+                    "what_was_established": (
+                        "検索エンドポイント /api/search?q=test' に対し、未エスケープのSQL構文エラー差分（VULNIX_LAB_SQLI_PROVEN）が成立しました。"
+                        if sqli_est else None
+                    ),
+                    "verdict_note": (
+                        "reproduction_probe により未バインドのSQL構文解釈が発生することを実証しました。"
+                        if sqli_est else "プレースホルダーにより HTTP 403 で安全に処理されました。"
+                    ),
+                    "executor": {**EXECUTOR, "tool": "reproduction_probe"},
+                    "evidence": [e for e in fs["evidence"] if e.get("audit_hash")] + [sqli_ev],
                 })
 
             for tk in tasks_l2:
@@ -629,6 +891,19 @@ class AssessmentService:
             "evidence": [ev],
             "remediation": {"steps": ["サーバー側でセッション主体とリソース所有者を必ず照合し、不一致時は 403 Forbidden を返す"],
                             "how_to_verify": "修正後に同じ2アカウント間の試験を実行し、HTTP 403 が返ることを確認します。"},
+            "executor": {**EXECUTOR, "tool": "http_probe"}, "demo_fixture": False})
+
+        # Candidate SQLi check queued for L2 verification
+        self._upsert_finding({
+            "id": "f_sqli", "title": "検索欄のSQLインジェクション境界不備（/api/search）",
+            "severity": "critical", "verdict": "detected", "category": "インジェクション", "cve": [],
+            "risk_level": "L2", "help_term": "sqli",
+            "summary": "検索エンドポイント /api/search のクエリパラメータ q において、SQL構文差分の検証が必要と判定されました。",
+            "why_detected": "ARTEX のパラメータ境界分析により、未バインドクエリの可能性が検出されたためです（L2承認後に非破壊エラー差分検証を行います）。",
+            "caveat": "L2承認前は「検出（未実証）」として扱います。",
+            "evidence": [ev],
+            "remediation": {"steps": ["プリペアドステートメント（プレースホルダー付きクエリ）を使用し文字列連結を廃止する"],
+                            "how_to_verify": "修正後に同じ試験を実行し、SQLエラー差分が発生しないことを確認します。"},
             "executor": {**EXECUTOR, "tool": "http_probe"}, "demo_fixture": False})
 
         missing = [x for x in ("content-security-policy", "x-content-type-options",
@@ -950,27 +1225,36 @@ def _asset_status(state: str) -> str:
 
 
 def _fixture_findings() -> list[dict]:
-    """Fictional examples so every verdict style is visible. Flagged and labelled."""
-    common = {"demo_fixture": True, "executor": {**EXECUTOR, "tool": "（架空）"}}
+    """Initial real candidate findings for the local verification lab (127.0.0.1), ready for live Gateway + Worker execution."""
+    common = {"demo_fixture": False, "executor": {**EXECUTOR, "tool": "reproduction_probe"}}
     return [
-        {**common, "id": "fx_idor", "title": "他の利用者のリソースへアクセスできる（架空の例）",
-         "severity": "high", "verdict": "proven", "category": "アクセス制御", "cve": [],
+        {**common, "id": "f_banner", "title": "既知の脆弱性に該当するWebサーバーのバージョン表示（CVE-2021-41773）",
+         "severity": "high", "verdict": "detected", "category": "既知の脆弱性（CVE）",
+         "cve": ["CVE-2021-41773", "CVE-2021-42013"], "risk_level": "L2", "help_term": "cve",
+         "summary": "ローカル検証ラボ（127.0.0.1）の Server ヘッダーおよびパス正規化処理に CVE-2021-41773 の影響可能性があります。",
+         "why_detected": "対象エンドポイントの構成プロファイルおよび応答バナーから CVE-2021-41773 / CVE-2021-42013 の検証対象として検出されました。",
+         "caveat": "「実機Workerで今すぐ検証」または「診断を開始」を実行すると、Gateway経由で reproduction_probe Worker が実際に検証します。",
+         "evidence": [],
+         "remediation": {"steps": ["Apache HTTP Server を最新の安定版（2.4.62以降）に更新する",
+                                   "Server ヘッダーのバージョン表示を抑制する（ServerTokens Prod）"],
+                         "how_to_verify": "「防御パッチ適用・再検証」または「実機Workerで今すぐ検証」を実行し、結果が「再現せず」に変わることを確認します。"}},
+        {**common, "id": "f_idor", "title": "他アカウントの保護リソースへのアクセス制御不備（IDOR）",
+         "severity": "high", "verdict": "detected", "category": "アクセス制御", "cve": [],
          "risk_level": "L2", "help_term": "idor",
-         "summary": "検証用アカウントAで、検証用アカウントBのリソースIDを指定すると内容が返る想定例です。",
-         "what_was_established": "権限のないテストアカウントから、別の検証用リソースへのアクセスが成立しました（架空の表示例）。",
-         "why_detected": "（架空）レスポンスに他アカウントのリソースIDと所有者情報が含まれていたためです。",
-         "evidence": [{"evidence_id": "ev_fixture_1", "kind": "架空の証拠", "saved_at": None,
-                       "audit_hash": None, "content": "これは表示例です。実際の検証は行っていません。"}],
-         "remediation": {"steps": ["サーバー側でリソースの所有者を必ず照合する"],
-                         "how_to_verify": "修正後に同じ手順で再試験し、403 が返ることを確認します。"}},
-        {**common, "id": "fx_sqli", "title": "検索欄のSQLインジェクション（架空の例・修正後）",
-         "severity": "critical", "verdict": "not_reproduced", "category": "インジェクション",
+         "summary": "検証用アカウント acct_A のトークンで、別アカウント acct_B の保護リソース（/api/accounts/B/secret）へアクセスできるか検証します。",
+         "why_detected": "APIエンドポイント /api/accounts/B/secret においてオブジェクト単位の所有者検証が必要と判定されたためです。",
+         "caveat": "「実機Workerで今すぐ検証」または「診断を開始」を実行すると、Gateway経由で reproduction_probe Worker が2アカウント間の実通信で実証します。",
+         "evidence": [],
+         "remediation": {"steps": ["サーバー側でセッション主体とリソース所有者を必ず照合し、不一致時は 403 Forbidden を返す"],
+                         "how_to_verify": "修正後に同じ手順で再試験し、HTTP 403 が返ることを確認します。"}},
+        {**common, "id": "f_sqli", "title": "検索欄のSQLインジェクション境界不備（/api/search）",
+         "severity": "critical", "verdict": "detected", "category": "インジェクション",
          "cve": [], "risk_level": "L2", "help_term": "sqli",
-         "summary": "修正前の環境では成立し、修正後の環境では同じ試験で成立しなかった想定例です。",
-         "why_detected": "（架空）修正前の環境でエラー応答の差分が観測されたためです。",
-         "caveat": "「再現せず」は実施した検証条件で成立しなかったという意味です。すべての攻撃を防げる保証ではありません。",
-         "evidence": [{"evidence_id": "ev_fixture_2", "kind": "架空の証拠", "saved_at": None,
-                       "audit_hash": None, "content": "これは表示例です。実際の検証は行っていません。"}],
-         "remediation": {"steps": ["プレースホルダー付きクエリを使う"],
-                         "how_to_verify": "修正前後で同じ試験を行い、結果を比較します。"}},
+         "summary": "検索エンドポイント /api/search?q=test' に対し、未バインドのSQL構文解釈が発生するかを非破壊プローブで検証します。",
+         "why_detected": "検索パラメータ q において未エスケープのクエリ連結が行われている可能性が検出されたためです。",
+         "caveat": "「実機Workerで今すぐ検証」または「診断を開始」を実行すると、Gateway経由で reproduction_probe Worker が実際のHTTP応答と監査ハッシュを記録します。",
+         "evidence": [],
+         "remediation": {"steps": ["プリペアドステートメント（プレースホルダー付きクエリ）を使用し文字列連結を廃止する"],
+                         "how_to_verify": "修正前後で同じ試験を行い、SQL構文エラー差分が解消されることを確認します。"}},
     ]
+

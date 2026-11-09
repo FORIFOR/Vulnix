@@ -76,6 +76,15 @@ export function ExecutionControls({ snap, onUpdate, refetch }: {
           <HelpPopover term="emergency_stop" />
         </span>
       )}
+      {(snap.state === "completed" || snap.state === "stopped" || snap.state === "failed") && (
+        <button
+          disabled={busy}
+          onClick={() => run("/restart")}
+          className="rounded-lg bg-zinc-900 px-3 py-2 text-sm font-semibold text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-white dark:text-zinc-900"
+        >
+          ↻ 再診断を実行
+        </button>
+      )}
       {snap.state === "completed" && !snap.defense_comparison && (
         <button
           disabled={busy}

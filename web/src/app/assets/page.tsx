@@ -1,10 +1,10 @@
 "use client";
 
-import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { AssetRegistrationModal } from "@/components/AssetRegistrationModal";
 import { Card, Pill } from "@/components/ui";
-import { getJSON } from "@/lib/api";
+import { getJSON, postJSON } from "@/lib/api";
 import type { Asset } from "@/lib/types";
 
 const STATUS_CLS: Record<string, string> = {
@@ -17,8 +17,10 @@ const STATUS_CLS: Record<string, string> = {
 };
 
 export default function AssetsPage() {
+  const router = useRouter();
   const [assets, setAssets] = useState<Asset[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [editingAsset, setEditingAsset] = useState<Asset | null>(null);
 
@@ -26,13 +28,39 @@ export default function AssetsPage() {
     getJSON<Asset[]>("/api/assets").then(setAssets, (e) => setErr(e.message));
   }, []);
 
+  const handleSelectAsset = async (a: Asset) => {
+    if (!a.assessment_id) return;
+    setBusyId(a.id);
+    setErr(null);
+    try {
+      await postJSON("/api/assets/select", { id: a.id });
+      router.push(`/assessments/${a.assessment_id}`);
+    } catch (e) {
+      setErr((e as Error).message);
+      setBusyId(null);
+    }
+  };
+
+  const handleDeleteAsset = async (a: Asset) => {
+    setBusyId(a.id);
+    setErr(null);
+    try {
+      const res = await postJSON<{ assets: Asset[] }>("/api/assets/delete", { id: a.id });
+      setAssets(res.assets);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   return (
     <main className="mx-auto max-w-5xl p-4 md:p-8">
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="mb-1 text-2xl font-bold">資産管理・診断許可登録</h1>
           <p className="text-sm text-zinc-500">
-            診断対象の一覧です。未診断の資産を安全とは判定しません。診断には書面許可と所有確認が必要です。
+            診断対象の一覧です。対象の切り替え・削除・書面許可（SOW）の登録が行えます。
           </p>
         </div>
         <button
@@ -47,7 +75,7 @@ export default function AssetsPage() {
         </button>
       </div>
 
-      {err && <p role="alert" className="text-sm text-red-700">読み込めませんでした：{err}</p>}
+      {err && <p role="alert" className="mb-4 rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-800 dark:bg-red-950/40 dark:text-red-200">{err}</p>}
       {!assets && !err && <p className="text-sm text-zinc-500">読み込み中…</p>}
 
       <Card className="overflow-hidden p-0">
@@ -60,7 +88,7 @@ export default function AssetsPage() {
               <th scope="col" className="hidden px-4 py-2 font-medium lg:table-cell">書面許可（SOW）</th>
               <th scope="col" className="px-4 py-2 font-medium">状態</th>
               <th scope="col" className="px-4 py-2 font-medium">リスク（前回比）</th>
-              <th scope="col" className="px-4 py-2" />
+              <th scope="col" className="px-4 py-2 text-right font-medium">操作</th>
             </tr>
           </thead>
           <tbody>
@@ -99,22 +127,38 @@ export default function AssetsPage() {
                   )}
                 </td>
                 <td className="px-4 py-3 text-right">
-                  {a.assessment_id ? (
-                    <Link href={`/assessments/${a.assessment_id}`} className="font-semibold underline-offset-2 hover:underline">
-                      開く →
-                    </Link>
-                  ) : (
+                  <div className="inline-flex items-center justify-end gap-2">
+                    {a.assessment_id ? (
+                      <button
+                        type="button"
+                        disabled={busyId === a.id}
+                        onClick={() => handleSelectAsset(a)}
+                        className="rounded-md bg-zinc-900 px-2.5 py-1 text-xs font-semibold text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-white dark:text-zinc-900"
+                      >
+                        診断を開く →
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled={busyId === a.id}
+                        onClick={() => {
+                          setEditingAsset(a);
+                          setModalOpen(true);
+                        }}
+                        className="rounded-md border border-amber-300 bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-900 hover:bg-amber-100 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200"
+                      >
+                        許可を登録
+                      </button>
+                    )}
                     <button
                       type="button"
-                      onClick={() => {
-                        setEditingAsset(a);
-                        setModalOpen(true);
-                      }}
-                      className="rounded-md border border-amber-300 bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-900 hover:bg-amber-100 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200"
+                      disabled={busyId === a.id}
+                      onClick={() => handleDeleteAsset(a)}
+                      className="rounded-md border border-red-200 px-2.5 py-1 text-xs font-medium text-red-700 hover:bg-red-50 disabled:opacity-50 dark:border-red-900/60 dark:text-red-300 dark:hover:bg-red-950/40"
                     >
-                      許可を登録
+                      削除
                     </button>
-                  )}
+                  </div>
                 </td>
               </tr>
             ))}

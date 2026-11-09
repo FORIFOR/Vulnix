@@ -23,7 +23,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from .assessment import AssessmentService
 from .control_verification import run_live_control_verification
-from .lab import start_lab
+from .lab import set_lab_mode, start_lab
 from .operators import AuthError, MFAChallenge, OperatorStore
 from .router import HttpModelBackend
 
@@ -245,6 +245,12 @@ def make_handler(svc: AssessmentService, ops: OperatorStore):
                         actor=actor,
                     )
                     return self._json(200, {"asset": asset, "assets": svc.assets()})
+                elif p == "/api/assets/delete":
+                    assets = svc.delete_asset(str(body.get("id", "")), actor=actor)
+                    return self._json(200, {"assets": assets, "snapshot": svc.snapshot()})
+                elif p == "/api/assets/select":
+                    snap = svc.select_asset(str(body.get("id", "")), actor=actor)
+                    return self._json(200, {"assets": svc.assets(), "snapshot": snap})
                 elif p == "/api/system/verify-controls":
                     rep = run_live_control_verification()
                     svc.audit.record("system.controls_verified", actor=actor, all_passed=rep["all_passed"])
@@ -259,12 +265,24 @@ def make_handler(svc: AssessmentService, ops: OperatorStore):
                     return self._json(200, st)
                 elif p == base + "/start":
                     svc.start()
+                elif p == base + "/restart":
+                    return self._json(200, svc.restart(actor))
                 elif p == base + "/pause":
                     svc.pause(actor)
                 elif p == base + "/resume":
                     svc.resume(actor)
                 elif p == base + "/emergency-stop":
                     return self._json(200, {"stop_report": svc.emergency_stop(actor)})
+                elif p == base + "/verify-finding":
+                    fid = str(body.get("finding_id", "")).strip()
+                    if not fid:
+                        return self._json(400, {"error": "finding_id is required"})
+                    return self._json(200, svc.verify_finding(fid, actor))
+                elif p == base + "/lab-mode":
+                    mode = str(body.get("mode", "vulnerable")).strip()
+                    set_lab_mode(mode)
+                    svc.audit.record("lab.mode_changed", actor=actor, mode=mode)
+                    return self._json(200, svc.snapshot())
                 elif p == base + "/verify-fix":
                     if "approver" not in sess.roles:
                         return self._json(403, {"error": "修正後の再検証には承認責任者の権限が必要です"})

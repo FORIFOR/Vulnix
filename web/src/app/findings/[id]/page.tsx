@@ -2,24 +2,54 @@
 
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
-import { Suspense } from "react";
+import { Suspense, useState } from "react";
 import { EvidencePanel } from "@/components/findings/EvidencePanel";
 import { RemediationPanel } from "@/components/findings/RemediationPanel";
 import { HelpPopover } from "@/components/learning/HelpPopover";
 import { Card, FixtureBadge, SeverityBadge, VerdictBadge } from "@/components/ui";
+import { postJSON } from "@/lib/api";
+import type { Snapshot } from "@/lib/types";
 import { useAssessment } from "@/lib/useAssessment";
 
 function Detail() {
   const { id } = useParams<{ id: string }>();
   const aid = useSearchParams().get("a") ?? "scan_001";
-  const { snap, error } = useAssessment(aid);
+  const { snap, setSnap, error } = useAssessment(aid);
+  const [busy, setBusy] = useState(false);
+  const [verifyErr, setVerifyErr] = useState<string | null>(null);
   if (!snap) return <p className="p-6 text-sm">{error ? `読み込めませんでした：${error}` : "読み込み中…"}</p>;
   const f = snap.findings.find((x) => x.id === id);
   if (!f) return <p className="p-6 text-sm">この問題は見つかりません。</p>;
 
+  const runLiveVerify = async () => {
+    setBusy(true);
+    setVerifyErr(null);
+    try {
+      const updated = await postJSON<Snapshot>(`/api/assessments/${aid}/verify-finding`, {
+        finding_id: f.id,
+      });
+      setSnap(updated);
+    } catch (e) {
+      setVerifyErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <main className="mx-auto max-w-3xl space-y-4 p-4 md:p-8">
-      <Link href={`/assessments/${aid}?tab=findings`} className="text-sm text-zinc-500 hover:underline">← 問題一覧</Link>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <Link href={`/assessments/${aid}?tab=findings`} className="text-sm text-zinc-500 hover:underline">← 問題一覧</Link>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={runLiveVerify}
+          className="rounded-lg bg-zinc-900 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-white dark:text-zinc-900"
+        >
+          {busy ? "Worker実行中…" : "▶ 実機Workerで今すぐ検証（Gateway経由）"}
+        </button>
+      </div>
+      {verifyErr && <p className="text-xs text-red-600">{verifyErr}</p>}
       <div className="flex flex-wrap items-center gap-2">
         <SeverityBadge s={f.severity} />
         <VerdictBadge v={f.verdict} />

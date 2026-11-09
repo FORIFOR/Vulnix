@@ -3,8 +3,9 @@
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useState } from "react";
-import { getJSON } from "@/lib/api";
+import { getJSON, postJSON } from "@/lib/api";
 import { fmtTime } from "@/lib/labels";
+import type { Snapshot } from "@/lib/types";
 import { useAssessment } from "@/lib/useAssessment";
 import { FindingCard } from "../findings/FindingCard";
 import { WorkspaceHeader } from "../layout/WorkspaceHeader";
@@ -27,6 +28,8 @@ export function AssessmentTabs({ id }: { id: string }) {
   const { snap, setSnap, error, conn, audit, chainValid, notes, refetch } = useAssessment(id);
   const [reportMd, setReportMd] = useState<string | null>(null);
   const [reportBusy, setReportBusy] = useState(false);
+  const [labBusy, setLabBusy] = useState(false);
+  const [labErr, setLabErr] = useState<string | null>(null);
 
   if (!snap) {
     return (
@@ -59,6 +62,37 @@ export function AssessmentTabs({ id }: { id: string }) {
     }
   };
 
+  const runAllWorkers = async () => {
+    setLabBusy(true);
+    setLabErr(null);
+    try {
+      const updated = await postJSON<Snapshot>(`/api/assessments/${snap.id}/verify-finding`, {
+        finding_id: "all",
+      });
+      setSnap(updated);
+    } catch (e) {
+      setLabErr((e as Error).message);
+    } finally {
+      setLabBusy(false);
+    }
+  };
+
+  const toggleLabMode = async (mode: "vulnerable" | "patched") => {
+    setLabBusy(true);
+    setLabErr(null);
+    try {
+      await postJSON<Snapshot>(`/api/assessments/${snap.id}/lab-mode`, { mode });
+      const updated = await postJSON<Snapshot>(`/api/assessments/${snap.id}/verify-finding`, {
+        finding_id: "all",
+      });
+      setSnap(updated);
+    } catch (e) {
+      setLabErr((e as Error).message);
+    } finally {
+      setLabBusy(false);
+    }
+  };
+
   return (
     <div className="flex min-h-dvh flex-col">
       <WorkspaceHeader snap={snap} conn={conn} onUpdate={setSnap} refetch={refetch} />
@@ -80,9 +114,38 @@ export function AssessmentTabs({ id }: { id: string }) {
 
       <main className="mx-auto w-full max-w-5xl flex-1 p-4 md:p-6">
         {snap.demo && (
-          <p className="mb-4 rounded-lg bg-violet-50 px-3 py-2 text-xs text-violet-900 dark:bg-violet-950/40 dark:text-violet-200">
-            ローカル検証ラボ（127.0.0.1）でのデモです。検査・承認・緊急停止は実際のGatewayとWorkerで動きます。「架空データ」と表示された問題は表示例です。
-          </p>
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-violet-200 bg-violet-50/90 px-3.5 py-2.5 text-xs text-violet-950 dark:border-violet-900/60 dark:bg-violet-950/40 dark:text-violet-100">
+            <div className="space-y-0.5">
+              <div className="flex flex-wrap items-center gap-2 font-semibold">
+                <span>ローカル検証ラボ（127.0.0.1:18081）実機実行モード</span>
+                <span className={`rounded px-1.5 py-0.5 text-[11px] font-bold ${snap.lab_mode === "patched" ? "bg-emerald-200 text-emerald-950 dark:bg-emerald-900 dark:text-emerald-100" : "bg-amber-200 text-amber-950 dark:bg-amber-900 dark:text-amber-100"}`}>
+                  現在：{snap.lab_mode === "patched" ? "防御パッチ適用済み (Apache 2.4.62)" : "脆弱環境 (Apache 2.4.49 / IDOR / SQLi)"}
+                </span>
+              </div>
+              <p className="text-violet-800 dark:text-violet-200">
+                すべての問題（CVE-2021-41773・IDOR・SQLi・設定不備）は実際の Gateway と隔離 Worker（http_probe / reproduction_probe）で検証・監査記録されます。
+              </p>
+              {labErr && <p className="font-semibold text-red-700 dark:text-red-300">エラー：{labErr}</p>}
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                disabled={labBusy}
+                onClick={runAllWorkers}
+                className="rounded-lg bg-violet-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-violet-800 disabled:opacity-50 dark:bg-violet-200 dark:text-violet-950 dark:hover:bg-violet-100"
+              >
+                {labBusy ? "Worker実行中…" : "⚡ 全問題を実機Workerで今すぐ検証"}
+              </button>
+              <button
+                type="button"
+                disabled={labBusy}
+                onClick={() => toggleLabMode(snap.lab_mode === "patched" ? "vulnerable" : "patched")}
+                className="rounded-lg border border-violet-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-violet-900 hover:bg-violet-100 disabled:opacity-50 dark:border-violet-700 dark:bg-zinc-900 dark:text-violet-100"
+              >
+                {snap.lab_mode === "patched" ? "脆弱環境に戻して再検証" : "パッチ適用環境に切替えて再検証"}
+              </button>
+            </div>
+          </div>
         )}
 
         {tab === "assessment" && (
@@ -179,7 +242,7 @@ export function AssessmentTabs({ id }: { id: string }) {
                 {snap.state === "idle" ? "診断を開始すると、ここに問題が表示されます。" : "まだ問題は検出されていません（未検出は安全という意味ではありません）。"}
               </p>
             )}
-            {findings.map((f) => <FindingCard key={f.id} f={f} assessmentId={snap.id} />)}
+            {findings.map((f) => <FindingCard key={f.id} f={f} assessmentId={snap.id} onUpdate={setSnap} />)}
           </div>
         )}
 

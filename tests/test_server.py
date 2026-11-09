@@ -332,6 +332,26 @@ class TestServer(unittest.TestCase):
         self.assertEqual(ubody["asset"]["status"], "承認待ち")
         self.assertIsNone(ubody["asset"]["assessment_id"])
 
+        # 4. Delete unapproved asset and active asset via POST /api/assets/delete
+        dcode, dbody = self._req(f"{self.root}/assets/delete", {"id": ubody["asset"]["id"]})
+        self.assertEqual(dcode, 200)
+        self.assertNotIn(ubody["asset"]["id"], [a["id"] for a in dbody["assets"]])
+
+        dcode2, dbody2 = self._req(f"{self.root}/assets/delete", {"id": abody["asset"]["id"]})
+        self.assertEqual(dcode2, 200)
+        self.assertNotIn(abody["asset"]["id"], [a["id"] for a in dbody2["assets"]])
+
+        # 5. Live on-demand verification of individual findings and 'all' via real Gateway + Worker
+        vcode, vsnap = self.post("/verify-finding", {"finding_id": "f_sqli"})
+        self.assertEqual(vcode, 200)
+        f_sqli = next(f for f in vsnap["findings"] if f["id"] == "f_sqli")
+        self.assertEqual(f_sqli["verdict"], "proven")
+        self.assertTrue(any(e.get("audit_hash") for e in f_sqli["evidence"]))
+
+        acode2, asnap = self.post("/verify-finding", {"finding_id": "all"})
+        self.assertEqual(acode2, 200)
+        self.assertFalse(any(f.get("demo_fixture") for f in asnap["findings"]))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -77,7 +77,7 @@ def reproduction_probe_tool() -> Tool:
     return Tool(
         name="reproduction_probe", action="safe_reproduction",
         args={"url": ArgSpec(str, pattern=r"https?://[^\s]+"),
-              "check": ArgSpec(str, required=False, choices=("idor", "cve_2021_41773"))},
+              "check": ArgSpec(str, required=False, choices=("idor", "cve_2021_41773", "sqli"))},
         build_argv=build, timeout_s=20,
     )
 

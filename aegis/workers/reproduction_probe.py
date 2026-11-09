@@ -26,6 +26,11 @@ CHECKS = {
         "headers": {},
         "marker": "VULNIX_LAB_PATH_TRAVERSAL_PROVEN",
     },
+    "sqli": {
+        "path": "/api/search?q=test%27",
+        "headers": {},
+        "marker": "VULNIX_LAB_SQLI_PROVEN",
+    },
 }
 
 
