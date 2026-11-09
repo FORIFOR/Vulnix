@@ -46,10 +46,10 @@ export default function LoginPage() {
     <main className="flex min-h-dvh items-center justify-center p-4">
       <form onSubmit={submit} className="w-full max-w-sm rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
         <div className="mb-6 flex items-center gap-2">
-          <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-zinc-900 text-sm font-bold text-white dark:bg-white dark:text-zinc-900">A</span>
+          <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-zinc-900 text-sm font-bold text-white dark:bg-white dark:text-zinc-900">V</span>
           <div className="leading-tight">
-            <div className="font-semibold">Aegis</div>
-            <div className="text-xs text-zinc-500">オペレーターログイン</div>
+            <div className="font-semibold">Vulnix</div>
+            <div className="text-xs text-zinc-500">AI Security Testing Platform — ログイン</div>
           </div>
         </div>
         <label className="mb-1 block text-sm font-medium" htmlFor="name">ユーザー名</label>

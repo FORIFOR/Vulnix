@@ -40,7 +40,7 @@ export default function AssetsPage() {
               <th scope="col" className="hidden px-4 py-2 font-medium sm:table-cell">種別</th>
               <th scope="col" className="hidden px-4 py-2 font-medium md:table-cell">環境</th>
               <th scope="col" className="px-4 py-2 font-medium">状態</th>
-              <th scope="col" className="px-4 py-2 font-medium">リスク</th>
+              <th scope="col" className="px-4 py-2 font-medium">リスク（前回比）</th>
               <th scope="col" className="px-4 py-2" />
             </tr>
           </thead>
@@ -57,7 +57,20 @@ export default function AssetsPage() {
                   <Pill className={STATUS_CLS[a.status] ?? "bg-zinc-200 text-zinc-800"}>{a.status}</Pill>
                 </td>
                 <td className="px-4 py-3 tabular-nums">
-                  {a.risk ? `${a.risk.score}/100` : <span className="text-zinc-400">—</span>}
+                  {a.risk ? (
+                    <span>
+                      {a.risk.score}/100
+                      {typeof a.previous_risk_score === "number" && (
+                        <span className="ml-1.5 text-xs text-zinc-500">
+                          （前回 {a.previous_risk_score}/100）
+                        </span>
+                      )}
+                    </span>
+                  ) : typeof a.previous_risk_score === "number" ? (
+                    <span className="text-xs text-zinc-500">未診断（前回 {a.previous_risk_score}/100）</span>
+                  ) : (
+                    <span className="text-zinc-400">—</span>
+                  )}
                 </td>
                 <td className="px-4 py-3 text-right">
                   {a.assessment_id ? (

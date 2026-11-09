@@ -1,18 +1,57 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { command } from "@/lib/api";
 import { GLOSSARY } from "@/lib/glossary";
+import { recordLearning, type LearnLevel } from "@/lib/learningHistory";
 
-const LEVELS = [
+const LEVELS: { key: LearnLevel; label: string }[] = [
   { key: "easy", label: "かんたん" },
   { key: "detail", label: "詳しく" },
   { key: "expert", label: "専門家" },
-] as const;
+];
 
-export function ExplanationPanel({ term, context }: { term: string; context?: string }) {
-  const [level, setLevel] = useState<(typeof LEVELS)[number]["key"]>("easy");
+export function ExplanationPanel({
+  term,
+  context,
+  findingId,
+  assessmentId = "scan_001",
+}: {
+  term: string;
+  context?: string;
+  findingId?: string;
+  assessmentId?: string;
+}) {
+  const [level, setLevel] = useState<LearnLevel>("easy");
+  const [aiAnswer, setAiAnswer] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
   const t = GLOSSARY[term];
+
+  useEffect(() => {
+    if (t) recordLearning(term, t.title, level);
+  }, [term, t, level]);
+
   if (!t) return null;
+
+  const askAi = async () => {
+    setBusy(true);
+    setErr(null);
+    try {
+      const res = (await command(`/api/assessments/${assessmentId}/chat`, {
+        question: `「${t.title}」について、この診断でなぜ検出されたのか、どの証拠から判断したのか、修正後にどう確認するのかを教えてください。`,
+        term,
+        finding_id: findingId,
+      })) as { message?: { text: string } };
+      setAiAnswer(res.message?.text ?? "回答を取得しました。診断タブのチャット欄でも確認できます。");
+      recordLearning(term, t.title, level, true);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div>
       <div className="mb-2 flex items-center justify-between gap-2">
@@ -41,12 +80,20 @@ export function ExplanationPanel({ term, context }: { term: string; context?: st
           {context}
         </p>
       )}
+      {aiAnswer && (
+        <div className="mt-3 whitespace-pre-wrap rounded-lg border border-violet-200 bg-violet-50/70 p-2.5 text-xs leading-relaxed text-zinc-800 dark:border-violet-800 dark:bg-violet-950/40 dark:text-zinc-200">
+          <div className="mb-1 font-semibold text-violet-900 dark:text-violet-300">Vulnix AI による診断コンテキスト解説</div>
+          {aiAnswer}
+        </div>
+      )}
+      {err && <p role="alert" className="mt-2 text-xs text-red-700 dark:text-red-300">{err}</p>}
       <button
-        disabled
-        title="AIチャットは未接続です（P1）"
-        className="mt-3 w-full cursor-not-allowed rounded-lg border border-dashed border-zinc-300 py-1.5 text-xs text-zinc-500 dark:border-zinc-600"
+        type="button"
+        disabled={busy}
+        onClick={askAi}
+        className="mt-3 w-full rounded-lg border border-zinc-300 py-1.5 text-xs font-semibold text-zinc-800 hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-600 dark:text-zinc-100 dark:hover:bg-zinc-800"
       >
-        AIに質問する（未接続）
+        {busy ? "Vulnix AI が回答を作成中…" : "AIに質問する（なぜ検出・証拠・修正確認）"}
       </button>
     </div>
   );

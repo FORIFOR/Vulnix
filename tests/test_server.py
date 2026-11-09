@@ -216,6 +216,22 @@ class TestServer(unittest.TestCase):
                     break
         self.assertEqual(ids, [4, 5])
 
+    def test_chat_and_report_and_history(self):
+        self.login("op", "op-pw")
+        code, body = self.post("/chat", {"question": "なぜ検出されたのですか？", "term": "idor"})
+        self.assertEqual(code, 200)
+        self.assertIn("なぜ検出されたか", body["message"]["text"])
+        self.assertEqual(len(body["chat_messages"]), 2)
+        self.assertIn("chat.asked", [e["event"] for e in self.get("/logs")["entries"]])
+
+        rep = self.get("/report")
+        self.assertIn("# Vulnix セキュリティ診断レポート", rep["markdown"])
+        self.assertTrue(rep["filename"].endswith(".md"))
+
+        s = self.get()
+        self.assertIn("history", s)
+        self.assertEqual(s["history"]["previous_assessment_id"], "scan_000")
+
 
 if __name__ == "__main__":
     unittest.main()

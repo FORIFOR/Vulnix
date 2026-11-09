@@ -5,8 +5,8 @@ import { THEME_SCRIPT } from "@/lib/theme";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Aegis — AI Security Workspace",
-  description: "許可された範囲で、検出・実証・防御の検証を証拠付きで行う診断ワークスペース",
+  title: "Vulnix — Find. Prove. Secure. | AI Security Testing Platform",
+  description: "許可された範囲で、検出・実証・防御の検証を証拠付きで行う AI Security Testing Platform",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

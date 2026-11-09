@@ -20,11 +20,11 @@ export function AppSidebar() {
     >
       <Link href="/dashboard" className="mr-auto flex items-center gap-2 px-2 md:mb-6 md:mr-0">
         <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-zinc-900 text-sm font-bold text-white dark:bg-white dark:text-zinc-900">
-          A
+          V
         </span>
         <span className="leading-tight">
-          <span className="block text-sm font-semibold">Aegis</span>
-          <span className="hidden text-[11px] text-zinc-500 md:block">AI Security Workspace</span>
+          <span className="block text-sm font-semibold">Vulnix</span>
+          <span className="hidden text-[11px] text-zinc-500 md:block">Find. Prove. Secure.</span>
         </span>
       </Link>
       {NAV.map((n) => {

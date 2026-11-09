@@ -81,6 +81,11 @@ def make_handler(svc: AssessmentService, ops: OperatorStore):
                 return self._json(200, svc.snapshot())
             if p == f"/api/assessments/{svc.a.id}/logs":
                 return self._json(200, svc.logs())
+            if p == f"/api/assessments/{svc.a.id}/report":
+                return self._json(200, {
+                    "markdown": svc.report_markdown(),
+                    "filename": f"vulnix-report-{svc.a.id}.md",
+                })
             if p == f"/api/assessments/{svc.a.id}/events":
                 q = parse_qs(u.query)
                 after = self.headers.get("Last-Event-ID") or (q.get("after") or ["0"])[0]
@@ -212,6 +217,13 @@ def make_handler(svc: AssessmentService, ops: OperatorStore):
                     svc.resume(actor)
                 elif p == base + "/emergency-stop":
                     return self._json(200, {"stop_report": svc.emergency_stop(actor)})
+                elif p == base + "/chat":
+                    q = str(body.get("question", "")).strip()
+                    if not q:
+                        return self._json(400, {"error": "質問を入力してください"})
+                    term = str(body.get("term") or "") or None
+                    finding_id = str(body.get("finding_id") or "") or None
+                    return self._json(200, svc.ask_chat(q, actor, term=term, finding_id=finding_id))
                 elif m := re.fullmatch(base + r"/approvals/(req_[0-9a-f]+)", p):
                     decision = body.get("decision")
                     if decision not in ("approve", "reject"):
@@ -244,7 +256,7 @@ def main() -> None:
     ops = OperatorStore(seed)
     srv = ThreadingHTTPServer(("127.0.0.1", a.port), make_handler(svc, ops))
     srv.daemon_threads = True
-    print(f"Aegis control plane: http://127.0.0.1:{a.port}  (audit: {data / 'audit.jsonl'})")
+    print(f"Vulnix control plane: http://127.0.0.1:{a.port}  (audit: {data / 'audit.jsonl'})")
     if first and ops.credentials_path:
         print(f"初回起動: 操作者アカウントを生成しました（ハッシュのみ {seed} に保存）。")
         print(f"初期ログイン情報（平文・600権限）: {ops.credentials_path}")

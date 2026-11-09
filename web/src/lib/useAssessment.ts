@@ -5,7 +5,7 @@
 // so the screen always converges on server state.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getJSON } from "./api";
-import type { AegisEvent, Approval, AuditEntry, Finding, Snapshot } from "./types";
+import type { AegisEvent, Approval, AuditEntry, ChatMessage, Finding, Snapshot } from "./types";
 
 export type Conn = "connecting" | "live" | "reconnecting" | "offline";
 
@@ -31,6 +31,13 @@ export function applyEvent(s: Snapshot, ev: AegisEvent): Snapshot {
       return { ...s, findings: upsert(s.findings, ev.finding as Finding), risk: ev.risk as Snapshot["risk"] };
     case "stop.report":
       return { ...s, stop_report: ev.stop_report as Snapshot["stop_report"] };
+    case "chat.message": {
+      const incoming = (ev.messages as ChatMessage[]) ?? [];
+      const cur = s.chat_messages ?? [];
+      const seen = new Set(cur.map((m) => m.id));
+      const merged = [...cur, ...incoming.filter((m) => !seen.has(m.id))];
+      return { ...s, chat_messages: merged };
+    }
     default:
       return s;
   }

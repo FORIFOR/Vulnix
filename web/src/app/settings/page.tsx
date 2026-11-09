@@ -5,6 +5,12 @@ import { MfaSection } from "@/components/settings/MfaSection";
 import { PasswordChangeForm } from "@/components/settings/PasswordChangeForm";
 import { Card, Pill } from "@/components/ui";
 import { fmtTime } from "@/lib/labels";
+import {
+  clearLearningHistory,
+  getLearningServerSnapshot,
+  getLearningSnapshot,
+  subscribeLearning,
+} from "@/lib/learningHistory";
 import { getThemeServerSnapshot, getThemeSnapshot, setTheme, subscribeTheme, type Theme } from "@/lib/theme";
 import { useAssessment } from "@/lib/useAssessment";
 import { useSession } from "@/lib/useSession";
@@ -15,10 +21,13 @@ const THEMES: { key: Theme; label: string }[] = [
   { key: "dark", label: "ダーク" },
 ];
 
+const LEVEL_LABEL = { easy: "かんたん", detail: "詳しく", expert: "専門家" } as const;
+
 export default function Settings() {
   const { snap, error } = useAssessment("scan_001");
   const { session, logout } = useSession();
   const theme = useSyncExternalStore(subscribeTheme, getThemeSnapshot, getThemeServerSnapshot);
+  const learning = useSyncExternalStore(subscribeLearning, getLearningSnapshot, getLearningServerSnapshot);
   const pick = (t: Theme) => setTheme(t);
   const a = snap?.authorization;
 
@@ -62,6 +71,45 @@ export default function Settings() {
           ))}
         </div>
         <p className="mt-2 text-xs text-zinc-500">この設定はこのブラウザにのみ保存されます。</p>
+      </Card>
+
+      <Card>
+        <div className="mb-2 flex items-center justify-between">
+          <h2 className="text-sm font-semibold">学習履歴（「？」による3段階解説）</h2>
+          {learning.length > 0 && (
+            <button
+              type="button"
+              onClick={clearLearningHistory}
+              className="text-xs text-zinc-500 hover:underline"
+            >
+              履歴をクリア
+            </button>
+          )}
+        </div>
+        {learning.length === 0 ? (
+          <p className="text-sm text-zinc-500">
+            画面内の「？」ボタンを押して用語解説やAI解説を確認すると、ここに学習履歴が記録されます。
+          </p>
+        ) : (
+          <ul className="space-y-1.5 text-sm">
+            {learning.map((item) => (
+              <li key={`${item.term}-${item.level}`} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-zinc-200 px-3 py-1.5 dark:border-zinc-800">
+                <div className="flex items-center gap-2">
+                  <span className="font-medium">{item.title}</span>
+                  <Pill className="bg-violet-100 text-violet-800 dark:bg-violet-900/50 dark:text-violet-200">
+                    {LEVEL_LABEL[item.level]}
+                  </Pill>
+                  {item.askedAi && (
+                    <Pill className="bg-zinc-200 text-zinc-800 dark:bg-zinc-700 dark:text-zinc-100">
+                      AI解説確認済み
+                    </Pill>
+                  )}
+                </div>
+                <span className="text-xs tabular-nums text-zinc-500">{fmtTime(item.ts)}</span>
+              </li>
+            ))}
+          </ul>
+        )}
       </Card>
 
       <Card>

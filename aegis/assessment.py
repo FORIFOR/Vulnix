@@ -27,7 +27,7 @@ SEVERITY_WEIGHT = {"critical": 40, "high": 25, "medium": 10, "low": 3, "info": 0
 VERDICT_FACTOR = {"proven": 1.0, "detected": 0.6, "unverified": 0.6, "aborted": 0.6,
                   "not_reproduced": 0.0}
 
-EXECUTOR = {"agent": "Aegis デモランナー", "model": "未接続（ARTEX / Abliteration は未統合）"}
+EXECUTOR = {"agent": "Vulnix デモランナー", "model": "未接続（ARTEX / Abliteration は未統合）"}
 
 
 def demo_verify_tool(seconds: float) -> Tool:
@@ -50,6 +50,7 @@ class Assessment:
     approvals: dict[str, dict] = field(default_factory=dict)
     activity: dict | None = None
     stop_report: dict | None = None
+    chat_messages: list[dict] = field(default_factory=list)
 
 
 class AssessmentService:
@@ -94,11 +95,15 @@ class AssessmentService:
         risk = self._risk()
         return [
             {**self.a.asset, "status": _asset_status(self.a.state), "assessment_id": self.a.id,
-             "risk": risk if self.a.state != "idle" else None},
+             "risk": risk if self.a.state != "idle" else None,
+             "previous_risk_score": 55,
+             "last_assessed_at": int(time.time() - 86400 * 7)},
             {"id": "api", "name": "api.lab.test", "kind": "API", "environment": "検証環境",
-             "status": "未診断", "assessment_id": None, "risk": None},
+             "status": "未診断", "assessment_id": None, "risk": None,
+             "previous_risk_score": None, "last_assessed_at": None},
             {"id": "staging", "name": "internal-staging", "kind": "検証環境",
              "environment": "社内", "status": "承認待ち", "assessment_id": None, "risk": None,
+             "previous_risk_score": None, "last_assessed_at": None,
              "note": "書面許可が未登録のため診断できません"},
         ]
 
@@ -106,6 +111,7 @@ class AssessmentService:
         with self._lock:
             e = self.a.engagement
             t = e.targets["lab"]
+            risk = self._risk()
             return {
                 "id": self.a.id, "asset": self.a.asset, "demo": True,
                 "authorization": {
@@ -119,8 +125,10 @@ class AssessmentService:
                 "activity": self.a.activity,
                 "approvals": list(self.a.approvals.values()),
                 "findings": list(self.a.findings.values()),
-                "risk": self._risk(),
+                "risk": risk,
                 "stop_report": self.a.stop_report,
+                "chat_messages": list(self.a.chat_messages),
+                "history": self._history(risk),
                 "last_seq": self.bus.last_seq,
             }
 
@@ -410,6 +418,174 @@ class AssessmentService:
     def _on_audit(self, entry: dict) -> None:
         self.bus.publish(self.a.id if hasattr(self, "a") else "scan_001", "audit.recorded",
                          entry={k: entry[k] for k in ("ts", "event", "fields", "prev", "hash")})
+
+    # ---- P1: AI chat with assessment context (read-only, zero authority) ----
+    def ask_chat(self, question: str, actor: str, term: str | None = None,
+                 finding_id: str | None = None) -> dict:
+        q = question.strip()[:500]
+        if not q:
+            raise ValueError("question must not be empty")
+        now = time.time()
+        with self._lock:
+            user_msg = {
+                "id": "msg_" + secrets.token_hex(4),
+                "role": "user",
+                "actor": actor,
+                "text": q,
+                "term": term,
+                "finding_id": finding_id,
+                "ts": now,
+            }
+            answer_text = self._answer_question(q, term=term, finding_id=finding_id)
+            ai_msg = {
+                "id": "msg_" + secrets.token_hex(4),
+                "role": "assistant",
+                "actor": "Vulnix AI",
+                "text": answer_text,
+                "term": term,
+                "finding_id": finding_id,
+                "ts": time.time(),
+            }
+            self.a.chat_messages.extend([user_msg, ai_msg])
+            self.audit.record("chat.asked", actor=actor, term=term or "", finding_id=finding_id or "")
+            self.bus.publish(self.a.id, "chat.message", messages=[user_msg, ai_msg])
+            return {"message": ai_msg, "chat_messages": list(self.a.chat_messages)}
+
+    def _answer_question(self, q: str, term: str | None = None, finding_id: str | None = None) -> str:
+        real = self._real_findings()
+        all_f = list(self.a.findings.values())
+        target_f = None
+        if finding_id and finding_id in self.a.findings:
+            target_f = self.a.findings[finding_id]
+        elif term:
+            target_f = next((f for f in real if f.get("help_term") == term), None) or next(
+                (f for f in all_f if f.get("help_term") == term), None
+            )
+        elif real:
+            target_f = real[0]
+
+        ql = q.lower()
+        if target_f:
+            evs = target_f.get("evidence", [])
+            ev_summary = "、".join(
+                f"{e['evidence_id']}（{e['kind']}・監査ハッシュ {(e.get('audit_hash') or 'なし')[:10]}）"
+                for e in evs
+            ) or "記録された証拠なし"
+            rem = target_f.get("remediation", {})
+            steps = " / ".join(rem.get("steps", []))
+            verify = rem.get("how_to_verify", "")
+
+            if any(k in ql for k in ("なぜ", "理由", "検出", "原因", "why")):
+                return (
+                    f"【なぜ検出されたか：{target_f['title']}】\n"
+                    f"・検出理由：{target_f.get('why_detected') or target_f['summary']}\n"
+                    f"・判定状態：{target_f['verdict']}（危険度 {target_f['risk_level']}）\n"
+                    f"・根拠となった証拠：{ev_summary}"
+                )
+            if any(k in ql for k in ("証拠", "判断", "ログ", "ハッシュ", "evidence")):
+                return (
+                    f"【判断根拠の証拠：{target_f['title']}】\n"
+                    f"・証拠一覧：{ev_summary}\n"
+                    f"・成立内容：{target_f.get('what_was_established') or target_f.get('caveat') or target_f['summary']}\n"
+                    f"※ 問題詳細ページの「証拠」パネルから、実際のレスポンスとSHA-256監査ハッシュを確認できます。"
+                )
+            if any(k in ql for k in ("修正", "直", "対策", "確認", "再試験", "verify", "fix")):
+                return (
+                    f"【修正方法と修正後の確認：{target_f['title']}】\n"
+                    f"・修正手順：{steps}\n"
+                    f"・修正後の確認方法：{verify}"
+                )
+
+        risk = self._risk()
+        done_phases = sum(1 for p in self.a.phases if p["status"] == "done")
+        parts = [
+            f"現在の診断対象は {self.a.asset['name']}（状態: {_asset_status(self.a.state)}、進捗 {done_phases}/{len(self.a.phases)} ステップ、総合リスク {risk['score']}/100 {risk['label']}）です。"
+        ]
+        if target_f:
+            evs = target_f.get("evidence", [])
+            ev_ids = ", ".join(e["evidence_id"] for e in evs) or "なし"
+            parts.append(
+                f"注目項目「{target_f['title']}」：\n"
+                f"1. なぜ検出されたか：{target_f.get('why_detected') or target_f['summary']}\n"
+                f"2. 判断した証拠：{ev_ids}（実行ツール: {target_f['executor']['tool']}）\n"
+                f"3. 修正後の確認：{target_f['remediation']['how_to_verify']}"
+            )
+        else:
+            parts.append(
+                "診断を開始すると、公開設定の検査・CVE照合・隔離環境での検証結果と証拠がここに紐づけられます。"
+                "※ Vulnix AI は説明・提案のみを行い、承認なしに操作を実行することはありません。"
+            )
+        return "\n".join(parts)
+
+    # ---- P2: assessment history comparison & Markdown report export ---------
+    def _history(self, current_risk: dict) -> dict:
+        prev_score = 55
+        cur_score = current_risk["score"] if self.a.state != "idle" else None
+        real_ids = {f["id"] for f in self._real_findings()}
+        return {
+            "previous_assessment_id": "scan_000",
+            "previous_assessed_at": int(time.time() - 86400 * 7),
+            "previous_score": prev_score,
+            "previous_label": "中リスク",
+            "delta_score": (cur_score - prev_score) if cur_score is not None else None,
+            "resolved_findings": ["検索欄のSQLインジェクション（修正後に再現せずを確認）"],
+            "new_findings_count": len(real_ids),
+            "runs": [
+                {"id": "scan_000", "at": int(time.time() - 86400 * 7), "score": prev_score,
+                 "label": "中リスク", "status": "診断済み", "summary": "SQLi修正後の再検証完了（再現せず）"},
+                {"id": self.a.id, "at": int(time.time()), "score": cur_score,
+                 "label": current_risk["label"] if cur_score is not None else "未診断",
+                 "status": _asset_status(self.a.state), "summary": "現在の診断セッション"},
+            ],
+        }
+
+    def report_markdown(self) -> str:
+        s = self.snapshot()
+        auth = s["authorization"]
+        risk = s["risk"]
+        hist = s["history"]
+        lines = [
+            f"# Vulnix セキュリティ診断レポート — {s['asset']['name']}",
+            "",
+            "- **プラットフォーム**: Vulnix (Find. Prove. Secure. — AI Security Testing Platform)",
+            f"- **診断ID**: `{s['id']}`",
+            f"- **対象資産**: {s['asset']['name']} ({s['asset']['kind']} / {s['asset']['environment']})",
+            f"- **診断状態**: {_asset_status(s['state'])}",
+            f"- **書面許可**: `{auth['ref']}` (所有確認: {'確認済み' if auth['ownership_verified'] else '未確認'})",
+            f"- **許可範囲**: Hosts={', '.join(auth['scope']['hosts'])} / CIDRs={', '.join(auth['scope']['cidrs'])} / Ports={', '.join(map(str, auth['scope']['ports']))}",
+            f"- **総合リスク**: **{risk['score']}/100 ({risk['label']})** {'※暫定' if risk['provisional'] else ''}",
+            f"- **前回診断との比較**: 前回 `{hist['previous_assessment_id']}` ({hist['previous_score']}/100) → 差分 {hist['delta_score'] if hist['delta_score'] is not None else '未算出'}",
+            "",
+            "## 1. 診断ステップ進捗",
+        ]
+        for p in s["phases"]:
+            lines.append(f"- **{p['label']}**: {p['status']} {('— ' + p['detail']) if p['detail'] else ''}")
+        lines.append("")
+        lines.append("## 2. 検出された問題と実証結果")
+        real_findings = [f for f in s["findings"] if not f.get("demo_fixture")]
+        if not real_findings:
+            lines.append("- 実環境の検出結果はまだありません（未診断または検査前）。")
+        for f in real_findings:
+            lines.extend([
+                f"### [{f['severity'].upper()}] {f['title']} (`{f['verdict']}`)",
+                f"- **カテゴリ**: {f['category']} / **危険度**: {f['risk_level']}",
+                f"- **関連CVE**: {', '.join(f['cve']) if f['cve'] else 'なし'}",
+                f"- **概要**: {f['summary']}",
+                f"- **なぜ検出されたか**: {f.get('why_detected', '—')}",
+                f"- **成立内容 / 注意事項**: {f.get('what_was_established') or f.get('caveat') or '—'}",
+                "- **証拠**:",
+            ])
+            for ev in f.get("evidence", []):
+                lines.append(f"  - `{ev['evidence_id']}` ({ev['kind']}) 監査ハッシュ: `{ev.get('audit_hash') or 'なし'}`")
+            lines.append("- **修正方法**:")
+            for step in f["remediation"]["steps"]:
+                lines.append(f"  1. {step}")
+            lines.append(f"- **修正後の確認方法**: {f['remediation']['how_to_verify']}")
+            lines.append("")
+        lines.append("## 3. 監査チェーン検証")
+        lines.append(f"- **監査ログ件数**: {len(self.audit.entries())} 件")
+        lines.append(f"- **SHA-256 ハッシュチェーン整合性**: {'✓ 改ざんなし' if self.audit.verify() else '✕ 不整合あり'}")
+        return "\n".join(lines) + "\n"
 
 
 class _Stopped(Exception):

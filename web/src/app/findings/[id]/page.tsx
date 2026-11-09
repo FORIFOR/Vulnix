@@ -27,7 +27,7 @@ function Detail() {
       </div>
       <h1 className="flex items-center text-2xl font-bold">
         {f.title}
-        {f.help_term && <HelpPopover term={f.help_term} context={f.why_detected} />}
+        {f.help_term && <HelpPopover term={f.help_term} context={f.why_detected} findingId={f.id} />}
       </h1>
 
       <Card>

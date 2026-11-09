@@ -8,15 +8,30 @@ import type { AegisEvent, Approval, Snapshot } from "@/lib/types";
 import { HelpPopover } from "../learning/HelpPopover";
 import { Card, Pill } from "../ui";
 
-function Bubble({ children }: { children: React.ReactNode }) {
+function Bubble({
+  children,
+  actor = "Vulnix AI",
+  isUser = false,
+}: {
+  children: React.ReactNode;
+  actor?: string;
+  isUser?: boolean;
+}) {
   return (
     <div className="flex gap-3">
-      <span aria-hidden className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-zinc-900 text-xs font-bold text-white dark:bg-white dark:text-zinc-900">
-        A
+      <span
+        aria-hidden
+        className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-bold ${
+          isUser
+            ? "bg-zinc-200 text-zinc-800 dark:bg-zinc-700 dark:text-zinc-100"
+            : "bg-zinc-900 text-white dark:bg-white dark:text-zinc-900"
+        }`}
+      >
+        {isUser ? "U" : "V"}
       </span>
       <div className="min-w-0 flex-1">
-        <div className="mb-1 text-xs font-semibold text-zinc-500">Aegis</div>
-        <div className="text-sm leading-relaxed">{children}</div>
+        <div className="mb-1 text-xs font-semibold text-zinc-500">{actor}</div>
+        <div className="whitespace-pre-wrap text-sm leading-relaxed">{children}</div>
       </div>
     </div>
   );
@@ -81,10 +96,40 @@ function ApprovalCard({ ap, base, onUpdate, approver }: { ap: Approval; base: st
   );
 }
 
+const QUICK_PROMPTS = [
+  "なぜ検出されたのですか？",
+  "どの証拠から判断しましたか？",
+  "修正後にどう確認すればよいですか？",
+];
+
 export function AgentActivity({ snap, notes, onUpdate }: { snap: Snapshot; notes: AegisEvent[]; onUpdate: (s: Snapshot) => void }) {
   const a = snap.activity;
   const base = `/api/assessments/${snap.id}`;
   const approver = canApprove(useSession().session);
+  const [question, setQuestion] = useState("");
+  const [chatBusy, setChatBusy] = useState(false);
+  const [chatErr, setChatErr] = useState<string | null>(null);
+
+  const sendQuestion = async (qText: string) => {
+    const q = qText.trim();
+    if (!q || chatBusy) return;
+    setChatBusy(true);
+    setChatErr(null);
+    try {
+      const res = (await command(`${base}/chat`, { question: q })) as {
+        chat_messages?: Snapshot["chat_messages"];
+      };
+      setQuestion("");
+      if (res.chat_messages) {
+        onUpdate({ ...snap, chat_messages: res.chat_messages });
+      }
+    } catch (e) {
+      setChatErr((e as Error).message);
+    } finally {
+      setChatBusy(false);
+    }
+  };
+
   return (
     <div className="space-y-4">
       <Bubble>{headline(snap)}</Bubble>
@@ -138,10 +183,51 @@ export function AgentActivity({ snap, notes, onUpdate }: { snap: Snapshot; notes
         </Card>
       )}
 
-      <div className="ml-11">
-        <label className="sr-only" htmlFor="ask">AIに質問する</label>
-        <input id="ask" disabled placeholder="AIに質問する…（AIチャットは未接続です）"
-          className="w-full cursor-not-allowed rounded-2xl border border-zinc-300 bg-zinc-50 px-4 py-3 text-sm dark:border-zinc-700 dark:bg-zinc-900" />
+      {(snap.chat_messages ?? []).map((m) => (
+        <Bubble key={m.id} actor={m.actor} isUser={m.role === "user"}>
+          {m.text}
+        </Bubble>
+      ))}
+
+      <div className="ml-11 space-y-2">
+        <div className="flex flex-wrap gap-1.5">
+          {QUICK_PROMPTS.map((qp) => (
+            <button
+              key={qp}
+              type="button"
+              disabled={chatBusy}
+              onClick={() => sendQuestion(qp)}
+              className="rounded-full border border-zinc-300 bg-white px-2.5 py-1 text-xs text-zinc-700 hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800"
+            >
+              {qp}
+            </button>
+          ))}
+        </div>
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            void sendQuestion(question);
+          }}
+          className="flex gap-2"
+        >
+          <label className="sr-only" htmlFor="ask">AIに質問する</label>
+          <input
+            id="ask"
+            value={question}
+            onChange={(e) => setQuestion(e.target.value)}
+            disabled={chatBusy}
+            placeholder="AIに質問する…（なぜ検出されたか・証拠・修正方法など）"
+            className="flex-1 rounded-2xl border border-zinc-300 bg-white px-4 py-2.5 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+          />
+          <button
+            type="submit"
+            disabled={chatBusy || !question.trim()}
+            className="rounded-2xl bg-zinc-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-white dark:text-zinc-900"
+          >
+            {chatBusy ? "送信中…" : "質問"}
+          </button>
+        </form>
+        {chatErr && <p role="alert" className="text-xs text-red-700 dark:text-red-300">{chatErr}</p>}
       </div>
     </div>
   );

@@ -14,7 +14,7 @@ export function FindingCard({ f, assessmentId }: { f: Finding; assessmentId: str
       </div>
       <h3 className="mt-2 flex items-center font-semibold">
         {f.title}
-        {f.help_term && <HelpPopover term={f.help_term} context={f.why_detected} />}
+        {f.help_term && <HelpPopover term={f.help_term} context={f.why_detected} findingId={f.id} />}
       </h3>
       <p className="mt-1 text-sm text-zinc-700 dark:text-zinc-300">{f.what_was_established ?? f.summary}</p>
       {f.cve.length > 0 && <p className="mt-1 font-mono text-xs text-zinc-500">{f.cve.join(" / ")}</p>}

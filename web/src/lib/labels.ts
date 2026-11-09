@@ -49,6 +49,7 @@ export const AUDIT_EVENT: Record<string, string> = {
   "auth.password_changed": "パスワード変更",
   "auth.mfa_enabled": "2要素認証 有効化",
   "auth.mfa_disabled": "2要素認証 無効化",
+  "chat.asked": "AIコンテキスト質問",
 };
 
 export const fmtTime = (ts: number | null | undefined) =>

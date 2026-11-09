@@ -2,6 +2,8 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
+import { useState } from "react";
+import { getJSON } from "@/lib/api";
 import { fmtTime } from "@/lib/labels";
 import { useAssessment } from "@/lib/useAssessment";
 import { FindingCard } from "../findings/FindingCard";
@@ -23,6 +25,8 @@ const SEV_ORDER = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
 export function AssessmentTabs({ id }: { id: string }) {
   const tab = (useSearchParams().get("tab") ?? "assessment") as (typeof TABS)[number]["key"];
   const { snap, setSnap, error, conn, audit, chainValid, notes, refetch } = useAssessment(id);
+  const [reportMd, setReportMd] = useState<string | null>(null);
+  const [reportBusy, setReportBusy] = useState(false);
 
   if (!snap) {
     return (
@@ -36,6 +40,24 @@ export function AssessmentTabs({ id }: { id: string }) {
   );
   const counts = { findings: snap.findings.filter((f) => !f.demo_fixture).length, logs: audit.length };
   const auth = snap.authorization;
+  const hist = snap.history;
+
+  const exportReport = async () => {
+    setReportBusy(true);
+    try {
+      const r = await getJSON<{ markdown: string; filename: string }>(`/api/assessments/${snap.id}/report`);
+      setReportMd(r.markdown);
+      const blob = new Blob([r.markdown], { type: "text/markdown;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = r.filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    } finally {
+      setReportBusy(false);
+    }
+  };
 
   return (
     <div className="flex min-h-dvh flex-col">
@@ -83,9 +105,44 @@ export function AssessmentTabs({ id }: { id: string }) {
                   <dt className="text-zinc-500">許可操作</dt><dd>{auth.allowed_actions.join(", ")}</dd>
                 </dl>
               </Card>
+              {hist && (
+                <Card>
+                  <h2 className="mb-2 text-sm font-semibold">前回診断との履歴比較</h2>
+                  <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+                    <dt className="text-zinc-500">前回 ({hist.previous_assessment_id})</dt>
+                    <dd>{hist.previous_score}/100（{hist.previous_label}）</dd>
+                    <dt className="text-zinc-500">スコア差分</dt>
+                    <dd className="font-semibold">
+                      {hist.delta_score === null
+                        ? "診断後に算出"
+                        : hist.delta_score > 0
+                          ? `+${hist.delta_score} pt`
+                          : `${hist.delta_score} pt（改善）`}
+                    </dd>
+                    <dt className="text-zinc-500">解消確認</dt>
+                    <dd className="text-emerald-700 dark:text-emerald-300">{hist.resolved_findings.join("、")}</dd>
+                  </dl>
+                </Card>
+              )}
               <Link href="?tab=findings" scroll={false} className="block rounded-xl border border-zinc-300 py-2 text-center text-sm font-semibold hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-900">
                 問題を見る →
               </Link>
+              <button
+                type="button"
+                disabled={reportBusy}
+                onClick={exportReport}
+                className="w-full rounded-xl border border-zinc-300 py-2 text-center text-sm font-semibold hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
+              >
+                {reportBusy ? "レポート生成中…" : "⇩ 診断レポート出力 (Markdown)"}
+              </button>
+              {reportMd && (
+                <details className="rounded-xl border border-zinc-200 p-2 text-xs dark:border-zinc-800">
+                  <summary className="cursor-pointer font-semibold">レポートプレビューを表示</summary>
+                  <pre className="mt-2 max-h-60 overflow-auto whitespace-pre-wrap rounded bg-zinc-50 p-2 text-[11px] dark:bg-zinc-950">
+                    {reportMd}
+                  </pre>
+                </details>
+              )}
             </div>
           </div>
         )}

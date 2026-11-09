@@ -65,6 +65,34 @@ export interface Activity {
   model: string;
 }
 
+export interface ChatMessage {
+  id: string;
+  role: "user" | "assistant";
+  actor: string;
+  text: string;
+  term?: string | null;
+  finding_id?: string | null;
+  ts: number;
+}
+
+export interface AssessmentHistory {
+  previous_assessment_id: string;
+  previous_assessed_at: number;
+  previous_score: number;
+  previous_label: string;
+  delta_score: number | null;
+  resolved_findings: string[];
+  new_findings_count: number;
+  runs: {
+    id: string;
+    at: number;
+    score: number | null;
+    label: string;
+    status: string;
+    summary: string;
+  }[];
+}
+
 export interface Snapshot {
   id: string;
   demo: boolean;
@@ -85,6 +113,8 @@ export interface Snapshot {
   findings: Finding[];
   risk: Risk;
   stop_report: StopReport | null;
+  chat_messages?: ChatMessage[];
+  history?: AssessmentHistory;
   last_seq: number;
 }
 
@@ -96,6 +126,8 @@ export interface Asset {
   status: string;
   assessment_id: string | null;
   risk: Risk | null;
+  previous_risk_score?: number | null;
+  last_assessed_at?: number | null;
   note?: string;
 }
 

@@ -1,6 +1,8 @@
-# Aegis AI
+# Vulnix（ヴァルニクス）
 
-**AI は提案する、実行はゲートウェイが裁く（AI proposes, Gateway disposes）** を第一原則とする、防御志向のセキュリティ評価コントロールプレーン。
+**Find. Prove. Secure. — AI Security Testing Platform**
+
+**AI は提案する、実行はゲートウェイが裁く（AI proposes, Gateway disposes）** を第一原則とする、防御志向の AI セキュリティ診断プラットフォーム（旧称: Aegis AI）。
 
 AI/エージェントの出力は常に「信頼できない提案（データ）」として扱い、実行権限はサーバ側シークレット（HMAC トークン）を握る Gateway だけが持ちます。検知（detection）と証明（proof）を分離し、攻撃・エクスプロイトは一切実装・実行しません。
 
@@ -73,7 +75,7 @@ npm run dev                        # http://localhost:3000
 ## テスト
 
 ```bash
-python3 -m pytest tests/           # 93 tests
+python3 -m pytest tests/
 cd web && npm run typecheck && npm run lint && npm run build
 ```
 
@@ -83,9 +85,9 @@ cd web && npm run typecheck && npm run lint && npm run build
 
 | 優先度 | 項目 | 状態 |
 |--------|------|------|
-| P0 | 6層制御 / scrypt 操作者認証 + セッション永続化 / パスワード変更 / TOTP MFA / egress 3層 | ✅ 完了 |
-| P1 | `ProposalRouter` + `HttpModelBackend`（権限を持たないアダプタ、`AEGIS_MODEL_*` で設定） | ✅ 実装・テスト済 |
-| P2 | CVE エンジン（NVD CVE API 2.0 形式フィードを取り込み、バナー検知を駆動。検知のみ／"proven" にはしない） | ✅ 実装・統合済 |
+| P0 | 診断・問題・ログの3タブUI / 実行状態・一時停止・緊急停止 / 診断許可・承認表示 / 実証結果と証拠 / 6層制御・監査チェーン | ✅ 完了 |
+| P1 | 「？」による3段階解説 / 最新CVEの影響・検証状況 / AIチャットと診断コンテキスト連携 / `ProposalRouter` | ✅ 完了 |
+| P2 | 複数資産の管理・前回診断との履歴比較 / Markdown診断レポート出力・学習履歴の記録 | ✅ 完了 |
 
 ### 設計上の固定ライン（やらないこと）
 - 攻撃・エクスプロイトのワーカーを実装しない
@@ -94,4 +96,3 @@ cd web && npm run typecheck && npm run lint && npm run build
 - 非 Linux ホストでカーネル enforcement を「適用済み」と主張しない（偽の検証をしない）
 - API キー等の資格情報をコード/ログに保存しない
 
-詳細な要件は [REQUIREMENTS.md](REQUIREMENTS.md) を参照。
