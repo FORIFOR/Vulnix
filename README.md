@@ -96,3 +96,5 @@ cd web && npm run typecheck && npm run lint && npm run build
 - 非 Linux ホストでカーネル enforcement を「適用済み」と主張しない（偽の検証をしない）
 - API キー等の資格情報をコード/ログに保存しない
 
+詳細な要件定義は [REQUIREMENTS.md](REQUIREMENTS.md)、UI/UX詳細設計は [UI_UX_DESIGN.md](UI_UX_DESIGN.md) を参照。
+

@@ -1,14 +1,14 @@
-# Aegis AI — 要件定義
+# Vulnix — 要件定義
 
-本書は Aegis AI の機能要件・非機能要件・制約を定義する。設計の第一原則は
+本書は Vulnix（ヴァルニクス / 旧称: Aegis AI）の機能要件・非機能要件・制約を定義する。設計の第一原則は
 **「AI は提案する、実行はゲートウェイが裁く」**。AI/エージェント出力は信頼されない
 データであり、実行権限はサーバ側シークレットを持つ Gateway のみが有する。
 
 ## 1. 背景と目的
 
 - ARTEX（自律診断エージェント／**UNTRUSTED**）、Abliteration AI（提案専用の推論モデル／
-  **PROPOSAL-ONLY**）、Aegis（独立した安全制御プレーン + CVE 検証 + 可視化 UI）を
-  組み合わせたセキュリティ評価基盤を提供する。
+  **PROPOSAL-ONLY**）、Vulnix（独立した安全制御プレーン + CVE 検証 + 可視化 UI）を
+  組み合わせた AI Security Testing Platform（Find. Prove. Secure.）を提供する。
 - 製品価値は「確かめられること」。偽の PASS や攻撃能力は実害と見なし、提供しない。
 
 ## 2. 機能要件
@@ -42,15 +42,15 @@
 - FR-4.4 カタログはメタデータのみ（id, 影響バージョン, severity, remediation, 参照）。
   エクスプロイトコード・ペイロードを持たない。
 
-### FR-5 可視化 UI
-- FR-5.1 日常運用3画面、ペネトレーションテスト UI、「？」3段階学習を提供する。
+### FR-5 可視化 UI（詳細は [UI_UX_DESIGN.md](UI_UX_DESIGN.md) を参照）
+- FR-5.1 日常運用3タブ（「診断」「問題」「ログ」）、侵入実証テスト UI、「？」3段階学習、診断コンテキスト連携 AI チャット、履歴比較、Markdown レポート出力、学習履歴を提供する。
 - FR-5.2 UI は `/api/*` をコントロールプレーンへプロキシする（127.0.0.1 限定）。
 
 ## 3. 非機能要件
 
 - NFR-1 バックエンドは Python 標準ライブラリのみ（外部依存ゼロ）。Python 3.10+。
 - NFR-2 フロントエンドは Next.js / React / TypeScript / Tailwind。
-- NFR-3 テスト: `python3 -m pytest tests/`（93件）、Web は tsc + eslint + next build を通す。
+- NFR-3 テスト: `python3 -m pytest tests/`（94件）、Web は tsc + eslint + next build を通す。
 - NFR-4 シークレット（`.env` / `*.key` / `data/` / `operators.json` / `sessions.json` /
   `audit.jsonl`）はコミットしない（`.gitignore` で除外）。
 - NFR-5 変更を完了と報告する前に検証を実行し、未実行の確認は UNVERIFIED と記す。
