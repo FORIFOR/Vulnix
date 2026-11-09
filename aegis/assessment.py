@@ -137,7 +137,11 @@ class AssessmentService:
                 "authorization_ref": self.a.engagement.authorization_ref,
                 "ownership_verified": self.a.engagement.ownership_verified,
             }
-            return [primary, *[dict(x) for x in self._extra_assets]]
+            extras = [
+                dict(x) for x in self._extra_assets
+                if x["id"] != primary["id"] and x["name"].lower() != primary["name"].lower()
+            ]
+            return [primary, *extras]
 
     def register_asset(self, *, name: str, kind: str, environment: str,
                        authorization_ref: str = "", ownership_verified: bool = False,
@@ -151,52 +155,89 @@ class AssessmentService:
         authorized = bool(ownership_verified and clean_ref)
 
         with self._lock:
-            # Check if updating an existing extra asset (e.g. granting SOW to internal-staging)
-            existing = next((x for x in self._extra_assets if x["name"].lower() == clean_name), None)
-            if existing is not None:
-                existing["kind"] = clean_kind
-                existing["environment"] = clean_env
-                existing["authorization_ref"] = clean_ref
-                existing["ownership_verified"] = authorized
-                if authorized:
-                    existing["status"] = "未診断"
-                    existing["assessment_id"] = self.a.id
-                    existing.pop("note", None)
-                else:
-                    existing["status"] = "承認待ち"
-                    existing["assessment_id"] = None
-                    existing["note"] = "書面許可が未登録のため診断できません"
-                asset_record = dict(existing)
-            else:
-                aid = "asset_" + secrets.token_hex(3)
-                asset_record = {
-                    "id": aid,
-                    "name": clean_name,
+            # Check if updating the current primary asset
+            if self.a.asset["name"].lower() == clean_name:
+                self.a.asset = {
+                    **self.a.asset,
                     "kind": clean_kind,
                     "environment": clean_env,
-                    "status": "未診断" if authorized else "承認待ち",
-                    "assessment_id": self.a.id if authorized else None,
-                    "risk": None,
-                    "previous_risk_score": None,
-                    "last_assessed_at": None,
+                }
+                if authorized:
+                    e = self.a.engagement
+                    self.a.engagement = Engagement(
+                        e.id, True, clean_ref, e.not_before, e.not_after, e.targets, e.allowed_actions
+                    )
+                    self.gateway.engagement = self.a.engagement
+                asset_record = {
+                    **self.a.asset,
+                    "status": _asset_status(self.a.state),
+                    "assessment_id": self.a.id,
+                    "risk": self._risk() if self.a.state != "idle" else None,
                     "authorization_ref": clean_ref,
                     "ownership_verified": authorized,
-                    **({} if authorized else {"note": "書面許可が未登録のため診断できません"}),
                 }
-                self._extra_assets.insert(0, asset_record)
+            else:
+                # Check if updating an existing extra asset (e.g. granting SOW to internal-staging)
+                existing = next((x for x in self._extra_assets if x["name"].lower() == clean_name), None)
+                if existing is not None:
+                    existing["kind"] = clean_kind
+                    existing["environment"] = clean_env
+                    existing["authorization_ref"] = clean_ref
+                    existing["ownership_verified"] = authorized
+                    if authorized:
+                        existing["status"] = "未診断"
+                        existing["assessment_id"] = self.a.id
+                        existing.pop("note", None)
+                    else:
+                        existing["status"] = "承認待ち"
+                        existing["assessment_id"] = None
+                        existing["note"] = "書面許可が未登録のため診断できません"
+                    asset_record = dict(existing)
+                else:
+                    aid = "asset_" + secrets.token_hex(3)
+                    asset_record = {
+                        "id": aid,
+                        "name": clean_name,
+                        "kind": clean_kind,
+                        "environment": clean_env,
+                        "status": "未診断" if authorized else "承認待ち",
+                        "assessment_id": self.a.id if authorized else None,
+                        "risk": None,
+                        "previous_risk_score": None,
+                        "last_assessed_at": None,
+                        "authorization_ref": clean_ref,
+                        "ownership_verified": authorized,
+                        **({} if authorized else {"note": "書面許可が未登録のため診断できません"}),
+                    }
+                    self._extra_assets.insert(0, asset_record)
 
-            if activate_workspace and authorized and self.a.state in ("idle", "completed"):
-                self.a.asset = {
-                    "id": asset_record["id"],
-                    "name": clean_name,
-                    "kind": clean_kind,
-                    "environment": clean_env,
-                }
-                e = self.a.engagement
-                self.a.engagement = Engagement(
-                    e.id, True, clean_ref, e.not_before, e.not_after, e.targets, e.allowed_actions
-                )
-                self.gateway.engagement = self.a.engagement
+                if activate_workspace and authorized and self.a.state in ("idle", "completed"):
+                    prev_primary = {
+                        **self.a.asset,
+                        "status": _asset_status(self.a.state),
+                        "assessment_id": self.a.id,
+                        "risk": self._risk() if self.a.state != "idle" else None,
+                        "previous_risk_score": 55,
+                        "last_assessed_at": int(time.time() - 86400 * 7),
+                        "authorization_ref": self.a.engagement.authorization_ref,
+                        "ownership_verified": self.a.engagement.ownership_verified,
+                    }
+                    if not any(x["id"] == prev_primary["id"] for x in self._extra_assets):
+                        self._extra_assets.append(prev_primary)
+                    self._extra_assets = [
+                        x for x in self._extra_assets if x["id"] != asset_record["id"]
+                    ]
+                    self.a.asset = {
+                        "id": asset_record["id"],
+                        "name": clean_name,
+                        "kind": clean_kind,
+                        "environment": clean_env,
+                    }
+                    e = self.a.engagement
+                    self.a.engagement = Engagement(
+                        e.id, True, clean_ref, e.not_before, e.not_after, e.targets, e.allowed_actions
+                    )
+                    self.gateway.engagement = self.a.engagement
 
         self.audit.record(
             "asset.registered",

@@ -317,6 +317,8 @@ class TestServer(unittest.TestCase):
         self.assertEqual(abody["asset"]["name"], "portal.example.com")
         self.assertEqual(abody["asset"]["status"], "未診断")
         self.assertEqual(abody["asset"]["assessment_id"], "scan_001")
+        ids = [a["id"] for a in abody["assets"]]
+        self.assertEqual(len(ids), len(set(ids)))
 
         # 3. Register an asset without SOW -> locked as 承認待ち
         ucode, ubody = self._req(f"{self.root}/assets", {
