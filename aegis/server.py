@@ -1,0 +1,256 @@
+"""Control-plane HTTP API + SSE for the Aegis UI (local use).
+
+Binds to 127.0.0.1 only. Two independent guards protect state-changing requests:
+  1. CSRF: POST must carry `X-Aegis-Request: 1` and, if an Origin header is
+     present, an allowed one.
+  2. Operator auth: POST (except /api/auth/login) requires a valid session
+     cookie. The session's operator name is the audit actor; deciding an L2+
+     approval additionally requires the `approver` role.
+
+Run:  python3 -m aegis.server  [--port 8787] [--lab-port 18081]
+"""
+from __future__ import annotations
+
+import argparse
+import http.cookies
+import json
+import re
+import tempfile
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
+
+from .assessment import AssessmentService
+from .lab import start_lab
+from .operators import AuthError, MFAChallenge, OperatorStore
+from .router import HttpModelBackend
+
+ALLOWED_ORIGINS = {"http://localhost:3000", "http://127.0.0.1:3000"}
+COOKIE = "aegis_session"
+
+
+def make_handler(svc: AssessmentService, ops: OperatorStore):
+    class H(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *a):
+            pass
+
+        # ---- helpers --------------------------------------------------------
+        def _json(self, code: int, obj, extra_headers: list[tuple[str, str]] = ()) -> None:
+            body = json.dumps(obj, ensure_ascii=False).encode()
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            for k, v in extra_headers:
+                self.send_header(k, v)
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _session(self):
+            jar = http.cookies.SimpleCookie(self.headers.get("Cookie", ""))
+            morsel = jar.get(COOKIE)
+            return ops.resolve(morsel.value if morsel else None)
+
+        def _public_session(self, sess):
+            return {"operator": sess.operator, "roles": list(sess.roles),
+                    "expires": sess.expires,
+                    "mfa_enabled": ops.totp_enabled(sess.operator)} if sess else None
+
+        # ---- GET ------------------------------------------------------------
+        def do_GET(self):
+            u = urlsplit(self.path)
+            p = u.path.rstrip("/")
+            if p == "/api/auth/me":
+                return self._json(200, {"session": self._public_session(self._session())})
+            if p == "/api/assets":
+                return self._json(200, svc.assets())
+            if p == "/api/router/status":
+                backend = HttpModelBackend.from_env()
+                return self._json(200, {
+                    "connected": bool(backend),
+                    "backends": [backend.name] if backend else [],
+                    # Autonomous execution stays OFF by design: a proposal still
+                    # requires a human approval and a Gateway token to run.
+                    "autonomous_execution": False,
+                    "note": "モデルは提案のみ。実行は人の承認と Gateway のトークンが必要です。",
+                })
+            if p == f"/api/assessments/{svc.a.id}":
+                return self._json(200, svc.snapshot())
+            if p == f"/api/assessments/{svc.a.id}/logs":
+                return self._json(200, svc.logs())
+            if p == f"/api/assessments/{svc.a.id}/events":
+                q = parse_qs(u.query)
+                after = self.headers.get("Last-Event-ID") or (q.get("after") or ["0"])[0]
+                after = int(re.sub(r"\D", "", after) or 0)
+                return self._sse(after)
+            return self._json(404, {"error": "not found"})
+
+        def _sse(self, after: int) -> None:
+            self.close_connection = True   # never reuse a socket after a stream ends
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache, no-transform")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Connection", "keep-alive")
+            self.end_headers()
+            seq = after
+            last_ping = time.monotonic()
+            try:
+                self.wfile.write(b"retry: 2000\n\n")
+                self.wfile.flush()
+                while True:
+                    for ev in svc.bus.wait(seq, timeout=10):
+                        data = json.dumps(ev, ensure_ascii=False)
+                        self.wfile.write(f"id: {ev['event_id']}\ndata: {data}\n\n".encode())
+                        seq = ev["seq"]
+                    if time.monotonic() - last_ping > 10:
+                        self.wfile.write(b": ping\n\n")
+                        last_ping = time.monotonic()
+                    self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                return
+
+        # ---- POST -----------------------------------------------------------
+        def do_POST(self):
+            origin = self.headers.get("Origin")
+            if self.headers.get("X-Aegis-Request") != "1" or (origin and origin not in ALLOWED_ORIGINS):
+                return self._json(403, {"error": "csrf check failed"})
+            n = int(self.headers.get("Content-Length") or 0)
+            try:
+                body = json.loads(self.rfile.read(n) or b"{}") if n else {}
+            except json.JSONDecodeError:
+                return self._json(400, {"error": "invalid json"})
+            p = urlsplit(self.path).path.rstrip("/")
+
+            if p == "/api/auth/login":
+                return self._login(body)
+            if p == "/api/auth/logout":
+                sess = self._session()
+                if sess:
+                    svc.audit.record("auth.logout", actor=sess.operator)
+                ops.logout(sess.token if sess else None)
+                return self._json(200, {"session": None}, self._clear_cookie())
+
+            sess = self._session()
+            if not sess:
+                return self._json(401, {"error": "ログインが必要です"})
+            if p == "/api/auth/password":
+                return self._change_password(body, sess)
+            if p == "/api/auth/totp/enroll":
+                return self._totp_enroll(sess)
+            if p == "/api/auth/totp/confirm":
+                return self._totp_confirm(body, sess)
+            if p == "/api/auth/totp/disable":
+                return self._totp_disable(body, sess)
+            return self._dispatch(p, body, sess)
+
+        def _change_password(self, body, sess):
+            try:
+                ops.change_password(sess.operator, str(body.get("current", "")),
+                                    str(body.get("new", "")), keep_token=sess.token)
+            except AuthError as e:
+                return self._json(400, {"error": str(e)})
+            svc.audit.record("auth.password_changed", actor=sess.operator)
+            return self._json(200, {"ok": True})
+
+        def _totp_enroll(self, sess):
+            try:
+                secret, uri = ops.begin_totp_enroll(sess.operator)
+            except AuthError as e:
+                return self._json(400, {"error": str(e)})
+            # The secret/URI are shown once to the operator to add to their
+            # authenticator; they are not recorded in the audit log.
+            return self._json(200, {"secret": secret, "uri": uri})
+
+        def _totp_confirm(self, body, sess):
+            try:
+                ops.confirm_totp(sess.operator, str(body.get("code", "")))
+            except AuthError as e:
+                return self._json(400, {"error": str(e)})
+            svc.audit.record("auth.mfa_enabled", actor=sess.operator)
+            return self._json(200, {"ok": True, "mfa_enabled": True})
+
+        def _totp_disable(self, body, sess):
+            try:
+                ops.disable_totp(sess.operator, str(body.get("current", "")))
+            except AuthError as e:
+                return self._json(400, {"error": str(e)})
+            svc.audit.record("auth.mfa_disabled", actor=sess.operator)
+            return self._json(200, {"ok": True, "mfa_enabled": False})
+
+        def _login(self, body):
+            try:
+                sess = ops.login(str(body.get("name", "")), str(body.get("password", "")),
+                                 str(body.get("code", "")) or None)
+            except MFAChallenge as e:
+                time.sleep(0.2)
+                return self._json(401, {"error": str(e), "mfa_required": True})
+            except AuthError as e:
+                time.sleep(0.2)   # uniform-ish delay on failure
+                return self._json(401, {"error": str(e)})
+            svc.audit.record("auth.login", actor=sess.operator, roles=list(sess.roles))
+            cookie = (f"{COOKIE}={sess.token}; HttpOnly; SameSite=Strict; Path=/; "
+                      f"Max-Age={int(sess.expires - time.time())}")
+            return self._json(200, {"session": self._public_session(sess)},
+                              [("Set-Cookie", cookie)])
+
+        def _clear_cookie(self):
+            return [("Set-Cookie", f"{COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0")]
+
+        def _dispatch(self, p, body, sess):
+            base = f"/api/assessments/{svc.a.id}"
+            actor = sess.operator
+            try:
+                if p == base + "/start":
+                    svc.start()
+                elif p == base + "/pause":
+                    svc.pause(actor)
+                elif p == base + "/resume":
+                    svc.resume(actor)
+                elif p == base + "/emergency-stop":
+                    return self._json(200, {"stop_report": svc.emergency_stop(actor)})
+                elif m := re.fullmatch(base + r"/approvals/(req_[0-9a-f]+)", p):
+                    decision = body.get("decision")
+                    if decision not in ("approve", "reject"):
+                        return self._json(400, {"error": "decision must be approve|reject"})
+                    if "approver" not in sess.roles:
+                        return self._json(403, {"error": "承認には承認責任者の権限が必要です"})
+                    svc.decide_approval(m.group(1), decision, actor)
+                else:
+                    return self._json(404, {"error": "not found"})
+            except Exception as e:
+                return self._json(409, {"error": str(e)})
+            return self._json(200, svc.snapshot())
+
+    return H
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--port", type=int, default=8787)
+    ap.add_argument("--lab-port", type=int, default=18081)
+    ap.add_argument("--verify-seconds", type=float, default=20)
+    ap.add_argument("--data-dir", default=None)
+    a = ap.parse_args()
+    data = Path(a.data_dir or tempfile.mkdtemp(prefix="aegis-"))
+    data.mkdir(parents=True, exist_ok=True)
+    seed = data / "operators.json"
+    first = not seed.exists()
+    start_lab(a.lab_port)
+    svc = AssessmentService(data, a.lab_port, a.verify_seconds)
+    ops = OperatorStore(seed)
+    srv = ThreadingHTTPServer(("127.0.0.1", a.port), make_handler(svc, ops))
+    srv.daemon_threads = True
+    print(f"Aegis control plane: http://127.0.0.1:{a.port}  (audit: {data / 'audit.jsonl'})")
+    if first and ops.credentials_path:
+        print(f"初回起動: 操作者アカウントを生成しました（ハッシュのみ {seed} に保存）。")
+        print(f"初期ログイン情報（平文・600権限）: {ops.credentials_path}")
+        print("内容は手元で確認してください。再生成するにはこの2ファイルを削除して再起動します。")
+    srv.serve_forever()
+
+
+if __name__ == "__main__":
+    main()

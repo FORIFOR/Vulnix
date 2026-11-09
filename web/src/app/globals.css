@@ -1,0 +1,9 @@
+@import "tailwindcss";
+
+/* Class-based dark mode: `.dark` on <html> forces dark; the pre-paint script in
+   layout.tsx sets it from the saved preference, defaulting to the OS setting. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root { color-scheme: light dark; }
+body { @apply bg-zinc-50 text-zinc-900 antialiased; }
+.dark body { @apply bg-zinc-950 text-zinc-100; }

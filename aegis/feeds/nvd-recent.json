@@ -1,0 +1,64 @@
+{
+  "resultsPerPage": 2,
+  "format": "NVD_CVE",
+  "version": "2.0",
+  "vulnerabilities": [
+    {
+      "cve": {
+        "id": "CVE-2021-41773",
+        "sourceIdentifier": "security@apache.org",
+        "descriptions": [
+          {"lang": "en", "value": "A flaw was found in a change made to path normalization in Apache HTTP Server 2.4.49. An attacker could use a path traversal attack to map URLs to files outside the directories configured by Alias-like directives. If files outside of these directories are not protected by the usual default configuration \"require all denied\", these requests can succeed. If CGI scripts are also enabled for these aliased paths, this could allow for remote code execution."}
+        ],
+        "metrics": {
+          "cvssMetricV31": [
+            {"source": "nvd@nist.gov", "type": "Primary",
+             "cvssData": {"version": "3.1", "baseScore": 7.5, "baseSeverity": "HIGH"}}
+          ]
+        },
+        "weaknesses": [
+          {"source": "nvd@nist.gov", "type": "Primary",
+           "description": [{"lang": "en", "value": "CWE-22"}]}
+        ],
+        "configurations": [
+          {"nodes": [{"operator": "OR", "cpeMatch": [
+            {"vulnerable": true, "criteria": "cpe:2.3:a:apache:http_server:2.4.49:*:*:*:*:*:*:*"}
+          ]}]}
+        ],
+        "references": [
+          {"url": "https://httpd.apache.org/security/vulnerabilities_24.html"},
+          {"url": "https://nvd.nist.gov/vuln/detail/CVE-2021-41773"}
+        ]
+      }
+    },
+    {
+      "cve": {
+        "id": "CVE-2021-42013",
+        "sourceIdentifier": "security@apache.org",
+        "descriptions": [
+          {"lang": "en", "value": "It was found that the fix for CVE-2021-41773 in Apache HTTP Server 2.4.50 was insufficient. An attacker could use a path traversal attack to map URLs to files outside the directories configured by Alias-like directives. If CGI scripts are also enabled for these aliased paths, this could allow for remote code execution. This issue only affects Apache 2.4.49 and Apache 2.4.50 and not earlier versions."}
+        ],
+        "metrics": {
+          "cvssMetricV31": [
+            {"source": "nvd@nist.gov", "type": "Primary",
+             "cvssData": {"version": "3.1", "baseScore": 9.8, "baseSeverity": "CRITICAL"}}
+          ]
+        },
+        "weaknesses": [
+          {"source": "nvd@nist.gov", "type": "Primary",
+           "description": [{"lang": "en", "value": "CWE-22"}]}
+        ],
+        "configurations": [
+          {"nodes": [{"operator": "OR", "cpeMatch": [
+            {"vulnerable": true, "criteria": "cpe:2.3:a:apache:http_server:*:*:*:*:*:*:*:*",
+             "versionStartIncluding": "2.4.49", "versionEndIncluding": "2.4.50"}
+          ]}]}
+        ],
+        "references": [
+          {"url": "https://httpd.apache.org/security/vulnerabilities_24.html"},
+          {"url": "https://nvd.nist.gov/vuln/detail/CVE-2021-42013"}
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+# --- Secrets & runtime state (never commit) ---
+.env
+.env.*
+*.key
+data/
+**/operators.json
+**/sessions.json
+**/audit.jsonl
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+.venv/
+venv/
+
+# --- Next.js / Node (web/) ---
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+next-env.d.ts
+
+# --- OS / editor ---
+.DS_Store
+*.swp
