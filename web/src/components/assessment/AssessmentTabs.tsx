@@ -105,6 +105,31 @@ export function AssessmentTabs({ id }: { id: string }) {
                   <dt className="text-zinc-500">許可操作</dt><dd>{auth.allowed_actions.join(", ")}</dd>
                 </dl>
               </Card>
+              {snap.defense_comparison && (
+                <Card className="border-emerald-300 dark:border-emerald-800">
+                  <h2 className="mb-2 text-sm font-semibold text-emerald-800 dark:text-emerald-300">
+                    ✓ 修正前後の防御比較（実測）
+                  </h2>
+                  <p className="mb-2 text-xs">
+                    総合リスク：<span className="font-bold">{snap.defense_comparison.before_score}/100</span>
+                    {" → "}
+                    <span className="font-bold text-emerald-700 dark:text-emerald-300">
+                      {snap.defense_comparison.after_score}/100
+                    </span>
+                  </p>
+                  <ul className="space-y-1 text-xs">
+                    {snap.defense_comparison.items.map((it) => (
+                      <li key={it.id} className="rounded bg-emerald-50/70 p-1.5 dark:bg-emerald-950/30">
+                        <div className="font-medium">{it.title}</div>
+                        <div className="text-zinc-600 dark:text-zinc-400">
+                          {it.before_verdict} → <span className="font-semibold text-emerald-700 dark:text-emerald-300">{it.after_verdict}</span>
+                          {it.latest_evidence_id && <span className="ml-1 font-mono">({it.latest_evidence_id})</span>}
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                </Card>
+              )}
               {hist && (
                 <Card>
                   <h2 className="mb-2 text-sm font-semibold">前回診断との履歴比較</h2>

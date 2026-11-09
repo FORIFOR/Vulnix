@@ -50,6 +50,10 @@ export const AUDIT_EVENT: Record<string, string> = {
   "auth.mfa_enabled": "2要素認証 有効化",
   "auth.mfa_disabled": "2要素認証 無効化",
   "chat.asked": "AIコンテキスト質問",
+  "system.controls_verified": "安全制御の実機検証",
+  "cve.synced": "CVE/KEVフィード同期",
+  "proposal.received": "AI提案を受理（サニタイズ済）",
+  "proposal.rejected": "不正なAI提案を破棄",
 };
 
 export const fmtTime = (ts: number | null | undefined) =>

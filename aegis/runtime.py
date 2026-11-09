@@ -66,6 +66,10 @@ class WorkerPool:
                         self._procs.pop(pid, None)
             self._sem.release()
 
+    def active_pids(self) -> list[int]:
+        with self._lock:
+            return list(self._procs)
+
     def kill_all(self) -> list[int]:
         with self._lock:
             self._closed = True

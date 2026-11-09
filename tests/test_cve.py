@@ -1,4 +1,5 @@
 """CVE matcher: version ranges, banner detection, detection-is-not-proof."""
+import json
 import unittest
 
 from aegis import cve
@@ -118,6 +119,50 @@ class TestNvdLoader(unittest.TestCase):
 
     def test_empty_feed(self):
         self.assertEqual(cve.load_nvd({}), [])
+
+
+class TestCisaKevAndFeedMonitor(unittest.TestCase):
+    def test_kev_catalog_loaded(self):
+        self.assertTrue(cve.KEV_PATH.exists())
+        self.assertIn("CVE-2021-41773", cve.KEV_CATALOG)
+        self.assertIn("CVE-2021-42013", cve.KEV_CATALOG)
+        entry = cve.KEV_CATALOG["CVE-2021-41773"]
+        self.assertEqual(entry.vendor, "Apache")
+        self.assertEqual(entry.date_added, "2021-11-03")
+
+    def test_feed_monitor_correlates_assets_and_marks_kev(self):
+        mon = cve.FeedMonitor()
+        res = mon.correlate_assets([
+            {"id": "scan_001", "domain": "example.com", "banner": "Apache/2.4.49 (Unix)"},
+            {"id": "scan_002", "domain": "api.example.com", "banner": "Apache/2.4.52 (Unix)"},
+        ])
+        self.assertEqual(len(res["scan_001"]), 2)
+        self.assertEqual(res["scan_002"], [])
+        first = res["scan_001"][0]
+        self.assertTrue(first["kev_exploited"])
+        self.assertEqual(first["verdict"], "detected")
+        self.assertFalse(first["verified"])
+
+    def test_feed_monitor_ingest_and_sync_urls(self):
+        mon = cve.FeedMonitor()
+        kev_payload = {
+            "vulnerabilities": [{
+                "cveID": "CVE-2026-0001",
+                "vendorProject": "Example",
+                "product": "Server",
+                "vulnerabilityName": "Example KEV",
+                "dateAdded": "2026-01-01",
+                "dueDate": "2026-01-15",
+                "knownRansomwareCampaignUse": "Unknown",
+            }]
+        }
+        status = mon.sync_from_urls(
+            kev_url="https://feed.example/kev.json",
+            fetcher=lambda url: json.dumps(kev_payload).encode(),
+        )
+        self.assertIn("CVE-2026-0001", mon.kev)
+        self.assertGreaterEqual(status["kev_count"], 3)
+        self.assertEqual(status["sync_count"], 1)
 
 
 if __name__ == "__main__":

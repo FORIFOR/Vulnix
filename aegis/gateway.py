@@ -64,6 +64,24 @@ def http_probe_tool() -> Tool:
     )
 
 
+def reproduction_probe_tool() -> Tool:
+    workers = Path(__file__).parent / "workers"
+    worker = str(workers / "reproduction_probe.py")
+    sentinel = str(workers / "egress_sentinel.py")
+
+    def build(args: dict, d: PinnedDestination) -> list[str]:
+        inner = [worker, "--scheme", d.scheme, "--host", d.host, "--ip", d.ip,
+                 "--port", str(d.port), "--check", args.get("check", "idor")]
+        return [sys.executable, "-I", sentinel, "--allow", f"{d.ip}/{d.port}", "--", *inner]
+
+    return Tool(
+        name="reproduction_probe", action="safe_reproduction",
+        args={"url": ArgSpec(str, pattern=r"https?://[^\s]+"),
+              "check": ArgSpec(str, required=False, choices=("idor", "cve_2021_41773"))},
+        build_argv=build, timeout_s=20,
+    )
+
+
 class Gateway:
     def __init__(self, *, engagement: Engagement, tokens: TokenAuthority,
                  approvals: ApprovalStore, egress: EgressGuard, workers: WorkerPool,

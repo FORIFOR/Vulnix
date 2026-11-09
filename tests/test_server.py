@@ -10,7 +10,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 from aegis.assessment import AssessmentService
-from aegis.lab import start_lab
+from aegis.lab import set_lab_mode, start_lab
 from aegis.operators import OperatorStore, hash_password, totp_code
 from aegis.runtime import WorkerPool
 from aegis.server import make_handler
@@ -41,6 +41,7 @@ class TestServer(unittest.TestCase):
         cls.lab.server_close()
 
     def setUp(self):
+        set_lab_mode("vulnerable")
         self.tmp = tempfile.TemporaryDirectory()
         d = Path(self.tmp.name)
         self.svc = AssessmentService(d, LAB_PORT, verify_seconds=30)
@@ -231,6 +232,58 @@ class TestServer(unittest.TestCase):
         s = self.get()
         self.assertIn("history", s)
         self.assertEqual(s["history"]["previous_assessment_id"], "scan_000")
+
+    def test_p0_live_control_verification_and_cve_sync(self):
+        self.login("op", "op-pw")
+        code, rep = self._req(f"{self.root}/system/verify-controls", {})
+        self.assertEqual(code, 200)
+        self.assertTrue(rep["all_passed"])
+        check_ids = {c["id"]: c["passed"] for c in rep["checks"]}
+        self.assertEqual(check_ids, {
+            "egress_isolation": True,
+            "privilege_escalation_prevention": True,
+            "l2_approval_gate": True,
+            "emergency_stop_sigkill": True,
+            "netfilter_ruleset": True,
+        })
+
+        cve_st = self._req(f"{self.root}/cve/status")[1]
+        self.assertGreaterEqual(cve_st["cve_count"], 2)
+        self.assertGreaterEqual(cve_st["kev_count"], 2)
+        sync_code, sync_res = self._req(f"{self.root}/cve/sync", {})
+        self.assertEqual(sync_code, 200)
+        self.assertGreaterEqual(sync_res["sync_count"], 1)
+
+    def test_l2_reproduction_proof_and_post_patch_verify_fix(self):
+        # Use short verify_seconds so L2 completes quickly with real reproduction_probe
+        self.svc.set_verify_seconds(0.05)
+        self.login("appr", "appr-pw")
+        self.assertEqual(self.post("/start")[0], 200)
+        s = self.wait_for(lambda s: any(a["status"] == "pending" for a in s["approvals"]))
+        rid = s["approvals"][0]["id"]
+        self.assertEqual(self.post(f"/approvals/{rid}", {"decision": "approve"})[0], 200)
+        s = self.wait_for(lambda s: s["state"] == "completed", timeout=15)
+
+        f_banner = next(f for f in s["findings"] if f["id"] == "f_banner")
+        f_idor = next(f for f in s["findings"] if f["id"] == "f_idor")
+        self.assertEqual(f_banner["verdict"], "proven")
+        self.assertIsNotNone(f_banner["what_was_established"])
+        self.assertEqual(f_idor["verdict"], "proven")
+        self.assertIsNotNone(f_idor["what_was_established"])
+
+        # Now run post-patch defense verification (/verify-fix)
+        code, s_after = self.post("/verify-fix", {"mode": "patched"})
+        self.assertEqual(code, 200)
+        dc = s_after["defense_comparison"]
+        self.assertEqual(dc["lab_mode"], "patched")
+        self.assertGreater(dc["before_score"], 0)
+        self.assertEqual(dc["after_score"], 0)
+        self.assertTrue(all(item["after_verdict"] == "not_reproduced" for item in dc["items"]))
+
+        f_banner_after = next(f for f in s_after["findings"] if f["id"] == "f_banner")
+        f_idor_after = next(f for f in s_after["findings"] if f["id"] == "f_idor")
+        self.assertEqual(f_banner_after["verdict"], "not_reproduced")
+        self.assertEqual(f_idor_after["verdict"], "not_reproduced")
 
 
 if __name__ == "__main__":

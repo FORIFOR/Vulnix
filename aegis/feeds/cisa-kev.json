@@ -1,0 +1,28 @@
+{
+  "title": "CISA Catalog of Known Exploited Vulnerabilities (Bundled Subset)",
+  "catalogVersion": "2026.11.09",
+  "vulnerabilities": [
+    {
+      "cveID": "CVE-2021-41773",
+      "vendorProject": "Apache",
+      "product": "HTTP Server",
+      "vulnerabilityName": "Apache HTTP Server Path Traversal and File Disclosure Vulnerability",
+      "dateAdded": "2021-11-03",
+      "shortDescription": "Apache HTTP Server 2.4.49 contains a path traversal vulnerability.",
+      "requiredAction": "Apply updates per vendor instructions.",
+      "dueDate": "2021-11-17",
+      "knownRansomwareCampaignUse": "Known"
+    },
+    {
+      "cveID": "CVE-2021-42013",
+      "vendorProject": "Apache",
+      "product": "HTTP Server",
+      "vulnerabilityName": "Apache HTTP Server Path Traversal and Remote Code Execution Vulnerability",
+      "dateAdded": "2021-11-03",
+      "shortDescription": "Incomplete fix for CVE-2021-41773 in Apache HTTP Server 2.4.49 and 2.4.50.",
+      "requiredAction": "Upgrade to Apache HTTP Server 2.4.51 or later.",
+      "dueDate": "2021-11-17",
+      "knownRansomwareCampaignUse": "Known"
+    }
+  ]
+}

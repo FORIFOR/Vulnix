@@ -1,9 +1,10 @@
 "use client";
 
-import { useSyncExternalStore } from "react";
+import { useState, useSyncExternalStore } from "react";
 import { MfaSection } from "@/components/settings/MfaSection";
 import { PasswordChangeForm } from "@/components/settings/PasswordChangeForm";
 import { Card, Pill } from "@/components/ui";
+import { command } from "@/lib/api";
 import { fmtTime } from "@/lib/labels";
 import {
   clearLearningHistory,
@@ -12,6 +13,7 @@ import {
   subscribeLearning,
 } from "@/lib/learningHistory";
 import { getThemeServerSnapshot, getThemeSnapshot, setTheme, subscribeTheme, type Theme } from "@/lib/theme";
+import type { ControlVerificationReport } from "@/lib/types";
 import { useAssessment } from "@/lib/useAssessment";
 import { useSession } from "@/lib/useSession";
 
@@ -24,16 +26,82 @@ const THEMES: { key: Theme; label: string }[] = [
 const LEVEL_LABEL = { easy: "かんたん", detail: "詳しく", expert: "専門家" } as const;
 
 export default function Settings() {
-  const { snap, error } = useAssessment("scan_001");
+  const { snap, error, refetch } = useAssessment("scan_001");
   const { session, logout } = useSession();
   const theme = useSyncExternalStore(subscribeTheme, getThemeSnapshot, getThemeServerSnapshot);
   const learning = useSyncExternalStore(subscribeLearning, getLearningSnapshot, getLearningServerSnapshot);
+  const [verifyReport, setVerifyReport] = useState<ControlVerificationReport | null>(null);
+  const [verifyBusy, setVerifyBusy] = useState(false);
+  const [cveBusy, setCveBusy] = useState(false);
   const pick = (t: Theme) => setTheme(t);
   const a = snap?.authorization;
+  const cveSt = snap?.cve_status;
+
+  const runVerifyControls = async () => {
+    setVerifyBusy(true);
+    try {
+      const rep = (await command("/api/system/verify-controls", {})) as unknown as ControlVerificationReport;
+      setVerifyReport(rep);
+    } finally {
+      setVerifyBusy(false);
+    }
+  };
+
+  const syncCve = async () => {
+    setCveBusy(true);
+    try {
+      await command("/api/cve/sync", { source: "manual_ui_sync" });
+      await refetch();
+    } finally {
+      setCveBusy(false);
+    }
+  };
 
   return (
     <main className="mx-auto max-w-3xl space-y-4 p-4 md:p-8">
       <h1 className="text-2xl font-bold">設定</h1>
+
+      <Card>
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h2 className="text-sm font-semibold">安全制御の実機検証（P0 Live Verification）</h2>
+            <p className="text-xs text-zinc-500">
+              実プロセス（egress_sentinel）・実ソケット・Gateway を駆動し、通信遮断・権限詐称剥離・承認強制・緊急停止SIGKILLを実機検証します。
+            </p>
+          </div>
+          <button
+            type="button"
+            disabled={verifyBusy}
+            onClick={runVerifyControls}
+            className="rounded-lg bg-zinc-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-white dark:text-zinc-900"
+          >
+            {verifyBusy ? "実機検証を実行中…" : "▶ 6層制御の実機検証を実行"}
+          </button>
+        </div>
+        {verifyReport && (
+          <div className="mt-3 space-y-2">
+            <div className="flex items-center gap-2 text-xs font-semibold">
+              <Pill className={verifyReport.all_passed ? "bg-emerald-600 text-white" : "bg-red-600 text-white"}>
+                {verifyReport.all_passed ? "✓ 全5項目 PASS（実機検証済み）" : "✕ 一部失敗"}
+              </Pill>
+              <span className="text-zinc-500">
+                Host: {verifyReport.host_platform} / 合計 {verifyReport.total_elapsed_ms} ms
+              </span>
+            </div>
+            <ul className="space-y-1.5 text-xs">
+              {verifyReport.checks.map((c) => (
+                <li key={c.id} className="rounded-lg border border-zinc-200 p-2 dark:border-zinc-800">
+                  <div className="flex items-center justify-between font-semibold">
+                    <span>{c.passed ? "✓" : "✕"} {c.name}</span>
+                    <span className="tabular-nums text-zinc-500">{c.elapsed_ms} ms</span>
+                  </div>
+                  <div className="mt-0.5 text-zinc-600 dark:text-zinc-400">{c.detail}</div>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </Card>
 
       <Card>
         <h2 className="mb-2 text-sm font-semibold">アカウント</h2>
@@ -113,13 +181,25 @@ export default function Settings() {
       </Card>
 
       <Card>
-        <h2 className="mb-2 text-sm font-semibold">モデルと脅威情報</h2>
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-sm font-semibold">モデルと脅威情報（ARTEX × Abliteration / NVD + CISA KEV）</h2>
+          <button
+            type="button"
+            disabled={cveBusy}
+            onClick={syncCve}
+            className="rounded-lg border border-zinc-300 px-2.5 py-1 text-xs font-medium hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-600 dark:hover:bg-zinc-800"
+          >
+            {cveBusy ? "同期中…" : "↻ CVE / CISA KEV フィード同期"}
+          </button>
+        </div>
         <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
-          <dt className="text-zinc-500">診断エージェント</dt><dd>ARTEX — 未接続（提案は Gateway 経由でのみ実行）</dd>
-          <dt className="text-zinc-500">推論モデル</dt><dd>Abliteration / GPT / Claude — 環境変数 AEGIS_MODEL_URL で接続（既定は未接続）</dd>
-          <dt className="text-zinc-500">Proposal Router</dt><dd>実装済み・自律実行は無効（/api/router/status で確認）。Router は認可を持ちません</dd>
-          <dt className="text-zinc-500">モデルの権限</dt><dd>提案のみ。実行の可否は Gateway と人の承認が決めます</dd>
-          <dt className="text-zinc-500">CVE 照合</dt><dd>有効（検出のみ・「実証」とは区別）。NVD JSON フィード取り込みに対応</dd>
+          <dt className="text-zinc-500">診断エージェント</dt><dd>ARTEX 実行エンジン — タスク計画・ProposalRouter 統合済み</dd>
+          <dt className="text-zinc-500">推論アダプター</dt><dd>AbliterationBackend — OpenAI 互換 Chat Completions (`messages` / `choices`) 対応</dd>
+          <dt className="text-zinc-500">モデルの権限</dt><dd>提案のみ（権限詐称キーは Router が自動除去）。実行は Gateway と人の承認が裁く</dd>
+          <dt className="text-zinc-500">CVE / KEV 監視</dt>
+          <dd>
+            NVD 登録 {cveSt?.cve_count ?? 2} 件 / CISA KEV 悪用確認 {cveSt?.kev_count ?? 2} 件（最終同期: {fmtTime(cveSt?.last_synced_at)}）
+          </dd>
         </dl>
       </Card>
 

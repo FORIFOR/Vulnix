@@ -1,20 +1,21 @@
-"""CVE intelligence (P2): match observed evidence to known CVEs.
+"""CVE intelligence & continuous monitoring (P2): NVD CVE 2.0 + CISA KEV.
 
 This engine turns an observation (e.g. a server banner) into *candidate*
-findings. It embodies the project's first principle — separate detection from
-proof. A match here is "detected (unverified)"; it is NEVER "proven". Proving a
-finding is a separate, non-destructive confirmation step and is not done here.
-
-The catalog holds descriptive metadata only (id, affected versions, severity,
-remediation, references). It contains NO exploit code or payloads; matching a
-CVE does not attempt, and cannot perform, any exploitation.
+findings and correlates them with CISA Known Exploited Vulnerabilities (KEV).
+It embodies the project's first principle — separate detection from proof:
+  * A match here is "detected (unverified)"; it is NEVER "proven".
+  * Proving a finding requires an authorized L2 reproduction worker execution
+    through the Gateway (`reproduction_probe`).
 """
 from __future__ import annotations
 
 import json
 import re
+import time
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 
 def parse_version(v: str) -> tuple[int, ...]:
@@ -51,7 +52,7 @@ def version_in_range(version: str, rng: dict) -> bool:
 @dataclass(frozen=True)
 class CVE:
     id: str
-    product: str                      # lowercased product key, e.g. "apache"
+    product: str                      # lowercased product key, e.g. "http_server"
     title: str
     severity: str                     # critical|high|medium|low|info
     cwe: str
@@ -65,6 +66,18 @@ class CVE:
 
 
 @dataclass(frozen=True)
+class KevEntry:
+    cve_id: str
+    vendor: str
+    product: str
+    name: str
+    date_added: str
+    due_date: str
+    ransomware_use: str
+    required_action: str
+
+
+@dataclass(frozen=True)
 class Candidate:
     """A CVE matched to an observation. Detection only — not proof."""
     cve: CVE
@@ -73,14 +86,11 @@ class Candidate:
     source: str                       # where the observation came from
     verdict: str = "detected"         # never "proven" from this engine
     verified: bool = False
+    in_kev: bool = False
 
 
-# Banner product names differ from NVD CPE product keys (CPE uses vendor:product,
-# e.g. apache:http_server). Map what a Server header says to the catalog key.
 PRODUCT_ALIASES = {"apache": "http_server", "apache-coyote": "tomcat"}
 
-# Minimal fallback used only if no feed file is present. Catalog keys match NVD
-# CPE product ("http_server"), so banner "Apache" resolves via PRODUCT_ALIASES.
 _BUILTIN: tuple[CVE, ...] = (
     CVE(id="CVE-2021-41773", product="http_server",
         title="Apache HTTP Server 2.4.49 パストラバーサル／RCE",
@@ -97,6 +107,7 @@ _BUILTIN: tuple[CVE, ...] = (
 )
 
 FEED_PATH = Path(__file__).parent / "feeds" / "nvd-recent.json"
+KEV_PATH = Path(__file__).parent / "feeds" / "cisa-kev.json"
 
 _BANNER = re.compile(r"([A-Za-z][\w-]*)/(\d+(?:\.\d+)+)")
 
@@ -151,11 +162,7 @@ def _nvd_ranges(cve_obj: dict) -> tuple[str, tuple[dict, ...]]:
 
 
 def load_nvd(obj: dict) -> list[CVE]:
-    """Parse NVD CVE API 2.0 JSON into CVE records (application CPEs only).
-
-    This is the ingestion path for a real feed: point it at a downloaded NVD
-    JSON file or API response. It performs NO network I/O itself — the caller
-    supplies the already-fetched object — so it is fully testable offline."""
+    """Parse NVD CVE API 2.0 JSON into CVE records (application CPEs only)."""
     out: list[CVE] = []
     for v in obj.get("vulnerabilities", []):
         c = v.get("cve", {})
@@ -164,7 +171,7 @@ def load_nvd(obj: dict) -> list[CVE]:
             continue
         product, ranges = _nvd_ranges(c)
         if not product or not ranges:
-            continue                            # no usable application version range
+            continue
         desc = next((d["value"] for d in c.get("descriptions", []) if d.get("lang") == "en"), "")
         out.append(CVE(
             id=cid, product=product.lower(),
@@ -177,6 +184,33 @@ def load_nvd(obj: dict) -> list[CVE]:
     return out
 
 
+def load_cisa_kev(obj: dict) -> dict[str, KevEntry]:
+    """Parse CISA Known Exploited Vulnerabilities (KEV) JSON into a dict by CVE ID."""
+    out: dict[str, KevEntry] = {}
+    for item in obj.get("vulnerabilities", []):
+        cid = item.get("cveID")
+        if not cid:
+            continue
+        out[cid] = KevEntry(
+            cve_id=cid,
+            vendor=str(item.get("vendorProject", "")),
+            product=str(item.get("product", "")),
+            name=str(item.get("vulnerabilityName", cid)),
+            date_added=str(item.get("dateAdded", "")),
+            due_date=str(item.get("dueDate", "")),
+            ransomware_use=str(item.get("knownRansomwareCampaignUse", "Unknown")),
+            required_action=str(item.get("requiredAction", "")),
+        )
+    return out
+
+
+def load_kev_feed(path: Path = KEV_PATH) -> dict[str, KevEntry]:
+    try:
+        return load_cisa_kev(json.loads(path.read_text()))
+    except (OSError, ValueError):
+        return {}
+
+
 def match(product: str, version: str, catalog: tuple[CVE, ...] | None = None) -> list[CVE]:
     cat = CATALOG if catalog is None else catalog
     product = product.lower()
@@ -184,8 +218,6 @@ def match(product: str, version: str, catalog: tuple[CVE, ...] | None = None) ->
 
 
 def load_feed(path: Path = FEED_PATH) -> list[CVE]:
-    """Ingest an NVD-format feed file from disk (no network). Returns [] if the
-    file is absent or unreadable, so startup falls back to the built-in set."""
     try:
         return load_nvd(json.loads(path.read_text()))
     except (OSError, ValueError):
@@ -197,18 +229,135 @@ def build_catalog() -> tuple[CVE, ...]:
     return tuple(feed) if feed else _BUILTIN
 
 
-# Catalog is ingested from the NVD-format feed at import; built-in is the fallback.
 CATALOG: tuple[CVE, ...] = build_catalog()
+KEV_CATALOG: dict[str, KevEntry] = load_kev_feed()
 
 
 def detect_from_banner(banner: str, *, source: str = "banner",
-                       catalog: tuple[CVE, ...] | None = None) -> list[Candidate]:
+                       catalog: tuple[CVE, ...] | None = None,
+                       kev: dict[str, KevEntry] | None = None) -> list[Candidate]:
     """Parse a 'Product/x.y.z' banner and return candidate CVEs (unverified)."""
     cat = CATALOG if catalog is None else catalog
+    kev_map = KEV_CATALOG if kev is None else kev
     out: list[Candidate] = []
     for m in _BANNER.finditer(banner or ""):
         raw_product, version = m.group(1).lower(), m.group(2)
         product = PRODUCT_ALIASES.get(raw_product, raw_product)
         for cve in match(product, version, cat):
-            out.append(Candidate(cve=cve, product=product, version=version, source=source))
+            out.append(Candidate(
+                cve=cve,
+                product=product,
+                version=version,
+                source=source,
+                in_kev=(cve.id in kev_map),
+            ))
     return out
+
+
+def _default_fetcher(url: str) -> bytes:
+    req = urllib.request.Request(url, headers={"User-Agent": "vulnix-cve-monitor/1.0"})
+    with urllib.request.urlopen(req, timeout=20) as r:    # pragma: no cover
+        return r.read()
+
+
+class FeedMonitor:
+    """Continuous CVE & CISA KEV feed monitor and asset vulnerability correlator."""
+
+    def __init__(self, *, catalog: tuple[CVE, ...] | None = None,
+                 kev: dict[str, KevEntry] | None = None,
+                 fetcher: Callable[[str], bytes] | None = None):
+        self.catalog: tuple[CVE, ...] = catalog if catalog is not None else CATALOG
+        self.kev: dict[str, KevEntry] = dict(kev if kev is not None else KEV_CATALOG)
+        self._fetcher = fetcher or _default_fetcher
+        self.last_synced_at: float = time.time()
+        self.sync_source: str = "bundled_nvd_and_cisa_kev"
+        self.sync_count: int = 0
+
+    def ingest_payloads(self, *, nvd_obj: dict | None = None, kev_obj: dict | None = None,
+                        source: str = "manual_ingest") -> dict:
+        if nvd_obj is not None:
+            parsed = load_nvd(nvd_obj)
+            if parsed:
+                by_id = {c.id: c for c in self.catalog}
+                for c in parsed:
+                    by_id[c.id] = c
+                self.catalog = tuple(by_id.values())
+        if kev_obj is not None:
+            self.kev.update(load_cisa_kev(kev_obj))
+        self.last_synced_at = time.time()
+        self.sync_source = source
+        self.sync_count += 1
+        return self.status()
+
+    def sync_from_urls(self, *, nvd_url: str | None = None, kev_url: str | None = None,
+                       fetcher: Callable[[str], bytes] | None = None) -> dict:
+        fn = fetcher or self._fetcher
+        nvd_obj = json.loads(fn(nvd_url)) if nvd_url else None
+        kev_obj = json.loads(fn(kev_url)) if kev_url else None
+        return self.ingest_payloads(nvd_obj=nvd_obj, kev_obj=kev_obj, source="remote_feed_sync")
+
+    def correlate_assets(self, asset_banners: dict[str, str] | list[dict]) -> dict[str, list[dict]] | list[dict]:
+        """Match asset banners against the active CVE + KEV catalogs."""
+        if isinstance(asset_banners, list):
+            by_id: dict[str, list[dict]] = {}
+            for item in asset_banners:
+                aid = str(item.get("id", ""))
+                banner = str(item.get("banner", ""))
+                cands = detect_from_banner(banner, source=f"asset:{aid}",
+                                           catalog=self.catalog, kev=self.kev)
+                by_id[aid] = [
+                    {
+                        "id": c.cve.id,
+                        "severity": c.cve.severity,
+                        "in_kev": c.in_kev,
+                        "kev_exploited": c.in_kev,
+                        "verdict": c.verdict,
+                        "verified": c.verified,
+                        "ransomware_use": self.kev[c.cve.id].ransomware_use if c.in_kev else "Unknown",
+                        "due_date": self.kev[c.cve.id].due_date if c.in_kev else None,
+                    }
+                    for c in cands
+                ]
+            return by_id
+
+        results: list[dict] = []
+        for aid, banner in asset_banners.items():
+            cands = detect_from_banner(banner, source=f"asset:{aid}",
+                                       catalog=self.catalog, kev=self.kev)
+            results.append({
+                "asset_id": aid,
+                "banner": banner,
+                "matched_cves": [
+                    {
+                        "id": c.cve.id,
+                        "severity": c.cve.severity,
+                        "in_kev": c.in_kev,
+                        "kev_exploited": c.in_kev,
+                        "verdict": c.verdict,
+                        "verified": c.verified,
+                        "ransomware_use": self.kev[c.cve.id].ransomware_use if c.in_kev else "Unknown",
+                        "due_date": self.kev[c.cve.id].due_date if c.in_kev else None,
+                    }
+                    for c in cands
+                ],
+            })
+        return results
+
+    def status(self) -> dict:
+        return {
+            "cve_count": len(self.catalog),
+            "kev_count": len(self.kev),
+            "last_synced_at": self.last_synced_at,
+            "sync_source": self.sync_source,
+            "sync_count": self.sync_count,
+            "cves": [
+                {
+                    "id": c.id,
+                    "product": c.product,
+                    "severity": c.severity,
+                    "cwe": c.cwe,
+                    "in_kev": c.id in self.kev,
+                }
+                for c in self.catalog
+            ],
+        }

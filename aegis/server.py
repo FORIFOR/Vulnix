@@ -22,6 +22,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from .assessment import AssessmentService
+from .control_verification import run_live_control_verification
 from .lab import start_lab
 from .operators import AuthError, MFAChallenge, OperatorStore
 from .router import HttpModelBackend
@@ -72,11 +73,15 @@ def make_handler(svc: AssessmentService, ops: OperatorStore):
                 return self._json(200, {
                     "connected": bool(backend),
                     "backends": [backend.name] if backend else [],
-                    # Autonomous execution stays OFF by design: a proposal still
-                    # requires a human approval and a Gateway token to run.
+                    "artex_engine": "ready",
+                    "abliteration_adapter": "openai_chat_completions_compatible",
                     "autonomous_execution": False,
                     "note": "モデルは提案のみ。実行は人の承認と Gateway のトークンが必要です。",
                 })
+            if p == "/api/system/verify-controls":
+                return self._json(200, run_live_control_verification())
+            if p == "/api/cve/status":
+                return self._json(200, svc.cve_monitor.status())
             if p == f"/api/assessments/{svc.a.id}":
                 return self._json(200, svc.snapshot())
             if p == f"/api/assessments/{svc.a.id}/logs":
@@ -209,7 +214,19 @@ def make_handler(svc: AssessmentService, ops: OperatorStore):
             base = f"/api/assessments/{svc.a.id}"
             actor = sess.operator
             try:
-                if p == base + "/start":
+                if p == "/api/system/verify-controls":
+                    rep = run_live_control_verification()
+                    svc.audit.record("system.controls_verified", actor=actor, all_passed=rep["all_passed"])
+                    return self._json(200, rep)
+                elif p == "/api/cve/sync":
+                    st = svc.cve_monitor.ingest_payloads(
+                        nvd_obj=body.get("nvd") if isinstance(body.get("nvd"), dict) else None,
+                        kev_obj=body.get("kev") if isinstance(body.get("kev"), dict) else None,
+                        source=str(body.get("source", "operator_sync")),
+                    )
+                    svc.audit.record("cve.synced", actor=actor, cve_count=st["cve_count"], kev_count=st["kev_count"])
+                    return self._json(200, st)
+                elif p == base + "/start":
                     svc.start()
                 elif p == base + "/pause":
                     svc.pause(actor)
@@ -217,6 +234,10 @@ def make_handler(svc: AssessmentService, ops: OperatorStore):
                     svc.resume(actor)
                 elif p == base + "/emergency-stop":
                     return self._json(200, {"stop_report": svc.emergency_stop(actor)})
+                elif p == base + "/verify-fix":
+                    if "approver" not in sess.roles:
+                        return self._json(403, {"error": "修正後の再検証には承認責任者の権限が必要です"})
+                    return self._json(200, svc.verify_fix(actor))
                 elif p == base + "/chat":
                     q = str(body.get("question", "")).strip()
                     if not q:
@@ -244,7 +265,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8787)
     ap.add_argument("--lab-port", type=int, default=18081)
-    ap.add_argument("--verify-seconds", type=float, default=20)
+    ap.add_argument("--verify-seconds", type=float, default=2.0)
     ap.add_argument("--data-dir", default=None)
     a = ap.parse_args()
     data = Path(a.data_dir or tempfile.mkdtemp(prefix="aegis-"))

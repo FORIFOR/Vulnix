@@ -93,9 +93,54 @@ export interface AssessmentHistory {
   }[];
 }
 
+export interface DefenseComparison {
+  verified_at: number;
+  actor: string;
+  lab_mode: string;
+  before_score: number;
+  after_score: number;
+  items: {
+    id: string;
+    title: string;
+    severity: Severity;
+    before_verdict: Verdict;
+    after_verdict: Verdict;
+    latest_evidence_id?: string;
+  }[];
+}
+
+export interface ControlVerificationReport {
+  verified_at: number;
+  host_platform: string;
+  all_passed: boolean;
+  total_elapsed_ms: number;
+  checks: {
+    id: string;
+    name: string;
+    passed: boolean;
+    elapsed_ms: number;
+    detail: string;
+  }[];
+}
+
+export interface CveStatus {
+  cve_count: number;
+  kev_count: number;
+  last_synced_at: number;
+  sync_source: string;
+  cves: {
+    id: string;
+    product: string;
+    severity: Severity;
+    cwe: string;
+    in_kev: boolean;
+  }[];
+}
+
 export interface Snapshot {
   id: string;
   demo: boolean;
+  lab_mode?: string;
   asset: { id: string; name: string; kind: string; environment: string };
   authorization: {
     status: "authorized" | "missing";
@@ -115,6 +160,16 @@ export interface Snapshot {
   stop_report: StopReport | null;
   chat_messages?: ChatMessage[];
   history?: AssessmentHistory;
+  defense_comparison?: DefenseComparison | null;
+  cve_status?: CveStatus;
+  artex_tasks?: {
+    id: string;
+    phase: string;
+    title: string;
+    risk_level: RiskLevel;
+    status: string;
+    tool: string;
+  }[];
   last_seq: number;
 }
 
