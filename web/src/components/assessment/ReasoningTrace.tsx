@@ -20,6 +20,7 @@ const EXECUTION_EVENTS = new Set([
   "emergency_stop",
   "lab.mode_changed",
   "assessment.restarted",
+  "assessment.failed",
 ]);
 
 function fmtClock(ts: number): string {

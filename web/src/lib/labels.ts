@@ -60,6 +60,7 @@ export const AUDIT_EVENT: Record<string, string> = {
   "asset.selected": "診断対象を切替",
   "lab.mode_changed": "検証ラボ防御モード切替",
   "assessment.restarted": "再診断を開始",
+  "assessment.failed": "診断中断（エラー）",
 };
 
 export const fmtTime = (ts: number | null | undefined) =>

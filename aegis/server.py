@@ -38,6 +38,12 @@ def make_handler(svc: AssessmentService, ops: OperatorStore):
         def log_message(self, *a):
             pass
 
+        def handle(self) -> None:
+            try:
+                super().handle()
+            except (ConnectionResetError, BrokenPipeError):
+                pass
+
         # ---- helpers --------------------------------------------------------
         def _json(self, code: int, obj, extra_headers: list[tuple[str, str]] = ()) -> None:
             body = json.dumps(obj, ensure_ascii=False).encode()

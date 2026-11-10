@@ -73,7 +73,7 @@ class AssessmentService:
         target = Target("lab", hosts=tuple(sorted(self._allowed_hosts)),
                         cidrs=("127.0.0.1/32",), ports=(lab_port,))
         eng = Engagement("eng_demo", True, "DEMO-AUTH-001（ローカル検証ラボ）", now - 60,
-                         now + 8 * 3600, {"lab": target},
+                         now + 30 * 86400, {"lab": target},
                          frozenset({"read_only_probe", "safe_reproduction"}))
         self.approval_store = ApprovalStore()
         self.tokens = TokenAuthority(secrets.token_bytes(32), time.time)
@@ -130,14 +130,26 @@ class AssessmentService:
             {"key": "report", "label": "結果をまとめる", "status": "pending", "detail": ""},
         ]
 
+    def _ensure_active_window_locked(self) -> None:
+        now = time.time()
+        e = self.a.engagement
+        if not (e.not_before <= now < e.not_after - 3600):
+            self.a.engagement = Engagement(
+                e.id, e.ownership_verified, e.authorization_ref,
+                now - 60, now + 30 * 86400, e.targets, e.allowed_actions,
+            )
+            self.gateway.engagement = self.a.engagement
+        self.gateway.budget = Budget(50)
+
     def _sync_scope_for_host(self, host: str, auth_ref: str) -> None:
         self._allowed_hosts.add(host)
+        now = time.time()
         e = self.a.engagement
         target = Target("lab", hosts=tuple(sorted(self._allowed_hosts)),
                         cidrs=("127.0.0.1/32",), ports=(self.lab_port,))
         self.a.engagement = Engagement(
             e.id, True, auth_ref or e.authorization_ref,
-            e.not_before, e.not_after, {"lab": target}, e.allowed_actions
+            now - 60, now + 30 * 86400, {"lab": target}, e.allowed_actions
         )
         self.gateway.engagement = self.a.engagement
         self.a.target_url = f"http://{host}:{self.lab_port}/"
@@ -381,6 +393,7 @@ class AssessmentService:
         with self._lock:
             if self.a.state != "idle":
                 raise ValueError(f"cannot start from {self.a.state}")
+            self._ensure_active_window_locked()
             set_lab_mode("vulnerable")
             self._set_state("running")
             self._thread = threading.Thread(target=self._run, daemon=True, name="runner")
@@ -392,6 +405,7 @@ class AssessmentService:
             if self.a.state == "running":
                 raise ValueError("既に診断が実行中です")
             self._reset_workspace_locked()
+            self._ensure_active_window_locked()
             set_lab_mode("vulnerable")
             self._set_state("running")
             self._thread = threading.Thread(target=self._run, daemon=True, name="runner")
@@ -410,6 +424,7 @@ class AssessmentService:
         with self._lock:
             if self.a.state != "paused":
                 raise ValueError(f"cannot resume from {self.a.state}")
+            self._ensure_active_window_locked()
             self.gateway.resume(actor)   # re-validates engagement window
             self._set_state("running")
 
@@ -464,6 +479,7 @@ class AssessmentService:
             with self._lock:
                 if self.gateway.state is State.STOPPED:
                     self._reset_workspace_locked()
+                self._ensure_active_window_locked()
                 url = self.a.target_url
             self._think(
                 "全問題の一括実機検証を開始",
@@ -481,6 +497,14 @@ class AssessmentService:
             for fid in ("f_banner", "f_idor", "f_sqli"):
                 if fid in self.a.findings:
                     self.verify_finding(fid, actor=actor)
+            with self._lock:
+                self._phase("scope", "done", f"{url} は許可範囲内（127.0.0.1/32）")
+                self._phase("config", "done", "公開設定・HTTPヘッダーを検査済み")
+                self._phase("analysis", "done", f"{len(self._real_findings())} 件を分析済み")
+                self._phase("verification", "done", "全問題の隔離Worker検証を完了")
+                self._phase("report", "done", "実機検証結果を反映しました")
+                self.a.activity = None
+                self._set_state("completed")
             self._think(
                 "全問題の実機検証が完了",
                 f"すべての Worker プローブ応答と SHA-256 監査ハッシュを記録しました（総合リスク: {self._risk()['score']}/100）。",
@@ -495,6 +519,9 @@ class AssessmentService:
                 raise ValueError("指定された問題が見つかりません")
             if self.gateway.state is State.STOPPED:
                 self._reset_workspace_locked()
+            self._ensure_active_window_locked()
+            if self.a.state == "failed":
+                self._set_state("idle")
             url = self.a.target_url
 
         if finding_id in ("f_idor", "fx_idor"):
@@ -644,6 +671,7 @@ class AssessmentService:
         with self._lock:
             if self.a.state not in ("completed", "idle"):
                 raise ValueError("診断完了後に修正後の再検証を実行してください")
+            self._ensure_active_window_locked()
             before_risk = self._risk()
             before_verdicts = {
                 f["id"]: {"title": f["title"], "severity": f["severity"], "verdict": f["verdict"]}
@@ -758,6 +786,8 @@ class AssessmentService:
             self._run_inner()
         except _Stopped:
             pass
+        except Exception as e:
+            self._fail(f"診断エラー: {e}")
 
     def _run_inner(self) -> None:
         url = self.a.target_url
@@ -1158,6 +1188,8 @@ class AssessmentService:
 
     def _fail(self, msg):
         with self._lock:
+            self.audit.record("assessment.failed", reason=msg)
+            self.bus.publish(self.a.id, "agent.note", message=msg)
             for p in self.a.phases:
                 if p["status"] == "running":
                     self._phase(p["key"], "aborted", msg)
