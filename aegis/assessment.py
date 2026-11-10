@@ -7,6 +7,7 @@ launches is a real confined process that the emergency stop can kill.
 """
 from __future__ import annotations
 
+import copy
 import json
 import secrets
 import sys
@@ -1241,7 +1242,10 @@ class AssessmentService:
                 "finding_id": finding_id,
                 "ts": now,
             }
-            source, answer_text = self._answer_question(q, term=term, finding_id=finding_id)
+        # Inference can be slow. Never hold the control-plane lock while waiting:
+        # snapshots, worker updates and emergency stop must remain responsive.
+        source, answer_text = self._answer_question(q, term=term, finding_id=finding_id)
+        with self._lock:
             ai_msg = {
                 "id": "msg_" + secrets.token_hex(4),
                 "role": "assistant",
@@ -1258,29 +1262,34 @@ class AssessmentService:
             return {"message": ai_msg, "chat_messages": list(self.a.chat_messages), "planner": self.planner_status()}
 
     def _answer_question(self, q: str, term: str | None = None, finding_id: str | None = None) -> tuple[str, str]:
-        real = self._real_findings()
-        all_f = list(self.a.findings.values())
-        target_f = None
-        if finding_id and finding_id in self.a.findings:
-            target_f = self.a.findings[finding_id]
-        elif term:
-            target_f = next((f for f in real if f.get("help_term") == term), None) or next(
-                (f for f in all_f if f.get("help_term") == term), None
-            )
-        elif real:
-            target_f = real[0]
-
-        # If an external Abliteration / OpenAI-compatible model endpoint is configured, try it first
-        ext = self._chat_backend
-        if ext is not None:
-            ans = ext.chat(q, {
+        with self._lock:
+            real = self._real_findings()
+            all_f = list(self.a.findings.values())
+            target_f = None
+            if finding_id and finding_id in self.a.findings:
+                target_f = self.a.findings[finding_id]
+            elif term:
+                target_f = next((f for f in real if f.get("help_term") == term), None) or next(
+                    (f for f in all_f if f.get("help_term") == term), None
+                )
+            elif real:
+                target_f = real[0]
+            # Ground each answer in one immutable, point-in-time context.
+            context = copy.deepcopy({
                 "asset": self.a.asset,
                 "state": self.a.state,
                 "risk": self._risk(),
                 "target_finding": target_f,
             })
+            done_phases = sum(1 for p in self.a.phases if p["status"] == "done")
+            total_phases = len(self.a.phases)
+        target_f = context["target_finding"]
+        ext = self._chat_backend
+        if ext is not None:
+            ans = ext.chat(q, context)
             if ans:
-                self._model_response_verified = True
+                with self._lock:
+                    self._model_response_verified = True
                 return "external_model", ans
 
         ql = q.lower()
@@ -1315,10 +1324,9 @@ class AssessmentService:
                     f"・修正後の確認方法：{verify}"
                 )
 
-        risk = self._risk()
-        done_phases = sum(1 for p in self.a.phases if p["status"] == "done")
+        risk = context["risk"]
         parts = [
-            f"現在の診断対象は {self.a.asset['name']}（状態: {_asset_status(self.a.state)}、進捗 {done_phases}/{len(self.a.phases)} ステップ、総合リスク {risk['score']}/100 {risk['label']}）です。"
+            f"現在の診断対象は {context['asset']['name']}（状態: {_asset_status(context['state'])}、進捗 {done_phases}/{total_phases} ステップ、総合リスク {risk['score']}/100 {risk['label']}）です。"
         ]
         if target_f:
             evs = target_f.get("evidence", [])

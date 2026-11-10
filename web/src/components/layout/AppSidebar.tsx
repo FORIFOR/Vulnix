@@ -16,7 +16,7 @@ export function AppSidebar() {
   return (
     <nav
       aria-label="メイン"
-      className="flex shrink-0 items-center gap-1 border-b border-zinc-200 bg-zinc-50 px-3 py-2 md:h-dvh md:w-56 md:flex-col md:items-stretch md:border-b-0 md:border-r md:px-3 md:py-4 dark:border-zinc-800 dark:bg-zinc-950"
+      className="flex flex-wrap shrink-0 items-center gap-1 border-b border-zinc-200 bg-zinc-50 px-3 py-2 md:h-dvh md:w-56 md:flex-nowrap md:flex-col md:items-stretch md:border-b-0 md:border-r md:px-3 md:py-4 dark:border-zinc-800 dark:bg-zinc-950"
     >
       <Link href="/dashboard" className="mr-auto flex items-center gap-2 px-2 md:mb-6 md:mr-0">
         <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-zinc-900 text-sm font-bold text-white dark:bg-white dark:text-zinc-900">

@@ -330,6 +330,64 @@ class TestModelEnvironmentConfig(unittest.TestCase):
                     self.assertEqual(calls[0][2]["model"], "configured-model")
                     self.assertIn("messages", calls[0][2])
 
+    def test_timeout_default_bounds_and_endpoint_namespace(self):
+        for value, expected in ((None, 30), ("120", 120), ("1", 1), ("0", 30),
+                                ("121", 30), ("nan", 30), ("inf", 30), ("bad", 30)):
+            for adapter in (HttpModelBackend, AbliterationBackend):
+                with self.subTest(value=value, adapter=adapter.__name__):
+                    env = {"VULNIX_ABLITERATION_URL": "http://127.0.0.1/model",
+                           "AEGIS_MODEL_TIMEOUT_SECONDS": "110"}
+                    if value is not None:
+                        env["VULNIX_ABLITERATION_TIMEOUT_SECONDS"] = value
+                    with patch.dict(os.environ, env, clear=True):
+                        backend = adapter.from_env()
+                    self.assertEqual(backend._timeout_s, expected)
+                    with patch("aegis.router.urllib.request.urlopen") as request:
+                        request.return_value.__enter__.return_value.read.return_value = b'{"proposals": []}'
+                        backend.propose({})
+                        self.assertEqual(request.call_args.kwargs["timeout"], expected)
+
+    def test_chat_uses_configured_timeout_and_retains_fallback(self):
+        with patch.dict(os.environ, {
+            "VULNIX_MODEL_URL": "http://127.0.0.1/v1/chat/completions",
+            "VULNIX_MODEL_TIMEOUT_SECONDS": "120",
+        }, clear=True):
+            backend = AbliterationBackend.from_env()
+        with patch("aegis.router.urllib.request.urlopen", side_effect=TimeoutError) as request:
+            self.assertIsNone(backend.chat("Explain IDOR", {}))
+            self.assertEqual(request.call_args.kwargs["timeout"], 120)
+
+    def test_slow_chat_does_not_lock_control_plane_or_mutate_its_context(self):
+        from aegis.assessment import AssessmentService
+        started, release = threading.Event(), threading.Event()
+        captured, answers = [], []
+        def transport(_url, _headers, body):
+            captured.append(json.loads(json.loads(body)["messages"][1]["content"])["context"])
+            started.set()
+            release.wait(timeout=5)
+            return b'{"choices": [{"message": {"content": "read-only answer"}}]}'
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {}, clear=True):
+            service = AssessmentService(Path(tmp), 19998)
+            service._chat_backend = AbliterationBackend("http://127.0.0.1/model", transport=transport)
+            thread = threading.Thread(target=lambda: answers.append(service.ask_chat("Explain IDOR", "test", finding_id="f_idor")))
+            thread.start()
+            try:
+                self.assertTrue(started.wait(timeout=2))
+                unlocked = service._lock.acquire(timeout=0.5)
+                self.assertTrue(unlocked, "model wait must not block emergency stop or snapshot")
+                if unlocked:
+                    service.a.findings["f_idor"]["verdict"] = "not_reproduced"
+                    service._lock.release()
+                self.assertNotEqual(captured[0]["target_finding"]["verdict"], "not_reproduced")
+                self.assertEqual(next(f for f in service.snapshot()["findings"] if f["id"] == "f_idor")["verdict"], "not_reproduced")
+            finally:
+                release.set()
+                thread.join(timeout=3)
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(answers[0]["message"]["source"], "external_model")
+            self.assertEqual(service.a.findings["f_idor"]["verdict"], "not_reproduced")
+            self.assertFalse(any(e["event"] == "allow" for e in service.audit.entries()))
+
     def test_documented_namespace_wins_without_cross_endpoint_credentials(self):
         with patch.dict(os.environ, {
             "VULNIX_ABLITERATION_URL": "http://127.0.0.1:19999/v1/chat/completions",

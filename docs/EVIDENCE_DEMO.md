@@ -1,7 +1,7 @@
 # Evidence workspace and safe demo
 
-This change is presentation-only. It does not grant authority, alter Gateway,
-change network controls, or bypass approval. The built-in lab is a Python HTTP
+These workspace and response-validation changes do not grant authority, alter
+Gateway, change network controls, or bypass approval. The built-in lab is a Python HTTP
 simulation, not an actual Apache installation, production SQL database, or external
 security assessment. `not_reproduced` is a result under the tested conditions,
 not a guarantee of safety.
@@ -104,3 +104,31 @@ Manual local model check: Qwen3.5:4b via the OpenAI-compatible adapter produced 
 IDOR-defense explanation after warm-up. The cold request timed out at 30 seconds;
 the successful request took approximately 22 seconds. No paid API or model download
 was used. This does not verify that Qwen or the installed custom model is abliterated.
+
+
+## Slow local-model explanations and narrow screens
+
+Model HTTP socket waits default to 30 seconds. Set the selected endpoint's
+`*_TIMEOUT_SECONDS` (for example `VULNIX_ABLITERATION_TIMEOUT_SECONDS=120`)
+only on the isolated process that needs more time. Values must be finite and
+between 1 and 120 seconds; invalid values fall back to 30. This is a socket timeout,
+not an absolute end-to-end deadline. It changes no model settings or permissions.
+Model inference uses a copied diagnostic context and does not hold the control-plane
+lock, so status reads, worker updates and emergency stop remain responsive.
+A failed model call still produces an explicitly labeled built-in explanation.
+
+The learning popover is placed inside the viewport, updates on resize and scrolling,
+and scrolls long responses internally. Escape closes it and returns focus to the
+help button. Check the actual question button, not just a short adapter request,
+when verifying a slow local model for a recording.
+
+Assessment state is currently held in memory. A normal backend restart preserves
+operator files and the audit log, but does not restore the diagnostic workspace.
+Do not restart an active recording and assume its evidence screen will survive.
+
+With a 120-second process-local setting, the actual IDOR help-popover question
+returned `AI解説（qwen3.5:4b）` / `external_model` in 41.04 seconds in a manual
+loopback check. It cited the existing test-account evidence and explained owner
+checks and a 403 retest. A concurrent status read took 0.024 seconds; findings and
+lab mode were unchanged. This is observed local behavior, not a latency guarantee
+or proof of an abliterated model, autonomous attack planning, or automatic repair.

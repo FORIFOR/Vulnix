@@ -1,6 +1,8 @@
 "use client";
 
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useId, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { helpPopoverPosition } from "@/lib/helpPopoverPosition";
 import { GLOSSARY } from "@/lib/glossary";
 import { ExplanationPanel } from "./ExplanationPanel";
 
@@ -16,15 +18,22 @@ export function HelpPopover({
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLSpanElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
   const id = useId();
   const t = GLOSSARY[term];
 
   useEffect(() => {
     if (!open) return;
     const onDoc = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      if (ref.current && !ref.current.contains(e.target as Node) && !panelRef.current?.contains(e.target as Node)) setOpen(false);
     };
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setOpen(false);
+        buttonRef.current?.focus();
+      }
+    };
     document.addEventListener("mousedown", onDoc);
     document.addEventListener("keydown", onKey);
     return () => {
@@ -33,10 +42,39 @@ export function HelpPopover({
     };
   }, [open]);
 
+  useLayoutEffect(() => {
+    if (!open) return;
+    const panel = panelRef.current;
+    const button = buttonRef.current;
+    if (!panel || !button) return;
+    const updatePosition = () => {
+      const position = helpPopoverPosition(button.getBoundingClientRect(), {
+        width: document.documentElement.clientWidth,
+        height: window.innerHeight,
+      }, panel.scrollHeight + 2);
+      Object.assign(panel.style, {
+        left: `${position.left}px`, top: `${position.top}px`,
+        width: `${position.width}px`, maxHeight: `${position.maxHeight}px`,
+        visibility: "visible",
+      });
+    };
+    updatePosition();
+    const observer = new ResizeObserver(updatePosition);
+    observer.observe(panel);
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
+    };
+  }, [open]);
+
   if (!t) return null;
   return (
     <span ref={ref} className="relative inline-flex align-middle">
       <button
+        ref={buttonRef}
         type="button"
         aria-label={`${t.title}の解説`}
         aria-expanded={open}
@@ -46,15 +84,18 @@ export function HelpPopover({
       >
         ？
       </button>
-      {open && (
+      {open && createPortal(
         <div
+          ref={panelRef}
+          style={{ visibility: "hidden" }}
           id={id}
           role="dialog"
           aria-label={t.title}
-          className="absolute left-1/2 top-7 z-50 w-[min(22rem,calc(100vw-2rem))] -translate-x-1/2 rounded-xl border border-zinc-200 bg-white p-4 text-left text-sm font-normal text-zinc-800 shadow-xl dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+          className="fixed z-50 overflow-y-auto overscroll-contain break-words rounded-xl border border-zinc-200 bg-white p-4 text-left text-sm font-normal text-zinc-800 shadow-xl dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
         >
           <ExplanationPanel term={term} context={context} findingId={findingId} />
-        </div>
+        </div>,
+        document.body,
       )}
     </span>
   );

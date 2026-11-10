@@ -69,6 +69,7 @@ npm run dev                        # http://localhost:3000
 | `VULNIX_ABLITERATION_URL` / `AEGIS_MODEL_URL` | Abliteration AI（OpenAI 互換 `/v1/chat/completions` または `/v1/propose`）のエンドポイント。未設定なら内蔵 ARTEX プランナーで動作。 | なし |
 | `VULNIX_ABLITERATION_KEY` / `AEGIS_MODEL_KEY` | 上記の Bearer API キー（実行時に環境変数で設定。リポジトリやログには保存しない）。 | なし |
 | `VULNIX_ABLITERATION_MODEL` / `AEGIS_MODEL_MODEL` | 使用モデル名 | `"abliteration-security-v1"` |
+| `VULNIX_ABLITERATION_TIMEOUT_SECONDS` / `AEGIS_MODEL_TIMEOUT_SECONDS` | 同じ接頭辞のモデルHTTP応答待ち。1〜120秒。未設定・不正値は30秒。必要な起動プロセスだけに設定。 | `30` |
 | `VULNIX_NVD_FEED_URL` / `VULNIX_KEV_FEED_URL` | `POST /api/cve/sync` 実行時の NVD / CISA KEV フィード取得先 URL | 内蔵フィード |
 | `AEGIS_API` | Web → コントロールプレーンのプロキシ先 | `http://127.0.0.1:8787` |
 

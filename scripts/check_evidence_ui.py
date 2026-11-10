@@ -72,6 +72,32 @@ with sync_playwright() as p:
     assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), "Horizontal mobile overflow"
     if args.screenshots:
         page.screenshot(path=str(args.screenshots / "evidence-mobile.png"))
+    page.goto(args.url + "/findings/f_idor?a=scan_001")
+    help_button = page.get_by_role("button", name="アクセス制御の不備（IDOR）の解説", exact=True)
+    help_button.click()
+    dialog = page.get_by_role("dialog", name="アクセス制御の不備（IDOR）", exact=True)
+    expect(dialog).to_be_visible()
+    for width, height in ((720, 1280), (390, 844), (320, 640), (1440, 900), (720, 1280)):
+        page.set_viewport_size({"width": width, "height": height})
+        page.wait_for_timeout(100)  # let the resize observer position the portal
+        box = dialog.bounding_box()
+        assert box and box["x"] >= 15 and box["x"] + box["width"] <= width - 15, box
+        assert box["y"] >= 15 and box["y"] + box["height"] <= height - 15, box
+        assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), width
+    page.keyboard.press("Escape")
+    expect(dialog).not_to_be_visible()
+    expect(help_button).to_be_focused()
+    help_button.click()
+    expect(dialog).to_be_visible()
+    dialog.get_by_role("tab", name="詳しく", exact=True).click()
+    expect(dialog.get_by_role("tab", name="詳しく", exact=True)).to_have_attribute("aria-selected", "true")
+    page.get_by_role("heading", name="この問題をひと目で理解").click()
+    expect(dialog).not_to_be_visible()
+    help_button.click()
+    expect(dialog).to_be_visible()
+    if args.screenshots:
+        page.screenshot(path=str(args.screenshots / "learning-popover.png"))
+    # Do not request model inference in this read-only layout check.
     assert not errors, errors
     browser.close()
-print("PASS: filter/reset/back/forward, invalid query, export failure/retry/download, preview close, mobile layout, no page errors")
+print("PASS: filter/reset/back/forward, invalid query, export failure/retry/download, preview close, mobile layout, help popover resize/dismiss/reopen, no page errors")
