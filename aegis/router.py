@@ -16,15 +16,30 @@ backends plug in. It deliberately:
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import urllib.request
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Callable, Protocol, runtime_checkable
 
 from .policy import PROPOSAL_KEYS
 
 MAX_RATIONALE = 500
+DEFAULT_MODEL_TIMEOUT_SECONDS = 30.0
+MAX_MODEL_TIMEOUT_SECONDS = 120.0
+
+
+def _model_timeout(value: object) -> float:
+    """Bound inference waits; malformed configuration retains the normal default."""
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return DEFAULT_MODEL_TIMEOUT_SECONDS
+    if not math.isfinite(seconds) or not 1 <= seconds <= MAX_MODEL_TIMEOUT_SECONDS:
+        return DEFAULT_MODEL_TIMEOUT_SECONDS
+    return seconds
 
 # transport(url, headers, body) -> response bytes. Injectable for offline tests.
 Transport = Callable[[str, dict, bytes], bytes]
@@ -104,9 +119,10 @@ class StubBackend:
         return [dict(p) for p in self.proposals]      # copies: callers can't mutate ours
 
 
-def _http_transport(url: str, headers: dict, body: bytes) -> bytes:
+def _http_transport(url: str, headers: dict, body: bytes, *,
+                    timeout_s: float = DEFAULT_MODEL_TIMEOUT_SECONDS) -> bytes:
     req = urllib.request.Request(url, data=body, headers=headers, method="POST")
-    with urllib.request.urlopen(req, timeout=30) as r:    # pragma: no cover - needs network
+    with urllib.request.urlopen(req, timeout=timeout_s) as r:    # pragma: no cover - needs network
         return r.read()
 
 
@@ -116,26 +132,36 @@ class HttpModelBackend:
 
     def __init__(self, name: str, url: str, *, api_key: str | None = None,
                  model: str = "", api_format: str = "auto",
+                 timeout_s: float = DEFAULT_MODEL_TIMEOUT_SECONDS,
                  transport: Transport | None = None):
         self.name = name
         self._url = url
         self._key = api_key
         self._model = model
         self._format = api_format   # "auto" | "openai" | "native"
-        self._transport = transport or _http_transport
+        self._timeout_s = _model_timeout(timeout_s)
+        self._transport = transport or partial(_http_transport, timeout_s=self._timeout_s)
 
     @classmethod
     def from_env(cls, name: str = "model", prefix: str = "AEGIS_MODEL",
                  transport: Transport | None = None) -> "HttpModelBackend | None":
         """Build from env (VULNIX_MODEL_* or AEGIS_MODEL_*). Returns None when no
         endpoint is configured."""
-        url = os.environ.get(f"{prefix}_URL") or os.environ.get("VULNIX_MODEL_URL")
-        if not url:
+        prefixes = [prefix, "VULNIX_MODEL"]
+        if prefix == "AEGIS_MODEL":
+            prefixes.insert(0, "VULNIX_ABLITERATION")
+        source = next((p for p in prefixes if os.environ.get(f"{p}_URL")), None)
+        if source is None:
             return None
-        key = os.environ.get(f"{prefix}_KEY") or os.environ.get("VULNIX_MODEL_KEY")
-        model = os.environ.get(f"{prefix}_MODEL") or os.environ.get("VULNIX_MODEL_MODEL", "")
-        fmt = os.environ.get(f"{prefix}_FORMAT") or os.environ.get("VULNIX_MODEL_FORMAT", "auto")
-        return cls(name, url, api_key=key, model=model, api_format=fmt, transport=transport)
+        url = os.environ[f"{source}_URL"]
+        # Credentials must come from the selected endpoint's namespace. A stale
+        # key belonging to a different URL must never be sent to this endpoint.
+        key = os.environ.get(f"{source}_KEY")
+        model = os.environ.get(f"{source}_MODEL", "")
+        fmt = os.environ.get(f"{source}_FORMAT", "auto")
+        timeout = _model_timeout(os.environ.get(f"{source}_TIMEOUT_SECONDS"))
+        return cls(name, url, api_key=key, model=model, api_format=fmt,
+                   timeout_s=timeout, transport=transport)
 
     def _headers(self) -> dict[str, str]:
         h = {"Content-Type": "application/json"}
@@ -180,7 +206,8 @@ class AbliterationBackend(HttpModelBackend):
 
     def __init__(self, name_or_url: str, url: str | None = None, *,
                  api_key: str | None = None, model: str = "abliteration-sec-1",
-                 name: str = "abliteration", transport: Transport | None = None):
+                 name: str = "abliteration", transport: Transport | None = None,
+                 timeout_s: float = DEFAULT_MODEL_TIMEOUT_SECONDS):
         if url is None:
             actual_url = name_or_url
             actual_name = name
@@ -188,7 +215,19 @@ class AbliterationBackend(HttpModelBackend):
             actual_name = name_or_url
             actual_url = url
         super().__init__(actual_name, actual_url, api_key=api_key, model=model,
-                         api_format="openai", transport=transport)
+                         api_format="openai", transport=transport, timeout_s=timeout_s)
+
+    @classmethod
+    def from_env(cls, name: str = "model", prefix: str = "AEGIS_MODEL",
+                 transport: Transport | None = None) -> "AbliterationBackend | None":
+        configured = HttpModelBackend.from_env(name, prefix, transport)
+        if configured is None:
+            return None
+        # The dedicated adapter always uses OpenAI chat messages and does not
+        # accept HttpModelBackend's api_format constructor argument.
+        return cls(configured.name, configured._url, api_key=configured._key,
+                   model=configured._model or "abliteration-sec-1",
+                   transport=configured._transport, timeout_s=configured._timeout_s)
 
     def chat(self, question: str, context: dict) -> str | None:
         """Ask the OpenAI-compatible endpoint a natural-language question grounded

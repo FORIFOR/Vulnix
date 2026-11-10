@@ -15,6 +15,7 @@ import { Card } from "../ui";
 import { AgentActivity } from "./AgentActivity";
 import { PhaseTimeline } from "./PhaseTimeline";
 import { ReasoningTrace } from "./ReasoningTrace";
+import { EvidenceOverview, EVIDENCE_STATES } from "./EvidenceOverview";
 
 const TABS = [
   { key: "assessment", label: "診断" },
@@ -25,10 +26,14 @@ const TABS = [
 const SEV_ORDER = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
 
 export function AssessmentTabs({ id }: { id: string }) {
-  const tab = (useSearchParams().get("tab") ?? "assessment") as (typeof TABS)[number]["key"];
+  const params = useSearchParams();
+  const tabParam = params.get("tab");
+  const tab = TABS.find((t) => t.key === tabParam)?.key ?? "assessment";
+  const evidenceFilter = EVIDENCE_STATES.find((s) => s.key === params.get("evidence"))?.key ?? "all";
   const { snap, setSnap, error, conn, audit, chainValid, notes, refetch } = useAssessment(id);
   const [reportMd, setReportMd] = useState<string | null>(null);
   const [reportBusy, setReportBusy] = useState(false);
+  const [reportErr, setReportErr] = useState<string | null>(null);
   const [labBusy, setLabBusy] = useState(false);
   const [cardBusy, setCardBusy] = useState(false);
   const [labErr, setLabErr] = useState<string | null>(null);
@@ -48,7 +53,10 @@ export function AssessmentTabs({ id }: { id: string }) {
   const hist = snap.history;
 
   const exportReport = async () => {
+    if (reportBusy) return;
     setReportBusy(true);
+    setReportErr(null);
+    setReportMd(null);
     try {
       const r = await getJSON<{ markdown: string; filename: string }>(`/api/assessments/${snap.id}/report`);
       setReportMd(r.markdown);
@@ -57,8 +65,12 @@ export function AssessmentTabs({ id }: { id: string }) {
       const a = document.createElement("a");
       a.href = url;
       a.download = r.filename;
+      document.body.appendChild(a);
       a.click();
-      URL.revokeObjectURL(url);
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (e) {
+      setReportErr((e as Error).message);
     } finally {
       setReportBusy(false);
     }
@@ -119,13 +131,13 @@ export function AssessmentTabs({ id }: { id: string }) {
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-violet-200 bg-violet-50/90 px-3.5 py-2.5 text-xs text-violet-950 dark:border-violet-900/60 dark:bg-violet-950/40 dark:text-violet-100">
             <div className="space-y-0.5">
               <div className="flex flex-wrap items-center gap-2 font-semibold">
-                <span>ローカル検証ラボ（127.0.0.1:18081）実機実行モード</span>
+                <span>ローカル模擬ラボ（{snap.lab_endpoint}）実測デモ</span>
                 <span className={`rounded px-1.5 py-0.5 text-[11px] font-bold ${snap.lab_mode === "patched" ? "bg-emerald-200 text-emerald-950 dark:bg-emerald-900 dark:text-emerald-100" : "bg-amber-200 text-amber-950 dark:bg-amber-900 dark:text-amber-100"}`}>
-                  現在：{snap.lab_mode === "patched" ? "防御パッチ適用済み (Apache 2.4.62)" : "脆弱環境 (Apache 2.4.49 / IDOR / SQLi)"}
+                  現在：{snap.lab_mode === "patched" ? "防御挙動モード（模擬環境）" : "脆弱挙動モード（模擬環境）"}
                 </span>
               </div>
               <p className="text-violet-800 dark:text-violet-200">
-                すべての問題（CVE-2021-41773・IDOR・SQLi・設定不備）は実際の Gateway と隔離 Worker（http_probe / reproduction_probe）で検証・監査記録されます。
+                Gateway と隔離 Worker がローカル HTTP 応答を実測します。Apache / IDOR / SQLi の挙動を模擬しており、本番環境や実在する Apache の診断結果ではありません。
               </p>
               {labErr && <p className="font-semibold text-red-700 dark:text-red-300">エラー：{labErr}</p>}
             </div>
@@ -150,8 +162,10 @@ export function AssessmentTabs({ id }: { id: string }) {
           </div>
         )}
 
+        <EvidenceOverview snap={snap} selected={tab === "findings" ? evidenceFilter : "all"} />
+
         {tab === "assessment" && (
-          <div className="grid gap-6 lg:grid-cols-[1fr_18rem]">
+          <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_18rem]">
             <AgentActivity
               snap={snap}
               notes={notes}
@@ -160,7 +174,7 @@ export function AssessmentTabs({ id }: { id: string }) {
               externalBusy={labBusy || cardBusy}
               onUpdate={setSnap}
             />
-            <div className="space-y-4">
+            <div className="min-w-0 space-y-4">
               <Card>
                 <h2 className="mb-3 text-sm font-semibold">進捗</h2>
                 <PhaseTimeline phases={snap.phases} />
@@ -204,7 +218,7 @@ export function AssessmentTabs({ id }: { id: string }) {
               )}
               {hist && (
                 <Card>
-                  <h2 className="mb-2 text-sm font-semibold">前回診断との履歴比較</h2>
+                  <h2 className="mb-2 text-sm font-semibold">前回診断との履歴比較{hist.demo_fixture ? "（架空のデモ履歴）" : ""}</h2>
                   <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
                     <dt className="text-zinc-500">前回 ({hist.previous_assessment_id})</dt>
                     <dd>{hist.previous_score}/100（{hist.previous_label}）</dd>
@@ -232,6 +246,7 @@ export function AssessmentTabs({ id }: { id: string }) {
               >
                 {reportBusy ? "レポート生成中…" : "⇩ 診断レポート出力 (Markdown)"}
               </button>
+              {reportErr && <p role="alert" className="text-xs text-red-700 dark:text-red-300">レポートを出力できませんでした：{reportErr}。再度お試しください。</p>}
               {reportMd && (
                 <details className="rounded-xl border border-zinc-200 p-2 text-xs dark:border-zinc-800">
                   <summary className="cursor-pointer font-semibold">レポートプレビューを表示</summary>
@@ -245,7 +260,7 @@ export function AssessmentTabs({ id }: { id: string }) {
         )}
 
         {tab === "findings" && (
-          <div className="space-y-4">
+          <div className="min-w-0 space-y-4">
             <ReasoningTrace
               snap={snap}
               audit={audit}
@@ -253,17 +268,25 @@ export function AssessmentTabs({ id }: { id: string }) {
               externalBusy={labBusy || cardBusy}
               compact
             />
+            {evidenceFilter !== "all" && (
+              <div role="status" className="flex items-center justify-between text-sm">
+                <span>{EVIDENCE_STATES.find((s) => s.key === evidenceFilter)?.label}：{snap.evidence_summary[evidenceFilter]} 件</span>
+                <Link href="?tab=findings" scroll={false} className="text-xs font-semibold underline">絞り込みを解除</Link>
+              </div>
+            )}
+            {evidenceFilter !== "all" && snap.evidence_summary[evidenceFilter] === 0 && <p className="text-sm text-zinc-500">この状態の問題はありません。別の状態を選ぶか、絞り込みを解除してください。</p>}
             <div className="grid gap-3 md:grid-cols-2">
               {counts.findings === 0 && (
                 <p className="text-sm text-zinc-500 md:col-span-2">
                   {snap.state === "idle" ? "診断を開始すると、ここに問題が表示されます。" : "まだ問題は検出されていません（未検出は安全という意味ではありません）。"}
                 </p>
               )}
-              {findings.map((f) => (
+              {findings.filter((f) => evidenceFilter === "all" || f.evidence_status === evidenceFilter).map((f) => (
                 <FindingCard
                   key={f.id}
                   f={f}
                   assessmentId={snap.id}
+                  labEndpoint={snap.lab_endpoint}
                   onUpdate={setSnap}
                   onBusyChange={setCardBusy}
                 />
@@ -273,7 +296,7 @@ export function AssessmentTabs({ id }: { id: string }) {
         )}
 
         {tab === "logs" && (
-          <div className="space-y-4">
+          <div className="min-w-0 space-y-4">
             <EventTimeline entries={audit} chainValid={chainValid} />
             <RawLogViewer entries={audit} />
           </div>

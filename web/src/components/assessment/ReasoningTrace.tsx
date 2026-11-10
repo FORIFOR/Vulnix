@@ -48,9 +48,9 @@ function toTraceItem(e: AuditEntry): TraceItem {
         key: e.hash,
         ts: e.ts,
         kind: "thought",
-        badge: "推論・仮説",
+        badge: "計画・仮説",
         badgeCls: "bg-violet-100 text-violet-900 dark:bg-violet-900/60 dark:text-violet-100",
-        title: String(f.step ?? "AI推論ステップ"),
+        title: String(f.step ?? "計画ステップ"),
         detail: String(f.detail ?? ""),
         tool: f.tool ? String(f.tool) : undefined,
         hash: e.hash,
@@ -60,7 +60,7 @@ function toTraceItem(e: AuditEntry): TraceItem {
         key: e.hash,
         ts: e.ts,
         kind: "proposal",
-        badge: "AI提案",
+        badge: "提案",
         badgeCls: "bg-sky-100 text-sky-900 dark:bg-sky-900/60 dark:text-sky-100",
         title: `${f.backend} が ${f.tool}（${f.action}）を提案`,
         detail: `対象: ${f.target} — ProposalRouter によりスキーマ検証・無害化済み`,
@@ -183,15 +183,15 @@ export function ReasoningTrace({
 
   const headerTitle = isRunning
     ? snap.activity?.title
-      ? `思考・実機検証中：${snap.activity.title}`
-      : "ARTEX × Abliteration AI が推論・Worker検証を実行中…"
+      ? `計画・実機検証中：${snap.activity.title}`
+      : "ARTEX が計画・Worker検証を実行中…"
     : items.length > 0
-      ? `思考・実行プロセス（${items.length} ステップ・監査ログ ${audit.length} 件）`
-      : "思考・実行プロセス（待機中 — 診断またはWorker検証を開始するとリアルタイム表示されます）";
+      ? `計画・実行プロセス（${items.length} ステップ・監査ログ ${audit.length} 件）`
+      : "計画・実行プロセス（待機中 — 診断またはWorker検証を開始するとリアルタイム表示されます）";
 
   return (
     <div
-      className={`overflow-hidden rounded-2xl border transition-colors ${
+      className={`min-w-0 max-w-full overflow-hidden rounded-2xl border transition-colors ${
         isRunning
           ? "border-blue-400/80 bg-blue-50/40 dark:border-blue-800 dark:bg-blue-950/20"
           : "border-zinc-200 bg-zinc-50/80 dark:border-zinc-800 dark:bg-zinc-900/50"
@@ -250,7 +250,7 @@ export function ReasoningTrace({
                     : "text-zinc-600 hover:text-zinc-900 dark:text-zinc-400"
                 }`}
               >
-                推論・実行ステップ ({items.length})
+                計画・実行ステップ ({items.length})
               </button>
               <button
                 type="button"
@@ -278,7 +278,7 @@ export function ReasoningTrace({
             {viewMode === "steps" ? (
               items.length === 0 ? (
                 <p className="py-4 text-center text-xs text-zinc-500">
-                  「診断を開始」または「実機Workerで今すぐ検証」を押すと、ここにAIの推論仮説・Gateway検査・Worker応答がリアルタイムに流れます。
+                  「診断を開始」または「実機Workerで今すぐ検証」を押すと、ここにプランナーの検証計画・Gateway検査・Worker応答がリアルタイムに流れます。
                 </p>
               ) : (
                 <ol className="relative ml-2 space-y-2.5 border-l-2 border-zinc-300 pl-3.5 dark:border-zinc-700">
@@ -316,7 +316,7 @@ export function ReasoningTrace({
                         </div>
                         <p className="mt-0.5 text-zinc-600 dark:text-zinc-300">{it.detail}</p>
                         {it.codePreview && (
-                          <pre className="mt-1 overflow-x-auto rounded-lg bg-zinc-900 p-2 font-mono text-[11px] text-emerald-300">
+                          <pre className="mt-1 max-w-full overflow-x-auto rounded-lg bg-zinc-900 p-2 font-mono text-[11px] text-emerald-300">
                             {it.codePreview}
                           </pre>
                         )}
@@ -326,7 +326,7 @@ export function ReasoningTrace({
                 </ol>
               )
             ) : (
-              <pre className="overflow-x-auto rounded-xl bg-zinc-950 p-3 font-mono text-[11px] leading-relaxed text-zinc-200">
+              <pre className="max-w-full overflow-x-auto rounded-xl bg-zinc-950 p-3 font-mono text-[11px] leading-relaxed text-zinc-200">
                 {audit.length === 0
                   ? "// まだ監査ログはありません"
                   : audit.map((e) => JSON.stringify(e)).join("\n")}

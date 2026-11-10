@@ -7,6 +7,7 @@ launches is a real confined process that the emergency stop can kill.
 """
 from __future__ import annotations
 
+import copy
 import json
 import secrets
 import sys
@@ -19,6 +20,8 @@ from . import cve
 from .audit import AuditLog
 from .authz import ApprovalStore, Engagement, Target, TokenAuthority
 from .events import EventBus
+from .evidence import (EVIDENCE_LABELS, evidence_status, evidence_summary,
+                       reproduction_verdict, reproduction_note)
 from .gateway import Gateway, State, http_probe_tool, reproduction_probe_tool
 from .lab import get_lab_mode, set_lab_mode
 from .network import EgressGuard
@@ -32,7 +35,7 @@ VERDICT_FACTOR = {"proven": 1.0, "detected": 0.6, "unverified": 0.6, "aborted": 
 
 EXECUTOR = {
     "agent": "ARTEX 実行エンジン（ProposalRouter 制御）",
-    "model": "Abliteration AI アダプター（提案専用・権限なし）",
+    "model": "提案元は診断コンテキストを参照（実行権限なし）",
 }
 
 
@@ -94,6 +97,9 @@ class AssessmentService:
         ext_model = HttpModelBackend.from_env()
         if ext_model:
             backends.append(ext_model)
+        self._external_model_configured = ext_model is not None
+        self._chat_backend = AbliterationBackend.from_env()
+        self._model_response_verified = False
         self.router = ProposalRouter(self.gateway, self.audit, backends)
         self.artex = ArtexEngine(self.router)
         self.cve_monitor = cve.FeedMonitor()
@@ -348,6 +354,21 @@ class AssessmentService:
         self.artex.tasks = []
         self._set_state("idle")
 
+    def planner_status(self) -> dict:
+        """Report loaded configuration, never pretend configuration proves connectivity."""
+        return {
+            "mode": "external_configured" if self._external_model_configured else "builtin",
+            "external_model_configured": self._external_model_configured,
+            "connection_verified": self._model_response_verified,
+            "connected": self._model_response_verified,
+            "model_name": self._chat_backend._model if self._chat_backend else None,
+            "backends": self.router.backends,
+            "artex_engine": "ready",
+            "autonomous_execution": False,
+            "note": ("外部モデルから解説応答を確認済み。内蔵プランナーも有効です。" if self._model_response_verified else "外部モデルは設定済み・疎通未確認。内蔵プランナーも有効です。")
+                    if self._external_model_configured else "内蔵 ARTEX プランナーで動作中。外部 AI モデルは未設定です。",
+        }
+
     def snapshot(self) -> dict:
         with self._lock:
             e = self.a.engagement
@@ -356,6 +377,9 @@ class AssessmentService:
             return {
                 "id": self.a.id, "asset": self.a.asset, "demo": True,
                 "lab_mode": get_lab_mode(),
+                "lab_endpoint": f"127.0.0.1:{self.lab_port}",
+                "planner": self.planner_status(),
+                "evidence_summary": evidence_summary(list(self.a.findings.values())),
                 "authorization": {
                     "status": "authorized" if e.ownership_verified and e.authorization_ref else "missing",
                     "ref": e.authorization_ref, "ownership_verified": e.ownership_verified,
@@ -366,7 +390,7 @@ class AssessmentService:
                 "phases": [dict(p) for p in self.a.phases],
                 "activity": self.a.activity,
                 "approvals": list(self.a.approvals.values()),
-                "findings": list(self.a.findings.values()),
+                "findings": [{**f, "evidence_status": evidence_status(f)} for f in self.a.findings.values()],
                 "risk": risk,
                 "stop_report": self.a.stop_report,
                 "chat_messages": list(self.a.chat_messages),
@@ -538,10 +562,11 @@ class AssessmentService:
             res, ev = self._exec("reproduction_probe", "safe_reproduction",
                                  {"url": url, "check": "idor"}, approval_id=apr)
             if res and ev:
-                est = bool(res.get("established"))
+                outcome = reproduction_verdict(res, "idor")
+                est = outcome == "proven"
                 self._think(
                     "IDOR 実機応答の判定",
-                    f"Worker 応答: HTTP {res.get('forged_account_A_status')} — {'他アカウントの保護リソース取得が成立（実証成功）' if est else 'HTTP 403 Forbidden により遮断（再現せず）'} [証拠 {ev['evidence_id']}]",
+                    reproduction_note(res, "idor") + f" [証拠 {ev['evidence_id']}]",
                     phase="verification",
                     tool="reproduction_probe",
                     level="L2",
@@ -552,16 +577,13 @@ class AssessmentService:
                     self._upsert_finding({
                         **f,
                         "demo_fixture": False,
-                        "verdict": "proven" if est else "not_reproduced",
+                        "verdict": outcome,
                         "_in_verification": False,
                         "what_was_established": (
                             "権限のないテストアカウント acct_A から、別の検証用リソース（acct_B の res_b_001）へのアクセスが実機Workerで成立しました。"
                             if est else None
                         ),
-                        "verdict_note": (
-                            "reproduction_probe Worker（egress_sentinel 適用）による実リクエストで認可バイパスを実証しました。"
-                            if est else "所有者照合により HTTP 403 Forbidden で遮断されることを実機確認しました。"
-                        ),
+                        "verdict_note": reproduction_note(res, "idor"),
                         "executor": {**EXECUTOR, "tool": "reproduction_probe"},
                         "evidence": prev_ev + [ev],
                     })
@@ -579,10 +601,11 @@ class AssessmentService:
             res, ev = self._exec("reproduction_probe", "safe_reproduction",
                                  {"url": url, "check": "sqli"}, approval_id=apr)
             if res and ev:
-                est = bool(res.get("established"))
+                outcome = reproduction_verdict(res, "sqli")
+                est = outcome == "proven"
                 self._think(
                     "SQLi 実機応答の判定",
-                    f"Worker 応答: HTTP {res.get('probe_status')} — {'SQL構文エラー差分（VULNIX_LAB_SQLI_PROVEN）を検出・実証' if est else 'プリペアドステートメントにより HTTP 403 で安全に拒否（再現せず）'} [証拠 {ev['evidence_id']}]",
+                    reproduction_note(res, "sqli") + f" [証拠 {ev['evidence_id']}]",
                     phase="verification",
                     tool="reproduction_probe",
                     level="L2",
@@ -593,16 +616,13 @@ class AssessmentService:
                     self._upsert_finding({
                         **f,
                         "demo_fixture": False,
-                        "verdict": "proven" if est else "not_reproduced",
+                        "verdict": outcome,
                         "_in_verification": False,
                         "what_was_established": (
                             "検索エンドポイント /api/search?q=test' に対し、未エスケープのSQL構文エラー差分（VULNIX_LAB_SQLI_PROVEN）が実機Workerで成立しました。"
                             if est else None
                         ),
-                        "verdict_note": (
-                            "reproduction_probe Worker により未バインドのSQL構文解釈が発生することを実証しました。"
-                            if est else "プレースホルダー（プリペアドステートメント）により HTTP 403 で安全に処理されることを実機確認しました。"
-                        ),
+                        "verdict_note": reproduction_note(res, "sqli"),
                         "executor": {**EXECUTOR, "tool": "reproduction_probe"},
                         "evidence": prev_ev + [ev],
                     })
@@ -620,10 +640,11 @@ class AssessmentService:
             res, ev = self._exec("reproduction_probe", "safe_reproduction",
                                  {"url": url, "check": "cve_2021_41773"}, approval_id=apr)
             if res and ev:
-                est = bool(res.get("established"))
+                outcome = reproduction_verdict(res, "cve_2021_41773")
+                est = outcome == "proven"
                 self._think(
                     "CVE-2021-41773 実機応答の判定",
-                    f"Worker 応答: HTTP {res.get('status')} — {'検証用マーカー（VULNIX_LAB_PATH_TRAVERSAL_PROVEN）への到達を実証' if est else 'Apache 2.4.62 パッチにより HTTP 403 で遮断（再現せず）'} [証拠 {ev['evidence_id']}]",
+                    reproduction_note(res, "cve_2021_41773") + f" [証拠 {ev['evidence_id']}]",
                     phase="verification",
                     tool="reproduction_probe",
                     level="L2",
@@ -634,16 +655,13 @@ class AssessmentService:
                     self._upsert_finding({
                         **f,
                         "demo_fixture": False,
-                        "verdict": "proven" if est else "not_reproduced",
+                        "verdict": outcome,
                         "_in_verification": False,
                         "what_was_established": (
                             "隔離ラボ環境において、正規化前のパスシーケンス（CVE-2021-41773）により検証用マーカー（VULNIX_LAB_PATH_TRAVERSAL_PROVEN）への到達が成立しました。"
                             if est else None
                         ),
-                        "verdict_note": (
-                            "reproduction_probe Worker により実際にパス正規化バイパスが成立することを実証しました。"
-                            if est else "Apache/2.4.62 パッチ適用により HTTP 403 Forbidden で遮断されることを実機確認しました。"
-                        ),
+                        "verdict_note": reproduction_note(res, "cve_2021_41773"),
                         "executor": {**EXECUTOR, "tool": "reproduction_probe"},
                         "evidence": prev_ev + [ev],
                     })
@@ -661,6 +679,14 @@ class AssessmentService:
             if res and ev:
                 with self._lock:
                     self._analyze(res, ev)
+        if not res or not ev:
+            with self._lock:
+                finding = self.a.findings[finding_id]
+                self._upsert_finding({
+                    **finding, "verdict": "unverified", "_in_verification": False,
+                    "what_was_established": None,
+                    "verdict_note": "修正確認できず。今回のWorker応答を取得できませんでした。過去の証拠を現在の結果とは扱いません。",
+                })
         return self.snapshot()
 
     # ---- P2: Post-patch defense verification & before/after comparison ------
@@ -682,7 +708,7 @@ class AssessmentService:
         url = self.a.target_url
         self._think(
             "防御パッチ適用後の再検証を開始",
-            "ラボ環境を patched モード（Apache 2.4.62 / 所有者照合 / プリペアドステートメント適用）へ切り替え、同一プローブで再検証します。",
+            "ローカル模擬ラボの防御挙動モードへ切り替え、同一プローブの実HTTP応答で防御結果を確認します。本番ソフトウェアへのパッチ適用は行いません。",
             phase="verification",
             tool="http_probe / reproduction_probe",
             level="L2",
@@ -708,47 +734,40 @@ class AssessmentService:
                                        approval_id=apr_ref3)
 
         with self._lock:
-            if "f_banner" in self.a.findings and ev_cve:
-                fb = self.a.findings["f_banner"]
+            latest_ids = {}
+            for fid, check, result, evidence in (
+                ("f_banner", "cve_2021_41773", res_cve, ev_cve),
+                ("f_idor", "idor", res_idor, ev_idor),
+                ("f_sqli", "sqli", res_sqli, ev_sqli),
+            ):
+                if fid not in self.a.findings:
+                    continue
+                finding = self.a.findings[fid]
+                verdict = reproduction_verdict(result, check)
+                latest_ids[fid] = evidence["evidence_id"] if evidence else None
                 self._upsert_finding({
-                    **fb,
-                    "demo_fixture": False,
-                    "verdict": "not_reproduced",
-                    "what_was_established": None,
-                    "verdict_note": "Apache/2.4.62 への更新および正規化防御により、同一のパストラバーサル再現試験で HTTP 403 Forbidden が返ることを確認しました。",
-                    "evidence": [e for e in fb["evidence"] if e.get("audit_hash")] + ([ev_http] if ev_http else []) + [ev_cve],
+                    **finding, "verdict": verdict, "_in_verification": False,
+                    "what_was_established": reproduction_note(result, check) if verdict == "proven" else None,
+                    "verdict_note": reproduction_note(result, check),
+                    "evidence": finding["evidence"] + ([evidence] if evidence else []),
                 })
-            if "f_idor" in self.a.findings and ev_idor:
-                fi = self.a.findings["f_idor"]
+            headers = (res or {}).get("headers")
+            valid_headers = isinstance(headers, dict) and (res or {}).get("status") == 200
+            h = {k.lower(): v for k, v in headers.items()} if valid_headers else {}
+            for fid in ("f_headers", "f_powered"):
+                if fid not in self.a.findings:
+                    continue
+                finding = self.a.findings[fid]
+                remains = (any(not h.get(k) for k in ("content-security-policy", "x-content-type-options", "strict-transport-security"))
+                           if fid == "f_headers" else bool(h.get("x-powered-by")))
+                verdict = ("proven" if remains else "not_reproduced") if valid_headers else "unverified"
+                note = ("最新のHTTP応答ヘッダーに設定不備が残っています。" if remains else "最新のHTTP応答ヘッダーで、この設定項目の対策を確認しました。") if valid_headers else "修正確認できず。HTTP応答ヘッダーを取得できませんでした。"
+                latest_ids[fid] = ev_http["evidence_id"] if ev_http else None
                 self._upsert_finding({
-                    **fi,
-                    "demo_fixture": False,
-                    "verdict": "not_reproduced",
-                    "what_was_established": None,
-                    "verdict_note": "所有者照合の適用により、テストアカウント acct_A から acct_B のリソースへのアクセスが HTTP 403 Forbidden で遮断されることを確認しました。",
-                    "evidence": [e for e in fi["evidence"] if e.get("audit_hash")] + [ev_idor],
+                    **finding, "verdict": verdict, "what_was_established": note if verdict == "proven" else None,
+                    "verdict_note": note,
+                    "evidence": finding["evidence"] + ([ev_http] if ev_http else []),
                 })
-            if "f_sqli" in self.a.findings and ev_sqli:
-                fs = self.a.findings["f_sqli"]
-                self._upsert_finding({
-                    **fs,
-                    "demo_fixture": False,
-                    "verdict": "not_reproduced",
-                    "what_was_established": None,
-                    "verdict_note": "プレースホルダー（プリペアドステートメント）の適用により、同一の検索パラメータ試験で SQL 構文解釈が発生しないことを確認しました。",
-                    "evidence": [e for e in fs["evidence"] if e.get("audit_hash")] + [ev_sqli],
-                })
-            for hid in ("f_headers", "f_powered"):
-                if hid in self.a.findings and ev_http:
-                    fh = self.a.findings[hid]
-                    self._upsert_finding({
-                        **fh,
-                        "demo_fixture": False,
-                        "verdict": "not_reproduced",
-                        "what_was_established": None,
-                        "verdict_note": "修正後のHTTP応答ヘッダーで対策が適用されていることを確認しました。",
-                        "evidence": [e for e in fh["evidence"] if e.get("audit_hash")] + [ev_http],
-                    })
 
             after_risk = self._risk()
             items = []
@@ -759,8 +778,8 @@ class AssessmentService:
                     "title": binfo["title"],
                     "severity": binfo["severity"],
                     "before_verdict": binfo["verdict"],
-                    "after_verdict": cur_f.get("verdict", "not_reproduced"),
-                    "latest_evidence_id": cur_f.get("evidence", [{}])[-1].get("evidence_id"),
+                    "after_verdict": cur_f.get("verdict", "unverified"),
+                    "latest_evidence_id": latest_ids.get(fid),
                 })
             self.a.defense_comparison = {
                 "verified_at": time.time(),
@@ -772,12 +791,12 @@ class AssessmentService:
             }
             self._think(
                 "修正前後の防御比較が完了",
-                f"すべての脆弱性が「再現せず」となり、総合リスクが {before_risk['score']}/100 から {after_risk['score']}/100 に低減したことを実証しました。",
+                f"HTTP応答とWorker判定に基づく結果を記録しました。総合リスク: {before_risk['score']}/100 → {after_risk['score']}/100。結果が不明な項目は修正未確認です。",
                 phase="report",
                 tool="Gateway",
                 level="L1",
             )
-            self._set_state("completed")
+            self._set_state("failed" if any(f["verdict"] == "unverified" for f in self._real_findings()) else "completed")
             return self.snapshot()
 
     # ---- runner -------------------------------------------------------------
@@ -903,10 +922,10 @@ class AssessmentService:
                 return
             if banner_id in self.a.findings:
                 f = self.a.findings[banner_id]
-                established = bool(cve_res.get("established"))
+                established = reproduction_verdict(cve_res, "cve_2021_41773") == "proven"
                 self._think(
                     "CVE-2021-41773 実証結果の確認",
-                    f"HTTP {cve_res.get('status')} — {'検証用マーカー到達（実証成功）' if established else '再現せず'} [証拠 {cve_ev['evidence_id']}]",
+                    reproduction_note(cve_res, "cve_2021_41773") + f" [証拠 {cve_ev['evidence_id']}]",
                     phase="verification",
                     tool="reproduction_probe",
                     level="L2",
@@ -914,17 +933,14 @@ class AssessmentService:
                 self._upsert_finding({
                     **f,
                     "demo_fixture": False,
-                    "verdict": "proven" if established else "not_reproduced",
+                    "verdict": reproduction_verdict(cve_res, "cve_2021_41773"),
                     "_in_verification": False,
                     "what_was_established": (
                         "隔離ラボ環境において、正規化前のパスシーケンス（CVE-2021-41773）により"
                         "検証用マーカー（VULNIX_LAB_PATH_TRAVERSAL_PROVEN）への到達が成立しました。"
                         if established else None
                     ),
-                    "verdict_note": (
-                        "reproduction_probe により実際にパス正規化バイパスが成立することを実証しました。"
-                        if established else "再現試験を実施しましたが成立しませんでした。"
-                    ),
+                    "verdict_note": reproduction_note(cve_res, "cve_2021_41773"),
                     "executor": {**EXECUTOR, "tool": "reproduction_probe"},
                     "evidence": [e for e in f["evidence"] if e.get("audit_hash")] + [vev, cve_ev],
                 })
@@ -937,10 +953,10 @@ class AssessmentService:
                 return
             if "f_idor" in self.a.findings:
                 fi = self.a.findings["f_idor"]
-                idor_est = bool(idor_res.get("established"))
+                idor_est = reproduction_verdict(idor_res, "idor") == "proven"
                 self._think(
                     "IDOR（認可境界）実証結果の確認",
-                    f"HTTP {idor_res.get('forged_account_A_status')} — {'acct_A から acct_B リソース取得が成立（実証成功）' if idor_est else '再現せず'} [証拠 {idor_ev['evidence_id']}]",
+                    reproduction_note(idor_res, "idor") + f" [証拠 {idor_ev['evidence_id']}]",
                     phase="verification",
                     tool="reproduction_probe",
                     level="L2",
@@ -948,17 +964,14 @@ class AssessmentService:
                 self._upsert_finding({
                     **fi,
                     "demo_fixture": False,
-                    "verdict": "proven" if idor_est else "not_reproduced",
+                    "verdict": reproduction_verdict(idor_res, "idor"),
                     "_in_verification": False,
                     "what_was_established": (
                         "権限のないテストアカウント acct_A から、別の検証用リソース（acct_B の res_b_001）"
                         "へのアクセスが成立しました。"
                         if idor_est else None
                     ),
-                    "verdict_note": (
-                        "2つのテストアカウント（acct_A / acct_B）を用いた実リクエストで認可バイパスを実証しました。"
-                        if idor_est else "所有者照合により HTTP 403 で遮断されました。"
-                    ),
+                    "verdict_note": reproduction_note(idor_res, "idor"),
                     "executor": {**EXECUTOR, "tool": "reproduction_probe"},
                     "evidence": [e for e in fi["evidence"] if e.get("audit_hash")] + [idor_ev],
                 })
@@ -971,10 +984,10 @@ class AssessmentService:
                 return
             if "f_sqli" in self.a.findings:
                 fs = self.a.findings["f_sqli"]
-                sqli_est = bool(sqli_res.get("established"))
+                sqli_est = reproduction_verdict(sqli_res, "sqli") == "proven"
                 self._think(
                     "SQLインジェクション境界 実証結果の確認",
-                    f"HTTP {sqli_res.get('probe_status')} — {'SQL構文エラー差分（VULNIX_LAB_SQLI_PROVEN）が成立（実証成功）' if sqli_est else '再現せず'} [証拠 {sqli_ev['evidence_id']}]",
+                    reproduction_note(sqli_res, "sqli") + f" [証拠 {sqli_ev['evidence_id']}]",
                     phase="verification",
                     tool="reproduction_probe",
                     level="L2",
@@ -982,16 +995,13 @@ class AssessmentService:
                 self._upsert_finding({
                     **fs,
                     "demo_fixture": False,
-                    "verdict": "proven" if sqli_est else "not_reproduced",
+                    "verdict": reproduction_verdict(sqli_res, "sqli"),
                     "_in_verification": False,
                     "what_was_established": (
-                        "検索エンドポイント /api/search?q=test' に対し、未エスケープのSQL構文エラー差分（VULNIX_LAB_SQLI_PROVEN）が成立しました。"
+                        "模擬検索エンドポイント /api/search?q=test' に対し、検証用のSQLエラーマーカー（VULNIX_LAB_SQLI_PROVEN）を含む応答差分を確認しました。"
                         if sqli_est else None
                     ),
-                    "verdict_note": (
-                        "reproduction_probe により未バインドのSQL構文解釈が発生することを実証しました。"
-                        if sqli_est else "プレースホルダーにより HTTP 403 で安全に処理されました。"
-                    ),
+                    "verdict_note": reproduction_note(sqli_res, "sqli"),
                     "executor": {**EXECUTOR, "tool": "reproduction_probe"},
                     "evidence": [e for e in fs["evidence"] if e.get("audit_hash")] + [sqli_ev],
                 })
@@ -1179,7 +1189,10 @@ class AssessmentService:
     def _upsert_finding(self, f):
         with self._lock:
             self.a.findings[f["id"]] = f
-            self.bus.publish(self.a.id, "finding.upserted", finding=f, risk=self._risk())
+            self.bus.publish(self.a.id, "finding.upserted",
+                             finding={**f, "evidence_status": evidence_status(f)},
+                             evidence_summary=evidence_summary(list(self.a.findings.values())),
+                             risk=self._risk())
 
     def _mark_verifying(self, fid, flag):
         f = self.a.findings.get(fid)
@@ -1229,11 +1242,15 @@ class AssessmentService:
                 "finding_id": finding_id,
                 "ts": now,
             }
-            answer_text = self._answer_question(q, term=term, finding_id=finding_id)
+        # Inference can be slow. Never hold the control-plane lock while waiting:
+        # snapshots, worker updates and emergency stop must remain responsive.
+        source, answer_text = self._answer_question(q, term=term, finding_id=finding_id)
+        with self._lock:
             ai_msg = {
                 "id": "msg_" + secrets.token_hex(4),
                 "role": "assistant",
-                "actor": "Vulnix AI",
+                "actor": f"AI解説（{self._chat_backend._model}）" if source == "external_model" else "内蔵解説",
+                "source": source,
                 "text": answer_text,
                 "term": term,
                 "finding_id": finding_id,
@@ -1242,32 +1259,38 @@ class AssessmentService:
             self.a.chat_messages.extend([user_msg, ai_msg])
             self.audit.record("chat.asked", actor=actor, term=term or "", finding_id=finding_id or "")
             self.bus.publish(self.a.id, "chat.message", messages=[user_msg, ai_msg])
-            return {"message": ai_msg, "chat_messages": list(self.a.chat_messages)}
+            return {"message": ai_msg, "chat_messages": list(self.a.chat_messages), "planner": self.planner_status()}
 
-    def _answer_question(self, q: str, term: str | None = None, finding_id: str | None = None) -> str:
-        real = self._real_findings()
-        all_f = list(self.a.findings.values())
-        target_f = None
-        if finding_id and finding_id in self.a.findings:
-            target_f = self.a.findings[finding_id]
-        elif term:
-            target_f = next((f for f in real if f.get("help_term") == term), None) or next(
-                (f for f in all_f if f.get("help_term") == term), None
-            )
-        elif real:
-            target_f = real[0]
-
-        # If an external Abliteration / OpenAI-compatible model endpoint is configured, try it first
-        ext = AbliterationBackend.from_env()
-        if isinstance(ext, AbliterationBackend):
-            ans = ext.chat(q, {
+    def _answer_question(self, q: str, term: str | None = None, finding_id: str | None = None) -> tuple[str, str]:
+        with self._lock:
+            real = self._real_findings()
+            all_f = list(self.a.findings.values())
+            target_f = None
+            if finding_id and finding_id in self.a.findings:
+                target_f = self.a.findings[finding_id]
+            elif term:
+                target_f = next((f for f in real if f.get("help_term") == term), None) or next(
+                    (f for f in all_f if f.get("help_term") == term), None
+                )
+            elif real:
+                target_f = real[0]
+            # Ground each answer in one immutable, point-in-time context.
+            context = copy.deepcopy({
                 "asset": self.a.asset,
                 "state": self.a.state,
                 "risk": self._risk(),
                 "target_finding": target_f,
             })
+            done_phases = sum(1 for p in self.a.phases if p["status"] == "done")
+            total_phases = len(self.a.phases)
+        target_f = context["target_finding"]
+        ext = self._chat_backend
+        if ext is not None:
+            ans = ext.chat(q, context)
             if ans:
-                return ans
+                with self._lock:
+                    self._model_response_verified = True
+                return "external_model", ans
 
         ql = q.lower()
         if target_f:
@@ -1281,30 +1304,29 @@ class AssessmentService:
             verify = rem.get("how_to_verify", "")
 
             if any(k in ql for k in ("なぜ", "理由", "検出", "原因", "why")):
-                return (
+                return "builtin", (
                     f"【なぜ検出されたか：{target_f['title']}】\n"
                     f"・検出理由：{target_f.get('why_detected') or target_f['summary']}\n"
                     f"・判定状態：{target_f['verdict']}（危険度 {target_f['risk_level']}）\n"
                     f"・根拠となった証拠：{ev_summary}"
                 )
             if any(k in ql for k in ("証拠", "判断", "ログ", "ハッシュ", "evidence")):
-                return (
+                return "builtin", (
                     f"【判断根拠の証拠：{target_f['title']}】\n"
                     f"・証拠一覧：{ev_summary}\n"
                     f"・成立内容：{target_f.get('what_was_established') or target_f.get('verdict_note') or target_f.get('caveat') or target_f['summary']}\n"
                     f"※ 問題詳細ページの「証拠」パネルから、実際のレスポンスとSHA-256監査ハッシュを確認できます。"
                 )
             if any(k in ql for k in ("修正", "直", "対策", "確認", "再試験", "verify", "fix")):
-                return (
+                return "builtin", (
                     f"【修正方法と修正後の確認：{target_f['title']}】\n"
                     f"・修正手順：{steps}\n"
                     f"・修正後の確認方法：{verify}"
                 )
 
-        risk = self._risk()
-        done_phases = sum(1 for p in self.a.phases if p["status"] == "done")
+        risk = context["risk"]
         parts = [
-            f"現在の診断対象は {self.a.asset['name']}（状態: {_asset_status(self.a.state)}、進捗 {done_phases}/{len(self.a.phases)} ステップ、総合リスク {risk['score']}/100 {risk['label']}）です。"
+            f"現在の診断対象は {context['asset']['name']}（状態: {_asset_status(context['state'])}、進捗 {done_phases}/{total_phases} ステップ、総合リスク {risk['score']}/100 {risk['label']}）です。"
         ]
         if target_f:
             evs = target_f.get("evidence", [])
@@ -1320,7 +1342,7 @@ class AssessmentService:
                 "診断を開始すると、公開設定の検査・CVE照合・隔離環境での検証結果と証拠がここに紐づけられます。"
                 "※ Vulnix AI は説明・提案のみを行い、承認なしに操作を実行することはありません。"
             )
-        return "\n".join(parts)
+        return "builtin", "\n".join(parts)
 
     # ---- P2: assessment history comparison & Markdown report export ---------
     def _history(self, current_risk: dict) -> dict:
@@ -1328,6 +1350,7 @@ class AssessmentService:
         cur_score = current_risk["score"] if self.a.state != "idle" else None
         real_ids = {f["id"] for f in self._real_findings()}
         return {
+            "demo_fixture": True,
             "previous_assessment_id": "scan_000",
             "previous_assessed_at": int(time.time() - 86400 * 7),
             "previous_score": prev_score,
@@ -1358,8 +1381,14 @@ class AssessmentService:
             f"- **診断状態**: {_asset_status(s['state'])}（ラボ防御状態: `{s.get('lab_mode', 'vulnerable')}`）",
             f"- **書面許可**: `{auth['ref']}` (所有確認: {'確認済み' if auth['ownership_verified'] else '未確認'})",
             f"- **許可範囲**: Hosts={', '.join(auth['scope']['hosts'])} / CIDRs={', '.join(auth['scope']['cidrs'])} / Ports={', '.join(map(str, auth['scope']['ports']))}",
-            f"- **総合リスク**: **{risk['score']}/100 ({risk['label']})** {'※暫定' if risk['provisional'] else ''}",
-            f"- **前回診断との比較**: 前回 `{hist['previous_assessment_id']}` ({hist['previous_score']}/100) → 差分 {hist['delta_score'] if hist['delta_score'] is not None else '未算出'}",
+            "- **総合リスク**: 未診断（安全性は未評価）" if s["state"] == "idle" else f"- **総合リスク**: **{risk['score']}/100 ({risk['label']})** {'※暫定' if risk['provisional'] else ''}",
+            f"- **前回診断との比較（架空のデモ履歴）**: 前回 `{hist['previous_assessment_id']}` ({hist['previous_score']}/100) → 差分 {hist['delta_score'] if hist['delta_score'] is not None else '未算出'}",
+            "",
+            "## 証拠の概要と検証範囲",
+            f"- **提案エンジン**: {s['planner']['note']}",
+            f"- **検証環境**: ローカル模擬ラボ ({s['lab_endpoint']})。実在する Apache や本番環境の診断結果ではありません。",
+            "- **判定の限界**: 検出は実証を意味しません。「再現せず」は今回の条件での結果であり、安全性の保証ではありません。",
+            "- **証拠状態**: " + " / ".join(f"{EVIDENCE_LABELS[k]} {v} 件" for k, v in s["evidence_summary"].items() if k != "fixture"),
             "",
             "## 1. 診断ステップ進捗",
         ]
@@ -1372,7 +1401,7 @@ class AssessmentService:
             lines.append("- 実環境の検出結果はまだありません（未診断または検査前）。")
         for f in real_findings:
             lines.extend([
-                f"### [{f['severity'].upper()}] {f['title']} (`{f['verdict']}`)",
+                f"### [{f['severity'].upper()}] {f['title']} ({EVIDENCE_LABELS[f['evidence_status']]})",
                 f"- **カテゴリ**: {f['category']} / **危険度**: {f['risk_level']}",
                 f"- **関連CVE**: {', '.join(f['cve']) if f['cve'] else 'なし'}",
                 f"- **概要**: {f['summary']}",
@@ -1400,7 +1429,7 @@ class AssessmentService:
             lines.append("")
         lines.append("## 4. 監査チェーン検証")
         lines.append(f"- **監査ログ件数**: {len(self.audit.entries())} 件")
-        lines.append(f"- **SHA-256 ハッシュチェーン整合性**: {'✓ 改ざんなし' if self.audit.verify() else '✕ 不整合あり'}")
+        lines.append(f"- **SHA-256 ハッシュチェーン整合性**: {'✓ 整合性を確認（外部の真正性証明ではありません）' if self.audit.verify() else '✕ 不整合あり'}")
         return "\n".join(lines) + "\n"
 
 

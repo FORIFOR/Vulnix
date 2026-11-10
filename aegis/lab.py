@@ -39,7 +39,6 @@ def set_lab_mode(mode: str, srv: http.server.HTTPServer | None = None) -> str:
         raise ValueError("mode must be vulnerable|patched")
     st = getattr(srv, "lab_state", _DEFAULT_STATE) if srv else _DEFAULT_STATE
     st.mode = mode
-    _DEFAULT_STATE.mode = mode
     return st.mode
 
 
@@ -141,8 +140,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
 
 
 def start_lab(port: int = 18081, mode: str = "vulnerable") -> http.server.HTTPServer:
+    global _DEFAULT_STATE
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", port), _Handler)
     srv.lab_state = LabState(mode)  # type: ignore[attr-defined]
-    _DEFAULT_STATE.mode = mode
+    # Control-plane helpers without an explicit server address this live lab.
+    _DEFAULT_STATE = srv.lab_state
     threading.Thread(target=srv.serve_forever, daemon=True, name="lab").start()
     return srv

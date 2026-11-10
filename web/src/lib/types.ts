@@ -14,7 +14,10 @@ export interface Evidence {
   content: string;
 }
 
+export type EvidenceStatus = "candidate" | "detected" | "proven" | "not_reproduced" | "incomplete" | "fixture";
+
 export interface Finding {
+  evidence_status: EvidenceStatus;
   id: string;
   title: string;
   severity: Severity;
@@ -69,6 +72,7 @@ export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
   actor: string;
+  source?: "builtin" | "external_model";
   text: string;
   term?: string | null;
   finding_id?: string | null;
@@ -76,6 +80,7 @@ export interface ChatMessage {
 }
 
 export interface AssessmentHistory {
+  demo_fixture?: boolean;
   previous_assessment_id: string;
   previous_assessed_at: number;
   previous_score: number;
@@ -141,6 +146,16 @@ export interface Snapshot {
   id: string;
   demo: boolean;
   lab_mode?: string;
+  lab_endpoint: string;
+  evidence_summary: Record<EvidenceStatus, number>;
+  planner: {
+    mode: "builtin" | "external_configured";
+    external_model_configured: boolean;
+    connection_verified: boolean;
+    model_name?: string | null;
+    note: string;
+    backends: string[];
+  };
   asset: { id: string; name: string; kind: string; environment: string };
   authorization: {
     status: "authorized" | "missing";

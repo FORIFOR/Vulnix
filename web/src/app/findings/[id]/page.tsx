@@ -4,10 +4,11 @@ import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 import { Suspense, useState } from "react";
 import { ReasoningTrace } from "@/components/assessment/ReasoningTrace";
+import { FindingLearningCard } from "@/components/findings/FindingLearningCard";
 import { EvidencePanel } from "@/components/findings/EvidencePanel";
 import { RemediationPanel } from "@/components/findings/RemediationPanel";
 import { HelpPopover } from "@/components/learning/HelpPopover";
-import { Card, FixtureBadge, SeverityBadge, VerdictBadge } from "@/components/ui";
+import { Card, FixtureBadge, Pill, SeverityBadge, VerdictBadge } from "@/components/ui";
 import { postJSON } from "@/lib/api";
 import type { Snapshot } from "@/lib/types";
 import { useAssessment } from "@/lib/useAssessment";
@@ -53,13 +54,15 @@ function Detail() {
       {verifyErr && <p className="text-xs text-red-600">{verifyErr}</p>}
       <div className="flex flex-wrap items-center gap-2">
         <SeverityBadge s={f.severity} />
-        <VerdictBadge v={f.verdict} />
+        {f.evidence_status === "candidate" ? <Pill className="border border-zinc-400">未計測の候補</Pill> : <VerdictBadge v={f.verdict} />}
         {f.demo_fixture && <FixtureBadge />}
       </div>
       <h1 className="flex items-center text-2xl font-bold">
         {f.title}
         {f.help_term && <HelpPopover term={f.help_term} context={f.why_detected} findingId={f.id} />}
       </h1>
+
+      <FindingLearningCard finding={f} localLab={snap.demo} busy={busy} />
 
       <ReasoningTrace
         snap={snap}
