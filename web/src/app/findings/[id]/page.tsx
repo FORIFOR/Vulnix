@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 import { Suspense, useState } from "react";
 import { ReasoningTrace } from "@/components/assessment/ReasoningTrace";
+import { FindingLearningCard } from "@/components/findings/FindingLearningCard";
 import { EvidencePanel } from "@/components/findings/EvidencePanel";
 import { RemediationPanel } from "@/components/findings/RemediationPanel";
 import { HelpPopover } from "@/components/learning/HelpPopover";
@@ -60,6 +61,8 @@ function Detail() {
         {f.title}
         {f.help_term && <HelpPopover term={f.help_term} context={f.why_detected} findingId={f.id} />}
       </h1>
+
+      <FindingLearningCard finding={f} localLab={snap.demo} busy={busy} />
 
       <ReasoningTrace
         snap={snap}

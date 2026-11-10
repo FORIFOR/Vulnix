@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from aegis.assessment import AssessmentService
-from aegis.evidence import evidence_status, evidence_summary
+from aegis.evidence import evidence_status, evidence_summary, reproduction_verdict
 
 
 class TestEvidenceStatus(unittest.TestCase):
@@ -83,3 +83,20 @@ class TestTrustSnapshot(unittest.TestCase):
         self.assertEqual(event["evidence_summary"], snap["evidence_summary"])
         self.assertEqual(event["evidence_summary"]["candidate"], 2)
         self.assertEqual(event["evidence_summary"]["proven"], 1)
+
+
+class TestReproductionVerdict(unittest.TestCase):
+    def test_unknown_or_contradictory_responses_never_mean_fixed(self):
+        for result in (None, {}, {"check": "idor", "status": 500, "established": False, "verdict": "not_reproduced"},
+                       {"check": "idor", "status": 200, "established": False, "verdict": "not_reproduced"},
+                       {"check": "idor", "status": 403, "established": True, "verdict": "not_reproduced"},
+                       {"check": "idor", "status": 200, "established": True, "verdict": "proven", "response": {}},
+                       {"check": "sqli", "status": 403, "established": False, "verdict": "not_reproduced"}):
+            with self.subTest(result=result):
+                self.assertEqual(reproduction_verdict(result, "idor"), "unverified")
+
+    def test_agreeing_marker_and_http_results(self):
+        self.assertEqual(reproduction_verdict({"check": "idor", "status": 200, "established": True,
+                         "verdict": "proven", "response": {"marker": "VULNIX_LAB_IDOR_PROVEN"}}, "idor"), "proven")
+        self.assertEqual(reproduction_verdict({"check": "idor", "status": 403, "established": False,
+                         "verdict": "not_reproduced"}, "idor"), "not_reproduced")

@@ -129,12 +129,18 @@ class HttpModelBackend:
                  transport: Transport | None = None) -> "HttpModelBackend | None":
         """Build from env (VULNIX_MODEL_* or AEGIS_MODEL_*). Returns None when no
         endpoint is configured."""
-        url = os.environ.get(f"{prefix}_URL") or os.environ.get("VULNIX_MODEL_URL")
-        if not url:
+        prefixes = [prefix, "VULNIX_MODEL"]
+        if prefix == "AEGIS_MODEL":
+            prefixes.insert(0, "VULNIX_ABLITERATION")
+        source = next((p for p in prefixes if os.environ.get(f"{p}_URL")), None)
+        if source is None:
             return None
-        key = os.environ.get(f"{prefix}_KEY") or os.environ.get("VULNIX_MODEL_KEY")
-        model = os.environ.get(f"{prefix}_MODEL") or os.environ.get("VULNIX_MODEL_MODEL", "")
-        fmt = os.environ.get(f"{prefix}_FORMAT") or os.environ.get("VULNIX_MODEL_FORMAT", "auto")
+        url = os.environ[f"{source}_URL"]
+        # Credentials must come from the selected endpoint's namespace. A stale
+        # key belonging to a different URL must never be sent to this endpoint.
+        key = os.environ.get(f"{source}_KEY")
+        model = os.environ.get(f"{source}_MODEL", "")
+        fmt = os.environ.get(f"{source}_FORMAT", "auto")
         return cls(name, url, api_key=key, model=model, api_format=fmt, transport=transport)
 
     def _headers(self) -> dict[str, str]:
@@ -189,6 +195,18 @@ class AbliterationBackend(HttpModelBackend):
             actual_url = url
         super().__init__(actual_name, actual_url, api_key=api_key, model=model,
                          api_format="openai", transport=transport)
+
+    @classmethod
+    def from_env(cls, name: str = "model", prefix: str = "AEGIS_MODEL",
+                 transport: Transport | None = None) -> "AbliterationBackend | None":
+        configured = HttpModelBackend.from_env(name, prefix, transport)
+        if configured is None:
+            return None
+        # The dedicated adapter always uses OpenAI chat messages and does not
+        # accept HttpModelBackend's api_format constructor argument.
+        return cls(configured.name, configured._url, api_key=configured._key,
+                   model=configured._model or "abliteration-sec-1",
+                   transport=configured._transport)
 
     def chat(self, question: str, context: dict) -> str | None:
         """Ask the OpenAI-compatible endpoint a natural-language question grounded

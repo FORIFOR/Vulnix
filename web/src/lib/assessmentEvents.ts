@@ -39,3 +39,16 @@ export function applyEvent(s: Snapshot, ev: AegisEvent): Snapshot {
   }
 }
 
+
+/** Merge a slow chat reply without restoring the pre-request assessment state. */
+export function applyChatReply(s: Snapshot, reply: { chat_messages?: ChatMessage[]; planner?: Snapshot["planner"] }): Snapshot {
+  const messages = [...(s.chat_messages ?? [])];
+  for (const message of reply.chat_messages ?? []) {
+    if (!messages.some((m) => m.id === message.id)) messages.push(message);
+  }
+  return {
+    ...s,
+    chat_messages: messages,
+    planner: reply.planner ? { ...reply.planner, connection_verified: reply.planner.connection_verified || s.planner.connection_verified } : s.planner,
+  };
+}

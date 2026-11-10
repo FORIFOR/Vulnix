@@ -64,12 +64,9 @@ def main() -> None:
 
     established = (
         r.status == 200
-        and (
-            spec["marker"] in raw_body
-            or (isinstance(parsed_body, dict) and bool(parsed_body.get("established")))
-        )
+        and spec["marker"] in raw_body
     )
-    verdict = "proven" if established else "not_reproduced"
+    verdict = "proven" if established else "not_reproduced" if r.status == 403 else "unverified"
     print(json.dumps({
         "check": a.check,
         "request_path": spec["path"],

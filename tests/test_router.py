@@ -6,6 +6,7 @@ import secrets
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from aegis.audit import AuditLog
@@ -308,6 +309,82 @@ class TestAbliterationBackendAndArtexEngine(unittest.TestCase):
         self.assertEqual(tools, ["reproduction_probe", "reproduction_probe"])
         tasks[0].status = "running"
         self.assertEqual(engine.tasks[0].status, "running")
+
+
+class TestModelEnvironmentConfig(unittest.TestCase):
+    def test_all_supported_namespaces_initialize_both_adapters(self):
+        for prefix in ("VULNIX_ABLITERATION", "AEGIS_MODEL", "VULNIX_MODEL"):
+            for adapter in (HttpModelBackend, AbliterationBackend):
+                with self.subTest(prefix=prefix, adapter=adapter.__name__):
+                    calls = []
+                    def transport(url, headers, body):
+                        calls.append((url, headers, json.loads(body)))
+                        return json.dumps({"choices": [{"message": {"content": json.dumps({"proposals": []})}}]}).encode()
+                    env = {f"{prefix}_URL": "http://127.0.0.1:19999/v1/chat/completions",
+                           f"{prefix}_KEY": "test-only", f"{prefix}_MODEL": "configured-model"}
+                    with patch.dict(os.environ, env, clear=True):
+                        backend = adapter.from_env(transport=transport)
+                    self.assertIsInstance(backend, adapter)
+                    self.assertEqual(backend.propose({}), [])
+                    self.assertEqual(calls[0][1]["Authorization"], "Bearer test-only")
+                    self.assertEqual(calls[0][2]["model"], "configured-model")
+                    self.assertIn("messages", calls[0][2])
+
+    def test_documented_namespace_wins_without_cross_endpoint_credentials(self):
+        with patch.dict(os.environ, {
+            "VULNIX_ABLITERATION_URL": "http://127.0.0.1:19999/v1/chat/completions",
+            "AEGIS_MODEL_URL": "https://unused.invalid/chat/completions",
+            "AEGIS_MODEL_KEY": "wrong-endpoint-key",
+            "VULNIX_MODEL_KEY": "also-wrong",
+        }, clear=True):
+            backend = AbliterationBackend.from_env()
+        self.assertEqual(backend._url, "http://127.0.0.1:19999/v1/chat/completions")
+        self.assertNotIn("Authorization", backend._headers())
+
+    def test_absent_and_failed_model_still_allow_builtin_explanations(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertIsNone(AbliterationBackend.from_env())
+        with patch.dict(os.environ, {"AEGIS_MODEL_URL": "http://127.0.0.1:19999/v1/chat/completions"}, clear=True):
+            backend = AbliterationBackend.from_env(transport=lambda *_: b"invalid JSON")
+        self.assertIsNone(backend.chat("Explain IDOR", {}))
+
+    def test_service_chat_uses_loaded_adapter_over_real_loopback_http(self):
+        from aegis.assessment import AssessmentService
+        calls = []
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                calls.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+                body = json.dumps({"choices": [{"message": {"content": "所有者を確認し、不一致ならアクセスを拒否します。"}}]}, ensure_ascii=False).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            def log_message(self, *_):
+                pass
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                with patch.dict(os.environ, {
+                    "VULNIX_ABLITERATION_URL": f"http://127.0.0.1:{server.server_port}/v1/chat/completions",
+                    "VULNIX_ABLITERATION_MODEL": "local-http-stub-not-a-real-model",
+                }, clear=True):
+                    service = AssessmentService(Path(tmp), 19998)
+                answer = service.ask_chat("IDORをどう防ぐ？", "test", finding_id="f_idor")
+                self.assertIn("所有者を確認", answer["message"]["text"])
+                self.assertEqual(answer["message"]["source"], "external_model")
+                self.assertTrue(answer["planner"]["connection_verified"])
+                self.assertTrue(service.planner_status()["external_model_configured"])
+                self.assertEqual(calls[0]["model"], "local-http-stub-not-a-real-model")
+                context = json.loads(calls[0]["messages"][1]["content"])
+                self.assertEqual(context["context"]["target_finding"]["id"], "f_idor")
+                self.assertFalse(any(e["event"] == "allow" for e in service.audit.entries()))
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
 
 
 if __name__ == "__main__":

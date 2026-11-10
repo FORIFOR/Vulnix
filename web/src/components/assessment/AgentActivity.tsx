@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type Dispatch, type SetStateAction } from "react";
+import { applyChatReply } from "@/lib/assessmentEvents";
 import { command } from "@/lib/api";
 import { fmtTime } from "@/lib/labels";
 import { canApprove, useSession } from "@/lib/useSession";
@@ -11,7 +12,7 @@ import { ReasoningTrace } from "./ReasoningTrace";
 
 function Bubble({
   children,
-  actor = "Vulnix AI",
+  actor = "Vulnix",
   isUser = false,
 }: {
   children: React.ReactNode;
@@ -116,7 +117,7 @@ export function AgentActivity({
   audit: AuditEntry[];
   chainValid: boolean | null;
   externalBusy?: boolean;
-  onUpdate: (s: Snapshot) => void;
+  onUpdate: Dispatch<SetStateAction<Snapshot | null>>;
 }) {
   const a = snap.activity;
   const base = `/api/assessments/${snap.id}`;
@@ -133,10 +134,11 @@ export function AgentActivity({
     try {
       const res = (await command(`${base}/chat`, { question: q })) as {
         chat_messages?: Snapshot["chat_messages"];
+        planner?: Snapshot["planner"];
       };
       setQuestion("");
       if (res.chat_messages) {
-        onUpdate({ ...snap, chat_messages: res.chat_messages });
+        onUpdate((current) => current ? applyChatReply(current, res) : current);
       }
     } catch (e) {
       setChatErr((e as Error).message);
@@ -235,13 +237,13 @@ export function AgentActivity({
           }}
           className="flex gap-2"
         >
-          <label className="sr-only" htmlFor="ask">AIに質問する</label>
+          <label className="sr-only" htmlFor="ask">診断について質問する</label>
           <input
             id="ask"
             value={question}
             onChange={(e) => setQuestion(e.target.value)}
             disabled={chatBusy}
-            placeholder="AIに質問する…（なぜ検出されたか・証拠・修正方法など）"
+            placeholder={snap.planner.external_model_configured ? "AIに質問する…（原因・証拠・対策）" : "内蔵解説に質問する…（原因・証拠・対策）"}
             className="flex-1 rounded-2xl border border-zinc-300 bg-white px-4 py-2.5 text-sm dark:border-zinc-700 dark:bg-zinc-900"
           />
           <button

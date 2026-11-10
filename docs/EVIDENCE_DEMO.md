@@ -17,8 +17,9 @@ not a guarantee of safety.
   Back/Forward; invalid tabs and filters fall back safely.
 - The actual loaded proposal backends are returned in the snapshot and router
   status. An endpoint configuration is not proof of a working connection.
-  The legacy `connected` field remains false; use `external_model_configured` and
-  `connection_verified` separately. This version does not perform a health probe.
+  The legacy `connected` field and `connection_verified` become true only after a
+  valid explanation response. They record a successful response, not continuous
+  connection health. Configuration alone is not a successful response.
 - The lab banner uses the actual port and explicitly labels simulated behavior.
   Prior-run sample history is labeled fictional. Reports include these limits,
   evidence counts, and an unevaluated risk label before the first scan.
@@ -83,3 +84,23 @@ and comparison layout, then again on a fresh initial snapshot. It covers filter,
 reset, Back/Forward, invalid queries, export failure/retry/download, preview
 open/close, mobile width, desktop width and browser page errors. Export failure
 is injected only inside the test browser.
+
+## Response-grounded defense verification
+
+The lab control now points to the actual HTTP server state. A successful defense
+recheck requires the observed HTTP response and worker verdict to agree. For the
+mock reproduction checks, HTTP 200 with the expected marker means `proven`,
+HTTP 403 with a negative worker result means `not_reproduced`, and unknown,
+contradictory or missing responses mean `unverified`. A failed mode switch must
+not clear an existing finding. Reports and the beginner IDOR card follow the
+latest evidence, never an older success after a failed recheck.
+
+The beginner card explains the weak point, possible impact and remediation, then
+shows the test caller, resource owner and actual HTTP result. Built-in explanations
+are labeled separately from external model answers. Slow model replies merge into
+the current snapshot so they cannot restore stale findings.
+
+Manual local model check: Qwen3.5:4b via the OpenAI-compatible adapter produced an
+IDOR-defense explanation after warm-up. The cold request timed out at 30 seconds;
+the successful request took approximately 22 seconds. No paid API or model download
+was used. This does not verify that Qwen or the installed custom model is abliterated.

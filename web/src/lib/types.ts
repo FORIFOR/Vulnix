@@ -72,6 +72,7 @@ export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
   actor: string;
+  source?: "builtin" | "external_model";
   text: string;
   term?: string | null;
   finding_id?: string | null;
@@ -151,6 +152,7 @@ export interface Snapshot {
     mode: "builtin" | "external_configured";
     external_model_configured: boolean;
     connection_verified: boolean;
+    model_name?: string | null;
     note: string;
     backends: string[];
   };

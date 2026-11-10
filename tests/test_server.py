@@ -4,6 +4,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
@@ -247,6 +248,8 @@ class TestServer(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertIn("なぜ検出されたか", body["message"]["text"])
         self.assertEqual(len(body["chat_messages"]), 2)
+        self.assertEqual(body["message"]["source"], "builtin")
+        self.assertEqual(body["message"]["actor"], "内蔵解説")
         self.assertIn("chat.asked", [e["event"] for e in self.get("/logs")["entries"]])
 
         rep = self.get("/report")
@@ -294,6 +297,10 @@ class TestServer(unittest.TestCase):
         self.assertIsNotNone(f_banner["what_was_established"])
         self.assertEqual(f_idor["verdict"], "proven")
         self.assertIsNotNone(f_idor["what_was_established"])
+        before_response = json.loads(f_idor["evidence"][-1]["content"])
+        self.assertEqual(before_response["status"], 200)
+        self.assertTrue(before_response["established"])
+        self.assertEqual(before_response["response"]["confidential_marker"], "VULNIX_LAB_IDOR_PROVEN")
 
         # Now run post-patch defense verification (/verify-fix)
         code, s_after = self.post("/verify-fix", {"mode": "patched"})
@@ -308,6 +315,50 @@ class TestServer(unittest.TestCase):
         f_idor_after = next(f for f in s_after["findings"] if f["id"] == "f_idor")
         self.assertEqual(f_banner_after["verdict"], "not_reproduced")
         self.assertEqual(f_idor_after["verdict"], "not_reproduced")
+        latest = json.loads(f_idor_after["evidence"][-1]["content"])
+        self.assertEqual(latest["status"], 403)
+        self.assertFalse(latest["established"])
+        self.assertEqual(latest["verdict"], f_idor_after["verdict"])
+        self.assertEqual(latest["response"]["caller_account"], "acct_A")
+        self.assertEqual(latest["response"]["resource_owner"], "acct_B")
+        self.assertNotIn("confidential_marker", latest["response"])
+        report = self.get("/report")["markdown"]
+        self.assertIn(f_idor_after["evidence"][-1]["evidence_id"], report)
+        self.assertIn("HTTP 403", report)
+
+    def test_failed_defense_switch_keeps_real_200_proof(self):
+        self.login("appr", "appr-pw")
+        self.post("/verify-finding", {"finding_id": "all"})
+        with patch("aegis.assessment.set_lab_mode", return_value="patched"):
+            code, after = self.post("/verify-fix")
+        self.assertEqual(code, 200)
+        finding = next(f for f in after["findings"] if f["id"] == "f_idor")
+        latest = json.loads(finding["evidence"][-1]["content"])
+        self.assertEqual(latest["status"], 200)
+        self.assertEqual(finding["verdict"], "proven")
+        self.assertIn("防御を確認できていません", finding["verdict_note"])
+        self.assertGreater(after["risk"]["score"], 0)
+        self.assertNotIn("すべての脆弱性が「再現せず」", self.get("/logs")["entries"][-2]["fields"].get("detail", ""))
+
+    def test_failed_individual_recheck_does_not_keep_old_fixed_result(self):
+        self.login("appr", "appr-pw")
+        self.post("/verify-fix")
+        with patch.object(self.svc, "_exec", return_value=(None, None)):
+            code, after = self.post("/verify-finding", {"finding_id": "f_idor"})
+        self.assertEqual(code, 200)
+        finding = next(f for f in after["findings"] if f["id"] == "f_idor")
+        self.assertEqual(finding["verdict"], "unverified")
+        self.assertIn("修正確認できず", finding["verdict_note"])
+        self.assertIsNone(finding["what_was_established"])
+
+    def test_missing_worker_response_never_claims_fixed(self):
+        self.login("appr", "appr-pw")
+        with patch.object(self.svc, "_exec", return_value=(None, None)):
+            code, after = self.post("/verify-fix")
+        self.assertEqual(code, 200)
+        self.assertEqual(after["state"], "failed")
+        self.assertTrue(all(f["verdict"] == "unverified" for f in after["findings"]))
+        self.assertTrue(all(it["latest_evidence_id"] is None for it in after["defense_comparison"]["items"]))
 
     def test_operator_registration_and_asset_registration(self):
         # 1. Register a new account via /api/auth/register
