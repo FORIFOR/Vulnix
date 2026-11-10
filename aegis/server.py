@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import http.cookies
 import json
+import os
 import re
 import tempfile
 import time
@@ -25,12 +26,19 @@ from .assessment import AssessmentService
 from .control_verification import run_live_control_verification
 from .lab import set_lab_mode, start_lab
 from .operators import AuthError, MFAChallenge, OperatorStore
+from .real_software_cve import run_real_software_cve_comparison
 
 ALLOWED_ORIGINS = {"http://localhost:3000", "http://127.0.0.1:3000"}
 COOKIE = "aegis_session"
 
 
-def make_handler(svc: AssessmentService, ops: OperatorStore):
+def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_auth: bool | None = None):
+    enforce_read_auth = (
+        os.environ.get("AEGIS_REQUIRE_READ_AUTH") == "1"
+        if require_read_auth is None
+        else bool(require_read_auth)
+    )
+
     class H(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -58,7 +66,12 @@ def make_handler(svc: AssessmentService, ops: OperatorStore):
         def _session(self):
             jar = http.cookies.SimpleCookie(self.headers.get("Cookie", ""))
             morsel = jar.get(COOKIE)
-            return ops.resolve(morsel.value if morsel else None)
+            token = morsel.value if morsel else None
+            if not token:
+                auth_hdr = self.headers.get("Authorization", "")
+                if auth_hdr.startswith("Bearer "):
+                    token = auth_hdr[7:].strip()
+            return ops.resolve(token)
 
         def _public_session(self, sess):
             return {"operator": sess.operator, "roles": list(sess.roles),
@@ -69,8 +82,11 @@ def make_handler(svc: AssessmentService, ops: OperatorStore):
         def do_GET(self):
             u = urlsplit(self.path)
             p = u.path.rstrip("/")
+            sess = self._session()
             if p == "/api/auth/me":
-                return self._json(200, {"session": self._public_session(self._session())})
+                return self._json(200, {"session": self._public_session(sess)})
+            if enforce_read_auth and not sess:
+                return self._json(401, {"error": "ログインが必要です"})
             if p == "/api/assets":
                 return self._json(200, svc.assets())
             if p == "/api/router/status":
@@ -79,6 +95,8 @@ def make_handler(svc: AssessmentService, ops: OperatorStore):
                 return self._json(200, run_live_control_verification())
             if p == "/api/cve/status":
                 return self._json(200, svc.cve_monitor.status())
+            if p == "/api/cve/real-software-verify":
+                return self._json(200, run_real_software_cve_comparison())
             if p == f"/api/assessments/{svc.a.id}":
                 return self._json(200, svc.snapshot())
             if p == f"/api/assessments/{svc.a.id}/logs":
@@ -248,9 +266,16 @@ def make_handler(svc: AssessmentService, ops: OperatorStore):
                 elif p == "/api/assets/select":
                     snap = svc.select_asset(str(body.get("id", "")), actor=actor)
                     return self._json(200, {"assets": svc.assets(), "snapshot": snap})
+                elif p == "/api/router/verify":
+                    rep = svc.verify_planner_connections(actor)
+                    return self._json(200, rep)
                 elif p == "/api/system/verify-controls":
                     rep = run_live_control_verification()
                     svc.audit.record("system.controls_verified", actor=actor, all_passed=rep["all_passed"])
+                    return self._json(200, rep)
+                elif p == "/api/cve/real-software-verify":
+                    rep = run_real_software_cve_comparison()
+                    svc.audit.record("cve.real_software_verified", actor=actor, all_passed=rep["all_passed"])
                     return self._json(200, rep)
                 elif p == "/api/cve/sync":
                     st = svc.cve_monitor.ingest_payloads(
@@ -313,6 +338,8 @@ def main() -> None:
     ap.add_argument("--lab-port", type=int, default=18081)
     ap.add_argument("--verify-seconds", type=float, default=2.0)
     ap.add_argument("--data-dir", default=None)
+    ap.add_argument("--require-read-auth", action="store_true",
+                    help="Require operator authentication on all GET endpoints")
     a = ap.parse_args()
     data = Path(a.data_dir or tempfile.mkdtemp(prefix="aegis-"))
     data.mkdir(parents=True, exist_ok=True)
@@ -321,7 +348,10 @@ def main() -> None:
     start_lab(a.lab_port)
     svc = AssessmentService(data, a.lab_port, a.verify_seconds)
     ops = OperatorStore(seed)
-    srv = ThreadingHTTPServer(("127.0.0.1", a.port), make_handler(svc, ops))
+    srv = ThreadingHTTPServer(
+        ("127.0.0.1", a.port),
+        make_handler(svc, ops, require_read_auth=a.require_read_auth or None),
+    )
     srv.daemon_threads = True
     print(f"Vulnix control plane: http://127.0.0.1:{a.port}  (audit: {data / 'audit.jsonl'})")
     if first and ops.credentials_path:
@@ -333,3 +363,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

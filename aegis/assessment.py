@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import secrets
 import sys
 import threading
@@ -26,7 +27,9 @@ from .gateway import Gateway, State, http_probe_tool, reproduction_probe_tool
 from .lab import get_lab_mode, set_lab_mode
 from .network import EgressGuard
 from .policy import ArgSpec, Budget, Tool
-from .router import AbliterationBackend, ArtexEngine, ArtexplannerBackend, HttpModelBackend, ProposalRouter
+from .router import (AbliterationBackend, ArtexEngine, ArtexplannerBackend,
+                     ArtexSubprocessBackend, HttpModelBackend, ProposalRouter,
+                     verify_planner_connections)
 from .runtime import WorkerPool
 
 SEVERITY_WEIGHT = {"critical": 40, "high": 25, "medium": 10, "low": 3, "info": 0}
@@ -65,8 +68,11 @@ class Assessment:
 
 class AssessmentService:
     def __init__(self, data_dir: Path, lab_port: int, verify_seconds: float = 1.5):
+        self.data_dir = Path(data_dir)
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.state_path = self.data_dir / "state.json"
         self.bus = EventBus()
-        self.audit = AuditLog(data_dir / "audit.jsonl")
+        self.audit = AuditLog(self.data_dir / "audit.jsonl")
         self.audit.listeners.append(self._on_audit)
         self._lock = threading.RLock()
         self.lab_port = lab_port
@@ -92,14 +98,19 @@ class AssessmentService:
             },
             budget=Budget(50))
 
-        # Wire ARTEX + Abliteration ProposalRouter (zero execution authority)
-        backends = [ArtexplannerBackend()]
+        # Wire ARTEX (in-process + optional external CLI subprocess) + Abliteration ProposalRouter
+        self._artex_cli_backend = ArtexSubprocessBackend()
+        backends: list = [ArtexplannerBackend()]
+        if os.environ.get("VULNIX_ARTEX_CLI") or os.environ.get("AEGIS_ARTEX_CMD"):
+            backends.append(self._artex_cli_backend)
         ext_model = HttpModelBackend.from_env()
         if ext_model:
             backends.append(ext_model)
         self._external_model_configured = ext_model is not None
         self._chat_backend = AbliterationBackend.from_env()
         self._model_response_verified = False
+        self._artex_cli_verified = False
+        self._last_planner_verification: dict | None = None
         self.router = ProposalRouter(self.gateway, self.audit, backends)
         self.artex = ArtexEngine(self.router)
         self.cve_monitor = cve.FeedMonitor()
@@ -125,6 +136,110 @@ class AssessmentService:
              "authorization_ref": "", "ownership_verified": False,
              "note": "書面許可が未登録のため診断できません"},
         ]
+        self._load_state_locked()
+
+    def _save_state_locked(self) -> None:
+        """Persist assessment state, findings, evidence, approvals, and assets atomically."""
+        try:
+            payload = {
+                "version": 1,
+                "saved_at": time.time(),
+                "id": self.a.id,
+                "asset": self.a.asset,
+                "target_url": self.a.target_url,
+                "state": self.a.state,
+                "phases": self.a.phases,
+                "findings": self.a.findings,
+                "approvals": self.a.approvals,
+                "activity": self.a.activity,
+                "stop_report": self.a.stop_report,
+                "chat_messages": self.a.chat_messages,
+                "defense_comparison": self.a.defense_comparison,
+                "extra_assets": self._extra_assets,
+                "allowed_hosts": sorted(self._allowed_hosts),
+                "authorization_ref": self.a.engagement.authorization_ref,
+                "ownership_verified": self.a.engagement.ownership_verified,
+                "lab_mode": get_lab_mode(),
+                "artex_cli_verified": self._artex_cli_verified,
+                "last_planner_verification": self._last_planner_verification,
+            }
+            tmp_path = self.state_path.with_suffix(".json.tmp")
+            tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(tmp_path, self.state_path)
+        except OSError:
+            pass
+
+    def _load_state_locked(self) -> None:
+        """Restore persisted assessment state, findings, evidence, and approvals across restarts."""
+        if not self.state_path.exists():
+            return
+        try:
+            data = json.loads(self.state_path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                return
+        except (OSError, ValueError):
+            return
+
+        if isinstance(data.get("allowed_hosts"), list):
+            self._allowed_hosts = {str(h) for h in data["allowed_hosts"] if h} | {"lab.test", "api.lab.test"}
+        if isinstance(data.get("asset"), dict) and data["asset"].get("name"):
+            self.a.asset = dict(data["asset"])
+        auth_ref = str(data.get("authorization_ref") or self.a.engagement.authorization_ref)
+        self._sync_scope_for_host(self.a.asset["name"], auth_ref)
+        if isinstance(data.get("phases"), list) and data["phases"]:
+            self.a.phases = [dict(p) for p in data["phases"] if isinstance(p, dict)]
+        if isinstance(data.get("findings"), dict) and data["findings"]:
+            self.a.findings = {str(k): dict(v) for k, v in data["findings"].items() if isinstance(v, dict)}
+        if isinstance(data.get("approvals"), dict):
+            self.a.approvals = {str(k): dict(v) for k, v in data["approvals"].items() if isinstance(v, dict)}
+            for ap in self.a.approvals.values():
+                if ap.get("status") == "approved":
+                    ap["approval_ref"] = self.approval_store.approve(
+                        str(ap.get("decided_by") or "approver"),
+                        "eng_demo", "lab", str(ap.get("action") or "safe_reproduction"),
+                    )
+        if isinstance(data.get("extra_assets"), list):
+            self._extra_assets = [dict(x) for x in data["extra_assets"] if isinstance(x, dict)]
+        if isinstance(data.get("chat_messages"), list):
+            self.a.chat_messages = [dict(m) for m in data["chat_messages"] if isinstance(m, dict)]
+        if isinstance(data.get("stop_report"), dict):
+            self.a.stop_report = dict(data["stop_report"])
+        if isinstance(data.get("defense_comparison"), dict):
+            self.a.defense_comparison = dict(data["defense_comparison"])
+        saved_state = str(data.get("state", "idle"))
+        if saved_state in ("idle", "completed", "stopped", "failed", "paused"):
+            self.a.state = saved_state
+            if saved_state == "stopped":
+                self.gateway._state = State.STOPPED
+            elif saved_state == "paused":
+                self.gateway._state = State.PAUSED
+        elif saved_state == "running":
+            # A process restart interrupted an in-flight thread; preserve progress as paused
+            self.a.state = "paused"
+            self.gateway._state = State.PAUSED
+        self._artex_cli_verified = bool(data.get("artex_cli_verified", False))
+        if isinstance(data.get("last_planner_verification"), dict):
+            self._last_planner_verification = dict(data["last_planner_verification"])
+
+    def verify_planner_connections(self, actor: str = "operator") -> dict:
+        """Run a live end-to-end connection verification of external ARTEX CLI and
+        Abliteration OpenAI-compatible API, recording the cryptographic proof in audit."""
+        rep = verify_planner_connections()
+        with self._lock:
+            self._artex_cli_verified = bool(rep["artex_cli"]["verified"])
+            if rep["abliteration_api"]["verified"]:
+                self._model_response_verified = True
+            self._last_planner_verification = rep
+            self._save_state_locked()
+        self.audit.record(
+            "router.connections_verified",
+            actor=actor,
+            all_verified=rep["all_verified"],
+            proof_sha256=rep["proof_sha256"],
+            artex_version=rep["artex_cli"]["version"],
+            abliteration_mode=rep["abliteration_api"]["endpoint_mode"],
+        )
+        return rep
 
     @staticmethod
     def _default_phases() -> list[dict]:
@@ -159,6 +274,7 @@ class AssessmentService:
         )
         self.gateway.engagement = self.a.engagement
         self.a.target_url = f"http://{host}:{self.lab_port}/"
+
 
     # ---- snapshot -----------------------------------------------------------
     def assets(self) -> list[dict]:
@@ -248,6 +364,7 @@ class AssessmentService:
 
                 if activate_workspace and authorized and self.a.state != "running":
                     self._activate_asset_locked(asset_record, clean_ref)
+            self._save_state_locked()
 
         self.audit.record(
             "asset.registered",
@@ -335,6 +452,7 @@ class AssessmentService:
                     raise ValueError("削除対象の資産が見つかりません")
                 deleted_name = target["name"]
                 self._extra_assets = [x for x in self._extra_assets if x["id"] != asset_id]
+                self._save_state_locked()
         self.audit.record("asset.deleted", actor=actor, asset_id=asset_id, name=deleted_name)
         return self.assets()
 
@@ -361,6 +479,8 @@ class AssessmentService:
             "external_model_configured": self._external_model_configured,
             "connection_verified": self._model_response_verified,
             "connected": self._model_response_verified,
+            "artex_cli_verified": self._artex_cli_verified,
+            "last_verification": self._last_planner_verification,
             "model_name": self._chat_backend._model if self._chat_backend else None,
             "backends": self.router.backends,
             "artex_engine": "ready",
@@ -1141,6 +1261,7 @@ class AssessmentService:
                                      "title": title, "description": description,
                                      "status": "pending", "decided_by": None,
                                      "decided_at": None, "approval_ref": None}
+            self._save_state_locked()
             self._publish_approval(aid)
         while not ev.wait(0.2):
             self._checkpoint(allow_pause=True)
@@ -1155,6 +1276,7 @@ class AssessmentService:
             ap["approval_ref"] = self.approval_store.approve(actor, "eng_demo", "lab", ap["action"])
         self.audit.record("approval." + ap["status"], request=aid, actor=actor,
                           action=ap["action"], risk_level=ap["risk_level"])
+        self._save_state_locked()
         self._publish_approval(aid)
         if notify and aid in self._approval_events:
             self._approval_events[aid].set()
@@ -1174,6 +1296,7 @@ class AssessmentService:
         with self._lock:
             p = next(p for p in self.a.phases if p["key"] == key)
             p["status"], p["detail"] = status, detail
+            self._save_state_locked()
             self.bus.publish(self.a.id, "phase.updated", phase=key, status=status,
                              message=detail, phases=[dict(x) for x in self.a.phases])
 
@@ -1184,11 +1307,13 @@ class AssessmentService:
 
     def _set_state(self, state):
         self.a.state = state
+        self._save_state_locked()
         self.bus.publish(self.a.id, "assessment.state", state=state, risk=self._risk())
 
     def _upsert_finding(self, f):
         with self._lock:
             self.a.findings[f["id"]] = f
+            self._save_state_locked()
             self.bus.publish(self.a.id, "finding.upserted",
                              finding={**f, "evidence_status": evidence_status(f)},
                              evidence_summary=evidence_summary(list(self.a.findings.values())),
@@ -1257,6 +1382,7 @@ class AssessmentService:
                 "ts": time.time(),
             }
             self.a.chat_messages.extend([user_msg, ai_msg])
+            self._save_state_locked()
             self.audit.record("chat.asked", actor=actor, term=term or "", finding_id=finding_id or "")
             self.bus.publish(self.a.id, "chat.message", messages=[user_msg, ai_msg])
             return {"message": ai_msg, "chat_messages": list(self.a.chat_messages), "planner": self.planner_status()}

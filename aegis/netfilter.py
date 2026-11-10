@@ -94,3 +94,137 @@ def apply_ruleset(ruleset: str, *, runner=subprocess.run, assume_linux: bool | N
 def ruleset_for(pinned_ip: str, pinned_port: int) -> str:
     """Convenience wrapper for a single pinned destination."""
     return nft_ruleset([(pinned_ip, pinned_port)])
+
+
+def verify_linux_netns_enforcement(*, pinned_ip: str = "127.0.0.1", pinned_port: int = 18081) -> dict:
+    """On Linux with root/sudo + `ip` + `nft`, create an isolated network namespace,
+    apply the nftables egress ruleset to the live kernel, and verify that:
+      1. The kernel table `inet aegis_egress` is active with `policy drop`;
+      2. Loopback traffic to the pinned port succeeds;
+      3. Outbound connections to cloud metadata (169.254.169.254:80) and external
+         IPs (198.51.100.1:443) are blocked by the kernel even without userland hooks.
+    Safe to call on any OS; returns structured status."""
+    import json
+    import os
+    import secrets
+    import time
+
+    t0 = time.monotonic()
+    rules = ruleset_for(pinned_ip, pinned_port)
+    if not supported():
+        return {
+            "supported_os": False,
+            "kernel_enforced": False,
+            "reason": f"non-linux host ({sys.platform})",
+            "elapsed_ms": round((time.monotonic() - t0) * 1000, 2),
+        }
+
+    ip_bin = shutil.which("ip")
+    nft_bin = nft_path()
+    if not ip_bin or not nft_bin:
+        return {
+            "supported_os": True,
+            "kernel_enforced": False,
+            "reason": "ip or nft binary not installed",
+            "elapsed_ms": round((time.monotonic() - t0) * 1000, 2),
+        }
+
+    prefix: list[str] = []
+    if hasattr(os, "geteuid") and os.geteuid() != 0:
+        sudo_bin = shutil.which("sudo")
+        if not sudo_bin:
+            return {
+                "supported_os": True,
+                "kernel_enforced": False,
+                "reason": "requires root or passwordless sudo",
+                "elapsed_ms": round((time.monotonic() - t0) * 1000, 2),
+            }
+        chk = subprocess.run([sudo_bin, "-n", "true"], capture_output=True, text=True)
+        if chk.returncode != 0:
+            return {
+                "supported_os": True,
+                "kernel_enforced": False,
+                "reason": "sudo requires password",
+                "elapsed_ms": round((time.monotonic() - t0) * 1000, 2),
+            }
+        prefix = [sudo_bin, "-n"]
+
+    ns = f"aegis_ns_{secrets.token_hex(4)}"
+    try:
+        add_p = subprocess.run([*prefix, ip_bin, "netns", "add", ns], capture_output=True, text=True)
+        if add_p.returncode != 0:
+            return {
+                "supported_os": True,
+                "kernel_enforced": False,
+                "reason": f"ip netns add failed: {add_p.stderr.strip()}",
+                "elapsed_ms": round((time.monotonic() - t0) * 1000, 2),
+            }
+
+        subprocess.run([*prefix, ip_bin, "netns", "exec", ns, ip_bin, "link", "set", "lo", "up"],
+                       capture_output=True, text=True, check=True)
+        apply_p = subprocess.run(
+            [*prefix, ip_bin, "netns", "exec", ns, nft_bin, "-f", "-"],
+            input=rules, capture_output=True, text=True,
+        )
+        if apply_p.returncode != 0:
+            return {
+                "supported_os": True,
+                "kernel_enforced": False,
+                "reason": f"nft apply failed: {apply_p.stderr.strip()}",
+                "elapsed_ms": round((time.monotonic() - t0) * 1000, 2),
+            }
+
+        list_p = subprocess.run(
+            [*prefix, ip_bin, "netns", "exec", ns, nft_bin, "list", "table", "inet", TABLE],
+            capture_output=True, text=True,
+        )
+        active_table = list_p.stdout.strip()
+
+        probe_code = (
+            "import json, socket, threading\n"
+            f"srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n"
+            "srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\n"
+            f"srv.bind(('127.0.0.1', {int(pinned_port)}))\n"
+            "srv.listen(1)\n"
+            "threading.Thread(target=lambda: srv.accept()[0].close(), daemon=True).start()\n"
+            "res = {}\n"
+            "c = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n"
+            "c.settimeout(1.0)\n"
+            f"c.connect(('127.0.0.1', {int(pinned_port)}))\n"
+            "c.close()\n"
+            "res['pinned_loopback'] = 'ALLOWED'\n"
+            "for label, addr in [('metadata', ('169.254.169.254', 80)), ('external', ('198.51.100.1', 443))]:\n"
+            "    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n"
+            "    s.settimeout(0.3)\n"
+            "    try:\n"
+            "        s.connect(addr)\n"
+            "        res[label] = 'ALLOWED_UNEXPECTED'\n"
+            "    except OSError as e:\n"
+            "        res[label] = f'BLOCKED:{type(e).__name__}'\n"
+            "    finally:\n"
+            "        s.close()\n"
+            "srv.close()\n"
+            "print(json.dumps(res))\n"
+        )
+        probe_p = subprocess.run(
+            [*prefix, ip_bin, "netns", "exec", ns, sys.executable, "-I", "-c", probe_code],
+            capture_output=True, text=True, timeout=10,
+        )
+        probe_out = json.loads(probe_p.stdout.strip()) if probe_p.returncode == 0 and probe_p.stdout.strip() else {}
+        enforced = (
+            "policy drop" in active_table
+            and probe_out.get("pinned_loopback") == "ALLOWED"
+            and str(probe_out.get("metadata", "")).startswith("BLOCKED:")
+            and str(probe_out.get("external", "")).startswith("BLOCKED:")
+        )
+        return {
+            "supported_os": True,
+            "kernel_enforced": enforced,
+            "namespace": ns,
+            "active_table_verified": "policy drop" in active_table,
+            "probe_results": probe_out,
+            "elapsed_ms": round((time.monotonic() - t0) * 1000, 2),
+        }
+    finally:
+        subprocess.run([*prefix, ip_bin, "netns", "delete", ns], capture_output=True, text=True)
+

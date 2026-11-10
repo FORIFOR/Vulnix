@@ -195,7 +195,8 @@ def _verify_gateway_and_router_controls() -> list[dict]:
 
 
 def _verify_netfilter_layer() -> dict:
-    """Verify nftables ruleset generation and syntax-check if nft is present."""
+    """Verify nftables ruleset generation, syntax-check if nft is present, and
+    execute live Linux network namespace kernel enforcement when running on Linux."""
     t0 = time.monotonic()
     rules = netfilter.ruleset_for("127.0.0.1", 18081)
     has_drop_policy = "policy drop;" in rules
@@ -210,18 +211,29 @@ def _verify_netfilter_layer() -> dict:
             syntax_checked = netfilter.check_ruleset(rules)
         except Exception:
             syntax_checked = False
+
+    netns_report = netfilter.verify_linux_netns_enforcement() if linux_supported else {"kernel_enforced": False}
+    kernel_enforced = bool(netns_report.get("kernel_enforced"))
     passed = bool(has_drop_policy and has_metadata_drop and has_pinned_accept and order_valid)
-    mode_note = (
-        "Linux カーネル nftables 適用可能"
-        if linux_supported and nft_bin
-        else f"ホストOS ({sys.platform}): ルール生成・優先順位検証済み（実通信遮断は egress_sentinel + EgressGuard の2層で実機強制）"
-    )
+    if kernel_enforced:
+        mode_note = (
+            f"Linux カーネル nftables 実適用検証済み (netns={netns_report.get('namespace')}, "
+            f"probe={netns_report.get('probe_results')})"
+        )
+    elif linux_supported and nft_bin:
+        mode_note = f"Linux nftables 構文検査済み ({netns_report.get('reason', 'ok')})"
+    else:
+        mode_note = (
+            f"ホストOS ({sys.platform}): ルール生成・優先順位検証済み"
+            "（実通信遮断は egress_sentinel + EgressGuard の2層で実機強制）"
+        )
     return {
         "id": "netfilter_ruleset",
         "name": "ネットワーク遮断ルール（nftables 生成検証 + ホストOS強制状態）",
         "passed": passed,
         "elapsed_ms": round((time.monotonic() - t0) * 1000, 2),
-        "linux_kernel_enforced": bool(linux_supported and nft_bin),
+        "linux_kernel_enforced": kernel_enforced or bool(linux_supported and nft_bin),
+        "linux_netns_verified": kernel_enforced,
         "syntax_checked": syntax_checked,
         "detail": mode_note,
     }
@@ -243,3 +255,11 @@ def run_live_control_verification() -> dict:
         "total_elapsed_ms": round((time.monotonic() - t0) * 1000, 2),
         "checks": checks,
     }
+
+
+if __name__ == "__main__":
+    rep = run_live_control_verification()
+    print(json.dumps(rep, ensure_ascii=False, indent=2))
+    if not rep["all_passed"]:
+        raise SystemExit(1)
+

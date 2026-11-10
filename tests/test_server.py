@@ -427,6 +427,91 @@ class TestServer(unittest.TestCase):
         self.assertEqual(acode2, 200)
         self.assertFalse(any(f.get("demo_fixture") for f in asnap["findings"]))
 
+    def test_state_approvals_and_evidence_persist_across_restart(self):
+        self.login("appr", "appr-pw")
+        self.svc.set_verify_seconds(0.05)
+        self._req(f"{self.root}/assets", {
+            "name": "persisted.lab.test",
+            "kind": "API",
+            "environment": "検証環境",
+            "authorization_ref": "SOW-PERSIST-001",
+            "ownership_verified": True,
+        })
+        self.post("/start")
+        pending = self.wait_for(lambda s: any(a["status"] == "pending" for a in s["approvals"]))
+        for ap in pending["approvals"]:
+            self.assertEqual(self.post(f"/approvals/{ap['id']}", {"decision": "approve"})[0], 200)
+        completed = self.wait_for(lambda s: s["state"] == "completed", timeout=15)
+        self.post("/chat", {"question": "なぜ検出されたのですか？", "finding_id": "f_idor"})
+
+        # Simulate server restart by constructing a brand new AssessmentService on the same data_dir
+        d = Path(self.tmp.name)
+        self.assertTrue((d / "state.json").exists())
+        restarted_svc = AssessmentService(d, LAB_PORT, verify_seconds=0.05)
+        try:
+            restored = restarted_svc.snapshot()
+            self.assertEqual(restored["state"], "completed")
+            self.assertEqual(restored["evidence_summary"], completed["evidence_summary"])
+            self.assertEqual(len(restored["approvals"]), len(completed["approvals"]))
+            self.assertEqual(restored["approvals"][0]["status"], "approved")
+            self.assertEqual(len(restored["chat_messages"]), 2)
+            f_idor_restored = next(f for f in restored["findings"] if f["id"] == "f_idor")
+            self.assertEqual(f_idor_restored["verdict"], "proven")
+            self.assertTrue(f_idor_restored["evidence"][-1]["audit_hash"])
+            asset_names = [a["name"] for a in restarted_svc.assets()]
+            self.assertIn("persisted.lab.test", asset_names)
+        finally:
+            restarted_svc.workers.kill_all()
+
+    def test_artex_cli_and_abliteration_api_live_verification_endpoint(self):
+        self.login("op", "op-pw")
+        code, rep = self._req(f"{self.root}/router/verify", {})
+        self.assertEqual(code, 200)
+        self.assertTrue(rep["all_verified"])
+        self.assertTrue(rep["artex_cli"]["verified"])
+        self.assertGreaterEqual(rep["artex_cli"]["proposals_count"], 2)
+        self.assertTrue(rep["abliteration_api"]["verified"])
+        self.assertTrue(rep["abliteration_api"]["chat_verified"])
+        self.assertTrue(rep["proof_sha256"])
+
+        st = self._req(f"{self.root}/router/status")[1]
+        self.assertTrue(st["connection_verified"])
+        self.assertTrue(st["artex_cli_verified"])
+
+    def test_real_software_cve_before_after_verification_endpoint(self):
+        self.login("op", "op-pw")
+        code, rep = self._req(f"{self.root}/cve/real-software-verify", {})
+        self.assertEqual(code, 200)
+        self.assertTrue(rep["all_passed"])
+        self.assertEqual(set(rep["before_remediation"]["matched_cves"]), {"CVE-2021-41773", "CVE-2021-42013"})
+        self.assertEqual(rep["after_remediation"]["matched_cves"], [])
+        for chk in ("cve_2021_41773", "sqli", "idor"):
+            self.assertEqual(rep["before_remediation"]["checks"][chk]["verdict"], "proven")
+            self.assertEqual(rep["after_remediation"]["checks"][chk]["verdict"], "not_reproduced")
+        self.assertTrue(rep["audit_chain_valid"])
+
+    def test_require_read_auth_enforces_login_on_get_endpoints(self):
+        strict_srv = ThreadingHTTPServer(
+            ("127.0.0.1", 0),
+            make_handler(self.svc, self.ops, require_read_auth=True),
+        )
+        strict_srv.daemon_threads = True
+        threading.Thread(target=strict_srv.serve_forever, daemon=True).start()
+        try:
+            strict_root = f"http://127.0.0.1:{strict_srv.server_port}/api"
+            # Unauthenticated GET /api/auth/me is allowed, but management/assessment GETs return 401
+            self.assertEqual(self._req(f"{strict_root}/auth/me")[0], 200)
+            self.assertEqual(self._req(f"{strict_root}/assets")[0], 401)
+            self.assertEqual(self._req(f"{strict_root}/assessments/scan_001")[0], 401)
+            # After login, Cookie or Bearer token grants access
+            self.login("op", "op-pw")
+            self.assertEqual(self._req(f"{strict_root}/assets")[0], 200)
+            self.assertEqual(self._req(f"{strict_root}/assessments/scan_001")[0], 200)
+        finally:
+            strict_srv.shutdown()
+            strict_srv.server_close()
+
 
 if __name__ == "__main__":
     unittest.main()
+
