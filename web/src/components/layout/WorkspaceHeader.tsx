@@ -46,6 +46,11 @@ export function WorkspaceHeader({ snap, conn, onUpdate, refetch }: {
           <RiskScore risk={snap.state === "idle" ? null : snap.risk} />
         </div>
       </div>
+      <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg bg-zinc-100 px-3 py-2 text-xs dark:bg-zinc-900">
+        <span className="font-semibold">{snap.planner.external_model_configured ? "外部モデル設定済み・疎通未確認" : "内蔵 ARTEX プランナー"}</span>
+        <span className="text-zinc-500">{snap.planner.external_model_configured ? "内蔵プランナーも有効" : "外部 AI モデル未設定"}</span>
+        <span className="text-zinc-500">提案 → Gateway 審査 → 許可範囲内で実行</span>
+      </div>
       <div className="mt-3">
         <ExecutionControls snap={snap} onUpdate={onUpdate} refetch={refetch} />
       </div>

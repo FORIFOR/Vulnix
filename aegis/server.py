@@ -25,7 +25,6 @@ from .assessment import AssessmentService
 from .control_verification import run_live_control_verification
 from .lab import set_lab_mode, start_lab
 from .operators import AuthError, MFAChallenge, OperatorStore
-from .router import HttpModelBackend
 
 ALLOWED_ORIGINS = {"http://localhost:3000", "http://127.0.0.1:3000"}
 COOKIE = "aegis_session"
@@ -75,15 +74,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore):
             if p == "/api/assets":
                 return self._json(200, svc.assets())
             if p == "/api/router/status":
-                backend = HttpModelBackend.from_env()
-                return self._json(200, {
-                    "connected": bool(backend),
-                    "backends": [backend.name] if backend else [],
-                    "artex_engine": "ready",
-                    "abliteration_adapter": "openai_chat_completions_compatible",
-                    "autonomous_execution": False,
-                    "note": "モデルは提案のみ。実行は人の承認と Gateway のトークンが必要です。",
-                })
+                return self._json(200, svc.planner_status())
             if p == "/api/system/verify-controls":
                 return self._json(200, run_live_control_verification())
             if p == "/api/cve/status":

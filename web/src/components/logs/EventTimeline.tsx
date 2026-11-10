@@ -46,7 +46,7 @@ export function EventTimeline({ entries, chainValid }: { entries: AuditEntry[]; 
       <div className="mb-3 flex items-center text-sm">
         監査チェーン：
         {chainValid === null ? "確認中" : chainValid ? (
-          <Pill className="ml-1 bg-emerald-100 text-emerald-900 dark:bg-emerald-900/50 dark:text-emerald-100">✓ 改ざんなし（監視中）</Pill>
+          <Pill className="ml-1 bg-emerald-100 text-emerald-900 dark:bg-emerald-900/50 dark:text-emerald-100">✓ チェーン整合性を確認</Pill>
         ) : (
           <Pill className="ml-1 bg-red-600 text-white">✕ 不整合を検出</Pill>
         )}

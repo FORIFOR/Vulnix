@@ -164,6 +164,30 @@ class TestServer(unittest.TestCase):
         self.assertIn("connected", status)
         self.assertIsInstance(status["backends"], list)     # none configured in tests
 
+    def test_evidence_summary_through_approval_and_lab_defense(self):
+        self.login("appr", "appr-pw")
+        self.svc.set_verify_seconds(0.05)
+        initial = self.get()
+        self.assertEqual(initial["evidence_summary"]["candidate"], 3)
+        self.post("/start")
+        pending = self.wait_for(lambda s: any(a["status"] == "pending" for a in s["approvals"]))
+        self.assertGreater(pending["evidence_summary"]["detected"], 0)
+        self.assertEqual(next(f for f in pending["findings"] if f["id"] == "f_banner")["evidence_status"], "detected")
+        for approval in pending["approvals"]:
+            self.assertEqual(self.post(f"/approvals/{approval['id']}", {"decision": "approve"})[0], 200)
+        completed = self.wait_for(lambda s: s["state"] == "completed", timeout=15)
+        self.assertEqual(next(f for f in completed["findings"] if f["id"] == "f_banner")["evidence_status"], "proven")
+        code, after = self.post("/verify-fix")
+        self.assertEqual(code, 200)
+        self.assertEqual(after["evidence_summary"]["proven"], 0)
+        self.assertGreater(after["evidence_summary"]["not_reproduced"], 0)
+        self.assertTrue(after["defense_comparison"]["items"])
+        self.assertTrue(self.get("/logs")["chain_valid"])
+        for finding in after["findings"]:
+            if finding["evidence_status"] == "not_reproduced":
+                self.assertTrue(finding["evidence"][-1]["audit_hash"])
+                self.assertIsNotNone(finding["evidence"][-1]["saved_at"])
+
     # ---- CSRF (independent of auth) ----------------------------------------
     def test_csrf_guard(self):
         self.login("appr", "appr-pw")

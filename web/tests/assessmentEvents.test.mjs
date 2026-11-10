@@ -1,0 +1,31 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { readFileSync } from "node:fs";
+import ts from "typescript";
+const source = readFileSync(new URL("../src/lib/assessmentEvents.ts", import.meta.url), "utf8");
+const { outputText } = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } });
+const { applyEvent } = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`);
+
+const initial = {
+  findings: [{ id: "f", evidence_status: "candidate" }],
+  evidence_summary: { candidate: 1, detected: 0, proven: 0, not_reproduced: 0, incomplete: 0, fixture: 0 },
+  risk: { score: 0 },
+};
+
+for (const status of ["detected", "proven", "not_reproduced", "incomplete"]) {
+  test(`SSE ${status} updates finding and counters together without a reload`, () => {
+    const counts = { ...initial.evidence_summary, candidate: 0, [status]: 1 };
+    const finding = { id: "f", evidence_status: status };
+    const next = applyEvent(initial, { type: "finding.upserted", finding, evidence_summary: counts, risk: { score: 25 } });
+    assert.deepEqual(next.evidence_summary, counts);
+    assert.equal(next.findings.length, 1);
+    assert.deepEqual(next.findings[0], finding);
+    assert.deepEqual(initial.evidence_summary, { candidate: 1, detected: 0, proven: 0, not_reproduced: 0, incomplete: 0, fixture: 0 });
+    assert.equal(initial.findings[0].evidence_status, "candidate");
+  });
+}
+test("unrelated stream events retain evidence state", () => {
+  const next = applyEvent(initial, { type: "assessment.state", state: "paused", risk: initial.risk });
+  assert.equal(next.evidence_summary, initial.evidence_summary);
+  assert.equal(next.findings, initial.findings);
+});

@@ -19,6 +19,7 @@ from . import cve
 from .audit import AuditLog
 from .authz import ApprovalStore, Engagement, Target, TokenAuthority
 from .events import EventBus
+from .evidence import EVIDENCE_LABELS, evidence_status, evidence_summary
 from .gateway import Gateway, State, http_probe_tool, reproduction_probe_tool
 from .lab import get_lab_mode, set_lab_mode
 from .network import EgressGuard
@@ -32,7 +33,7 @@ VERDICT_FACTOR = {"proven": 1.0, "detected": 0.6, "unverified": 0.6, "aborted": 
 
 EXECUTOR = {
     "agent": "ARTEX 実行エンジン（ProposalRouter 制御）",
-    "model": "Abliteration AI アダプター（提案専用・権限なし）",
+    "model": "提案元は診断コンテキストを参照（実行権限なし）",
 }
 
 
@@ -94,6 +95,7 @@ class AssessmentService:
         ext_model = HttpModelBackend.from_env()
         if ext_model:
             backends.append(ext_model)
+        self._external_model_configured = ext_model is not None
         self.router = ProposalRouter(self.gateway, self.audit, backends)
         self.artex = ArtexEngine(self.router)
         self.cve_monitor = cve.FeedMonitor()
@@ -348,6 +350,20 @@ class AssessmentService:
         self.artex.tasks = []
         self._set_state("idle")
 
+    def planner_status(self) -> dict:
+        """Report loaded configuration, never pretend configuration proves connectivity."""
+        return {
+            "mode": "external_configured" if self._external_model_configured else "builtin",
+            "external_model_configured": self._external_model_configured,
+            "connection_verified": False,
+            "connected": False,  # legacy field: configuration alone is not connectivity
+            "backends": self.router.backends,
+            "artex_engine": "ready",
+            "autonomous_execution": False,
+            "note": "外部モデルは設定済み・疎通未確認。内蔵プランナーも有効です。"
+                    if self._external_model_configured else "内蔵 ARTEX プランナーで動作中。外部 AI モデルは未設定です。",
+        }
+
     def snapshot(self) -> dict:
         with self._lock:
             e = self.a.engagement
@@ -356,6 +372,9 @@ class AssessmentService:
             return {
                 "id": self.a.id, "asset": self.a.asset, "demo": True,
                 "lab_mode": get_lab_mode(),
+                "lab_endpoint": f"127.0.0.1:{self.lab_port}",
+                "planner": self.planner_status(),
+                "evidence_summary": evidence_summary(list(self.a.findings.values())),
                 "authorization": {
                     "status": "authorized" if e.ownership_verified and e.authorization_ref else "missing",
                     "ref": e.authorization_ref, "ownership_verified": e.ownership_verified,
@@ -366,7 +385,7 @@ class AssessmentService:
                 "phases": [dict(p) for p in self.a.phases],
                 "activity": self.a.activity,
                 "approvals": list(self.a.approvals.values()),
-                "findings": list(self.a.findings.values()),
+                "findings": [{**f, "evidence_status": evidence_status(f)} for f in self.a.findings.values()],
                 "risk": risk,
                 "stop_report": self.a.stop_report,
                 "chat_messages": list(self.a.chat_messages),
@@ -735,7 +754,7 @@ class AssessmentService:
                     "demo_fixture": False,
                     "verdict": "not_reproduced",
                     "what_was_established": None,
-                    "verdict_note": "プレースホルダー（プリペアドステートメント）の適用により、同一の検索パラメータ試験で SQL 構文解釈が発生しないことを確認しました。",
+                    "verdict_note": "模擬ラボの防御挙動モードで、同一の検索パラメータ試験に対して検証用SQLエラーマーカーが返らないことを確認しました。",
                     "evidence": [e for e in fs["evidence"] if e.get("audit_hash")] + [ev_sqli],
                 })
             for hid in ("f_headers", "f_powered"):
@@ -985,11 +1004,11 @@ class AssessmentService:
                     "verdict": "proven" if sqli_est else "not_reproduced",
                     "_in_verification": False,
                     "what_was_established": (
-                        "検索エンドポイント /api/search?q=test' に対し、未エスケープのSQL構文エラー差分（VULNIX_LAB_SQLI_PROVEN）が成立しました。"
+                        "模擬検索エンドポイント /api/search?q=test' に対し、検証用のSQLエラーマーカー（VULNIX_LAB_SQLI_PROVEN）を含む応答差分を確認しました。"
                         if sqli_est else None
                     ),
                     "verdict_note": (
-                        "reproduction_probe により未バインドのSQL構文解釈が発生することを実証しました。"
+                        "reproduction_probe により、模擬検索APIのSQLエラー差分を確認しました。実際のデータベースに対するSQL実行の証明ではありません。"
                         if sqli_est else "プレースホルダーにより HTTP 403 で安全に処理されました。"
                     ),
                     "executor": {**EXECUTOR, "tool": "reproduction_probe"},
@@ -1179,7 +1198,10 @@ class AssessmentService:
     def _upsert_finding(self, f):
         with self._lock:
             self.a.findings[f["id"]] = f
-            self.bus.publish(self.a.id, "finding.upserted", finding=f, risk=self._risk())
+            self.bus.publish(self.a.id, "finding.upserted",
+                             finding={**f, "evidence_status": evidence_status(f)},
+                             evidence_summary=evidence_summary(list(self.a.findings.values())),
+                             risk=self._risk())
 
     def _mark_verifying(self, fid, flag):
         f = self.a.findings.get(fid)
@@ -1328,6 +1350,7 @@ class AssessmentService:
         cur_score = current_risk["score"] if self.a.state != "idle" else None
         real_ids = {f["id"] for f in self._real_findings()}
         return {
+            "demo_fixture": True,
             "previous_assessment_id": "scan_000",
             "previous_assessed_at": int(time.time() - 86400 * 7),
             "previous_score": prev_score,
@@ -1358,8 +1381,14 @@ class AssessmentService:
             f"- **診断状態**: {_asset_status(s['state'])}（ラボ防御状態: `{s.get('lab_mode', 'vulnerable')}`）",
             f"- **書面許可**: `{auth['ref']}` (所有確認: {'確認済み' if auth['ownership_verified'] else '未確認'})",
             f"- **許可範囲**: Hosts={', '.join(auth['scope']['hosts'])} / CIDRs={', '.join(auth['scope']['cidrs'])} / Ports={', '.join(map(str, auth['scope']['ports']))}",
-            f"- **総合リスク**: **{risk['score']}/100 ({risk['label']})** {'※暫定' if risk['provisional'] else ''}",
-            f"- **前回診断との比較**: 前回 `{hist['previous_assessment_id']}` ({hist['previous_score']}/100) → 差分 {hist['delta_score'] if hist['delta_score'] is not None else '未算出'}",
+            "- **総合リスク**: 未診断（安全性は未評価）" if s["state"] == "idle" else f"- **総合リスク**: **{risk['score']}/100 ({risk['label']})** {'※暫定' if risk['provisional'] else ''}",
+            f"- **前回診断との比較（架空のデモ履歴）**: 前回 `{hist['previous_assessment_id']}` ({hist['previous_score']}/100) → 差分 {hist['delta_score'] if hist['delta_score'] is not None else '未算出'}",
+            "",
+            "## 証拠の概要と検証範囲",
+            f"- **提案エンジン**: {s['planner']['note']}",
+            f"- **検証環境**: ローカル模擬ラボ ({s['lab_endpoint']})。実在する Apache や本番環境の診断結果ではありません。",
+            "- **判定の限界**: 検出は実証を意味しません。「再現せず」は今回の条件での結果であり、安全性の保証ではありません。",
+            "- **証拠状態**: " + " / ".join(f"{EVIDENCE_LABELS[k]} {v} 件" for k, v in s["evidence_summary"].items() if k != "fixture"),
             "",
             "## 1. 診断ステップ進捗",
         ]
@@ -1372,7 +1401,7 @@ class AssessmentService:
             lines.append("- 実環境の検出結果はまだありません（未診断または検査前）。")
         for f in real_findings:
             lines.extend([
-                f"### [{f['severity'].upper()}] {f['title']} (`{f['verdict']}`)",
+                f"### [{f['severity'].upper()}] {f['title']} ({EVIDENCE_LABELS[f['evidence_status']]})",
                 f"- **カテゴリ**: {f['category']} / **危険度**: {f['risk_level']}",
                 f"- **関連CVE**: {', '.join(f['cve']) if f['cve'] else 'なし'}",
                 f"- **概要**: {f['summary']}",
@@ -1400,7 +1429,7 @@ class AssessmentService:
             lines.append("")
         lines.append("## 4. 監査チェーン検証")
         lines.append(f"- **監査ログ件数**: {len(self.audit.entries())} 件")
-        lines.append(f"- **SHA-256 ハッシュチェーン整合性**: {'✓ 改ざんなし' if self.audit.verify() else '✕ 不整合あり'}")
+        lines.append(f"- **SHA-256 ハッシュチェーン整合性**: {'✓ 整合性を確認（外部の真正性証明ではありません）' if self.audit.verify() else '✕ 不整合あり'}")
         return "\n".join(lines) + "\n"
 
 

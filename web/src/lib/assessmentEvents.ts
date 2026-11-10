@@ -1,0 +1,41 @@
+import type { AegisEvent, Approval, ChatMessage, Finding, Snapshot } from "./types";
+
+function upsert<T extends { id: string }>(list: T[], item: T): T[] {
+  const i = list.findIndex((x) => x.id === item.id);
+  if (i === -1) return [...list, item];
+  const next = list.slice();
+  next[i] = item;
+  return next;
+}
+
+export function applyEvent(s: Snapshot, ev: AegisEvent): Snapshot {
+  switch (ev.type) {
+    case "phase.updated":
+      return { ...s, phases: ev.phases as Snapshot["phases"] };
+    case "assessment.state":
+      return { ...s, state: ev.state as Snapshot["state"], risk: ev.risk as Snapshot["risk"] };
+    case "activity.updated":
+      return { ...s, activity: ev.activity as Snapshot["activity"] };
+    case "approval.updated":
+      return { ...s, approvals: upsert(s.approvals, ev.approval as Approval) };
+    case "finding.upserted":
+      return {
+        ...s,
+        findings: upsert(s.findings, ev.finding as Finding),
+        evidence_summary: ev.evidence_summary as Snapshot["evidence_summary"],
+        risk: ev.risk as Snapshot["risk"],
+      };
+    case "stop.report":
+      return { ...s, stop_report: ev.stop_report as Snapshot["stop_report"] };
+    case "chat.message": {
+      const incoming = (ev.messages as ChatMessage[]) ?? [];
+      const cur = s.chat_messages ?? [];
+      const seen = new Set(cur.map((m) => m.id));
+      const merged = [...cur, ...incoming.filter((m) => !seen.has(m.id))];
+      return { ...s, chat_messages: merged };
+    }
+    default:
+      return s;
+  }
+}
+

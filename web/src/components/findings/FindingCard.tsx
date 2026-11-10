@@ -10,11 +10,13 @@ import { Card, FixtureBadge, Pill, SeverityBadge, VerdictBadge } from "../ui";
 export function FindingCard({
   f,
   assessmentId,
+  labEndpoint,
   onUpdate,
   onBusyChange,
 }: {
   f: Finding;
   assessmentId: string;
+  labEndpoint: string;
   onUpdate?: (s: Snapshot) => void;
   onBusyChange?: (busy: boolean) => void;
 }) {
@@ -46,7 +48,7 @@ export function FindingCard({
       <div>
         <div className="flex flex-wrap items-center gap-2">
           <SeverityBadge s={f.severity} />
-          <VerdictBadge v={f.verdict} />
+          {f.evidence_status === "candidate" ? <Pill className="border border-zinc-400">未計測の候補</Pill> : <VerdictBadge v={f.verdict} />}
           {(f._in_verification || busy) && <Pill className="bg-blue-600 text-white">実機Worker検証中</Pill>}
           {f.demo_fixture && <FixtureBadge />}
           <span className="ml-auto font-mono text-[11px] text-zinc-500">
@@ -71,6 +73,7 @@ export function FindingCard({
             <button
               type="button"
               onClick={() => setShowLog((v) => !v)}
+              aria-expanded={showLog || busy}
               className="flex w-full items-center justify-between px-3 py-1.5 text-left font-medium text-zinc-700 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800/60"
             >
               <span className="flex items-center gap-2">
@@ -81,8 +84,8 @@ export function FindingCard({
                 )}
                 <span>
                   {busy
-                    ? `思考・Worker実行中（${f.executor.tool} → 127.0.0.1:18081）…`
-                    : `思考・Worker実行ログ（最新証拠 ${latestEv?.evidence_id}）`}
+                    ? `計画・Worker実行中（${f.executor.tool} → ${labEndpoint}）…`
+                    : `計画・Worker実行ログ（最新証拠 ${latestEv?.evidence_id}）`}
                 </span>
               </span>
               <span className="text-[11px] text-zinc-500">{showLog ? "閉じる ▴" : "表示 ▾"}</span>
@@ -91,7 +94,7 @@ export function FindingCard({
               <div className="space-y-1.5 border-t border-zinc-200/80 px-3 py-2 dark:border-zinc-800">
                 <ol className="space-y-1 border-l-2 border-zinc-300 pl-2.5 text-[11px] text-zinc-600 dark:border-zinc-700 dark:text-zinc-300">
                   <li>1. 仮説形成：{f.why_detected}</li>
-                  <li>2. Gateway検査：単一使用トークン発行・EgressGuard (127.0.0.1:18081) 固定・egress_sentinel 隔離起動</li>
+                  <li>2. Gateway検査：単一使用トークン発行・EgressGuard ({labEndpoint}) 固定・egress_sentinel 隔離起動</li>
                   <li>
                     3. Worker結果：
                     {busy ? " 応答待機中…" : ` 判定=${f.verdict} / 監査ハッシュ #${latestEv?.audit_hash?.slice(0, 12) ?? "—"}`}

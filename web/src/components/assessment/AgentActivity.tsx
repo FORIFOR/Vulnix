@@ -146,7 +146,7 @@ export function AgentActivity({
   };
 
   return (
-    <div className="space-y-4">
+    <div className="min-w-0 space-y-4">
       <Bubble>{headline(snap)}</Bubble>
 
       <div className="ml-11">
