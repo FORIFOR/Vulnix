@@ -11,16 +11,22 @@ export function FindingCard({
   f,
   assessmentId,
   onUpdate,
+  onBusyChange,
 }: {
   f: Finding;
   assessmentId: string;
   onUpdate?: (s: Snapshot) => void;
+  onBusyChange?: (busy: boolean) => void;
 }) {
   const [busy, setBusy] = useState(false);
+  const [showLog, setShowLog] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const latestEv = f.evidence.at(-1);
 
   const runLiveVerify = async () => {
     setBusy(true);
+    setShowLog(true);
+    onBusyChange?.(true);
     setErr(null);
     try {
       const snap = await postJSON<Snapshot>(`/api/assessments/${assessmentId}/verify-finding`, {
@@ -31,6 +37,7 @@ export function FindingCard({
       setErr((e as Error).message);
     } finally {
       setBusy(false);
+      onBusyChange?.(false);
     }
   };
 
@@ -58,6 +65,47 @@ export function FindingCard({
         )}
         {f.cve.length > 0 && <p className="mt-1 font-mono text-xs text-zinc-500">{f.cve.join(" / ")}</p>}
         {err && <p className="mt-1 text-xs text-red-600 dark:text-red-400">{err}</p>}
+
+        {(busy || latestEv) && (
+          <div className="mt-2.5 overflow-hidden rounded-xl border border-zinc-200 bg-zinc-50/90 text-xs dark:border-zinc-800 dark:bg-zinc-900/60">
+            <button
+              type="button"
+              onClick={() => setShowLog((v) => !v)}
+              className="flex w-full items-center justify-between px-3 py-1.5 text-left font-medium text-zinc-700 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800/60"
+            >
+              <span className="flex items-center gap-2">
+                {busy ? (
+                  <span className="inline-block h-2 w-2 animate-ping rounded-full bg-blue-600" />
+                ) : (
+                  <span className="text-emerald-600 dark:text-emerald-400">✦</span>
+                )}
+                <span>
+                  {busy
+                    ? `思考・Worker実行中（${f.executor.tool} → 127.0.0.1:18081）…`
+                    : `思考・Worker実行ログ（最新証拠 ${latestEv?.evidence_id}）`}
+                </span>
+              </span>
+              <span className="text-[11px] text-zinc-500">{showLog ? "閉じる ▴" : "表示 ▾"}</span>
+            </button>
+            {(showLog || busy) && (
+              <div className="space-y-1.5 border-t border-zinc-200/80 px-3 py-2 dark:border-zinc-800">
+                <ol className="space-y-1 border-l-2 border-zinc-300 pl-2.5 text-[11px] text-zinc-600 dark:border-zinc-700 dark:text-zinc-300">
+                  <li>1. 仮説形成：{f.why_detected}</li>
+                  <li>2. Gateway検査：単一使用トークン発行・EgressGuard (127.0.0.1:18081) 固定・egress_sentinel 隔離起動</li>
+                  <li>
+                    3. Worker結果：
+                    {busy ? " 応答待機中…" : ` 判定=${f.verdict} / 監査ハッシュ #${latestEv?.audit_hash?.slice(0, 12) ?? "—"}`}
+                  </li>
+                </ol>
+                {latestEv?.content && (
+                  <pre className="max-h-36 overflow-auto rounded-lg bg-zinc-950 p-2 font-mono text-[11px] text-emerald-300">
+                    {latestEv.content}
+                  </pre>
+                )}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-zinc-100 pt-2.5 text-xs text-zinc-500 dark:border-zinc-800">

@@ -54,6 +54,12 @@ export const AUDIT_EVENT: Record<string, string> = {
   "cve.synced": "CVE/KEVフィード同期",
   "proposal.received": "AI提案を受理（サニタイズ済）",
   "proposal.rejected": "不正なAI提案を破棄",
+  "agent.thought": "AI推論・検証ステップ",
+  "asset.registered": "診断対象・SOW登録",
+  "asset.deleted": "診断対象を削除",
+  "asset.selected": "診断対象を切替",
+  "lab.mode_changed": "検証ラボ防御モード切替",
+  "assessment.restarted": "再診断を開始",
 };
 
 export const fmtTime = (ts: number | null | undefined) =>

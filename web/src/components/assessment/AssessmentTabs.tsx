@@ -14,6 +14,7 @@ import { RawLogViewer } from "../logs/RawLogViewer";
 import { Card } from "../ui";
 import { AgentActivity } from "./AgentActivity";
 import { PhaseTimeline } from "./PhaseTimeline";
+import { ReasoningTrace } from "./ReasoningTrace";
 
 const TABS = [
   { key: "assessment", label: "診断" },
@@ -29,6 +30,7 @@ export function AssessmentTabs({ id }: { id: string }) {
   const [reportMd, setReportMd] = useState<string | null>(null);
   const [reportBusy, setReportBusy] = useState(false);
   const [labBusy, setLabBusy] = useState(false);
+  const [cardBusy, setCardBusy] = useState(false);
   const [labErr, setLabErr] = useState<string | null>(null);
 
   if (!snap) {
@@ -150,7 +152,14 @@ export function AssessmentTabs({ id }: { id: string }) {
 
         {tab === "assessment" && (
           <div className="grid gap-6 lg:grid-cols-[1fr_18rem]">
-            <AgentActivity snap={snap} notes={notes} onUpdate={setSnap} />
+            <AgentActivity
+              snap={snap}
+              notes={notes}
+              audit={audit}
+              chainValid={chainValid}
+              externalBusy={labBusy || cardBusy}
+              onUpdate={setSnap}
+            />
             <div className="space-y-4">
               <Card>
                 <h2 className="mb-3 text-sm font-semibold">進捗</h2>
@@ -236,13 +245,30 @@ export function AssessmentTabs({ id }: { id: string }) {
         )}
 
         {tab === "findings" && (
-          <div className="grid gap-3 md:grid-cols-2">
-            {counts.findings === 0 && (
-              <p className="text-sm text-zinc-500 md:col-span-2">
-                {snap.state === "idle" ? "診断を開始すると、ここに問題が表示されます。" : "まだ問題は検出されていません（未検出は安全という意味ではありません）。"}
-              </p>
-            )}
-            {findings.map((f) => <FindingCard key={f.id} f={f} assessmentId={snap.id} onUpdate={setSnap} />)}
+          <div className="space-y-4">
+            <ReasoningTrace
+              snap={snap}
+              audit={audit}
+              chainValid={chainValid}
+              externalBusy={labBusy || cardBusy}
+              compact
+            />
+            <div className="grid gap-3 md:grid-cols-2">
+              {counts.findings === 0 && (
+                <p className="text-sm text-zinc-500 md:col-span-2">
+                  {snap.state === "idle" ? "診断を開始すると、ここに問題が表示されます。" : "まだ問題は検出されていません（未検出は安全という意味ではありません）。"}
+                </p>
+              )}
+              {findings.map((f) => (
+                <FindingCard
+                  key={f.id}
+                  f={f}
+                  assessmentId={snap.id}
+                  onUpdate={setSnap}
+                  onBusyChange={setCardBusy}
+                />
+              ))}
+            </div>
           </div>
         )}
 

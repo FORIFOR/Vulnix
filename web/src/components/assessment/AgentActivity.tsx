@@ -4,9 +4,10 @@ import { useState } from "react";
 import { command } from "@/lib/api";
 import { fmtTime } from "@/lib/labels";
 import { canApprove, useSession } from "@/lib/useSession";
-import type { AegisEvent, Approval, Snapshot } from "@/lib/types";
+import type { AegisEvent, Approval, AuditEntry, Snapshot } from "@/lib/types";
 import { HelpPopover } from "../learning/HelpPopover";
 import { Card, Pill } from "../ui";
+import { ReasoningTrace } from "./ReasoningTrace";
 
 function Bubble({
   children,
@@ -102,7 +103,21 @@ const QUICK_PROMPTS = [
   "修正後にどう確認すればよいですか？",
 ];
 
-export function AgentActivity({ snap, notes, onUpdate }: { snap: Snapshot; notes: AegisEvent[]; onUpdate: (s: Snapshot) => void }) {
+export function AgentActivity({
+  snap,
+  notes,
+  audit,
+  chainValid,
+  externalBusy = false,
+  onUpdate,
+}: {
+  snap: Snapshot;
+  notes: AegisEvent[];
+  audit: AuditEntry[];
+  chainValid: boolean | null;
+  externalBusy?: boolean;
+  onUpdate: (s: Snapshot) => void;
+}) {
   const a = snap.activity;
   const base = `/api/assessments/${snap.id}`;
   const approver = canApprove(useSession().session);
@@ -133,6 +148,16 @@ export function AgentActivity({ snap, notes, onUpdate }: { snap: Snapshot; notes
   return (
     <div className="space-y-4">
       <Bubble>{headline(snap)}</Bubble>
+
+      <div className="ml-11">
+        <ReasoningTrace
+          snap={snap}
+          audit={audit}
+          chainValid={chainValid}
+          externalBusy={externalBusy}
+          defaultOpen
+        />
+      </div>
 
       {a && (
         <Card className="ml-11">

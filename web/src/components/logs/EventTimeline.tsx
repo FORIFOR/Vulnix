@@ -7,17 +7,26 @@ const TONE: Record<string, string> = {
   deny: "bg-red-100 text-red-900 dark:bg-red-900/50 dark:text-red-100",
   emergency_stop: "bg-red-600 text-white",
   allow: "bg-emerald-100 text-emerald-900 dark:bg-emerald-900/50 dark:text-emerald-100",
+  "agent.thought": "bg-violet-100 text-violet-900 dark:bg-violet-900/50 dark:text-violet-100",
 };
 
 function describe(e: AuditEntry): string {
   const f = e.fields as Record<string, unknown>;
   switch (e.event) {
+    case "agent.thought":
+      return `【${f.step}】${f.detail}${f.tool ? `（ツール: ${f.tool} / ${f.risk_level ?? "L1"}）` : ""}`;
     case "allow": {
       const d = f.dest as { host?: string; ip?: string; port?: number } | undefined;
       return `${f.tool} を ${f.target} に対して実行（宛先 ${d?.host} → ${d?.ip}:${d?.port}、承認 ${f.approval}）`;
     }
     case "deny": return `理由: ${f.reason}`;
-    case "result": return `終了コード ${f.rc}${f.killed ? "（強制終了）" : ""}・${Number(f.elapsed).toFixed(2)} 秒`;
+    case "result": {
+      const tool = f.tool ? `[${f.tool}] ` : "";
+      const preview = f.stdout_preview ? ` — 応答: ${f.stdout_preview}` : "";
+      return `${tool}終了コード ${f.rc}${f.killed ? "（強制終了）" : ""}・${Number(f.elapsed).toFixed(2)} 秒${preview}`;
+    }
+    case "proposal.received":
+      return `${f.backend} が ${f.tool}（${f.action} → ${f.target}）を提案`;
     case "approval.auto": return `${f.tool}（${f.action}）をポリシーにより自動承認`;
     case "approval.approved":
     case "approval.rejected": return `${f.action}（${f.risk_level}）・${f.actor}`;

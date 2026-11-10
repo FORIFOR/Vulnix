@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 import { Suspense, useState } from "react";
+import { ReasoningTrace } from "@/components/assessment/ReasoningTrace";
 import { EvidencePanel } from "@/components/findings/EvidencePanel";
 import { RemediationPanel } from "@/components/findings/RemediationPanel";
 import { HelpPopover } from "@/components/learning/HelpPopover";
@@ -14,7 +15,7 @@ import { useAssessment } from "@/lib/useAssessment";
 function Detail() {
   const { id } = useParams<{ id: string }>();
   const aid = useSearchParams().get("a") ?? "scan_001";
-  const { snap, setSnap, error } = useAssessment(aid);
+  const { snap, setSnap, audit, chainValid, error } = useAssessment(aid);
   const [busy, setBusy] = useState(false);
   const [verifyErr, setVerifyErr] = useState<string | null>(null);
   if (!snap) return <p className="p-6 text-sm">{error ? `読み込めませんでした：${error}` : "読み込み中…"}</p>;
@@ -59,6 +60,14 @@ function Detail() {
         {f.title}
         {f.help_term && <HelpPopover term={f.help_term} context={f.why_detected} findingId={f.id} />}
       </h1>
+
+      <ReasoningTrace
+        snap={snap}
+        audit={audit}
+        chainValid={chainValid}
+        externalBusy={busy}
+        compact
+      />
 
       <Card>
         <h2 className="mb-1 text-sm font-semibold">何が危険か</h2>

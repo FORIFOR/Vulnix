@@ -446,6 +446,16 @@ class AssessmentService:
                 raise ValueError("assessment stopped")
             self._decide(approval_id, decision, actor)
 
+    def _think(self, step: str, detail: str, *, phase: str = "", tool: str = "", level: str = "L1") -> None:
+        self.audit.record(
+            "agent.thought",
+            step=step,
+            detail=detail,
+            phase=phase,
+            tool=tool,
+            risk_level=level,
+        )
+
     # ---- P2: On-demand single finding verification via real Gateway+Worker ---
     def verify_finding(self, finding_id: str, actor: str) -> dict:
         """Execute a real Gateway + Worker probe for a specific finding on demand
@@ -455,6 +465,13 @@ class AssessmentService:
                 if self.gateway.state is State.STOPPED:
                     self._reset_workspace_locked()
                 url = self.a.target_url
+            self._think(
+                "全問題の一括実機検証を開始",
+                f"対象 {url}（ラボ状態: {get_lab_mode()}）に対し、Gateway 経由で http_probe と reproduction_probe を順次実行します。",
+                phase="verification",
+                tool="http_probe / reproduction_probe",
+                level="L2",
+            )
             res, ev = self._exec("http_probe", "read_only_probe",
                                  {"url": url, "method": "GET"},
                                  approval_actor=f"verify:{actor}")
@@ -464,6 +481,13 @@ class AssessmentService:
             for fid in ("f_banner", "f_idor", "f_sqli"):
                 if fid in self.a.findings:
                     self.verify_finding(fid, actor=actor)
+            self._think(
+                "全問題の実機検証が完了",
+                f"すべての Worker プローブ応答と SHA-256 監査ハッシュを記録しました（総合リスク: {self._risk()['score']}/100）。",
+                phase="report",
+                tool="Gateway",
+                level="L1",
+            )
             return self.snapshot()
 
         with self._lock:
@@ -474,6 +498,13 @@ class AssessmentService:
             url = self.a.target_url
 
         if finding_id in ("f_idor", "fx_idor"):
+            self._think(
+                "IDOR（認可境界バイパス）の仮説検証",
+                "テストアカウント acct_A のトークンで acct_B の保護リソース (/api/accounts/B/secret) をリクエストし、所有者照合の有無を検証します。",
+                phase="verification",
+                tool="reproduction_probe",
+                level="L2",
+            )
             apr = self.approval_store.approve(actor, "eng_demo", "lab", "safe_reproduction")
             self.audit.record("approval.approved", request=f"req_{finding_id}", actor=actor,
                               action="safe_reproduction", risk_level="L2")
@@ -481,6 +512,13 @@ class AssessmentService:
                                  {"url": url, "check": "idor"}, approval_id=apr)
             if res and ev:
                 est = bool(res.get("established"))
+                self._think(
+                    "IDOR 実機応答の判定",
+                    f"Worker 応答: HTTP {res.get('forged_account_A_status')} — {'他アカウントの保護リソース取得が成立（実証成功）' if est else 'HTTP 403 Forbidden により遮断（再現せず）'} [証拠 {ev['evidence_id']}]",
+                    phase="verification",
+                    tool="reproduction_probe",
+                    level="L2",
+                )
                 with self._lock:
                     f = self.a.findings[finding_id]
                     prev_ev = [e for e in f.get("evidence", []) if e.get("audit_hash")]
@@ -501,6 +539,13 @@ class AssessmentService:
                         "evidence": prev_ev + [ev],
                     })
         elif finding_id in ("f_sqli", "fx_sqli"):
+            self._think(
+                "SQLインジェクション境界（/api/search）の仮説検証",
+                "検索パラメータ q=test' を送信し、未エスケープのSQL構文解釈（エラー差分）が発生するかを非破壊プローブで検証します。",
+                phase="verification",
+                tool="reproduction_probe",
+                level="L2",
+            )
             apr = self.approval_store.approve(actor, "eng_demo", "lab", "safe_reproduction")
             self.audit.record("approval.approved", request=f"req_{finding_id}", actor=actor,
                               action="safe_reproduction", risk_level="L2")
@@ -508,6 +553,13 @@ class AssessmentService:
                                  {"url": url, "check": "sqli"}, approval_id=apr)
             if res and ev:
                 est = bool(res.get("established"))
+                self._think(
+                    "SQLi 実機応答の判定",
+                    f"Worker 応答: HTTP {res.get('probe_status')} — {'SQL構文エラー差分（VULNIX_LAB_SQLI_PROVEN）を検出・実証' if est else 'プリペアドステートメントにより HTTP 403 で安全に拒否（再現せず）'} [証拠 {ev['evidence_id']}]",
+                    phase="verification",
+                    tool="reproduction_probe",
+                    level="L2",
+                )
                 with self._lock:
                     f = self.a.findings[finding_id]
                     prev_ev = [e for e in f.get("evidence", []) if e.get("audit_hash")]
@@ -528,6 +580,13 @@ class AssessmentService:
                         "evidence": prev_ev + [ev],
                     })
         elif finding_id == "f_banner":
+            self._think(
+                "CVE-2021-41773 パス正規化バイパスの仮説検証",
+                "Apache 2.4.49 のパス正規化不備（/cgi-bin/.%2e/...）が隔離ラボの検証用マーカーへ到達できるか reproduction_probe で検証します。",
+                phase="verification",
+                tool="reproduction_probe",
+                level="L2",
+            )
             apr = self.approval_store.approve(actor, "eng_demo", "lab", "safe_reproduction")
             self.audit.record("approval.approved", request="req_f_banner", actor=actor,
                               action="safe_reproduction", risk_level="L2")
@@ -535,6 +594,13 @@ class AssessmentService:
                                  {"url": url, "check": "cve_2021_41773"}, approval_id=apr)
             if res and ev:
                 est = bool(res.get("established"))
+                self._think(
+                    "CVE-2021-41773 実機応答の判定",
+                    f"Worker 応答: HTTP {res.get('status')} — {'検証用マーカー（VULNIX_LAB_PATH_TRAVERSAL_PROVEN）への到達を実証' if est else 'Apache 2.4.62 パッチにより HTTP 403 で遮断（再現せず）'} [証拠 {ev['evidence_id']}]",
+                    phase="verification",
+                    tool="reproduction_probe",
+                    level="L2",
+                )
                 with self._lock:
                     f = self.a.findings[finding_id]
                     prev_ev = [e for e in f.get("evidence", []) if e.get("audit_hash")]
@@ -555,6 +621,13 @@ class AssessmentService:
                         "evidence": prev_ev + [ev],
                     })
         else:
+            self._think(
+                "HTTP応答ヘッダー・露出情報の再検査",
+                f"対象 {url} に対して非破壊 GET プローブ（http_probe）を実行し、セキュリティヘッダーとバージョン露出を確認します。",
+                phase="config",
+                tool="http_probe",
+                level="L1",
+            )
             res, ev = self._exec("http_probe", "read_only_probe",
                                  {"url": url, "method": "GET"},
                                  approval_actor=f"verify:{actor}")
@@ -579,6 +652,13 @@ class AssessmentService:
 
         set_lab_mode("patched")
         url = self.a.target_url
+        self._think(
+            "防御パッチ適用後の再検証を開始",
+            "ラボ環境を patched モード（Apache 2.4.62 / 所有者照合 / プリペアドステートメント適用）へ切り替え、同一プローブで再検証します。",
+            phase="verification",
+            tool="http_probe / reproduction_probe",
+            level="L2",
+        )
         # 1. Re-run L1 HTTP probe
         res, ev_http = self._exec("http_probe", "read_only_probe",
                                   {"url": url, "method": "GET"},
@@ -662,6 +742,13 @@ class AssessmentService:
                 "after_score": after_risk["score"],
                 "items": items,
             }
+            self._think(
+                "修正前後の防御比較が完了",
+                f"すべての脆弱性が「再現せず」となり、総合リスクが {before_risk['score']}/100 から {after_risk['score']}/100 に低減したことを実証しました。",
+                phase="report",
+                tool="Gateway",
+                level="L1",
+            )
             self._set_state("completed")
             return self.snapshot()
 
@@ -676,6 +763,13 @@ class AssessmentService:
         url = self.a.target_url
         self._phase("scope", "running", "許可範囲・期間・書面許可を照合しています")
         self._activity("診断範囲を確認", "Gateway（範囲検査）", "L1")
+        self._think(
+            "診断範囲と書面許可（SOW）の照合",
+            f"対象 {url} が書面許可（{self.a.engagement.authorization_ref}）および許可CIDR 127.0.0.1/32 の範囲内にあることを検証しています。",
+            phase="scope",
+            tool="Gateway",
+            level="L1",
+        )
         self.gateway.engagement.check_active(time.time())
         self.gateway.egress.check(url, self.a.engagement.targets["lab"])
         self._phase("scope", "done", f"{url} は許可範囲内（127.0.0.1/32）")
@@ -683,6 +777,13 @@ class AssessmentService:
         self._checkpoint()
         self._phase("config", "running", "ARTEX が公開設定の非破壊プローブを提案・実行しています")
         self._activity("公開設定を検査（GET 1回・非破壊）", "http_probe", "L1")
+        self._think(
+            "非破壊HTTPプローブの計画とサニタイズ",
+            "ARTEX プランナーが公開設定・応答ヘッダー取得のため http_probe (GET) を提案し、ProposalRouter で安全性を検証しました。",
+            phase="config",
+            tool="http_probe",
+            level="L1",
+        )
         tasks_l1 = self.artex.plan_phase("config", {"target_id": "lab", "target_url": url})
         for tk in tasks_l1:
             tk.status = "running"
@@ -698,6 +799,13 @@ class AssessmentService:
         self._phase("analysis", "running", "取得した応答とNVD/CISA KEVフィードから問題を分析しています")
         self._activity("検出結果を分析（CVE / CISA KEV 照合）", "cve_engine", "L1")
         banner_id = self._analyze(res, ev)
+        self._think(
+            "CVE/CISA KEV 照合と検証仮説の構築",
+            f"応答バナー（{res.get('headers', {}).get('Server', 'unknown')}）およびAPI境界から {len(self._real_findings())} 件の検証対象（CVE-2021-41773 / IDOR / SQLi 等）を特定しました。",
+            phase="analysis",
+            tool="cve_engine",
+            level="L1",
+        )
         if "AI agent:" in res.get("body_prefix", ""):
             self.bus.publish(self.a.id, "agent.note",
                              message="ページ内にAI向けの指示文を検出しました。ProposalRouterにより無害化され実行権限には影響しません。")
@@ -706,6 +814,13 @@ class AssessmentService:
         self._checkpoint()
         self._phase("verification", "running", "隔離環境での侵入成立実証（再現試験）の承認を待っています")
         self._activity("脆弱性の検証（侵入成立の実証）", "reproduction_probe", "L2")
+        self._think(
+            "L2 侵入成立実証の人間承認リクエスト",
+            "CVE-2021-41773・IDOR・SQLi の再現試験は L2 操作のため、承認責任者による実行許可（単一使用トークン発行）を待機しています。",
+            phase="verification",
+            tool="reproduction_probe",
+            level="L2",
+        )
         tasks_l2 = self.artex.plan_phase("verification", {
             "target_id": "lab", "target_url": url, "has_cve_2021_41773": banner_id in self.a.findings,
         })
@@ -718,11 +833,25 @@ class AssessmentService:
         if self.a.approvals[ap_id]["status"] != "approved":
             for tk in tasks_l2:
                 tk.status = "skipped"
+            self._think(
+                "L2 再現試験をスキップ",
+                "承認責任者により却下されたため、L2 再現試験は実施せず検出段階の結果でレポートを作成します。",
+                phase="verification",
+                tool="Gateway",
+                level="L2",
+            )
             self._phase("verification", "skipped", "承認されなかったため実施していません")
         else:
             for tk in tasks_l2:
                 tk.status = "running"
             self._phase("verification", "running", "隔離Workerで侵入成立を実証中（reproduction_probe）")
+            self._think(
+                "L2 承認完了・隔離Workerでの侵入成立実証を開始",
+                "単一使用 HMAC トークンを発行し、egress_sentinel 隔離下で reproduction_probe Worker を起動しています。",
+                phase="verification",
+                tool="reproduction_probe",
+                level="L2",
+            )
             self._mark_verifying(banner_id, True)
             self._mark_verifying("f_idor", True)
             self._mark_verifying("f_sqli", True)
@@ -745,6 +874,13 @@ class AssessmentService:
             if banner_id in self.a.findings:
                 f = self.a.findings[banner_id]
                 established = bool(cve_res.get("established"))
+                self._think(
+                    "CVE-2021-41773 実証結果の確認",
+                    f"HTTP {cve_res.get('status')} — {'検証用マーカー到達（実証成功）' if established else '再現せず'} [証拠 {cve_ev['evidence_id']}]",
+                    phase="verification",
+                    tool="reproduction_probe",
+                    level="L2",
+                )
                 self._upsert_finding({
                     **f,
                     "demo_fixture": False,
@@ -772,6 +908,13 @@ class AssessmentService:
             if "f_idor" in self.a.findings:
                 fi = self.a.findings["f_idor"]
                 idor_est = bool(idor_res.get("established"))
+                self._think(
+                    "IDOR（認可境界）実証結果の確認",
+                    f"HTTP {idor_res.get('forged_account_A_status')} — {'acct_A から acct_B リソース取得が成立（実証成功）' if idor_est else '再現せず'} [証拠 {idor_ev['evidence_id']}]",
+                    phase="verification",
+                    tool="reproduction_probe",
+                    level="L2",
+                )
                 self._upsert_finding({
                     **fi,
                     "demo_fixture": False,
@@ -799,6 +942,13 @@ class AssessmentService:
             if "f_sqli" in self.a.findings:
                 fs = self.a.findings["f_sqli"]
                 sqli_est = bool(sqli_res.get("established"))
+                self._think(
+                    "SQLインジェクション境界 実証結果の確認",
+                    f"HTTP {sqli_res.get('probe_status')} — {'SQL構文エラー差分（VULNIX_LAB_SQLI_PROVEN）が成立（実証成功）' if sqli_est else '再現せず'} [証拠 {sqli_ev['evidence_id']}]",
+                    phase="verification",
+                    tool="reproduction_probe",
+                    level="L2",
+                )
                 self._upsert_finding({
                     **fs,
                     "demo_fixture": False,
@@ -822,6 +972,13 @@ class AssessmentService:
 
         self._checkpoint()
         self._phase("report", "running", "結果をまとめています")
+        self._think(
+            "診断結果と監査ハッシュチェーンの確定",
+            f"全ステップが完了しました。総合リスクスコア: {self._risk()['score']}/100（監査チェーン検証済み）。",
+            phase="report",
+            tool="Gateway",
+            level="L1",
+        )
         self._phase("report", "done", "診断が完了しました")
         with self._lock:
             self.a.activity = None

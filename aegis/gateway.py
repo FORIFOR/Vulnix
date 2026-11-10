@@ -140,8 +140,9 @@ class Gateway:
             self.audit.record("allow", jti=claims["jti"], tool=tool.name, target=claims["tgt"],
                               approval=claims["apr"], dest=dest.__dict__)
             result = self.workers.run(tool.build_argv(args, dest), tool.timeout_s)
-            self.audit.record("result", jti=claims["jti"], rc=result.returncode,
-                              killed=result.killed, elapsed=result.elapsed_s)
+            self.audit.record("result", jti=claims["jti"], tool=tool.name, rc=result.returncode,
+                              killed=result.killed, elapsed=result.elapsed_s,
+                              stdout_preview=result.stdout.strip()[:280])
             return Decision(True, "executed", result, dest)
         finally:
             with self._inflight_lock:
