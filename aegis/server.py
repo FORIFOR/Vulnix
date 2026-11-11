@@ -166,6 +166,8 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                      # approver without an admin's grant on record -> needs review
                      "needs_role_review": "approver" in o.roles and not approver_grant_recorded(o.name)}
                     for o in ops.operators()]})
+            if p == "/api/system/status":
+                return self._json(200, svc.system_status())
             if p == "/api/assets":
                 return self._json(200, svc.assets())
             if p == "/api/assets/secrets-status":

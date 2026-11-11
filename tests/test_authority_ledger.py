@@ -25,6 +25,7 @@ from tests import TEST_CONFINEMENT
 from aegis.assessment import AssessmentService, StopNotConfirmed
 from aegis.authority_ledger import AuthorityLedger, LedgerError
 from aegis.policy import PolicyError
+from aegis.network import NetworkError
 from aegis.authz import AuthzError
 from aegis.runtime import WorkerPool
 from tests.test_fail_closed import PersistenceBase
@@ -194,6 +195,89 @@ class TestLedgerCommit(LedgerBase):
         fresh = AuthorityLedger(self.dir, KEY, [self.markers])
         self.assertTrue(fresh.load(forged))
         self.assertEqual(fresh.verified_external_hosts, {})
+
+
+class TestLedgerReviewFindings(LedgerBase):
+    def replace_failing_for(self, suffix):
+        real = os.replace
+
+        def fn(src, dst):
+            if str(dst).endswith(suffix):
+                raise OSError("no")
+            return real(src, dst)
+        return patch("aegis.authority_ledger.os.replace", side_effect=fn)
+
+    def test_an_older_ledger_is_refused_even_while_the_epoch_record_lags(self):
+        led = self.granted()                                           # G1, epoch record healthy
+        g1 = (self.dir / "authority.ledger").read_bytes()
+        with self.replace_failing_for("authority.epoch"):
+            led.verified_external_hosts["two.example.test"] = {"host": "two.example.test"}
+            led.commit()                                               # G2, record still names G1
+            g2 = (self.dir / "authority.ledger").read_bytes()
+            led.verified_external_hosts.clear()
+            led.commit()                                               # G3: everything revoked
+        self.assertEqual(self.open().verified_external_hosts, {})       # G3 itself is what a restart finds
+        for stale in (g2, g1):
+            (self.dir / "authority.ledger").write_bytes(stale)          # only the ledger file is put back
+            refused = self.open()
+            self.assertTrue(refused.reason, "a superseded ledger was accepted")
+            self.assertEqual(refused.verified_external_hosts, {})
+
+    def test_the_counter_is_not_taken_from_an_unverified_ledger(self):
+        led = self.granted()
+        body = json.loads((self.dir / "authority.ledger").read_text())
+        body["generation"] = "999999999999:" + "f" * 32
+        (self.dir / "authority.ledger").write_text(json.dumps(body))
+        refused = self.open()
+        self.assertTrue(refused.reason)
+        self.assertTrue(refused.commit())
+        self.assertLess(int(refused.generation.split(":")[0]), 10 ** 6)
+        self.assertEqual(self.open().reason, "")                        # and it keeps working afterwards
+
+    def test_malformed_unverified_tables_do_not_stop_the_start(self):
+        self.granted()
+        for bad in ({"assets": 5, "real_service_hosts": 7}, {"verified_external_hosts": "x"}, []):
+            (self.dir / "authority.ledger").write_text(json.dumps(
+                {"generation": "2:" + "a" * 32, "previous": "", "tables": bad, "mac": "x"}))
+            led = self.open()
+            self.assertTrue(led.reason)
+            self.assertEqual(led.verified_external_hosts, {})
+
+    def test_a_lost_or_unreadable_ledger_means_the_name_list_is_unknown(self):
+        for damage in ("truncate", "delete", "edit"):
+            with self.subTest(damage):
+                shutil.rmtree(self.dir)
+                self.dir.mkdir()
+                self.granted()
+                if damage == "truncate":
+                    (self.dir / "authority.ledger").write_text("{ truncated")
+                elif damage == "delete":
+                    os.unlink(self.dir / "authority.ledger")
+                else:
+                    body = json.loads((self.dir / "authority.ledger").read_text())
+                    body["tables"]["real_service_hosts"] = []
+                    (self.dir / "authority.ledger").write_text(json.dumps(body))
+                led = self.open()
+                self.assertTrue(led.reason)
+                self.assertTrue(led.names_unknown)
+                self.assertIsNotNone(led.notice)
+                self.assertTrue(led.commit())
+                self.assertTrue(self.open().names_unknown)              # and it stays that way
+
+    def test_a_first_start_is_not_an_unknown_state(self):
+        led = self.open()
+        self.assertEqual(led.reason, "")
+        self.assertFalse(led.names_unknown)
+
+    def test_a_ledger_refused_only_because_of_a_marker_keeps_its_exact_name_list(self):
+        led = self.granted()
+        (self.markers / f"{led.marker_key()}.revoked").write_text(
+            json.dumps({"epochs": [led.generation], "mac": led.marker_mac([led.generation])}))
+        refused = self.open()
+        self.assertTrue(refused.reason)
+        self.assertEqual(refused.verified_external_hosts, {})
+        self.assertEqual(refused.real_service_hosts, {"svc.example.test"})
+        self.assertFalse(refused.names_unknown)
 
 
 # ---- crash at every durable step --------------------------------------------
@@ -543,3 +627,188 @@ class TestNothingLaunchesAfterTheWithdrawal(PersistenceBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestReviewFindingsStayFixed(PersistenceBase):
+    # ---- the name of a real service is never forgotten ----
+    def lab_alias(self, svc):
+        return svc.register_asset(name=HOST, kind="API", environment="x", ownership_verified=True,
+                                  authorization_ref="DEMO-X", activate_workspace=True)
+
+    def test_a_damaged_or_deleted_ledger_does_not_turn_a_real_service_into_a_lab_alias(self):
+        for damage in ("truncate", "delete", "delete-both"):
+            with self.subTest(damage):
+                self.restart()
+                self.onboard()
+                self.svc.delete_asset(self.svc.a.asset["id"], actor="appr")   # no card is left
+                self.svc.workers.kill_all()
+                if damage == "truncate":
+                    (self.dir / "authority.ledger").write_text("{ truncated")
+                elif damage == "delete":
+                    os.unlink(self.dir / "authority.ledger")
+                else:                                   # the ledger AND its epoch record are gone
+                    os.unlink(self.dir / "authority.ledger")
+                    os.unlink(self.dir / "authority.epoch")
+                again = self.open()
+                self.assertTrue(again.ledger.names_unknown)
+                self.assertIsNotNone(again.snapshot()["authority_notice"])
+                self.assertTrue(self.events("state.authority_rejected", again))
+                with self.assertRaises(ValueError):
+                    self.lab_alias(again)
+                self.assertEqual(again._resolve_host(HOST), [])
+                self.assertEqual(again._resolve_host("anything-else.example.test"), [])
+                self.assertEqual(again._resolve_host("lab.test"), ["127.0.0.1"])   # the bundled lab still works
+                again.workers.kill_all()
+                third = self.open()                                           # and a further restart changes nothing
+                self.assertTrue(third.ledger.names_unknown)
+                with self.assertRaises(ValueError):
+                    self.lab_alias(third)
+                third.workers.kill_all()
+                for f in self.dir.glob("authority*"):
+                    f.unlink()
+                (self.dir / "state.json").unlink(missing_ok=True)
+
+    def test_no_challenge_is_issued_while_the_name_cannot_be_recorded(self):
+        with patch("aegis.assessment.os.replace", side_effect=OSError("disk full")):
+            with self.assertRaises(ValueError):
+                self.svc.issue_ownership_challenge(url=self.url, approver="appr")
+        self.assertNotIn(HOST, [x["name"] for x in self.svc.assets()])
+        again = self.restart()
+        self.assertNotIn(HOST, [x["name"] for x in again.assets()])
+
+    # ---- grants ----
+    def test_scope_is_not_granted_when_the_activation_would_be_refused(self):
+        ch = self.svc.issue_ownership_challenge(url=self.url, approver="appr")["challenge"]
+        self.svc.verify_asset_ownership(url_or_host=self.url, method="dns_txt", actor="appr",
+                                        dns_lookup=self._token_lookup(ch))
+        self.svc._begin_operation()                     # a verification is in flight
+        try:
+            with self.assertRaises(ValueError):
+                self.svc.confirm_asset_scope(url_or_host=self.url, approver="appr", activate_workspace=True,
+                                             allow_loopback_test=True)
+        finally:
+            self.svc._end_operation()
+        self.assertNotIn(HOST, self.svc._verified_external_hosts)
+        self.assertNotIn(HOST, json.loads((self.dir / "authority.ledger").read_text())["tables"]["verified_external_hosts"])
+        self.assertEqual(self.events("asset.scope_confirmed"), [])
+
+    def test_a_dropped_ledger_entry_is_announced(self):
+        self.onboard()
+        self.svc.workers.kill_all()
+        os.unlink(self.dir / "state.json")              # every asset card is gone
+        again = self.open()
+        self.assertFalse(again._is_external_service_asset(HOST))
+        self.assertTrue(self.events("ledger.entry_without_asset_dropped", again))
+        self.assertIn(HOST, again.snapshot()["authority_notice"])
+        self.assertIn(HOST, again._real_service_hosts)
+        again.workers.kill_all()
+
+    # ---- an emergency stop is terminal ----
+    def test_a_verification_request_does_not_undo_an_emergency_stop(self):
+        self.onboard()
+        self.run_l1()
+        rep = self.svc.emergency_stop("appr")
+        self.assertTrue(rep["confirmed"])
+        seen = len(self.fake.seen)
+        for call in (lambda: self.svc.verify_finding("all", actor="op"),
+                     lambda: self.svc.verify_finding("f_ex_idor", actor="appr", roles={"approver"}),
+                     lambda: self.svc.verify_fix("appr")):
+            with self.assertRaises(ValueError):
+                call()
+        self.assertEqual(len(self.fake.seen), seen)
+        self.assertEqual(self.svc.gateway.state.value, "stopped")
+        snap = self.svc.snapshot()
+        self.assertEqual(snap["state"], "stopped")
+        self.assertIsNotNone(snap["stop_report"])
+        self.svc.restart("appr")                         # only an explicit new run ends the stop
+        end = time.time() + 20
+        while time.time() < end and self.svc.snapshot()["state"] == "running":
+            time.sleep(0.05)
+        self.assertEqual(self.svc.snapshot()["state"], "completed")
+
+    # ---- survivors are not forgotten ----
+    def hold_worker(self):
+        t = threading.Thread(target=lambda: self.svc.workers.run(SLEEPER, 120))
+        t.start()
+        end = time.time() + 5
+        while time.time() < end and not self.svc.workers.active_pids():
+            time.sleep(0.01)
+        return t, self.svc.workers.active_pids()[0]
+
+    def test_an_unconfirmed_stop_is_remembered_across_restart_select_and_delete(self):
+        self.onboard()
+        t, pid = self.hold_worker()
+        with patch("aegis.runtime._killpg"):             # the kill has no effect
+            rep = {}
+            stopper = threading.Thread(target=lambda: rep.update(self.svc.emergency_stop("appr")))
+            stopper.start()
+            stopper.join(30)
+            self.assertFalse(rep["confirmed"])
+            self.assertEqual(rep["survivors"], [pid])
+            self.assertEqual(self.svc.snapshot()["unstopped_workers"]["pids"], [pid])
+            self.svc.restart("appr")                     # a new run clears the stop report...
+            end = time.time() + 20
+            while time.time() < end and self.svc.snapshot()["state"] == "running":
+                time.sleep(0.05)
+            snap = self.svc.snapshot()
+            self.assertEqual(snap["unstopped_workers"]["pids"], [pid])       # ...but not the survivor
+            self.assertEqual(snap["state"], "failed")                        # and nothing new was launched
+            self.assertEqual(self.fake.seen, [])
+            self.assertTrue(any("停止を確認できていない" in e["fields"].get("reason", "") for e in self.events("deny")))
+            self.svc.select_asset("lab")
+            with self.assertRaises(StopNotConfirmed):
+                self.svc.delete_asset(next(x["id"] for x in self.svc.assets() if x["name"] == HOST), actor="appr")
+            self.assertEqual(self.svc.snapshot()["unstopped_workers"]["pids"], [pid])
+        end = time.time() + 5                            # now the kill works: confirmed late
+        while time.time() < end and self.svc.snapshot()["unstopped_workers"]:
+            time.sleep(0.05)
+        self.assertIsNone(self.svc.snapshot()["unstopped_workers"])
+        self.assertTrue(self.events("workers.stop_confirmed_late"))
+        t.join(10)
+        self.assertFalse(WorkerPool.group_alive(pid))
+
+    def test_the_kill_is_repeated_until_it_takes(self):
+        from aegis import runtime
+        pool = WorkerPool()
+        t = threading.Thread(target=lambda: pool.run(SLEEPER, 120))
+        t.start()
+        while not pool.active_pids():
+            time.sleep(0.01)
+        real, calls = runtime._killpg, {"n": 0}
+
+        def flaky(pgid):
+            calls["n"] += 1
+            if calls["n"] >= 3:
+                real(pgid)
+        with patch("aegis.runtime._killpg", side_effect=flaky):
+            self.assertEqual(pool.terminate_active(confirm_timeout_s=5.0), [])
+        self.assertGreaterEqual(calls["n"], 3)
+        t.join(10)
+
+    # ---- nothing more is looked up or fetched after a withdrawal ----
+    def test_no_proof_recheck_for_a_scope_withdrawn_during_name_resolution(self):
+        self.onboard()
+        looked = []
+        self.svc._proof_dns_lookup = lambda name: looked.append(name) or []
+        ext = self.svc._verified_external_hosts[HOST]
+        for withdraw in (self.svc.gateway.invalidate_pending,
+                         lambda: self.svc._verified_external_hosts.pop(HOST)):
+            epoch0 = self.svc.gateway._launch_epoch
+            withdraw()                                   # lands while the name lookup is still running
+            with self.assertRaises(NetworkError):
+                self.svc._require_addresses_covered_by_proof(HOST, ext, ["203.0.113.9"], epoch0)
+        self.assertEqual(looked, [])
+
+    def test_results_measured_after_the_scope_ended_are_not_recorded(self):
+        self.onboard()
+        real = self.svc.gateway.execute
+
+        def expire_during_run(proposal, token):
+            d = real(proposal, token)
+            self.svc._verified_external_hosts[HOST]["not_after"] = time.time() - 1   # the window closed meanwhile
+            return d
+        self.svc.gateway.execute = expire_during_run
+        snap = self.run_l1()
+        self.assertEqual(snap["state"], "failed")
+        self.assertIn("診断許可が終了", snap["failure"]["reason"])
+        self.assertFalse([f for f in snap["findings"] if f.get("evidence")])

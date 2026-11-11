@@ -16,10 +16,13 @@ interface NoticeSource {
 
 /** "Stopped" is only claimed when the server confirmed that every worker is gone. */
 export function stoppedHeadline(s: NoticeSource): string {
-  if (s.stop_report && !s.stop_report.confirmed) {
-    return `緊急停止を実行しましたが、停止を確認できていません（残存 Worker ${s.stop_report.survivors.length} 件）。新しい操作は拒否されます。プロセスを確認してください。`;
+  const survivors = s.unstopped_workers?.pids.length ?? 0;
+  if ((s.stop_report && !s.stop_report.confirmed) || survivors > 0) {
+    const n = Math.max(survivors, s.stop_report?.survivors.length ?? 0);
+    return `緊急停止を実行しましたが、停止を確認できていません（残存 Worker ${n} 件）。確認できるまで新しいWorkerは起動しません。プロセスを確認してください。`;
   }
-  return "緊急停止しました。実行許可を失効させ、実行中の処理を強制終了しました。";
+  if (!s.stop_report) return "緊急停止の状態です。「再診断を実行」で新しい診断を開始できます。";
+  return "緊急停止しました。実行許可を失効させ、実行中の処理の終了を確認しました。「再診断を実行」まで検証は実行できません。";
 }
 
 export function failureHeadline(s: NoticeSource): string {

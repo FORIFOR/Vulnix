@@ -48,7 +48,10 @@ export default function Dashboard() {
       const res = await postJSON<{ assets: Asset[] }>("/api/assets/delete", { id: a.id });
       setAssets(res.assets);
     } catch (e) {
+      // The error stays on screen (e.g. the asset was deleted but a worker could not be
+      // confirmed stopped). The list is re-read so it shows what the server actually holds.
       setErr((e as Error).message);
+      getJSON<Asset[]>("/api/assets").then(setAssets, () => {});
     } finally {
       setBusyId(null);
     }

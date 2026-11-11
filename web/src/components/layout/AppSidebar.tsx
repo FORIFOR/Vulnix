@@ -2,7 +2,31 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useState } from "react";
+import { getJSON } from "@/lib/api";
 import { useSession } from "@/lib/useSession";
+
+interface SystemStatus { unstopped_workers: { host: string; pids: number[] } | null }
+
+/** Shown on every page: a worker that could not be confirmed stopped is never out of sight. */
+function UnstoppedWorkersAlert() {
+  const [status, setStatus] = useState<SystemStatus | null>(null);
+  useEffect(() => {
+    let live = true;
+    const load = () => getJSON<SystemStatus>("/api/system/status").then((s) => { if (live) setStatus(s); }, () => {});
+    load();
+    const timer = setInterval(load, 5000);
+    return () => { live = false; clearInterval(timer); };
+  }, []);
+  const u = status?.unstopped_workers;
+  if (!u || u.pids.length === 0) return null;
+  return (
+    <div role="alert" className="w-full rounded-lg border border-red-300 bg-red-50 px-2 py-1.5 text-[11px] leading-snug text-red-900 md:mb-3 dark:border-red-900 dark:bg-red-950/40 dark:text-red-100">
+      <div className="font-semibold">Workerの停止を確認できていません</div>
+      {u.host}：{u.pids.length} 件（PID {u.pids.join(", ")}）。停止・取り消し・削除は完了として扱いません。新しいWorkerは起動しません。
+    </div>
+  );
+}
 
 const NAV = [
   { href: "/dashboard", label: "ホーム", icon: "⌂" },
@@ -27,6 +51,7 @@ export function AppSidebar() {
           <span className="hidden text-[11px] text-zinc-500 md:block">Find. Prove. Secure.</span>
         </span>
       </Link>
+      <UnstoppedWorkersAlert />
       {NAV.map((n) => {
         const active = path === n.href || (n.href !== "/dashboard" && path.startsWith(n.href.split("/").slice(0, 2).join("/")));
         return (

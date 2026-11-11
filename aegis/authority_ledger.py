@@ -119,6 +119,11 @@ class AuthorityLedger:
         self.notice: str | None = None   # why saved authority was not restored at startup
         self.rejected_reason = ""
         self.assets_known = False        # False until a ledger that lists assets was loaded or written
+        # True once the list of real-service names may be incomplete (the ledger was
+        # unreadable, missing, or not acceptable). From then on EVERY name that is not
+        # a bundled lab name is treated as a real service. Part of the signed tables.
+        self.names_unknown = False
+        self._superseded: set[str] = set()   # generations replaced while the epoch record lagged
         self.marker_pending = False
         self._counter = 0
         self._epoch_on_disk = ""         # what authority.epoch holds, as far as we know
@@ -130,7 +135,8 @@ class AuthorityLedger:
                 "ownership_proofs": self.ownership_proofs,
                 "verified_external_hosts": self.verified_external_hosts,
                 "real_service_hosts": sorted(self.real_service_hosts),
-                "accepted_profiles": self.accepted_profiles}
+                "accepted_profiles": self.accepted_profiles,
+                **({"names_unknown": True} if self.names_unknown else {})}
 
     def _set_tables(self, t: dict) -> None:
         self.assets = {str(k).lower(): dict(v) for k, v in (t.get("assets") or {}).items() if isinstance(v, dict)}
@@ -141,6 +147,7 @@ class AuthorityLedger:
                                         if isinstance(v, dict)}
         self.real_service_hosts = {str(h).lower() for h in (t.get("real_service_hosts") or []) if isinstance(h, str)}
         self.accepted_profiles = {str(k): str(v) for k, v in (t.get("accepted_profiles") or {}).items()}
+        self.names_unknown = self.names_unknown or t.get("names_unknown") is True      # never switched back
 
     def digest(self) -> str:
         return hashlib.sha256(canonical(self.tables()).encode("utf-8")).hexdigest()
@@ -215,11 +222,12 @@ class AuthorityLedger:
                 pass
             return type(e).__name__
 
-    def load(self, legacy: dict | None = None) -> str:
+    def load(self, legacy: dict | None = None, expect_ledger: bool = False) -> str:
         """Restore the tables from disk. Returns "" or the reason nothing that
         grants authority was restored. `legacy`: a parsed state.json of a version
         that kept the signed authority block there - imported once, only when no
-        ledger file exists."""
+        ledger file exists. `expect_ledger`: the display state says a ledger was
+        in use, so its absence is a loss, not a first start."""
         epoch = self.read_epoch()
         self._epoch_on_disk = epoch or ""
         self._counter = self._count(epoch)
@@ -244,18 +252,21 @@ class AuthorityLedger:
                     pass
             else:
                 untrusted = tables
-                self._counter = max(self._counter, self._count(generation))
                 if not hmac.compare_digest(str(body.get("mac") or ""), self._mac(generation, previous, tables)):
                     reason = "integrity check failed (unsigned or modified)"
+                elif not _GENERATION.fullmatch(generation):
+                    reason = "integrity check failed (generation)"
                 elif epoch is None:
+                    self._counter = max(self._counter, self._count(generation))     # verified: safe to count from
                     reason = "not the latest authority state (missing or emptied epoch record)"
                 elif not (hmac.compare_digest(epoch, generation)
                           or (previous and hmac.compare_digest(epoch, previous))):
                     reason = "not the latest authority state (older copy)"
                 else:
+                    self._counter = max(self._counter, self._count(generation))
                     candidate, cand_generation = tables, generation
                     self.assets_known = True
-        elif isinstance(legacy, dict):
+        elif isinstance(legacy, dict) and ("authority_mac" in legacy or "authority_epoch" in legacy):
             tables = {k: legacy.get(k) for k in TABLES if k != "assets"}
             tables = {"ownership_proofs": tables["ownership_proofs"] if isinstance(tables["ownership_proofs"], dict) else {},
                       "verified_external_hosts": (tables["verified_external_hosts"]
@@ -263,17 +274,20 @@ class AuthorityLedger:
                       "real_service_hosts": (tables["real_service_hosts"]
                                              if isinstance(tables["real_service_hosts"], list) else []),
                       "accepted_profiles": tables["accepted_profiles"] if isinstance(tables["accepted_profiles"], dict) else {}}
-            if any(tables.values()):
-                untrusted = tables
-                generation = str(legacy.get("authority_epoch") or "")
-                self._counter = max(self._counter, self._count(generation))
-                if not hmac.compare_digest(str(legacy.get("authority_mac") or ""), self.legacy_mac(tables, generation)):
-                    reason = "integrity check failed (unsigned or modified)"
-                elif epoch is None or not hmac.compare_digest(epoch, generation):
-                    reason = "not the latest authority state (older copy or missing epoch record)"
-                else:
-                    candidate, cand_generation = tables, generation
+            untrusted = tables
+            generation = str(legacy.get("authority_epoch") or "")
+            if not hmac.compare_digest(str(legacy.get("authority_mac") or ""), self.legacy_mac(tables, generation)):
+                reason = "integrity check failed (unsigned or modified)"
+            elif epoch is None or not hmac.compare_digest(epoch, generation):
+                reason = "not the latest authority state (older copy or missing epoch record)"
+            else:
+                candidate, cand_generation = tables, generation
+        elif self.epoch_path.exists() or expect_ledger:
+            # an epoch record (or a display state written alongside a ledger) without
+            # a ledger: the ledger was removed
+            reason = "the authority ledger is missing"
 
+        names_authentic = candidate is not None      # verified AND current: its name list is complete
         marker = self._marker_hit({cand_generation} if candidate is not None else {epoch or ""})
         if marker and (candidate is not None or untrusted):
             candidate, reason = None, reason or marker
@@ -294,9 +308,14 @@ class AuthorityLedger:
             # "This name is a real service" only ever RESTRICTS (never a lab alias,
             # never an external model), so it is kept even from a state that is not trusted.
             for key in ("real_service_hosts", "verified_external_hosts", "ownership_proofs", "assets"):
-                for name in (untrusted.get(key) or []):
+                names = untrusted.get(key) if isinstance(untrusted, dict) else None
+                for name in (names if isinstance(names, (list, dict)) else []):
                     if isinstance(name, str) and name:
                         self.real_service_hosts.add(name.rstrip(".").lower())
+            if reason and not names_authentic:
+                # Which names are real services can no longer be known for certain
+                # (the list may be gone, edited, or older than the truth).
+                self.names_unknown = True
         self.rejected_reason = reason
         if reason:
             self.notice = ("保存されていた所有確認・範囲確認は引き継いでいません"
@@ -320,13 +339,30 @@ class AuthorityLedger:
             except Exception as e:
                 self.error = type(e).__name__
                 return "ledger_failed"
+            replaced = self.generation
             self.generation, self._committed, self.assets_known = generation, digest, True     # committed
+            if replaced and self._epoch_on_disk != replaced:
+                pass                                         # that copy never matched the epoch record
+            if replaced:
+                self._superseded.add(replaced)
         try:
             self._write_epoch(self.generation)
         except Exception as e:
+            # The new ledger is on disk and acceptable (its `previous` is what the
+            # epoch record holds). But so would be an OLDER ledger written while the
+            # record lagged, or the one the record still names: those are named in a
+            # marker until the record catches up.
             self.error = type(e).__name__
+            stale = {g for g in self._superseded if g and g != self.generation}
+            if stale:
+                written = self._write_markers(stale)
+                self.marker_pending = self.marker_pending or written > 0
+                if not written:
+                    self._record("state.revocation_not_durable",
+                                 reason="epoch record and marker locations are unwritable")
             return "epoch_failed"
         self.error = None
+        self._superseded.clear()
         if self.marker_pending:
             self._clear_markers()
         return "ok"
@@ -372,6 +408,10 @@ class AuthorityLedger:
         self.commit_or_rollback(before)
 
     # ---- a reduction that cannot be written where the ledger lives -----------
+    def invalidate(self) -> None:
+        """Public form: the caller knows memory and disk disagree."""
+        self._invalidate()
+
     def _invalidate(self) -> None:
         self._committed = None
         gone = False
@@ -392,7 +432,7 @@ class AuthorityLedger:
             self._epoch_on_disk = ""
             sync_dir(self.data_dir)
             return                      # the copy on disk can no longer verify
-        written = self._write_markers()
+        written = self._write_markers(self._disk_generations() | self._superseded)
         self.marker_pending = self.marker_pending or written > 0
         if not written:
             self._record("state.revocation_not_durable",
@@ -429,13 +469,13 @@ class AuthorityLedger:
             pass
         return found
 
-    def _write_markers(self) -> int:
+    def _write_markers(self, generations: set[str]) -> int:
         written = 0
         uid = os.getuid() if hasattr(os, "getuid") else 0
         for path in self.marker_paths():
             # Name what is on disk NOW, and keep whatever an earlier marker already
             # named: a marker is only ever widened, never narrowed.
-            stale = self._disk_generations()
+            stale = set(generations)
             stale.discard("")
             try:
                 if os.lstat(path).st_uid == uid:

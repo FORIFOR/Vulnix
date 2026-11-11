@@ -266,12 +266,8 @@ class Gateway:
         self.tokens.revoke_all();                 mark("2_revoke_tokens")
         self.egress.block_all();                  mark("3_block_egress")
         rep.killed_pids = self.workers.kill_all(); mark("4_kill_workers")
-        deadline = time.monotonic() + confirm_timeout_s
-        while True:
-            rep.survivors = self.workers.still_running(rep.killed_pids)
-            if not rep.survivors or time.monotonic() > deadline:
-                break
-            time.sleep(0.02)
+        # keeps killing until every worker is confirmed dead or the time is up
+        rep.survivors = self.workers.confirm_stopped(rep.killed_pids, confirm_timeout_s)
         self.audit.record("emergency_stop", actor=actor, killed=rep.killed_pids,
                           survivors=rep.survivors);  mark("5_persist_audit")
         rep.confirmed = not rep.survivors and self.audit.verify()

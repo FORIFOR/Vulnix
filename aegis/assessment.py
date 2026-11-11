@@ -267,7 +267,7 @@ class AssessmentService:
         ]
         # No service is registered on our behalf: real services enter only through
         # the ownership flow, and whatever was saved (including deletions) is kept.
-        self._unstopped: dict | None = None      # workers a revocation/deletion could not confirm dead
+        self._unstopped: list[dict] = []         # workers a withdrawal or stop could not confirm dead
         self._load_state_locked()
         with self._lock:
             self._reconcile_assets_with_ledger_locked()
@@ -383,6 +383,8 @@ class AssessmentService:
             if (name in self.ledger.verified_external_hosts or name in self.ledger.ownership_proofs
                     or name in self.ledger.assets):
                 self.audit.record("ledger.entry_without_asset_dropped", host=name)
+                self._authority_notice = ("資産の記録が見つからないため、" + name +
+                                          " の所有確認・範囲確認を取り消しました。登録からやり直してください")
             self.ledger.verified_external_hosts.pop(name, None)
             self.ledger.ownership_proofs.pop(name, None)
             self.ledger.assets.pop(name, None)
@@ -405,10 +407,19 @@ class AssessmentService:
         self.gateway.invalidate_pending()
         if (self.a.asset.get("name") or "").lower() != h:
             return                  # workers only ever run against the active asset
-        survivors = self.workers.terminate_active(confirm_timeout_s=5.0)
+        self._note_unstopped_locked(h, self.workers.terminate_active(confirm_timeout_s=5.0), self.workers)
+
+    def system_status(self) -> dict:
+        """Conditions every page has to show, whatever asset is open."""
+        with self._lock:
+            return {"unstopped_workers": self._unstopped_now_locked(),
+                    "persistence_error": self._persist_error,
+                    "authority_notice": self._authority_notice}
+
+    def _note_unstopped_locked(self, host: str, survivors: list[int], pool) -> None:
         if survivors:
-            self._unstopped = {"host": h, "pids": survivors, "at": time.time(), "pool": self.workers}
-            self.audit.record("workers.stop_unconfirmed", host=h, survivors=survivors)
+            self._unstopped.append({"host": host, "pids": list(survivors), "at": time.time(), "pool": pool})
+            self.audit.record("workers.stop_unconfirmed", host=host, survivors=list(survivors))
 
     def _raise_if_unstopped(self, done: str) -> None:
         with self._lock:
@@ -419,17 +430,22 @@ class AssessmentService:
                 "プロセスを確認し、必要ならコントロールプレーンを停止してください")
 
     def _unstopped_now_locked(self) -> dict | None:
-        """The workers a withdrawal could not confirm dead that are STILL alive."""
-        u = self._unstopped
-        if not u:
+        """Workers that a withdrawal, reset or stop could not confirm dead and that
+        are STILL not confirmed dead. While there are any, nothing new launches."""
+        keep = []
+        for u in self._unstopped:
+            alive = u["pool"].confirm_stopped(u["pids"], 0.0)      # one more kill, one more look
+            if alive:
+                u["pids"] = alive
+                keep.append(u)
+            else:
+                self.audit.record("workers.stop_confirmed_late", host=u["host"], pids=u["pids"])
+        self._unstopped = keep
+        if not keep:
             return None
-        alive = u["pool"].still_running(u["pids"])
-        if not alive:
-            self.audit.record("workers.stop_confirmed_late", host=u["host"], pids=u["pids"])
-            self._unstopped = None
-            return None
-        u["pids"] = alive
-        return {"host": u["host"], "pids": list(alive), "at": u["at"]}
+        return {"host": "、".join(sorted({u["host"] for u in keep})),
+                "pids": sorted({p for u in keep for p in u["pids"]}),
+                "at": min(u["at"] for u in keep)}
 
     def _external_entry(self, host: str | None) -> dict | None:
         """The verified-external record for `host`, only while it is fully valid
@@ -484,6 +500,10 @@ class AssessmentService:
         h = (host or "").rstrip(".").lower()
         if h in self._verified_external_hosts or h in self._real_service_hosts:
             return True
+        if self.ledger.names_unknown and h and h not in ("lab.test", "api.lab.test"):
+            # the list of real-service names was lost or could not be trusted once:
+            # every name that is not a bundled lab name is treated as a real service
+            return True
         return any(x.get("name", "").lower() == h and x.get("challenge")
                    for x in (self.a.asset, *self._extra_assets))
 
@@ -495,7 +515,9 @@ class AssessmentService:
         if self._in_ownership_flow(h):
             # A host that went through the ownership flow is NEVER silently
             # redirected to the local lab: it resolves for real or not at all.
-            ext = self._external_entry(h)
+            with self._lock:
+                ext = self._external_entry(h)
+                epoch0 = self.gateway._launch_epoch       # every withdrawal and stop moves this on
             if ext is None:
                 return []
             if self._persist_error:
@@ -516,13 +538,20 @@ class AssessmentService:
                     )
                 safe_addrs.append(str(ip))
             if not allow_loopback:
-                self._require_addresses_covered_by_proof(h, ext, safe_addrs)
+                self._require_addresses_covered_by_proof(h, ext, safe_addrs, epoch0)
             return safe_addrs
         if h in self._allowed_hosts:
             return ["127.0.0.1"]
         return []
 
-    def _require_addresses_covered_by_proof(self, host: str, ext: dict, addrs: list[str]) -> None:
+    def _withdrawn_since_locked(self, host: str, ext: dict, epoch0: int | None) -> bool:
+        return (self._verified_external_hosts.get(host) is not ext
+                or self.gateway.state is not State.RUNNING
+                or self._stale_runner()
+                or (epoch0 is not None and self.gateway._launch_epoch != epoch0))
+
+    def _require_addresses_covered_by_proof(self, host: str, ext: dict, addrs: list[str],
+                                            epoch0: int | None = None) -> None:
         """Ownership was proven for a NAME; traffic goes to ADDRESSES. Whenever the
         name resolves to an address that no proof has covered yet (first use, DNS
         change, takeover of a dangling record), the proof is checked again before
@@ -540,6 +569,11 @@ class AssessmentService:
         stale = time.time() - float(ext.get("addresses_verified_at") or 0) > ADDRESS_PROOF_MAX_AGE_S
         if not new and not stale:
             return
+        with self._lock:
+            # the name lookup may have taken long: nothing more is looked up or
+            # fetched for a scope that was withdrawn or stopped in the meantime
+            if self._withdrawn_since_locked(host, ext, epoch0):
+                raise NetworkError(f"{host} の診断許可は取り消しまたは停止済みです。所有の再確認は行いません")
         token = challenge_for_host(host, self._ownership_secret)["token"]
         method = str(ext.get("proof_method") or "dns_txt")
         ok, detail, address_bound = False, "", False
@@ -559,6 +593,10 @@ class AssessmentService:
         except Exception as e:      # any failure to re-prove is a failed proof
             ok, detail = False, f"再確認に失敗: {type(e).__name__}"
         with self._lock:
+            if self._withdrawn_since_locked(host, ext, epoch0):
+                # withdrawn or stopped while the proof was being re-checked: its
+                # outcome is not recorded and nothing is sent
+                raise NetworkError(f"{host} の診断許可は取り消しまたは停止済みです")
             if ok:
                 live = self._verified_external_hosts.get(host)
                 if live is not None:
@@ -634,6 +672,8 @@ class AssessmentService:
         with self._lock:
             if self._stale_runner():
                 raise PolicyError("この要求を出したワークスペースは停止または切り替え済みです")
+            if self._unstopped_now_locked():
+                raise PolicyError("停止を確認できていないWorkerが残っているため、新しいWorkerは起動しません")
             if not self._in_ownership_flow(host):
                 return
             ext = self._external_entry(host)
@@ -741,7 +781,10 @@ class AssessmentService:
                 raise ValueError("承認できるのは、データディレクトリに置かれた導入先プロファイルだけです")
             if not sha256 or src["sha256"] != sha256:
                 raise ValueError("プロファイルの内容が表示時から変わっています。内容を確認し直してください")
+            self._require_working_store()
+            before = self.ledger.snapshot()
             self._accepted_profiles[profile_id] = src["sha256"]
+            self._commit_grant_locked(before, "プロファイルの承認")      # committed, or not accepted at all
             self.l2 = fresh
             self._apply_profile_acceptance_locked()
             self._save_state_locked()
@@ -853,6 +896,10 @@ class AssessmentService:
             self.ledger.commit()
         except Exception as e:          # never expected; unknown means not saved
             self.ledger.error = type(e).__name__
+            try:
+                self.ledger.invalidate()
+            except Exception:
+                pass
         state_error = None
         try:
             payload = {
@@ -870,6 +917,9 @@ class AssessmentService:
                 "chat_messages": self.a.chat_messages,
                 "defense_comparison": self.a.defense_comparison,
                 "failure": self.a.failure,
+                # authority lives in authority.ledger; this only says that one is in use,
+                # so that a ledger that disappears is noticed as a loss
+                "authority_ledger": True,
                 "extra_assets": self._extra_assets,
                 "allowed_hosts": sorted(self._allowed_hosts),
                 "authorization_ref": self.a.engagement.authorization_ref,
@@ -934,7 +984,7 @@ class AssessmentService:
             except (OSError, ValueError) as e:
                 data, unreadable = None, type(e).__name__
         had_ledger = self.ledger.path.exists()
-        rejected_reason = self.ledger.load(legacy=data)
+        rejected_reason = self.ledger.load(legacy=data, expect_ledger=bool(data and data.get("authority_ledger")))
         if had_ledger and data and any(data.get(k) for k in (
                 "ownership_proofs", "verified_external_hosts", "real_service_hosts", "accepted_profiles")):
             # authority is read from the ledger only; whatever state.json says about it is not used
@@ -950,6 +1000,7 @@ class AssessmentService:
             for name in (*self.ledger.assets, *self.ledger.verified_external_hosts, *self.ledger.ownership_proofs):
                 self.ledger.real_service_hosts.add(name)
             self.ledger.assets, self.ledger.verified_external_hosts, self.ledger.ownership_proofs = {}, {}, {}
+            self.ledger.accepted_profiles = {}
             self._authority_notice = "保存された状態を読み取れないため、実サービスの所有確認・範囲確認は引き継いでいません"
             self.audit.record("state.unreadable", error=unreadable)
             try:        # keep what was there for whoever has to find out why
@@ -1303,6 +1354,12 @@ class AssessmentService:
         with self._lock:
             return h in self._ownership_proofs or h in self._verified_external_hosts
 
+    def _refuse_after_stop_locked(self) -> None:
+        """An emergency stop is ended only by an explicit new run ("restart"), never
+        as a side effect of some other request."""
+        if self.gateway.state is State.STOPPED or self.a.state == "stopped":
+            raise ValueError("緊急停止中です。検証は実行できません。「再診断を実行」で新しい診断を開始してください")
+
     def _refuse_while_verifying_locked(self) -> None:
         if self._inflight:
             raise ValueError("検証の実行中は対象を切り替え・変更できません。完了してからやり直してください")
@@ -1420,10 +1477,13 @@ class AssessmentService:
             existing = self._asset_record(host)        # active asset or not: same handling
             if existing is not None and not self._in_ownership_flow(host):
                 raise ValueError("この名前は模擬ラボの対象として登録されています。先に削除してから実サービスとして登録してください")
-            if existing is self.a.asset and self.a.state == "running":
-                raise ValueError("診断実行中の対象は変更できません。先に停止してください")
+            if existing is self.a.asset and self.a.state in ("running", "paused"):
+                raise ValueError("診断の実行中・一時停止中の対象は変更できません。先に停止してください")
             if existing is self.a.asset:
                 self._refuse_while_verifying_locked()
+            # the name must be durably recorded as a real service before a challenge
+            # for it exists anywhere
+            self._require_working_store()
             self._real_service_hosts.add(host)
             if existing is not None:
                 if (existing.get("scheme"), existing.get("port")) != (parsed["scheme"], parsed["port"]) and (
@@ -1473,6 +1533,13 @@ class AssessmentService:
                 }
                 self._extra_assets.insert(0, asset_rec)
             self._save_state_locked()
+            if self.ledger.error:
+                # the registration is not in the ledger: a challenge is not handed out
+                # for a name that a restart would not know as a real service
+                if existing is None:
+                    self._extra_assets = [x for x in self._extra_assets if x is not asset_rec]
+                raise ValueError("権限台帳に保存できないため、登録できませんでした。保存先を確認してください")
+        self._raise_if_unstopped("対象の宛先を変更し、以前の診断許可を取り消しました")
 
         self.audit.record(
             "asset.challenge_issued",
@@ -1628,6 +1695,12 @@ class AssessmentService:
             now = time.time()
             # Only the signed proof table counts. The asset record is display state
             # (it is restored from disk unsigned) and is never consulted here.
+            if (activate_workspace and self.a.state != "running"
+                    and target_asset.get("id") != self.a.asset.get("id")):
+                # whatever can still refuse the activation refuses BEFORE the scope is granted
+                self._refuse_while_verifying_locked()
+                if self.a.state == "paused":
+                    raise ValueError("診断の一時停止中は対象を切り替えられません。先に停止してください")
             proof = self._ownership_proofs.get(host)
             expected = hashlib.sha256(
                 challenge_for_host(host, self._ownership_secret)["token"].encode("utf-8")).hexdigest()
@@ -1794,7 +1867,11 @@ class AssessmentService:
     def _reset_workspace_locked(self) -> None:
         self._run_generation += 1          # any runner of the previous workspace is now stale
         self.gateway.invalidate_pending()  # and a request still waiting in the Gateway cannot launch
-        self.workers.kill_all()
+        old = self.workers
+        # the previous workspace's workers are killed AND confirmed dead; any that
+        # are not stay on record (and keep everything new from launching)
+        self._note_unstopped_locked((self.a.asset.get("name") or "").lower(),
+                                    old.confirm_stopped(old.kill_all(), 5.0), old)
         self.workers = WorkerPool(max_concurrent=2)
         self.gateway.workers = self.workers
         self.gateway._state = State.RUNNING
@@ -1940,16 +2017,20 @@ class AssessmentService:
             self._set_state("running")
 
     def emergency_stop(self, actor: str) -> dict:
+        # The whole stop runs under the service lock: no request can reset the
+        # workspace or change state between "workers killed" and "stopped recorded".
         with self._lock:
             # The stop ends the generation: a runner that is past its last checkpoint
             # can no longer write "done"/"completed" over what the stop records.
             self._run_generation += 1
-        rep = self.gateway.emergency_stop(actor)
-        report = {"actor": actor, "confirmed": rep.confirmed, "killed_pids": rep.killed_pids,
-                  "survivors": rep.survivors,
-                  "steps": [{"name": n, "elapsed_ms": round(t * 1000, 2)} for n, t in rep.steps],
-                  "at": time.time()}
-        with self._lock:
+            pool = self.workers
+            rep = self.gateway.emergency_stop(actor)
+            report = {"actor": actor, "confirmed": rep.confirmed, "killed_pids": rep.killed_pids,
+                      "survivors": rep.survivors,
+                      "steps": [{"name": n, "elapsed_ms": round(t * 1000, 2)} for n, t in rep.steps],
+                      "at": time.time()}
+            # survivors stay on record beyond this report (a later restart clears the report)
+            self._note_unstopped_locked((self.a.asset.get("name") or "").lower(), rep.survivors, pool)
             self.a.stop_report = report
             for p in self.a.phases:
                 if p["status"] in ("pending", "running"):
@@ -2053,8 +2134,7 @@ class AssessmentService:
             raise ValueError("診断を一時停止中です。再開または停止してから検証を実行してください")
         if finding_id == "all":
             with self._lock:
-                if self.gateway.state is State.STOPPED:
-                    self._reset_workspace_locked()
+                self._refuse_after_stop_locked()
                 # this thread now belongs to the workspace it verifies: after a stop
                 # or reset it can neither write a result nor send a request
                 self._tls.gen = self._run_generation
@@ -2113,8 +2193,7 @@ class AssessmentService:
         with self._lock:
             if finding_id not in self.a.findings:
                 raise ValueError("指定された問題が見つかりません")
-            if self.gateway.state is State.STOPPED:
-                self._reset_workspace_locked()
+            self._refuse_after_stop_locked()
             self._tls.gen = self._run_generation
             self._ensure_active_window_locked()
             was_failed = self.a.state == "failed"
@@ -2894,6 +2973,14 @@ class AssessmentService:
         if not d.allowed:
             self._fail(f"Gateway が拒否しました: {d.reason}")
             return None, None
+        if origin == "real_service":
+            with self._lock:
+                still = self._external_entry(self.a.asset.get("name")) is not None
+            if not still:
+                # the scope ended (expired or withdrawn) while the worker ran: what it
+                # brought back is not recorded as a result of an authorised run
+                self._fail("診断許可が終了したため、この実行の結果は記録しません")
+                return None, None
         if d.result.killed or d.result.returncode != 0:
             self._fail(f"Worker が異常終了しました (rc={d.result.returncode})")
             return None, None

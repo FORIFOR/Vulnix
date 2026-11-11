@@ -39,11 +39,18 @@ test("authority that was not restored is announced", () => {
   assert.equal(statusNotices({ state: "idle", authority_notice: "引き継いでいません" })[0].tone, "warn");
 });
 
-test("a stop is only called a stop when it was confirmed", () => {
-  assert.match(stoppedHeadline({ state: "stopped", stop_report: { confirmed: true, survivors: [] } }), /緊急停止しました/);
-  const h = stoppedHeadline({ state: "stopped", stop_report: { confirmed: false, survivors: [4242] } });
-  assert.match(h, /確認できていません/);
-  assert.doesNotMatch(h, /強制終了しました/);
+test("a stop is only called confirmed when it was", () => {
+  assert.match(stoppedHeadline({ state: "stopped", stop_report: { confirmed: true, survivors: [] } }), /終了を確認しました/);
+  for (const snap of [
+    { state: "stopped", stop_report: { confirmed: false, survivors: [4242] } },
+    { state: "stopped", stop_report: { confirmed: true, survivors: [] }, unstopped_workers: { host: "h", pids: [4242] } },
+    { state: "stopped", stop_report: null, unstopped_workers: { host: "h", pids: [4242] } },
+  ]) {
+    const h = stoppedHeadline(snap);
+    assert.match(h, /確認できていません/);
+    assert.doesNotMatch(h, /確認しました/);
+  }
+  assert.doesNotMatch(stoppedHeadline({ state: "stopped", stop_report: null }), /確認しました/);
 });
 
 test("a withdrawal whose worker is still alive is shown as not completed", () => {

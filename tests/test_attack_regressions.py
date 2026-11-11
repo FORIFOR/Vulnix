@@ -435,6 +435,25 @@ class TestPlantedOrEditedProfile(RealServiceBase):
         self.assertEqual(len(svc.l2_profiles_status()["rejected"]), 1)
         self.assertEqual(svc.l2.runnable_check_ids(), ())
 
+    def test_an_acceptance_that_cannot_be_committed_is_not_an_acceptance(self):
+        self.write(self.site_profile())
+        svc = self.start()
+        sha = svc.l2_profiles_status()["profiles"][0]["sha256"]
+        svc._save_state_locked()
+        real = os.replace
+
+        def ledger_fails(src, dst):
+            if str(dst).endswith("authority.ledger"):
+                raise OSError("disk full")
+            return real(src, dst)
+        with patch("aegis.authority_ledger.os.replace", side_effect=ledger_fails):
+            with self.assertRaises(ValueError):
+                svc.accept_l2_profile("deepnote", sha, actor="root")
+        self.assertEqual(svc._accepted_profiles, {})
+        self.assertEqual(svc.l2.runnable_check_ids(), ())
+        self.assertTrue((self.dir / "authority.epoch").exists())     # nothing else was invalidated
+        self.assertEqual(self.start()._accepted_profiles, {})
+
     def test_acceptance_cannot_be_written_into_the_state_file(self):
         self.write(self.site_profile())
         svc = self.start()

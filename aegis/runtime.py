@@ -116,24 +116,36 @@ class WorkerPool:
                 alive.append(pid)
         return alive
 
+    def confirm_stopped(self, pids: list[int], confirm_timeout_s: float = 5.0) -> list[int]:
+        """Kill `pids` (and the cgroups of confined ones) and keep killing until they
+        are confirmed dead or the time is up. Returns the ones NOT confirmed dead.
+        The kill is repeated because a worker started through sudo may not have
+        joined its cgroup yet when the first kill arrives."""
+        if not pids:
+            return []
+        deadline = time.monotonic() + confirm_timeout_s
+        last_kill = 0.0
+        while True:
+            now = time.monotonic()
+            if now - last_kill >= 0.25:
+                last_kill = now
+                with self._lock:
+                    sessions = [self._sessions[p] for p in pids if p in self._sessions]
+                for sess in sessions:
+                    sess.kill()
+                for pid in pids:
+                    _killpg(pid)
+            alive = self.still_running(pids)
+            if not alive or time.monotonic() > deadline:
+                return alive
+            time.sleep(0.02)
+
     def terminate_active(self, confirm_timeout_s: float = 5.0) -> list[int]:
         """Kill every worker that is running now WITHOUT closing the pool, wait
         until they are confirmed dead, and return the ones that are not."""
         with self._lock:
             pids = list(self._procs)
-            sessions = [self._sessions[p] for p in pids if p in self._sessions]
-        if not pids:
-            return []
-        for sess in sessions:
-            sess.kill()
-        for pid in pids:
-            _killpg(pid)
-        deadline = time.monotonic() + confirm_timeout_s
-        while True:
-            alive = self.still_running(pids)
-            if not alive or time.monotonic() > deadline:
-                return alive
-            time.sleep(0.02)
+        return self.confirm_stopped(pids, confirm_timeout_s)
 
     @staticmethod
     def group_alive(pgid: int) -> bool:
