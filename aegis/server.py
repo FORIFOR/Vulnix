@@ -25,7 +25,7 @@ from urllib.parse import parse_qs, urlsplit
 from .assessment import AssessmentService
 from .control_verification import run_live_control_verification
 from .lab import set_lab_mode, start_lab
-from .operators import AuthError, MFAChallenge, OperatorStore
+from .operators import AuthError, LockedOut, MFAChallenge, OperatorStore
 from .ownership import parse_service_target
 from .real_software_cve import run_real_software_cve_comparison
 
@@ -46,6 +46,8 @@ def development_mode() -> bool:
 
 
 MAX_BODY_BYTES = 1_000_000
+# Routes that start a verification job (spawn workers / probes on this machine).
+JOB_ROUTES = frozenset({"/api/system/verify-controls", "/api/cve/real-software-verify"})
 
 
 def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_auth: bool | None = None,
@@ -66,6 +68,10 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
         enforce_read_auth = bool(require_read_auth)
     if not enforce_read_auth:
         svc.audit.record("config.read_auth_disabled", development_mode=development_mode())
+    if ops.legacy_sessions_revoked:
+        svc.audit.record("auth.legacy_sessions_revoked", count=ops.legacy_sessions_revoked,
+                         reason="session file held bearer tokens in plaintext; sessions must sign in again")
+        ops.legacy_sessions_revoked = 0
 
     def approver_grant_recorded(name: str) -> bool:
         """Whether the audit log shows an admin granting (or attesting) this
@@ -132,9 +138,11 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 # account list is for admins only, whatever the read-auth setting
                 if not sess or "admin" not in sess.roles:
                     return self._json(403, {"error": "アカウント一覧の参照には管理者の権限が必要です"})
+                locked = ops.locked_accounts()
                 return self._json(200, {"operators": [
                     {"name": o.name, "display": o.display, "roles": list(o.roles),
                      "mfa_enabled": bool(o.totp_secret),
+                     "locked_for": int(locked.get(o.name.lower(), 0)),
                      # approver without an admin's grant on record -> needs review
                      "needs_role_review": "approver" in o.roles and not approver_grant_recorded(o.name)}
                     for o in ops.operators()]})
@@ -146,12 +154,15 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 return self._json(200, svc.secrets_status(host))
             if p == "/api/router/status":
                 return self._json(200, svc.planner_status())
-            if p == "/api/system/verify-controls":
-                return self._json(200, run_live_control_verification())
+            if p == "/api/l2-profiles":
+                if not sess or not ({"admin", "approver"} & set(sess.roles)):
+                    return self._json(403, {"error": "プロファイルの参照には管理者または承認責任者の権限が必要です"})
+                return self._json(200, svc.l2_profiles_status())
+            if p in JOB_ROUTES:
+                # these START a verification job: POST only (CSRF-checked, role-checked, audited)
+                return self._json(405, {"error": "この操作は POST で実行してください"}, [("Allow", "POST")])
             if p == "/api/cve/status":
                 return self._json(200, svc.cve_monitor.status())
-            if p == "/api/cve/real-software-verify":
-                return self._json(200, run_real_software_cve_comparison())
             if p == f"/api/assessments/{svc.a.id}":
                 return self._json(200, svc.snapshot())
             if p == f"/api/assessments/{svc.a.id}/logs":
@@ -241,12 +252,16 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 return self._totp_disable(body, sess)
             if p == "/api/operators/roles":
                 return self._set_roles(body, sess)
+            if p in ("/api/operators/unlock", "/api/operators/reset-mfa"):
+                return self._admin_recovery(p, body, sess)
             return self._dispatch(p, body, sess)
 
         def _change_password(self, body, sess):
             try:
                 ops.change_password(sess.operator, str(body.get("current", "")),
                                     str(body.get("new", "")), keep_token=sess.token)
+            except LockedOut as e:
+                return self._locked(e, sess.operator)
             except AuthError as e:
                 return self._json(400, {"error": str(e)})
             svc.audit.record("auth.password_changed", actor=sess.operator)
@@ -271,21 +286,34 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
 
         def _totp_disable(self, body, sess):
             try:
-                ops.disable_totp(sess.operator, str(body.get("current", "")))
+                ops.disable_totp(sess.operator, str(body.get("current", "")), str(body.get("code", "")) or None)
+            except LockedOut as e:
+                return self._locked(e, sess.operator)
             except AuthError as e:
                 return self._json(400, {"error": str(e)})
             svc.audit.record("auth.mfa_disabled", actor=sess.operator)
             return self._json(200, {"ok": True, "mfa_enabled": False})
 
+        def _locked(self, e: LockedOut, name: str):
+            """429 for a paused sign-in. The same answer is given for names that do
+            not exist, so it does not reveal which accounts are real."""
+            if e.just_locked:
+                svc.audit.record("auth.locked", name=name[:32], seconds=int(e.retry_after))
+            return self._json(429, {"error": str(e), "locked": True, "retry_after": int(e.retry_after)},
+                              [("Retry-After", str(int(e.retry_after)))])
+
         def _login(self, body):
             try:
                 sess = ops.login(str(body.get("name", "")), str(body.get("password", "")),
                                  str(body.get("code", "")) or None)
+            except LockedOut as e:
+                return self._locked(e, str(body.get("name", "")))
             except MFAChallenge as e:
                 time.sleep(0.2)
                 return self._json(401, {"error": str(e), "mfa_required": True})
             except AuthError as e:
                 time.sleep(0.2)   # uniform-ish delay on failure
+                svc.audit.record("auth.login_failed", name=str(body.get("name", ""))[:32])
                 return self._json(401, {"error": str(e)})
             svc.audit.record("auth.login", actor=sess.operator, roles=list(sess.roles))
             cookie = (f"{COOKIE}={sess.token}; HttpOnly; SameSite=Strict; Path=/; "
@@ -341,6 +369,23 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                              before=list(before), after=list(after),
                              attested_unchanged=set(before) == set(after))
             return self._json(200, {"name": target, "roles": list(after)})
+
+        def _admin_recovery(self, p, body, sess):
+            """Recovery actions an admin performs for a legitimate user."""
+            target = str(body.get("name", "")).strip()
+            if "admin" not in sess.roles:
+                svc.audit.record("operator.recovery_denied", actor=sess.operator, target=target[:64], action=p)
+                return self._json(403, {"error": "この操作には管理者の権限が必要です"})
+            try:
+                if p == "/api/operators/unlock":
+                    changed = ops.unlock(target, actor=sess.operator)
+                    svc.audit.record("operator.unlocked", actor=sess.operator, target=target[:64], was_locked=changed)
+                else:
+                    changed = ops.reset_totp(target, actor=sess.operator)
+                    svc.audit.record("operator.mfa_reset", actor=sess.operator, target=target[:64], had_mfa=changed)
+            except AuthError as e:
+                return self._json(409, {"error": str(e)})
+            return self._json(200, {"name": target, "changed": changed})
 
         def _clear_cookie(self):
             return [("Set-Cookie", f"{COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0")]
@@ -421,16 +466,26 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 elif p == "/api/assets/select":
                     snap = svc.select_asset(str(body.get("id", "")), actor=actor)
                     return self._json(200, {"assets": svc.assets(), "snapshot": snap})
+                elif p == "/api/l2-profiles/accept":
+                    if "admin" not in sess.roles:
+                        svc.audit.record("l2.profile_accept_denied", actor=actor, profile=str(body.get("id", ""))[:64])
+                        return self._json(403, {"error": "プロファイルの承認には管理者の権限が必要です"})
+                    return self._json(200, svc.accept_l2_profile(
+                        str(body.get("id", "")), str(body.get("sha256", "")), actor))
                 elif p == "/api/router/verify":
                     rep = svc.verify_planner_connections(actor)
                     return self._json(200, rep)
-                elif p == "/api/system/verify-controls":
-                    rep = run_live_control_verification()
-                    svc.audit.record("system.controls_verified", actor=actor, all_passed=rep["all_passed"])
-                    return self._json(200, rep)
-                elif p == "/api/cve/real-software-verify":
-                    rep = run_real_software_cve_comparison()
-                    svc.audit.record("cve.real_software_verified", actor=actor, all_passed=rep["all_passed"])
+                elif p in JOB_ROUTES:
+                    if not ({"approver", "admin"} & set(sess.roles)):
+                        svc.audit.record("system.job_denied", actor=actor, job=p)
+                        return self._json(403, {"error": "検証ジョブの実行には承認責任者または管理者の権限が必要です"})
+                    svc.audit.record("system.job_started", actor=actor, job=p)
+                    if p == "/api/system/verify-controls":
+                        rep = run_live_control_verification()
+                        svc.audit.record("system.controls_verified", actor=actor, all_passed=rep["all_passed"])
+                    else:
+                        rep = run_real_software_cve_comparison()
+                        svc.audit.record("cve.real_software_verified", actor=actor, all_passed=rep["all_passed"])
                     return self._json(200, rep)
                 elif p == "/api/cve/sync":
                     st = svc.cve_monitor.ingest_payloads(

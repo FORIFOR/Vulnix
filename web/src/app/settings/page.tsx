@@ -2,6 +2,7 @@
 
 import { useState, useSyncExternalStore } from "react";
 import { MfaSection } from "@/components/settings/MfaSection";
+import { ProfilesSection } from "@/components/settings/ProfilesSection";
 import { RolesSection } from "@/components/settings/RolesSection";
 import { PasswordChangeForm } from "@/components/settings/PasswordChangeForm";
 import { Card, Pill } from "@/components/ui";
@@ -133,6 +134,13 @@ export default function Settings() {
         <Card>
           <h2 className="mb-2 text-sm font-semibold">アカウントとロール</h2>
           <RolesSection />
+        </Card>
+      )}
+
+      {session && (session.roles.includes("admin") || session.roles.includes("approver")) && (
+        <Card>
+          <h2 className="mb-2 text-sm font-semibold">L2判定プロファイル</h2>
+          <ProfilesSection />
         </Card>
       )}
 

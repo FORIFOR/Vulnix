@@ -28,7 +28,8 @@ export function FindingCard({
   // L2 on a real service: an explicit, per-item approval by an approver.
   const needsApproval = Boolean(f.requires_l2_approval);
   // A rule that is not confirmed against the target API can never run (the server refuses it too).
-  const unconfirmed = needsApproval && f.l2_spec_status === "placeholder";
+  const unaccepted = f.l2_spec_status === "unaccepted";
+  const unconfirmed = needsApproval && (f.l2_spec_status === "placeholder" || unaccepted);
   const blocked = unconfirmed || (needsApproval && f.l2_ready === false && f.evidence.length === 0);
   // Separation of duties: one operator requests the run, a different approver approves it.
   const { session } = useSession();
@@ -131,7 +132,9 @@ export function FindingCard({
           <button
             type="button"
             disabled={busy || blocked || waitingForOther}
-            title={unconfirmed
+            title={unaccepted
+              ? "この判定ルールのプロファイルは管理者にまだ承認されていないため、実行できません"
+              : unconfirmed
               ? "この項目の判定ルールは対象APIの仕様と未照合のため、実行できません"
               : blocked ? "先に、診断画面上部の「L2検証用アカウント」でこの項目に必要なアカウントを設定してください" : undefined}
             onClick={runLiveVerify}
@@ -139,6 +142,8 @@ export function FindingCard({
           >
             {busy
               ? "Worker実行中…"
+              : unaccepted
+                ? "実行不可（プロファイル未承認）"
               : unconfirmed
                 ? "実行不可（判定ルールが仕様未照合）"
               : blocked

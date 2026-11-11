@@ -278,11 +278,12 @@ def rule_digest(rule_json: str) -> str:
     return hashlib.sha256(rule_json.encode("utf-8")).hexdigest()
 
 
-def default_profile_dirs(data_dir: Path | None = None) -> list[Path]:
-    """Bundled templates, then the installation's own profiles (`<data_dir>/l2_profiles`,
-    never in git: it may name private hosts and cite a private API), then the
-    directory named by `VULNIX_L2_PROFILE_DIR`."""
-    dirs = [BUILTIN_PROFILE_DIR]
+def site_profile_dirs(data_dir: Path | None = None) -> list[Path]:
+    """Directories whose profiles are SITE configuration, not shipped code:
+    `<data_dir>/l2_profiles` and the one named by `VULNIX_L2_PROFILE_DIR`. A site
+    profile decides what may be run against a real service, so it is held to more:
+    strict file permissions, and an admin has to accept its exact content."""
+    dirs: list[Path] = []
     if data_dir is not None and (Path(data_dir) / "l2_profiles").is_dir():
         dirs.append(Path(data_dir) / "l2_profiles")
     extra = os.environ.get(PROFILE_DIR_ENV)
@@ -291,10 +292,38 @@ def default_profile_dirs(data_dir: Path | None = None) -> list[Path]:
     return dirs
 
 
+def default_profile_dirs(data_dir: Path | None = None) -> list[Path]:
+    """Bundled templates, then the installation's own (site) profiles."""
+    return [BUILTIN_PROFILE_DIR, *site_profile_dirs(data_dir)]
+
+
+def site_file_problem(path: Path) -> str | None:
+    """Why a site profile file must not be trusted, or None. Anyone who can write
+    the file (or swap it via its directory) could make a rule runnable."""
+    try:
+        st_file = os.lstat(path)
+        st_dir = os.stat(path.parent)
+    except OSError as e:
+        return f"cannot stat: {type(e).__name__}"
+    import stat as _stat
+    if not _stat.S_ISREG(st_file.st_mode):
+        return "not a regular file (symlinks are not followed)"
+    uid = os.getuid() if hasattr(os, "getuid") else None
+    if uid is not None and (st_file.st_uid != uid or st_dir.st_uid != uid):
+        return "file or directory is not owned by the user running the control plane"
+    if st_file.st_mode & 0o022:
+        return f"file is writable by group or others (mode {oct(st_file.st_mode & 0o777)}); use 0600"
+    if st_dir.st_mode & 0o022:
+        return f"directory is writable by group or others (mode {oct(st_dir.st_mode & 0o777)}); use 0700"
+    return None
+
+
 class L2RuleSet:
     """All loaded profiles. Check ids, finding ids and hosts are unique across profiles."""
 
     def __init__(self, profiles: list[dict]):
+        self.sources: dict[str, dict] = {}
+        self.rejected: list[dict] = []
         self.profiles: dict[str, dict] = {}
         self._checks: dict[str, tuple[dict, dict]] = {}
         self._hosts: dict[str, dict] = {}
@@ -312,25 +341,84 @@ class L2RuleSet:
                 self._checks[c["id"]] = (p, c)
 
     @classmethod
-    def load(cls, dirs: list[Path] | None = None) -> "L2RuleSet":
+    def load(cls, dirs: list[Path] | None = None, site_dirs: list[Path] | None = None) -> "L2RuleSet":
+        """`dirs` are trusted like code (the bundled directory, or directories a
+        caller passes in explicitly). `site_dirs` are site configuration: a file
+        with unsafe permissions or invalid content is NOT loaded (it is listed in
+        `rejected`), and every loaded one is recorded in `sources` with the SHA-256
+        of its bytes so the control plane can require an admin's acceptance."""
         if dirs is None:
-            dirs = default_profile_dirs()
+            dirs = [BUILTIN_PROFILE_DIR]
+            site_dirs = site_profile_dirs() if site_dirs is None else site_dirs
+        site_dirs = list(site_dirs or [])
         # A later directory replaces a profile with the same id from an earlier one,
         # so a site-specific (private) profile can supersede the bundled template.
         by_id: dict[str, dict] = {}
-        for d in dirs:
+        sources: dict[str, dict] = {}
+        rejected: list[dict] = []
+        for d, is_site in [(d, False) for d in dirs] + [(d, True) for d in site_dirs]:
             seen_here: set[str] = set()
             for f in sorted(Path(d).glob("*.json")):
                 try:
-                    raw = json.loads(f.read_text(encoding="utf-8"))
-                except ValueError as e:
-                    raise RuleError(f"L2 profile {f.name}: invalid JSON ({e})") from None
-                profile = validate_profile(raw, f.name)
-                _need(profile["id"] not in seen_here, f.name, "duplicate profile id within one directory")
+                    if is_site:
+                        problem = site_file_problem(f)
+                        if problem:
+                            raise RuleError(f"L2 profile {f.name}: {problem}")
+                    data = f.read_bytes()
+                    try:
+                        raw = json.loads(data.decode("utf-8"))
+                    except ValueError as e:
+                        raise RuleError(f"L2 profile {f.name}: invalid JSON ({e})") from None
+                    profile = validate_profile(raw, f.name)
+                    _need(profile["id"] not in seen_here, f.name, "duplicate profile id within one directory")
+                except RuleError as e:
+                    if not is_site:
+                        raise                      # shipped/explicit profiles must be valid
+                    rejected.append({"file": f.name, "reason": str(e)})
+                    continue
                 seen_here.add(profile["id"])
                 by_id.pop(profile["id"], None)
                 by_id[profile["id"]] = profile
-        return cls(list(by_id.values()))
+                sources[profile["id"]] = {"file": f.name, "site": is_site,
+                                          "sha256": hashlib.sha256(data).hexdigest()}
+        try:
+            rs = cls(list(by_id.values()))
+        except RuleError as e:
+            # a site profile that collides with another one (host, check id) is dropped
+            site_ids = [pid for pid, src in sources.items() if src["site"]]
+            if not site_ids:
+                raise
+            for pid in site_ids:
+                rejected.append({"file": sources[pid]["file"], "reason": str(e)})
+                by_id.pop(pid, None)
+                sources.pop(pid, None)
+            return cls.load(dirs, [])._with(sources={k: v for k, v in sources.items()}, rejected=rejected)
+        return rs._with(sources=sources, rejected=rejected)
+
+    def _with(self, *, sources: dict, rejected: list) -> "L2RuleSet":
+        self.sources = {**getattr(self, "sources", {}), **sources}
+        self.rejected = list(rejected)
+        return self
+
+    def hold_unaccepted(self, accepted: dict[str, str]) -> list[str]:
+        """Make every check of a site profile non-runnable unless an admin accepted
+        exactly this content (`accepted`: profile id -> sha256). Returns the ids
+        that are held. Held checks stay listed as candidates."""
+        held = []
+        for pid, src in self.sources.items():
+            if not src["site"] or accepted.get(pid) == src["sha256"]:
+                continue
+            profile = self.profiles.get(pid)
+            if profile is None:
+                continue
+            held.append(pid)
+            for c in profile["checks"]:
+                if c["spec_status"] == "confirmed":
+                    c["spec_status"] = "unaccepted"
+                    c["spec_note"] = ("このプロファイルの内容は管理者にまだ承認されていません"
+                                      "（承認後に変更された場合も再承認が必要です）。")
+            profile["spec_status"] = "unaccepted"
+        return held
 
     def check_ids(self) -> tuple[str, ...]:
         return tuple(sorted(self._checks))

@@ -109,7 +109,9 @@ export function RealServicePanel({ snap, onUpdate }: { snap: Snapshot; onUpdate:
             <h3 className="font-semibold">項目ごとの準備状況（判定ルール：{profile.label}）</h3>
             {profile.spec_status !== "confirmed" && (
               <p role="note" className="rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
-                {profile.spec_status === "placeholder"
+                {profile.spec_status === "unaccepted"
+                  ? "このプロファイルの内容は管理者にまだ承認されていない（または承認後に変更された）ため、L2検証は実行できません。設定 → L2判定プロファイル で管理者が承認してください。"
+                  : profile.spec_status === "placeholder"
                   ? "この判定ルールはすべて対象APIの仕様と未照合のため、L2検証は実行できません。"
                   : "仕様と未照合の項目は実行できません（承認しても送信されません）。"}
                 {profile.spec_note}
@@ -121,7 +123,9 @@ export function RealServicePanel({ snap, onUpdate }: { snap: Snapshot; onUpdate:
                   <div className="flex items-center justify-between gap-2">
                     <span>{c.label}</span>
                     <span className={c.ready ? "font-semibold text-emerald-700 dark:text-emerald-300" : "text-amber-800 dark:text-amber-300"}>
-                      {c.spec_status !== "confirmed"
+                      {c.spec_status === "unaccepted"
+                        ? "実行不可（プロファイル未承認）"
+                        : c.spec_status !== "confirmed"
                         ? "実行不可（仕様未照合）"
                         : c.ready ? "実行可能（承認待ち）" : `未設定: ${c.missing.map(tokenLabel).join("・")}`}
                     </span>

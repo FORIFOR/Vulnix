@@ -39,7 +39,7 @@ from .router import (AbliterationBackend, ArtexEngine, ArtexplannerBackend,
                      verify_planner_connections)
 from .runtime import WorkerPool
 from .secrets_store import EncryptedSecretStore
-from .l2_rules import L2RuleSet, default_profile_dirs
+from .l2_rules import BUILTIN_PROFILE_DIR, L2RuleSet, site_profile_dirs
 from .service_diag import analyze_l1_service_response, build_l2_candidates
 
 SEVERITY_WEIGHT = {"critical": 40, "high": 25, "medium": 10, "low": 3, "info": 0}
@@ -95,7 +95,11 @@ class AssessmentService:
                  separate_l2_approver: bool | None = None):
         self.data_dir = Path(data_dir)
         # Service profiles: per-API L2 rules. Loaded and validated once at start.
-        self.l2 = L2RuleSet.load(l2_profile_dirs or default_profile_dirs(self.data_dir))
+        # Explicitly passed directories are the caller's own (trusted like code); the
+        # default is the bundled templates plus SITE profiles from the data directory,
+        # which stay non-runnable until an admin accepts their exact content.
+        self._l2_dirs = list(l2_profile_dirs) if l2_profile_dirs else None
+        self.l2 = self._read_l2_profiles()
         # Optional separation of duties for real-service L2: one operator requests
         # a run, a DIFFERENT approver approves and executes it.
         self.separate_l2_approver = (
@@ -124,6 +128,7 @@ class AssessmentService:
         # asset records shown in the UI are display state only.
         self._ownership_proofs: dict[str, dict] = {}      # host -> recorded challenge proof
         self._real_service_hosts: set[str] = set()        # hosts registered through the ownership flow
+        self._accepted_profiles: dict[str, str] = {}      # site profile id -> sha256 an admin accepted
         self._authority_epoch = 0
         self._authority_digest = ""
         self._custom_resolver = None
@@ -195,6 +200,7 @@ class AssessmentService:
         # No service is registered on our behalf: real services enter only through
         # the ownership flow, and whatever was saved (including deletions) is kept.
         self._load_state_locked()
+        self._apply_profile_acceptance_locked(startup=True)
 
     def _external_entry(self, host: str | None) -> dict | None:
         """The verified-external record for `host`, only while it is fully valid
@@ -361,6 +367,66 @@ class AssessmentService:
         confirmation. Everything else is the local simulated lab."""
         return self._external_entry(host or self.a.asset.get("name")) is not None
 
+    # ---- L2 profiles: loading, integrity, acceptance -------------------------
+    def _read_l2_profiles(self) -> L2RuleSet:
+        if self._l2_dirs is not None:
+            return L2RuleSet.load(self._l2_dirs, [])
+        return L2RuleSet.load([BUILTIN_PROFILE_DIR], site_profile_dirs(self.data_dir))
+
+    def _apply_profile_acceptance_locked(self, *, startup: bool = False) -> None:
+        """Hold site profiles nobody accepted (or that changed since), rebuild the
+        Gateway tool so only runnable checks are in its schema, and put what was
+        loaded on the record."""
+        held = self.l2.hold_unaccepted(self._accepted_profiles)
+        self.gateway.tools["reproduction_probe"] = reproduction_probe_tool(self.l2)
+        for pid in held:
+            was = self._accepted_profiles.get(pid)
+            if was:        # accepted earlier, content is different now
+                self.audit.record("l2.profile_changed", profile=pid, file=self.l2.sources[pid]["file"],
+                                  accepted_sha256=was, current_sha256=self.l2.sources[pid]["sha256"])
+        for rej in self.l2.rejected:
+            self.audit.record("l2.profile_rejected", file=rej["file"], reason=rej["reason"][:300])
+        if startup or held or self.l2.rejected:
+            self.audit.record("l2.profiles_loaded", profiles=[
+                {"id": pid, "file": src["file"], "site": src["site"], "sha256": src["sha256"],
+                 "accepted": pid not in held} for pid, src in sorted(self.l2.sources.items())])
+
+    def l2_profiles_status(self) -> dict:
+        with self._lock:
+            return {
+                "profiles": [
+                    {"id": pid, "label": self.l2.profiles[pid]["label"], "file": src["file"], "site": src["site"],
+                     "sha256": src["sha256"], "hosts": self.l2.profiles[pid]["hosts"],
+                     "accepted": (not src["site"]) or self._accepted_profiles.get(pid) == src["sha256"],
+                     "changed_since_acceptance": bool(src["site"] and self._accepted_profiles.get(pid)
+                                                      and self._accepted_profiles.get(pid) != src["sha256"]),
+                     "confirmed_checks": [c["id"] for c in self.l2.profiles[pid]["checks"]
+                                          if c["spec_status"] in ("confirmed", "unaccepted")]}
+                    for pid, src in sorted(self.l2.sources.items()) if pid in self.l2.profiles],
+                "rejected": list(self.l2.rejected),
+            }
+
+    def accept_l2_profile(self, profile_id: str, sha256: str, actor: str) -> dict:
+        """An admin accepts the exact content of a site profile. The file is read
+        again now: what is accepted is what is on disk at this moment, and it has
+        to be the content the admin was shown (`sha256`)."""
+        with self._lock:
+            if self.a.state == "running":
+                raise ValueError("診断実行中はプロファイルを承認できません")
+            fresh = self._read_l2_profiles()
+            src = fresh.sources.get(profile_id)
+            if src is None or not src["site"]:
+                raise ValueError("承認できるのは、データディレクトリに置かれた導入先プロファイルだけです")
+            if not sha256 or src["sha256"] != sha256:
+                raise ValueError("プロファイルの内容が表示時から変わっています。内容を確認し直してください")
+            self._accepted_profiles[profile_id] = src["sha256"]
+            self.l2 = fresh
+            self._apply_profile_acceptance_locked()
+            self._save_state_locked()
+        self.audit.record("l2.profile_accepted", actor=actor, profile=profile_id, file=src["file"],
+                          sha256=src["sha256"])
+        return self.l2_profiles_status()
+
     def _l2_profile(self, host: str | None = None) -> dict | None:
         """The L2 rule profile bound to a verified external asset, if any."""
         h = (host or self.a.asset.get("name") or "").lower()
@@ -474,7 +540,8 @@ class AssessmentService:
     def _authority_tables(self) -> dict:
         return {"verified_external_hosts": self._verified_external_hosts,
                 "ownership_proofs": self._ownership_proofs,
-                "real_service_hosts": sorted(self._real_service_hosts)}
+                "real_service_hosts": sorted(self._real_service_hosts),
+                "accepted_profiles": self._accepted_profiles}
 
     def _authority_mac(self, tables: dict, epoch: int) -> str:
         """MAC over everything in state.json that grants authority, bound to an
@@ -536,6 +603,7 @@ class AssessmentService:
             "verified_external_hosts": data.get("verified_external_hosts") if isinstance(data.get("verified_external_hosts"), dict) else {},
             "ownership_proofs": data.get("ownership_proofs") if isinstance(data.get("ownership_proofs"), dict) else {},
             "real_service_hosts": data.get("real_service_hosts") if isinstance(data.get("real_service_hosts"), list) else [],
+            "accepted_profiles": data.get("accepted_profiles") if isinstance(data.get("accepted_profiles"), dict) else {},
         }
         authority_rejected = False
         rejected_reason = ""
@@ -561,6 +629,7 @@ class AssessmentService:
                 self._ownership_proofs = {str(k).lower(): dict(v)
                                           for k, v in saved["ownership_proofs"].items() if isinstance(v, dict)}
                 self._real_service_hosts = {str(h).lower() for h in saved["real_service_hosts"]}
+                self._accepted_profiles = {str(k): str(v) for k, v in saved["accepted_profiles"].items()}
         # never go backwards, whatever was on disk
         self._authority_epoch = max(stored_epoch or 0, self._authority_epoch)
         if not authority_rejected:
@@ -1094,6 +1163,9 @@ class AssessmentService:
                 # no further traffic is sent to this host until it is proven again.
                 self._verified_external_hosts.pop(host, None)
                 self._ownership_proofs.pop(host, None)
+                # stored test accounts and pending L2 requests go with the authority
+                self.secrets.clear_credentials(host)
+                self._l2_requests = {k: v for k, v in self._l2_requests.items() if v.get("host") != host}
                 if target_asset is not None:
                     target_asset["scope_confirmed"] = False
                     target_asset["authorization_ref"] = ""
@@ -2243,18 +2315,23 @@ class AssessmentService:
 
     def _exec(self, tool, action, args, approval_actor=None, approval_id=None):
         self._checkpoint()
-        if approval_id is None:
+        auto_approval = approval_id is None
+        if auto_approval:
             approval_id = self.approval_store.approve(approval_actor, "eng_demo", "lab", action)
             self.audit.record("approval.auto", actor=approval_actor, action=action,
                               tool=tool, risk_level="L1")
         try:
-            tok = self.tokens.issue(self.a.engagement, "lab", action, tool, approval_id,
-                                    self.approval_store, ttl=120)
-        except Exception as e:
-            self._fail(f"トークン発行が拒否されました: {e}")
-            return None, None
-        d = self.gateway.execute({"tool": tool, "target_id": "lab", "action": action,
-                                  "args": args}, tok)
+            try:
+                tok = self.tokens.issue(self.a.engagement, "lab", action, tool, approval_id,
+                                        self.approval_store, ttl=120)
+            except Exception as e:
+                self._fail(f"トークン発行が拒否されました: {e}")
+                return None, None
+            d = self.gateway.execute({"tool": tool, "target_id": "lab", "action": action,
+                                      "args": args}, tok)
+        finally:
+            if auto_approval:       # an automatic L1 approval is for this one call only
+                self.approval_store.revoke(approval_id)
         if self.gateway.state is State.STOPPED:
             raise _Stopped()
         if not d.allowed:

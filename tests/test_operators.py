@@ -221,8 +221,12 @@ class TestStore(unittest.TestCase):
         secret, _ = store.begin_totp_enroll("op")
         store.confirm_totp("op", totp_code(secret, clock.t))
         with self.assertRaises(AuthError):
-            store.disable_totp("op", "wrong-password")
-        store.disable_totp("op", "pw")
+            store.disable_totp("op", "wrong-password", totp_code(secret, clock.t))
+        with self.assertRaises(AuthError):          # the password alone no longer removes the second factor
+            store.disable_totp("op", "pw")
+        with self.assertRaises(AuthError):
+            store.disable_totp("op", "pw", "000000")
+        store.disable_totp("op", "pw", totp_code(secret, clock.t))
         self.assertFalse(store.totp_enabled("op"))
         self.assertEqual(store.login("op", "pw").operator, "op")   # password alone again
 

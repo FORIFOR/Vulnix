@@ -808,7 +808,16 @@ class TestUnconfirmedRulesCannotRun(RealServiceBase):
         (self.dir / "l2_profiles").mkdir()
         (self.dir / "l2_profiles" / "deepnote.json").write_text(json.dumps(site), encoding="utf-8")
         self.svc.workers.kill_all()
+        (self.dir / "l2_profiles").chmod(0o700)
+        (self.dir / "l2_profiles" / "deepnote.json").chmod(0o600)
         self.svc = AssessmentService(self.dir, LAB_PORT, verify_seconds=0.1)       # default profile dirs
+        # a site profile is listed but nothing in it runs until an admin accepts its exact content
+        self.assertEqual(self.svc.l2.runnable_check_ids(), ())
+        status = self.svc.l2_profiles_status()["profiles"]
+        self.assertEqual([(p["id"], p["site"], p["accepted"]) for p in status], [("deepnote", True, False)])
+        with self.assertRaises(ValueError):
+            self.svc.accept_l2_profile("deepnote", "0" * 64, "root")              # not the content on disk
+        self.svc.accept_l2_profile("deepnote", status[0]["sha256"], "root")
         self.assertEqual(self.svc.l2.runnable_check_ids(), ("deepnote_idor_notes",))
         # the hostname is only a label here: the injected resolver pins it to loopback
         self.svc._custom_resolver = lambda h: ["127.0.0.1"] if h == host else []

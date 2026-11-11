@@ -46,8 +46,9 @@ export function MfaSection() {
   });
 
   const disable = () => run(async () => {
-    await post("/api/auth/totp/disable", { current });
+    await post("/api/auth/totp/disable", { current, code });
     setCurrent("");
+    setCode("");
     await refresh();
     setMsg({ ok: true, text: "2要素認証を無効化しました。" });
   });
@@ -99,13 +100,18 @@ export function MfaSection() {
       )}
 
       {enabled && (
-        <div className="flex items-end gap-2">
+        <div className="flex flex-wrap items-end gap-2">
           <label className="text-sm">
             <span className="mb-1 block text-xs text-zinc-500">無効化するには現在のパスワード</span>
             <input type="password" autoComplete="current-password" value={current}
               onChange={(e) => setCurrent(e.target.value)} className={field} />
           </label>
-          <button onClick={disable} disabled={busy || current.length === 0}
+          <label className="text-sm">
+            <span className="mb-1 block text-xs text-zinc-500">現在の認証コード</span>
+            <input inputMode="numeric" autoComplete="one-time-code" value={code} placeholder="000000"
+              onChange={(e) => setCode(e.target.value)} className={`${field} tracking-widest`} />
+          </label>
+          <button onClick={disable} disabled={busy || current.length === 0 || code.length < 6}
             className="rounded-lg border border-red-300 px-3 py-1.5 text-sm font-medium text-red-700 hover:bg-red-50 disabled:opacity-40 dark:border-red-700 dark:text-red-300 dark:hover:bg-red-950/40">
             無効化
           </button>

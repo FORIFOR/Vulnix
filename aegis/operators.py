@@ -53,6 +53,31 @@ class MFAChallenge(AuthError):
     """Password was correct but a valid TOTP code is still required."""
 
 
+class LockedOut(AuthError):
+    """Too many failed attempts for this name; sign-in is paused for a while."""
+
+    def __init__(self, retry_after: float, just_locked: bool = False):
+        super().__init__("認証の失敗が続いたため、このアカウントでのログインを一時的に停止しています。"
+                         f"約{max(1, int(retry_after // 60) + (1 if retry_after % 60 else 0))}分後にもう一度お試しください")
+        self.retry_after = max(1.0, float(retry_after))
+        self.just_locked = just_locked
+
+
+# Sign-in throttling (per account name, whether or not the account exists, so the
+# response does not reveal which names are real).
+MAX_AUTH_FAILURES = 5          # failures ...
+AUTH_FAILURE_WINDOW = 15 * 60  # ... within this many seconds ...
+AUTH_LOCK_SECONDS = 15 * 60    # ... pause sign-in for this long
+_MAX_TRACKED_NAMES = 5000
+
+
+def session_key(token: str) -> str:
+    """Sessions are stored and looked up by the SHA-256 of the bearer token. The
+    token itself is 256 random bits and exists only in the user's cookie, so
+    neither sessions.json nor process memory lets someone resume a session."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
 # ---- TOTP (RFC 6238 / HOTP RFC 4226), standard library only -----------------
 def generate_totp_secret() -> str:
     return base64.b32encode(secrets.token_bytes(20)).decode().rstrip("=")
@@ -136,7 +161,10 @@ class OperatorStore:
         self._clock = clock
         self._lock = threading.Lock()
         self._ops: dict[str, Operator] = {}
-        self._sessions: dict[str, Session] = {}
+        self._sessions: dict[str, Session] = {}     # keyed by session_key(token); never the token
+        self._auth_failures: dict[str, list[float]] = {}
+        self._locked_until: dict[str, float] = {}
+        self.legacy_sessions_revoked = 0             # plaintext-token sessions dropped at load
         self._pending_totp: dict[str, str] = {}   # name -> secret awaiting confirmation
         self.credentials_path: Path | None = None
         self.admin_credentials_path: Path | None = None
@@ -211,13 +239,21 @@ class OperatorStore:
         now = self._clock()
         with self._lock:
             for s in raw.get("sessions", []):
+                if not isinstance(s, dict):
+                    continue
+                if "token_sha256" not in s:
+                    # Written by an older version that stored the bearer token itself.
+                    # Such a session is NOT carried over: the token sat on disk, so it
+                    # is revoked and the operator simply signs in again.
+                    self.legacy_sessions_revoked += 1
+                    continue
                 try:
-                    sess = Session(s["token"], s["operator"], tuple(s["roles"]),
-                                   float(s["created"]), float(s["expires"]))
+                    key = str(s["token_sha256"])
+                    sess = Session("", s["operator"], (), float(s["created"]), float(s["expires"]))
                 except (KeyError, TypeError, ValueError):
                     continue
-                if sess.expires > now and sess.operator in self._ops:
-                    self._sessions[sess.token] = sess
+                if len(key) == 64 and sess.expires > now and sess.operator in self._ops:
+                    self._sessions[key] = sess
         # Rewrite so the file sheds expired/stale entries on load.
         self._persist_sessions()
 
@@ -243,10 +279,11 @@ class OperatorStore:
         serialized under the lock so concurrent logins cannot clobber each
         other's entry (last writer would otherwise win with a stale set)."""
         with self._lock:
-            payload = {"sessions": [
-                {"token": s.token, "operator": s.operator, "roles": list(s.roles),
+            payload = {"version": 2, "sessions": [
+                # only the hash of the token, and no roles (roles come from the account)
+                {"token_sha256": key, "operator": s.operator,
                  "created": s.created, "expires": s.expires}
-                for s in self._sessions.values()
+                for key, s in self._sessions.items()
             ]}
             self._atomic_write(self.sessions_path, json.dumps(payload, ensure_ascii=False))
 
@@ -267,7 +304,9 @@ class OperatorStore:
         other sessions (the one making the change, keep_token, is kept)."""
         with self._lock:
             op = self._ops.get(name)
+        self._check_not_locked(name)
         if not op or not verify_password(current, op.password_hash):
+            self._note_failure(name)
             raise AuthError("現在のパスワードが違います")
         if len(new) < MIN_PASSWORD_LEN:
             raise AuthError(f"新しいパスワードは{MIN_PASSWORD_LEN}文字以上にしてください")
@@ -276,54 +315,117 @@ class OperatorStore:
         new_hash = hash_password(new)
         with self._lock:
             op.password_hash = new_hash
-            for tok in [t for t, s in self._sessions.items()
-                        if s.operator == name and t != keep_token]:
-                del self._sessions[tok]
+            keep = session_key(keep_token) if keep_token else None
+            for key in [k for k, s in self._sessions.items() if s.operator == name and k != keep]:
+                del self._sessions[key]
         self._persist_operators()
         self._persist_sessions()
 
+    # ---- sign-in throttling ----------------------------------------------
+    @staticmethod
+    def _throttle_key(name: str) -> str:
+        return (name or "").strip().lower()[:64]
+
+    def _check_not_locked(self, name: str) -> None:
+        key, now = self._throttle_key(name), self._clock()
+        with self._lock:
+            until = self._locked_until.get(key, 0.0)
+            if until > now:
+                raise LockedOut(until - now)
+            if until:
+                self._locked_until.pop(key, None)
+                self._auth_failures.pop(key, None)
+
+    def _note_failure(self, name: str) -> None:
+        """Count one failed attempt; raises LockedOut when this one trips the lock."""
+        key, now = self._throttle_key(name), self._clock()
+        with self._lock:
+            if len(self._auth_failures) >= _MAX_TRACKED_NAMES:      # bounded memory
+                for k in [k for k, v in self._auth_failures.items()
+                          if not v or now - v[-1] > AUTH_FAILURE_WINDOW]:
+                    self._auth_failures.pop(k, None)
+                if len(self._auth_failures) >= _MAX_TRACKED_NAMES:
+                    self._auth_failures.pop(next(iter(self._auth_failures)), None)
+            recent = [t for t in self._auth_failures.get(key, []) if now - t <= AUTH_FAILURE_WINDOW]
+            recent.append(now)
+            self._auth_failures[key] = recent
+            if len(recent) >= MAX_AUTH_FAILURES:
+                self._locked_until[key] = now + AUTH_LOCK_SECONDS
+                raise LockedOut(AUTH_LOCK_SECONDS, just_locked=True)
+
+    def _clear_failures(self, name: str) -> None:
+        key = self._throttle_key(name)
+        with self._lock:
+            self._auth_failures.pop(key, None)
+            self._locked_until.pop(key, None)
+
+    def locked_accounts(self) -> dict[str, float]:
+        """name -> seconds remaining, for names currently locked."""
+        now = self._clock()
+        with self._lock:
+            return {k: until - now for k, until in self._locked_until.items() if until > now}
+
+    def unlock(self, target: str, *, actor: str) -> bool:
+        """An admin lifts a lock early (recovery for a legitimate user). The lock
+        also ends by itself after AUTH_LOCK_SECONDS and is not kept across a restart."""
+        with self._lock:
+            acting = self._ops.get(actor)
+            if acting is None or "admin" not in acting.roles:
+                raise AuthError("ロックを解除できるのは管理者だけです")
+            key = self._throttle_key(target)
+            was_locked = self._locked_until.pop(key, 0.0) > self._clock()
+            self._auth_failures.pop(key, None)
+            return was_locked
+
     def login(self, name: str, password: str, code: str | None = None) -> Session:
+        self._check_not_locked(name)        # while locked, even the right password is refused
         with self._lock:
             op = self._ops.get(name)
         # Always run a hash to blunt username enumeration via timing.
         reference = op.password_hash if op else hash_password("x")
         ok = verify_password(password, reference)
         if not op or not ok:
+            self._note_failure(name)
             raise AuthError("ユーザー名またはパスワードが違います")
         # Second factor: only enforced for accounts that enrolled one (opt-in,
         # so a local operator can never be locked out by a default).
         if op.totp_secret and not verify_totp(op.totp_secret, code or "", self._clock()):
+            if code:                        # a wrong code is a failed attempt; a missing one is step 1
+                self._note_failure(name)
             raise MFAChallenge("認証コード（2要素）が必要です" if not code else "認証コードが違います")
+        self._clear_failures(name)
         now = self._clock()
         sess = Session(secrets.token_urlsafe(32), op.name, op.roles, now, now + SESSION_TTL)
         with self._lock:
-            self._sessions[sess.token] = sess
+            self._sessions[session_key(sess.token)] = Session("", op.name, (), now, sess.expires)
         self._persist_sessions()
         return sess
 
     def resolve(self, token: str | None) -> Session | None:
         if not token:
             return None
+        key = session_key(token)
         with self._lock:
-            sess = self._sessions.get(token)
+            sess = self._sessions.get(key)
             if sess and self._clock() >= sess.expires:
-                del self._sessions[token]
+                del self._sessions[key]
                 return None
-            if sess:
-                # Roles come from the account as it is NOW, so a revoked role stops
-                # working at once and a stored session cannot carry a stale one.
-                op = self._ops.get(sess.operator)
-                if op is None:
-                    del self._sessions[token]
-                    return None
-                sess.roles = op.roles
-            return sess
+            if sess is None:
+                return None
+            # Roles come from the account as it is NOW, so a revoked role stops
+            # working at once and a stored session cannot carry a stale one.
+            op = self._ops.get(sess.operator)
+            if op is None:
+                del self._sessions[key]
+                return None
+            # the caller gets the token it presented; the store keeps only its hash
+            return Session(token, sess.operator, op.roles, sess.created, sess.expires)
 
     def logout(self, token: str | None) -> None:
         if not token:
             return
         with self._lock:
-            removed = self._sessions.pop(token, None) is not None
+            removed = self._sessions.pop(session_key(token), None) is not None
         if removed:
             self._persist_sessions()
 
@@ -367,7 +469,7 @@ class OperatorStore:
                                              created_by=_created_by)
             sess = Session(secrets.token_urlsafe(32), clean_name, clean_roles, now, now + SESSION_TTL)
             if _issue_session:
-                self._sessions[sess.token] = sess
+                self._sessions[session_key(sess.token)] = Session("", clean_name, (), now, sess.expires)
         self._persist_operators()
         if _issue_session:
             self._persist_sessions()
@@ -436,12 +538,40 @@ class OperatorStore:
             self._pending_totp.pop(name, None)
         self._persist_operators()
 
-    def disable_totp(self, name: str, current_password: str) -> None:
+    def disable_totp(self, name: str, current_password: str, code: str | None = None) -> None:
+        """Turning the second factor off needs BOTH factors: the password and a
+        current code. (Lost device: an admin resets it with `reset_totp`.)"""
         with self._lock:
             op = self._ops.get(name)
+        self._check_not_locked(name)
         if not op or not verify_password(current_password, op.password_hash):
+            self._note_failure(name)
             raise AuthError("現在のパスワードが違います")
+        if op.totp_secret and not verify_totp(op.totp_secret, code or "", self._clock()):
+            self._note_failure(name)
+            raise AuthError("現在の認証コード（2要素）が必要です")
         with self._lock:
             op.totp_secret = None
             self._pending_totp.pop(name, None)
         self._persist_operators()
+
+    def reset_totp(self, target: str, *, actor: str) -> bool:
+        """Recovery for a lost authenticator: an admin (never the account itself)
+        removes the second factor and signs the account out everywhere."""
+        with self._lock:
+            acting = self._ops.get(actor)
+            if acting is None or "admin" not in acting.roles:
+                raise AuthError("2要素認証をリセットできるのは管理者だけです")
+            if target == actor:
+                raise AuthError("自分自身の2要素認証はリセットできません。別の管理者に依頼してください")
+            op = self._ops.get(target)
+            if op is None:
+                raise AuthError("対象のアカウントが見つかりません")
+            had = bool(op.totp_secret)
+            op.totp_secret = None
+            self._pending_totp.pop(target, None)
+            for key in [k for k, s in self._sessions.items() if s.operator == target]:
+                del self._sessions[key]
+        self._persist_operators()
+        self._persist_sessions()
+        return had

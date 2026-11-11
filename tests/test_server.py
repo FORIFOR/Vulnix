@@ -287,6 +287,10 @@ class TestServer(unittest.TestCase):
 
     def test_p0_live_control_verification_and_cve_sync(self):
         self.login("op", "op-pw")
+        # starting a verification job needs an approver or admin, and is POST only
+        self.assertEqual(self._req(f"{self.root}/system/verify-controls", {})[0], 403)
+        self.assertEqual(self._req(f"{self.root}/system/verify-controls")[0], 405)
+        self.login("appr", "appr-pw")
         code, rep = self._req(f"{self.root}/system/verify-controls", {})
         self.assertEqual(code, 200)
         self.assertTrue(rep["all_passed"])
@@ -516,6 +520,9 @@ class TestServer(unittest.TestCase):
 
     def test_real_software_cve_before_after_verification_endpoint(self):
         self.login("op", "op-pw")
+        self.assertEqual(self._req(f"{self.root}/cve/real-software-verify", {})[0], 403)
+        self.assertEqual(self._req(f"{self.root}/cve/real-software-verify")[0], 405)
+        self.login("appr", "appr-pw")
         code, rep = self._req(f"{self.root}/cve/real-software-verify", {})
         self.assertEqual(code, 200)
         self.assertTrue(rep["all_passed"])

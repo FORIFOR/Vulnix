@@ -11,6 +11,8 @@ interface OperatorRow {
   mfa_enabled: boolean;
   /** Approver role with no admin grant on record (e.g. self-assigned before roles were admin-granted). */
   needs_role_review: boolean;
+  /** Seconds the sign-in for this account stays paused after repeated failures (0 = not locked). */
+  locked_for: number;
 }
 
 const GRANTABLE: { key: string; label: string; hint: string }[] = [
@@ -59,6 +61,26 @@ export function RolesSection() {
       setNewName("");
       setNewDisplay("");
       setNewPassword("");
+      setVersion((v) => v + 1);
+    } catch (e) {
+      setMsg({ ok: false, text: (e as Error).message });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  // Recovery for a legitimate user: lift a sign-in lock, or reset a lost second factor.
+  const recover = async (row: OperatorRow, action: "unlock" | "reset-mfa") => {
+    setBusy(`${row.name}:${action}`);
+    setMsg(null);
+    try {
+      await postJSON(`/api/operators/${action}`, { name: row.name });
+      setMsg({
+        ok: true,
+        text: action === "unlock"
+          ? `${row.name} のログイン停止を解除しました。`
+          : `${row.name} の2要素認証をリセットし、すべてのセッションを終了しました。`,
+      });
       setVersion((v) => v + 1);
     } catch (e) {
       setMsg({ ok: false, text: (e as Error).message });
@@ -157,7 +179,20 @@ export function RolesSection() {
                       </label>
                     </td>
                   ))}
-                  <td className="py-1.5 text-xs text-zinc-500">{row.mfa_enabled ? "有効" : "未設定"}</td>
+                  <td className="py-1.5 text-xs text-zinc-500">
+                    {row.mfa_enabled ? "有効" : "未設定"}
+                    {row.mfa_enabled && !self && (
+                      <button type="button" disabled={busy !== null} onClick={() => recover(row, "reset-mfa")}
+                        className="ml-1.5 underline underline-offset-2 disabled:opacity-50">リセット</button>
+                    )}
+                    {row.locked_for > 0 && (
+                      <span className="mt-0.5 block text-amber-800 dark:text-amber-300">
+                        ログイン停止中（残り約{Math.ceil(row.locked_for / 60)}分）
+                        <button type="button" disabled={busy !== null} onClick={() => recover(row, "unlock")}
+                          className="ml-1 underline underline-offset-2 disabled:opacity-50">解除</button>
+                      </span>
+                    )}
+                  </td>
                 </tr>
               );
             })}
