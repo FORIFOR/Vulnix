@@ -159,6 +159,13 @@ class EncryptedSecretStore:
                     val = "/" + val
                 if not _PATH_RE.fullmatch(val):
                     raise ValueError("模擬データのパスは空白を含まない ASCII 300 文字以内で指定してください")
+                pattern = profile["paths"][k].get("override_pattern")
+                if not pattern or re.fullmatch(pattern, val) is None:
+                    # the admin accepted this profile's requests; an override may only
+                    # vary them the way the profile itself allows
+                    raise ValueError(
+                        f"「{profile['paths'][k]['label']}」は、判定ルールが許可する形式のパスにだけ変更できます"
+                        + (f"（許可: {pattern}）" if pattern else "（このパスは変更できません）"))
                 rec[k] = val
         rec["updated_at"] = time.time()
         rec["updated_by"] = actor
@@ -188,6 +195,7 @@ class EncryptedSecretStore:
         rec = self._cache[asset_id]
         env = {"VULNIX_L2_TOKENS": json.dumps({k: rec[k] for k in tokens_needed(check)})}
         overrides = {k: rec[k] for k in paths_used(check) if rec.get(k)}
+        self._last_override_keys = sorted(overrides)
         if overrides:
             env["VULNIX_L2_PATHS"] = json.dumps(overrides)
         return env

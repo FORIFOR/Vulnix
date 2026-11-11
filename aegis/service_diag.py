@@ -10,6 +10,7 @@ Implements:
 """
 from __future__ import annotations
 
+import re
 from typing import Optional
 import urllib.parse
 
@@ -53,6 +54,22 @@ def compute_finding_risk_score(
     return score, rationale
 
 
+MAX_TARGET_HEADERS = 100
+_UNSAFE_TEXT = re.compile(r"[\x00-\x1f\x7f<>`\[\]]")
+
+
+def clean_target_text(value, limit: int = 512) -> str:
+    """Text taken from a target's response, made safe to embed in titles, summaries
+    and the Markdown report: bounded length, no control characters, no HTML tags
+    and no Markdown link/code syntax."""
+    return _UNSAFE_TEXT.sub("", str(value))[:limit]
+
+
+def _hsts_effective(value: str) -> bool:
+    m = re.search(r"max-age\s*=\s*\"?(\d{1,12})", value.lower())
+    return bool(m) and int(m.group(1)) > 0
+
+
 def _enrich_ev(
     base_ev: dict,
     *,
@@ -76,13 +93,18 @@ def analyze_l1_service_response(
 ) -> list[dict]:
     """Analyze a read-only L1 ``http_probe`` response for an external HTTPS service."""
     findings: list[dict] = []
-    headers_raw = res.get("headers") or {}
+    # Everything below is text chosen by the target. It is bounded and stripped of
+    # control / markup characters once, here, before it reaches a title, a summary,
+    # the report or a regular expression.
+    headers_raw = {clean_target_text(k, 64): clean_target_text(v)
+                   for k, v in list((res.get("headers") or {}).items())[:MAX_TARGET_HEADERS]}
     headers_lower = {str(k).lower(): str(v) for k, v in headers_raw.items()}
     status_code = res.get("status")
+    is_redirect = isinstance(status_code, int) and 300 <= status_code < 400
     parsed_url = urllib.parse.urlparse(target_url)
     is_https = parsed_url.scheme.lower() == "https"
     tls_info = res.get("tls") or {}
-    set_cookies: list[str] = res.get("set_cookies") or []
+    set_cookies: list[str] = [clean_target_text(c, 1024) for c in (res.get("set_cookies") or [])[:50]]
     if not set_cookies and "set-cookie" in headers_lower:
         set_cookies = [headers_lower["set-cookie"]]
 
@@ -132,13 +154,48 @@ def analyze_l1_service_response(
                 }
             )
 
+    # 1b. No TLS at all
+    if not is_https:
+        r_score, r_rat = compute_finding_risk_score("high", "proven", internet_facing=False)
+        findings.append(
+            {
+                "id": "f_l1_no_tls",
+                "title": "HTTPS が使われていません（平文HTTPでの提供）",
+                "severity": "high",
+                "verdict": "proven",
+                "category": "暗号・TLS設定",
+                "cve": [],
+                "risk_level": "L1",
+                "help_term": "security_headers",
+                "risk_score": r_score,
+                "risk_rationale": r_rat,
+                "summary": "診断対象は http:// で応答しました。通信内容・Cookie・トークンが暗号化されずに流れます。",
+                "why_detected": "登録された対象URLのスキームが http で、TLS を使わない接続で応答を取得できたためです。",
+                "what_was_established": "TLS を使わない接続で応答が返ることを確認しました。",
+                "impact": "経路上の第三者に通信内容を読み取られ、改ざんされるリスクがあります。",
+                "evidence": [_enrich_ev(ev, target_url=target_url, verification_conditions=base_conditions)],
+                "remediation": {
+                    "steps": ["すべての通信を HTTPS（TLS 1.2 以上）で提供し、http は https へリダイレクトする",
+                              "HSTS を設定してブラウザに HTTPS を強制させる"],
+                    "how_to_verify": "https の URL で登録し直して同じGET検査を実行し、この項目が検出されないことを確認します。",
+                },
+                "executor": {**EXECUTOR_DEFAULT, "tool": "http_probe"},
+                "demo_fixture": False,
+            }
+        )
+
     # 2. HSTS, CSP, X-Content-Type-Options
     missing_sec_headers: list[str] = []
     if is_https and "strict-transport-security" not in headers_lower:
         missing_sec_headers.append("Strict-Transport-Security (HSTS)")
-    if "content-security-policy" not in headers_lower:
+    elif is_https and not _hsts_effective(headers_lower["strict-transport-security"]):
+        missing_sec_headers.append("Strict-Transport-Security (HSTS・max-age が 0 または不正で無効)")
+    # A redirect has no document to protect: CSP / nosniff are judged on the page it leads to.
+    if is_redirect:
+        pass
+    elif "content-security-policy" not in headers_lower:
         missing_sec_headers.append("Content-Security-Policy (CSP)")
-    if headers_lower.get("x-content-type-options", "").lower() != "nosniff":
+    if not is_redirect and headers_lower.get("x-content-type-options", "").lower() != "nosniff":
         missing_sec_headers.append("X-Content-Type-Options: nosniff")
 
     if missing_sec_headers:
@@ -183,14 +240,16 @@ def analyze_l1_service_response(
     # 3. Cookie Secure, HttpOnly, SameSite
     insecure_cookies: list[str] = []
     for raw_cookie in set_cookies:
-        c_lower = raw_cookie.lower()
-        cookie_name = raw_cookie.split("=", 1)[0].strip() or "cookie"
+        cookie_name = raw_cookie.split("=", 1)[0].strip()[:64] or "cookie"
+        # attributes are the ";"-separated parts AFTER name=value; a cookie name or
+        # value that merely contains the word "secure" does not count
+        attrs = {part.strip().split("=", 1)[0].lower() for part in raw_cookie.split(";")[1:]}
         missing_flags: list[str] = []
-        if is_https and "secure" not in c_lower:
+        if is_https and "secure" not in attrs:
             missing_flags.append("Secure")
-        if "httponly" not in c_lower:
+        if "httponly" not in attrs:
             missing_flags.append("HttpOnly")
-        if "samesite" not in c_lower:
+        if "samesite" not in attrs:
             missing_flags.append("SameSite")
         if missing_flags:
             insecure_cookies.append(f"{cookie_name} (未設定: {'/'.join(missing_flags)})")
@@ -237,8 +296,9 @@ def analyze_l1_service_response(
     acao = headers_lower.get("access-control-allow-origin", "")
     acac = headers_lower.get("access-control-allow-credentials", "").lower()
     probe_origin = str(res.get("cors_probe_origin", "https://untrusted-origin.example"))
-    if acao == "*" or (acao and probe_origin and acao == probe_origin):
-        sev = "high" if (acao == probe_origin and acac == "true") else "medium"
+    # "null" is as untrusted as a reflected origin (sandboxed frames, local files)
+    if acao in ("*", "null") or (acao and probe_origin and acao == probe_origin):
+        sev = "high" if (acao in (probe_origin, "null") and acac == "true") else "medium"
         r_score, r_rat = compute_finding_risk_score(
             sev, "proven", internet_facing=is_https
         )
@@ -354,7 +414,8 @@ def analyze_l1_service_response(
 
     # 6. Unauthenticated API access control boundary check
     content_type = headers_lower.get("content-type", "")
-    if status_code == 200 and "application/json" in content_type.lower():
+    media_type = content_type.lower().split(";", 1)[0].strip()
+    if status_code == 200 and (media_type == "application/json" or media_type.endswith("+json")):
         r_score, r_rat = compute_finding_risk_score(
             "medium", "detected", internet_facing=is_https
         )

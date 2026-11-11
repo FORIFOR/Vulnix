@@ -19,13 +19,21 @@ from typing import Callable, Optional
 _URL_HOST_RE = re.compile(r"https?://([^/\s\"':]+)")
 
 
+_IPV4 = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])")
+_IPV6 = re.compile(r"(?<![0-9A-Fa-f:])(?:[0-9A-Fa-f]{1,4}:){2,7}[0-9A-Fa-f:]{1,4}(?![0-9A-Fa-f:])")
+
+
 def anonymize_text(text: str, host_map: dict[str, str]) -> str:
     if not text:
         return ""
     out = str(text)
     for raw_host, anon_host in sorted(host_map.items(), key=lambda kv: -len(kv[0])):
         if raw_host:
-            out = out.replace(raw_host, anon_host)
+            # case-insensitive, and with an optional :port
+            out = re.sub(re.escape(raw_host) + r"(?::\d{1,5})?", anon_host, out, flags=re.IGNORECASE)
+    # any IP address literal identifies infrastructure as well
+    out = _IPV4.sub("[IPアドレス]", out)
+    out = _IPV6.sub("[IPアドレス]", out)
     return out
 
 
@@ -129,7 +137,8 @@ def build_remotion_export(
             "risk_rationale": _clean(f.get("risk_rationale", "")),
             "verification_status": ev_status,
             "verification_badge": (
-                "実証済み（L2再現確認）"
+                ("実証済み（L2再現確認）" if str(f.get("risk_level", "")).upper() == "L2"
+                 else "実測で確認（L1読み取り専用の観測）")
                 if ev_status == "proven"
                 else "検出済み（L1観測・実証未実施）"
                 if ev_status == "detected"

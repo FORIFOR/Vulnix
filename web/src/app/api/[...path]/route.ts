@@ -23,8 +23,9 @@ function hostAllowed(host: string | null): boolean {
   if (!host) return false;
   const h = host.trim().toLowerCase();
   if (EXTRA_HOSTS.has(h)) return true;
-  const name = h.startsWith("[") ? h.slice(0, h.indexOf("]") + 1) : h.split(":")[0];
-  return LOCAL_NAMES.has(name);
+  // exactly  name  or  name:port  - nothing before, nothing after
+  const m = /^(localhost|127\.0\.0\.1|\[::1\])(?::(\d{1,5}))?$/.exec(h);
+  return m !== null && LOCAL_NAMES.has(m[1]);
 }
 
 function misdirected() {

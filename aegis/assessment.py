@@ -13,6 +13,7 @@ import hmac
 import ipaddress
 import json
 import os
+import re
 import secrets
 import sys
 import threading
@@ -75,6 +76,10 @@ class Assessment:
     stop_report: dict | None = None
     chat_messages: list[dict] = field(default_factory=list)
     defense_comparison: dict | None = None
+
+
+class ApproverRequired(PermissionError):
+    """The action needs the approver role (mapped to HTTP 403)."""
 
 
 _DATA_DIR_LOCKS: dict[str, object] = {}
@@ -203,6 +208,9 @@ class AssessmentService:
         self._last_planner_verification: dict | None = None
         self.router = ProposalRouter(self.gateway, self.audit, backends)
         self.artex = ArtexEngine(self.router)
+        # Real services are planned by the built-in planner only: nothing about them
+        # (URL, findings, evidence) is sent to an external model or CLI.
+        self._local_router = ProposalRouter(self.gateway, self.audit, [ArtexplannerBackend()])
         self.cve_monitor = cve.FeedMonitor()
 
         self.a = Assessment(
@@ -393,6 +401,8 @@ class AssessmentService:
             # a private test CA is never trusted for a real service outside development
             env["VULNIX_TEST_CA_FILE"] = cafile
         rule = self._active_l2_check(args.get("check")) if tool_name == "reproduction_probe" else None
+        if rule is not None and not self._stored_overrides_allowed(rule):
+            rule = None          # a stored path no longer fits what the accepted profile allows
         if rule is not None and self._l2_transport_ok():
             env.update(self.secrets.worker_env_for_check(
                 self.a.asset.get("name", "").lower(), rule))
@@ -450,8 +460,10 @@ class AssessmentService:
     @staticmethod
     def _describe_rule(profile: dict, c: dict) -> dict:
         def req(node: dict) -> dict:
+            meta = profile["paths"][node["path"]]
             return {"account": profile["tokens"][node["token"]]["label"], "token_key": node["token"],
-                    "path": profile["paths"][node["path"]]["default"], "headers": sorted(node["headers"])}
+                    "path": meta["default"], "path_override_pattern": meta.get("override_pattern"),
+                    "headers": dict(node["headers"])}
         return {
             "id": c["id"], "label": c["label"],
             "request": req(c["subject"]),
@@ -523,6 +535,24 @@ class AssessmentService:
             return None
         return next((c for c in profile["checks"] if c["finding"]["id"] == finding_id), None)
 
+    def _stored_overrides_allowed(self, check: dict) -> bool:
+        """Stored path overrides are checked again at the moment tokens would be
+        released, against the profile as it is NOW (it may have been replaced and
+        re-accepted since the override was saved)."""
+        profile = self._l2_profile()
+        if profile is None:
+            return False
+        status = self.secrets.public_status(self.a.asset.get("name", "").lower(), profile)
+        values = {p["key"]: p["value"] for p in status["paths"] if p.get("value")}
+        for node in (check["subject"], *check["preconditions"]):
+            val = values.get(node["path"])
+            if val is None:
+                continue
+            pattern = profile["paths"][node["path"]].get("override_pattern")
+            if not pattern or re.fullmatch(pattern, val) is None:
+                return False
+        return True
+
     def _l2_block_reason(self) -> str | None:
         """Why test-account tokens may not be sent to the active asset right now."""
         ext = self._external_entry(self.a.asset.get("name"))
@@ -585,7 +615,7 @@ class AssessmentService:
                 fh.write(json.dumps(payload, ensure_ascii=False, indent=2))
             os.replace(tmp_path, self.state_path)
             self._persist_error = None
-        except OSError as e:
+        except Exception as e:      # OSError, but also anything that makes the state unserialisable
             # Not persisted: what is on disk may still grant authority that was just
             # revoked in memory (it would come back after a restart). Say so, and
             # refuse real-service work until saving works again.
@@ -594,7 +624,7 @@ class AssessmentService:
             if first:
                 try:
                     self.audit.record("state.persist_failed", error=type(e).__name__)
-                except OSError:
+                except Exception:
                     pass
 
     @staticmethod
@@ -884,6 +914,13 @@ class AssessmentService:
         clean_name = (name or "").strip().lower()
         if not clean_name or len(clean_name) > 120 or " " in clean_name:
             raise ValueError("有効な対象ドメインまたはホスト名を入力してください")
+        for text in (clean_name, kind or "", environment or "", authorization_ref or ""):
+            try:
+                str(text).encode("utf-8")
+            except UnicodeEncodeError:
+                raise ValueError("入力に不正な文字が含まれています") from None
+        if not re.fullmatch(r"[a-z0-9]([a-z0-9.-]*[a-z0-9])?", clean_name):
+            raise ValueError("有効な対象ドメインまたはホスト名を入力してください")
         clean_kind = (kind or "Webアプリケーション").strip()[:40]
         clean_env = (environment or "検証環境").strip()[:40]
         clean_ref = (authorization_ref or "").strip()[:80]
@@ -963,6 +1000,9 @@ class AssessmentService:
         return asset_record
 
     def _activate_asset_locked(self, asset_record: dict, auth_ref: str) -> None:
+        # the single place where the active asset changes: never during a verification
+        if asset_record.get("id") != self.a.asset.get("id"):
+            self._refuse_while_verifying_locked()
         prev_primary = {
             **self.a.asset,
             "status": _asset_status(self.a.state),
@@ -1204,6 +1244,7 @@ class AssessmentService:
         actor: str = "operator",
         dns_lookup=None,
         http_fetch=None,
+        roles=None,
     ) -> dict:
         """Step 2 of the 5-step registration flow: verify ownership via DNS TXT or
         /.well-known/vulnix-verify.txt. Ownership verification NEVER auto-approves L2."""
@@ -1249,6 +1290,11 @@ class AssessmentService:
                 if verified and not target_asset.get("scope_confirmed"):
                     target_asset["status"] = "範囲確認待ち"
                     target_asset["note"] = "Step 3: 診断対象スコープと禁止事項を確認してください（L2実証は自動承認されません）"
+            if (not verified and roles is not None and "approver" not in roles
+                    and (host in self._ownership_proofs or host in self._verified_external_hosts)):
+                # decided now, under the lock: someone else may have verified or
+                # confirmed this host while our lookup was in flight
+                raise ApproverRequired("所有確認済みの対象の再確認には承認責任者の権限が必要です")
             if not verified:
                 # A failed (re-)verification revokes any previously confirmed scope:
                 # no further traffic is sent to this host until it is proven again.
@@ -1339,6 +1385,12 @@ class AssessmentService:
             # endpoint from the SIGNED proof, not from the (unsigned) display record
             scheme = str(proof.get("scheme") or target_asset.get("scheme") or parsed["scheme"])
             port = int(proof.get("port") or target_asset.get("port") or parsed["port"])
+            if "://" in (url_or_host or "") and (parsed["scheme"], int(parsed["port"])) != (scheme, port):
+                # the approver named one endpoint, the proof is for another: do not
+                # silently confirm something different from what was asked
+                raise ValueError(
+                    f"確認しようとしたURL（{parsed['scheme']}・ポート{parsed['port']}）は、"
+                    f"所有確認を行った宛先（{scheme}・ポート{port}）と一致しません")
             target_asset["scheme"], target_asset["port"] = scheme, port
             if proof["method"] == "well_known" and (scheme, port) != ("https", 443) and not allow_loopback_test:
                 # the proof file was served by the HTTPS service on 443; it says
@@ -1674,16 +1726,22 @@ class AssessmentService:
             return (self.l2.has_check(f.get("reproduce_check"))
                     or self._l2_check_for_finding(finding_id) is not None)
 
-    def verify_finding(self, finding_id: str, actor: str) -> dict:
+    def verify_finding(self, finding_id: str, actor: str, *, roles=None) -> dict:
         """Execute a real Gateway + Worker probe for a specific finding on demand
-        and attach the live HTTP response and SHA-256 audit hash."""
+        and attach the live HTTP response and SHA-256 audit hash.
+
+        `roles`: the caller's roles as established by the HTTP layer. The decision
+        "does this run need an approver" is made HERE, after the active asset is
+        pinned for the duration of the run - never by a separate check beforehand,
+        which a concurrent asset switch could invalidate. (`None` = an in-process
+        caller that vouches for the actor itself.)"""
         self._begin_operation()        # the active asset cannot be switched while this runs
         try:
-            return self._verify_finding(finding_id, actor)
+            return self._verify_finding(finding_id, actor, roles)
         finally:
             self._end_operation()
 
-    def _verify_finding(self, finding_id: str, actor: str) -> dict:
+    def _verify_finding(self, finding_id: str, actor: str, roles=None) -> dict:
         if finding_id == "all":
             with self._lock:
                 if self.gateway.state is State.STOPPED:
@@ -1775,6 +1833,10 @@ class AssessmentService:
                 )
             if not actor or str(actor).startswith("policy:auto"):
                 raise ValueError("L2再現試験には人間の個別承認が必要です（自動承認不可）")
+            if roles is not None and "approver" not in roles:
+                self.audit.record("l2.run_denied", actor=actor, finding=finding_id, check=dn_check,
+                                  reason="approver role required")
+                raise ApproverRequired("実サービスのL2再現試験には承認責任者の権限が必要です")
             blocked = self._l2_block_reason()
             if blocked:
                 raise ValueError(blocked)
@@ -2207,16 +2269,29 @@ class AssessmentService:
             tool="http_probe",
             level="L1",
         )
+        if is_ext:
+            self.artex.router = self._local_router
+        else:
+            self.artex.router = self.router
         tasks_l1 = self.artex.plan_phase("config", {"target_id": "lab", "target_url": url})
+
+        def _is_the_executed_probe(tk) -> bool:
+            # Only the fixed read-only GET below is ever executed in this phase. Any
+            # other proposal (another URL, method, tool or check) stays a proposal.
+            p = tk.routed.proposal
+            a = p.get("args", {})
+            return (p.get("tool") == "http_probe" and p.get("action") == "read_only_probe"
+                    and a.get("url") == url and str(a.get("method", "GET")).upper() == "GET")
         for tk in tasks_l1:
-            if tk.status != "unsupported":
-                tk.status = "running"
+            if tk.status == "unsupported":
+                continue
+            tk.status = "running" if _is_the_executed_probe(tk) else "not_executed"
         res, ev = self._exec("http_probe", "read_only_probe", {"url": url, "method": "GET"},
                              approval_actor="policy:auto-L1")
         if res is None:
             return
         for tk in tasks_l1:
-            if tk.status != "unsupported":
+            if tk.status == "running":
                 tk.status = "completed"
         self._phase("config", "done", f"HTTP {res['status']} を取得")
 
@@ -2697,7 +2772,8 @@ class AssessmentService:
             }
             self.a.chat_messages.extend([user_msg, ai_msg])
             self._save_state_locked()
-            self.audit.record("chat.asked", actor=actor, term=term or "", finding_id=finding_id or "")
+            self.audit.record("chat.asked", actor=actor, term=term or "", finding_id=finding_id or "",
+                              answered_by=source, sent_to_external_model=(source == "external_model"))
             self.bus.publish(self.a.id, "chat.message", messages=[user_msg, ai_msg])
             return {"message": ai_msg, "chat_messages": list(self.a.chat_messages), "planner": self.planner_status()}
 
@@ -2725,7 +2801,10 @@ class AssessmentService:
             total_phases = len(self.a.phases)
         target_f = context["target_finding"]
         ext = self._chat_backend
-        if ext is not None:
+        # Findings and evidence of a real service (response bodies, cookies, the
+        # ownership challenge, names) never leave this machine: the external model
+        # is used for the local lab only.
+        if ext is not None and not self._in_ownership_flow(context["asset"].get("name")):
             ans = ext.chat(q, context)
             if ans:
                 with self._lock:

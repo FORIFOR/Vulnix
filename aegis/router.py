@@ -19,6 +19,7 @@ import json
 import math
 import os
 import re
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from functools import partial
@@ -119,11 +120,39 @@ class StubBackend:
         return [dict(p) for p in self.proposals]      # copies: callers can't mutate ours
 
 
+MAX_MODEL_RESPONSE_BYTES = 1_000_000
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None      # a redirect would carry the Authorization header to another origin
+
+
+def _require_safe_model_url(url: str) -> None:
+    """The request carries the API key: https only, except a loopback endpoint."""
+    parts = urllib.parse.urlsplit(url)
+    host = (parts.hostname or "").lower()
+    if parts.scheme == "https":
+        return
+    if parts.scheme == "http" and host in ("127.0.0.1", "localhost", "::1"):
+        return
+    raise ValueError("model endpoint must be https (http is accepted for loopback only)")
+
+
+def _open_model_url(req, *, timeout):
+    """The API key never follows a redirect."""
+    return urllib.request.build_opener(_NoRedirect).open(req, timeout=timeout)
+
+
 def _http_transport(url: str, headers: dict, body: bytes, *,
                     timeout_s: float = DEFAULT_MODEL_TIMEOUT_SECONDS) -> bytes:
+    _require_safe_model_url(url)
     req = urllib.request.Request(url, data=body, headers=headers, method="POST")
-    with urllib.request.urlopen(req, timeout=timeout_s) as r:    # pragma: no cover - needs network
-        return r.read()
+    with _open_model_url(req, timeout=timeout_s) as r:      # pragma: no cover - needs network
+        data = r.read(MAX_MODEL_RESPONSE_BYTES + 1)
+    if len(data) > MAX_MODEL_RESPONSE_BYTES:
+        raise ValueError("model response too large")
+    return data
 
 
 class HttpModelBackend:

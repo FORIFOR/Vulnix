@@ -40,7 +40,8 @@
   "paths": {
     "note_b_path": {
       "label": "Bのノート",
-      "default": "/api/notes/b1"
+      "default": "/api/notes/b1",
+      "override_pattern": "/api/notes/[A-Za-z0-9_-]{1,64}"
     },
     "note_a_path": {
       "label": "Aのノート",

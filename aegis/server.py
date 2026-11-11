@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import http.cookies
+import hashlib
 import json
 import os
 import re
@@ -22,7 +23,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from .assessment import AssessmentService
+from .assessment import ApproverRequired, AssessmentService
 from .control_verification import run_live_control_verification
 from .lab import set_lab_mode, start_lab
 from .operators import AuthError, LockedOut, MFAChallenge, OperatorStore
@@ -194,6 +195,11 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             if p == f"/api/assessments/{svc.a.id}/remotion":
                 q = parse_qs(u.query)
                 anon = (q.get("anonymize") or ["1"])[0] != "0"
+                if not anon:
+                    # the identifying export: a deliberate, recorded act by someone with authority
+                    if not sess or not ({"approver", "admin"} & set(sess.roles)):
+                        return self._json(403, {"error": "匿名化なしの出力には承認責任者または管理者の権限が必要です"})
+                    svc.audit.record("export.remotion_identified", actor=sess.operator)
                 return self._json(200, svc.remotion_export(anonymize=anon))
             if p == f"/api/assessments/{svc.a.id}/events":
                 q = parse_qs(u.query)
@@ -248,6 +254,11 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 return self._json(400, {"error": "invalid json"})
             if not isinstance(body, dict):
                 return self._json(400, {"error": "request body must be a JSON object"})
+            try:
+                # e.g. lone surrogates: valid JSON escapes that cannot be stored as UTF-8
+                json.dumps(body, ensure_ascii=False).encode("utf-8")
+            except (UnicodeEncodeError, ValueError):
+                return self._json(400, {"error": "request body contains characters that cannot be stored"})
             p = urlsplit(self.path).path.rstrip("/")
 
             if p == "/api/auth/login":
@@ -394,6 +405,8 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             try:
                 before, after = ops.set_roles(target, roles, actor=sess.operator)
             except AuthError as e:
+                svc.audit.record("operator.roles_change_failed", actor=sess.operator, target=target[:64],
+                                 requested=roles[:8], error=str(e)[:200])
                 return self._json(409, {"error": str(e)})
             svc.audit.record("operator.roles_changed", actor=sess.operator, target=target,
                              before=list(before), after=list(after),
@@ -466,6 +479,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         url_or_host=str(body.get("url") or body.get("host") or ""),
                         method=str(body.get("method", "dns_txt")),
                         actor=actor,
+                        roles=tuple(sess.roles),     # re-checked inside, when the result is applied
                     )
                     return self._json(200, {**res, "assets": svc.assets()})
                 elif p == "/api/assets/confirm-scope":
@@ -535,7 +549,11 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         kev_obj=body.get("kev") if isinstance(body.get("kev"), dict) else None,
                         source=str(body.get("source", "operator_sync")),
                     )
-                    svc.audit.record("cve.synced", actor=actor, cve_count=st["cve_count"], kev_count=st["kev_count"])
+                    svc.audit.record("cve.synced", actor=actor, cve_count=st["cve_count"], kev_count=st["kev_count"],
+                                     source=str(body.get("source", "operator_sync"))[:64],
+                                     payload_sha256=hashlib.sha256(
+                                         json.dumps({"nvd": body.get("nvd"), "kev": body.get("kev")},
+                                                    sort_keys=True, default=str).encode()).hexdigest())
                     return self._json(200, st)
                 elif p == base + "/start":
                     svc.start()
@@ -552,10 +570,9 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     fid = str(body.get("finding_id", "")).strip()
                     if not fid:
                         return self._json(400, {"error": "finding_id is required"})
-                    if (svc.finding_requires_human_l2_approval(fid)
-                            and "approver" not in sess.roles):
-                        return self._json(403, {"error": "実サービスのL2再現試験には承認責任者の権限が必要です"})
-                    return self._json(200, svc.verify_finding(fid, actor))
+                    # the service decides whether this needs an approver, under its own
+                    # lock (a check here could be invalidated by a concurrent switch)
+                    return self._json(200, svc.verify_finding(fid, actor, roles=tuple(sess.roles)))
                 elif p == base + "/request-l2":
                     fid = str(body.get("finding_id", "")).strip()
                     if not fid:
@@ -590,6 +607,8 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     svc.decide_approval(m.group(1), decision, actor)
                 else:
                     return self._json(404, {"error": "not found"})
+            except ApproverRequired as e:
+                return self._json(403, {"error": str(e)})
             except Exception as e:
                 return self._json(409, {"error": str(e)})
             return self._json(200, svc.snapshot())

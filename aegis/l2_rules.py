@@ -235,7 +235,20 @@ def validate_profile(raw, source: str = "<profile>") -> dict:
               f"`paths.{k}.label` is required")
         _need(isinstance(v.get("default"), str) and _PATH_RE.fullmatch(v["default"]) is not None, where,
               f"`paths.{k}.default` must be an absolute ASCII path without spaces")
-        paths[k] = {"label": v["label"].strip(), "default": v["default"]}
+        pattern = v.get("override_pattern")
+        if pattern is not None:
+            # An operator may replace this path (e.g. with the id of their mock
+            # resource), but only with something the profile - and so the admin who
+            # accepted it - allows. Without a pattern the path cannot be overridden.
+            _need(isinstance(pattern, str) and 0 < len(pattern) <= 200, where,
+                  f"`paths.{k}.override_pattern` must be a regular expression of at most 200 characters")
+            try:
+                compiled = re.compile(pattern)
+            except re.error as e:
+                raise RuleError(f"L2 profile {where}: `paths.{k}.override_pattern` is not a valid pattern ({e})") from None
+            _need(compiled.fullmatch(v["default"]) is not None or "REPLACE_WITH" in v["default"], where,
+                  f"`paths.{k}.default` must itself match `override_pattern`")
+        paths[k] = {"label": v["label"].strip(), "default": v["default"], "override_pattern": pattern}
 
     distinct = []
     for pair in raw.get("distinct_tokens", []):

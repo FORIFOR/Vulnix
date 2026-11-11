@@ -152,6 +152,7 @@ class Operator:
     roles: tuple[str, ...]
     totp_secret: str | None = None     # set => a second factor is required at login
     created_by: str | None = None      # admin who created it; "self" = self-registered (development mode)
+    totp_last_counter: int = -1        # last accepted TOTP time step (replay protection)
 
 
 @dataclass
@@ -197,7 +198,8 @@ class OperatorStore:
                 self._ops[o["name"]] = Operator(o["name"], o.get("display", o["name"]),
                                                 o["password_hash"],
                                                 tuple(r for r in o["roles"] if r in ROLES),
-                                                o.get("totp_secret"), o.get("created_by"))
+                                                o.get("totp_secret"), o.get("created_by"),
+                                                int(o.get("totp_last_counter", -1)))
             self._ensure_admin()
             return None
         # First run: generate the accounts with random passwords and write the seed.
@@ -317,7 +319,8 @@ class OperatorStore:
                 {"name": o.name, "display": o.display, "roles": list(o.roles),
                  "password_hash": o.password_hash,
                  **({"totp_secret": o.totp_secret} if o.totp_secret else {}),
-                 **({"created_by": o.created_by} if o.created_by else {})}
+                 **({"created_by": o.created_by} if o.created_by else {}),
+                 **({"totp_last_counter": o.totp_last_counter} if o.totp_last_counter >= 0 else {})}
                 for o in self._ops.values()
             ]}
             written = self._atomic_write(self.seed_path, json.dumps(payload, ensure_ascii=False, indent=2))
@@ -334,11 +337,11 @@ class OperatorStore:
         if not op or not verify_password(current, op.password_hash):
             self._note_failure(name)
             raise AuthError("現在のパスワードが違います")
+        self._clear_failures(name)      # the current password was right: not a guess, whatever follows
         if len(new) < MIN_PASSWORD_LEN:
             raise AuthError(f"新しいパスワードは{MIN_PASSWORD_LEN}文字以上にしてください")
         if new == current:
             raise AuthError("現在と異なるパスワードを設定してください")
-        self._clear_failures(name)
         new_hash = hash_password(new)
         with self._lock:
             op.password_hash = new_hash
@@ -361,26 +364,34 @@ class OperatorStore:
         (the machine's operator) creates `unlock.request` next to the seed file,
         one account name per line. It is honoured once and removed."""
         path = self.seed_path.with_name("unlock.request")
-        try:
-            st = os.lstat(path)
-        except OSError:
+        if not os.path.lexists(path):
             return
         import stat as _stat
-        ok = (_stat.S_ISREG(st.st_mode) and not (st.st_mode & 0o022)
-              and (not hasattr(os, "getuid") or st.st_uid == os.getuid()))
-        names: list[str] = []
-        if ok:
+        ok, names = False, []
+        try:
+            # O_NOFOLLOW: a symlink is refused, and the checks below are made on the
+            # very file that is then read (no check-then-open race)
+            fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
             try:
-                names = [ln.strip() for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()][:50]
-            except OSError:
-                ok = False
+                st = os.fstat(fd)
+                ok = (_stat.S_ISREG(st.st_mode) and not (st.st_mode & 0o022)
+                      and (not hasattr(os, "getuid") or st.st_uid == os.getuid()))
+                if ok:
+                    text = os.read(fd, 8192).decode("utf-8", "replace")
+                    names = [ln.strip() for ln in text.splitlines() if ln.strip()][:50]
+            finally:
+                os.close(fd)
+        except OSError:
+            ok = False
+        removed = True
         try:
             os.unlink(path)
         except OSError:
-            pass
+            removed = False       # e.g. a directory of that name: ignored, and not reported again and again
         if not ok:
-            self.recovery_events.append({"event": "auth.unlock_file_rejected",
-                                         "reason": "not a regular file owned by this user, or writable by others"})
+            if removed:
+                self.recovery_events.append({"event": "auth.unlock_file_rejected",
+                                             "reason": "not a regular file owned by this user, or writable by others"})
             return
         for name in names:
             key = self._throttle_key(name)
@@ -409,7 +420,10 @@ class OperatorStore:
                 self._locked_until[key] = now + AUTH_LOCK_SECONDS
                 self._auth_failures[key] = recent
                 raise LockedOut(AUTH_LOCK_SECONDS, just_locked=True)
-            if key not in self._auth_failures and len(self._auth_failures) >= _MAX_TRACKED_NAMES:
+            if (key not in self._auth_failures and len(self._auth_failures) >= _MAX_TRACKED_NAMES
+                    and name not in self._ops):
+                # only made-up names compete for the bounded table; a real account is
+                # always tracked, so filling the table cannot shut real users out
                 self._make_room_locked(name, now)
             recent.append(now)
             self._auth_failures[key] = recent
@@ -479,9 +493,11 @@ class OperatorStore:
         if counter is None:
             return False
         with self._lock:
-            if counter <= self._totp_last_counter.get(op.name, -1):
+            if counter <= max(self._totp_last_counter.get(op.name, -1), op.totp_last_counter):
                 return False
             self._totp_last_counter[op.name] = counter
+            op.totp_last_counter = counter
+        self._persist_operators()        # so a used code stays used across a restart
         return True
 
     def login(self, name: str, password: str, code: str | None = None) -> Session:
