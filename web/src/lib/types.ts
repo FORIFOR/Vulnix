@@ -34,6 +34,9 @@ export interface Finding {
   l2_spec_status?: "confirmed" | "placeholder";
   /** Verdict of the most recent L2 run; differs from `verdict` when an earlier proof is kept. */
   last_run_verdict?: Verdict;
+  /** Separation of duties is on: an L2 run needs a request by one operator and approval by another. */
+  l2_needs_request?: boolean;
+  l2_request?: { requested_by: string; requested_at: number } | null;
   risk_score?: number;
   risk_rationale?: string;
   impact?: string;
@@ -178,6 +181,7 @@ export interface Snapshot {
   demo: boolean;
   target_url?: string;
   is_external_service?: boolean;
+  l2_separation_required?: boolean;
   lab_mode?: string;
   lab_endpoint: string;
   secrets_status?: SecretsStatus;

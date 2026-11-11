@@ -323,7 +323,7 @@ class TestOwnershipPrimitives(unittest.TestCase):
 
     def test_proof_file_is_never_fetched_from_a_non_public_address(self):
         from aegis.ownership import default_well_known_fetcher
-        with patch("urllib.request.OpenerDirector.open") as opened:
+        with patch("socket.create_connection") as opened:
             for host in ("localhost", "127.0.0.1", "169.254.169.254", "10.0.0.5"):
                 with self.subTest(host=host):
                     with self.assertRaises(ValueError):

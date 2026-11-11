@@ -9,6 +9,10 @@ Roles:
   - approver: may additionally decide L2+ approvals (separation of duty:
     the person who runs a scan should not be the only one who can approve
     higher-risk actions).
+  - admin: may grant and revoke roles. Roles are NEVER self-assigned:
+    self-registration creates an `operator` account only, and the approver
+    role exists only where an admin granted it (each change is audited by
+    the control plane).
 An account may hold several roles. This is authentication + coarse
 authorization for the UI; it does NOT replace the Gateway's execution token.
 
@@ -31,7 +35,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote
 
-ROLES = ("operator", "approver")
+ROLES = ("operator", "approver", "admin")
 SESSION_TTL = 12 * 3600
 MIN_PASSWORD_LEN = 10
 TOTP_STEP = 30
@@ -134,6 +138,7 @@ class OperatorStore:
         self._sessions: dict[str, Session] = {}
         self._pending_totp: dict[str, str] = {}   # name -> secret awaiting confirmation
         self.credentials_path: Path | None = None
+        self.admin_credentials_path: Path | None = None
         self._load_or_init()
         self._load_sessions()
 
@@ -143,15 +148,19 @@ class OperatorStore:
             raw = json.loads(self.seed_path.read_text())
             for o in raw["operators"]:
                 self._ops[o["name"]] = Operator(o["name"], o.get("display", o["name"]),
-                                                o["password_hash"], tuple(o["roles"]),
+                                                o["password_hash"],
+                                                tuple(r for r in o["roles"] if r in ROLES),
                                                 o.get("totp_secret"))
+            self._ensure_admin()
             return None
-        # First run: generate two accounts with random passwords and write the seed.
+        # First run: generate the accounts with random passwords and write the seed.
         generated = {"operator": secrets.token_urlsafe(12),
-                     "approver": secrets.token_urlsafe(12)}
+                     "approver": secrets.token_urlsafe(12),
+                     "admin": secrets.token_urlsafe(12)}
         defaults = [
             ("operator", "診断オペレーター", ("operator",), generated["operator"]),
             ("approver", "承認責任者", ("operator", "approver"), generated["approver"]),
+            ("admin", "管理者", ("operator", "admin"), generated["admin"]),
         ]
         out = {"operators": []}
         for name, display, roles, pw in defaults:
@@ -171,6 +180,25 @@ class OperatorStore:
         cred.chmod(0o600)
         self.credentials_path = cred
         return generated
+
+    def _ensure_admin(self) -> None:
+        """An installation created before the admin role existed has nobody who can
+        grant roles. Create one admin account with a random password, written only
+        to a 0600 side file. No existing account is promoted: which of them should
+        hold that power is not something this code can know."""
+        if any("admin" in o.roles for o in self._ops.values()):
+            return
+        name = "admin" if "admin" not in self._ops else "admin-" + secrets.token_hex(3)
+        password = secrets.token_urlsafe(12)
+        self._ops[name] = Operator(name, "管理者", hash_password(password), ("operator", "admin"))
+        self._persist_operators()
+        cred = self.seed_path.with_name("operators.admin-credentials.txt")
+        cred.write_text(
+            "Aegis 管理者アカウント（ロール付与用・このファイルは手元で確認してください）\n"
+            "ログイン後にパスワードを変更し、このファイルは削除してください。\n\n"
+            f"ユーザー名: {name}\nパスワード: {password}\n")
+        cred.chmod(0o600)
+        self.admin_credentials_path = cred
 
     def _load_sessions(self) -> None:
         """Restore unexpired sessions for still-known operators after a restart."""
@@ -273,6 +301,14 @@ class OperatorStore:
             if sess and self._clock() >= sess.expires:
                 del self._sessions[token]
                 return None
+            if sess:
+                # Roles come from the account as it is NOW, so a revoked role stops
+                # working at once and a stored session cannot carry a stale one.
+                op = self._ops.get(sess.operator)
+                if op is None:
+                    del self._sessions[token]
+                    return None
+                sess.roles = op.roles
             return sess
 
     def logout(self, token: str | None) -> None:
@@ -283,10 +319,10 @@ class OperatorStore:
         if removed:
             self._persist_sessions()
 
-    def register(self, name: str, password: str, *, display: str = "",
-                 roles: tuple[str, ...] | list[str] = ("operator",)) -> Session:
-        """Register a new operator account (storing only its scrypt password hash)
-        and return an authenticated session."""
+    def register(self, name: str, password: str, *, display: str = "") -> Session:
+        """Self-registration: creates an `operator` account (storing only its scrypt
+        password hash) and returns an authenticated session. It can never grant
+        `approver` or `admin`; those are assigned by an admin via `set_roles`."""
         clean_name = (name or "").strip()
         if not clean_name or len(clean_name) < 2 or len(clean_name) > 32:
             raise AuthError("ユーザー名は2〜32文字で入力してください")
@@ -294,10 +330,7 @@ class OperatorStore:
             raise AuthError("ユーザー名には英数字・ハイフン・アンダースコア・ドットのみ使用できます")
         if len(password or "") < MIN_PASSWORD_LEN:
             raise AuthError(f"パスワードは{MIN_PASSWORD_LEN}文字以上にしてください")
-        role_set = [r for r in roles if r in ROLES]
-        if "operator" not in role_set:
-            role_set.insert(0, "operator")
-        clean_roles = tuple(dict.fromkeys(role_set))
+        clean_roles = ("operator",)
         clean_display = (display or "").strip()[:40] or clean_name
         pw_hash = hash_password(password)
         now = self._clock()
@@ -314,6 +347,33 @@ class OperatorStore:
     def operators(self) -> list[Operator]:
         with self._lock:
             return list(self._ops.values())
+
+    def set_roles(self, target: str, roles: list[str] | tuple[str, ...], *, actor: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """Replace `target`'s roles. Returns (before, after). The caller (server)
+        has already established that `actor` is an authenticated admin; this
+        re-checks it, and refuses changes that would defeat the model."""
+        unknown = [r for r in roles if r not in ROLES]
+        if unknown:
+            raise AuthError(f"不明なロールです: {', '.join(unknown)}")
+        new_roles = tuple(r for r in ROLES if r == "operator" or r in roles)   # canonical order
+        with self._lock:
+            acting = self._ops.get(actor)
+            if acting is None or "admin" not in acting.roles:
+                raise AuthError("ロールを変更できるのは管理者だけです")
+            op = self._ops.get(target)
+            if op is None:
+                raise AuthError("対象のアカウントが見つかりません")
+            before = op.roles
+            if target == actor and set(new_roles) != set(before):
+                # no self-service in either direction: not granting oneself approver,
+                # and not dropping the admin role by accident
+                raise AuthError("自分自身のロールは変更できません。別の管理者が変更してください")
+            if "admin" in before and "admin" not in new_roles and not any(
+                    "admin" in o.roles for n, o in self._ops.items() if n != target):
+                raise AuthError("最後の管理者から管理者ロールを外すことはできません")
+            op.roles = new_roles
+        self._persist_operators()
+        return before, new_roles
 
     # ---- two-factor (TOTP) enrollment ------------------------------------
     def totp_enabled(self, name: str) -> bool:

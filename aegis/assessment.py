@@ -29,7 +29,7 @@ from .evidence import (EVIDENCE_LABELS, evidence_status,
 from .gateway import Gateway, State, http_probe_tool, reproduction_probe_tool
 from .lab import get_lab_mode, set_lab_mode
 from .network import EgressGuard, NetworkError, system_resolver
-from .ownership import (PROHIBITED_ACTIONS_SUMMARY,
+from .ownership import (PROHIBITED_ACTIONS_SUMMARY, fetch_proof_file_pinned, public_address,
                         challenge_for_host, parse_service_target,
                         verify_ownership_challenge)
 from .policy import ArgSpec, Budget, Tool
@@ -79,16 +79,28 @@ class Assessment:
 # Findings whose single-item verification is a bundled-lab check (fixed lab paths).
 LAB_ONLY_FINDING_IDS = frozenset({"f_banner", "f_idor", "f_sqli", "fx_idor", "fx_sqli", "fx_banner"})
 
+# Under separation of duties, a request for an L2 run can be approved for this long.
+L2_REQUEST_MAX_AGE_S = 24 * 3600
+
 # A scope confirmation (and every renewal of it) needs a proof at most this old.
 OWNERSHIP_PROOF_MAX_AGE_S = 24 * 3600
 
 
 class AssessmentService:
     def __init__(self, data_dir: Path, lab_port: int, verify_seconds: float = 1.5,
-                 l2_profile_dirs: list[Path] | None = None):
+                 l2_profile_dirs: list[Path] | None = None,
+                 separate_l2_approver: bool | None = None):
         self.data_dir = Path(data_dir)
         # Service profiles: per-API L2 rules. Loaded and validated once at start.
         self.l2 = L2RuleSet.load(l2_profile_dirs or default_profile_dirs(self.data_dir))
+        # Optional separation of duties for real-service L2: one operator requests
+        # a run, a DIFFERENT approver approves and executes it.
+        self.separate_l2_approver = (
+            os.environ.get("AEGIS_SEPARATE_L2_APPROVER") == "1"
+            if separate_l2_approver is None else bool(separate_l2_approver))
+        # Pending requests live in memory only: under separation of duties they are
+        # half of the authority to run, so they are never restored from state.json.
+        self._l2_requests: dict[str, dict] = {}
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.state_path = self.data_dir / "state.json"
         self.secrets = EncryptedSecretStore(self.data_dir)
@@ -105,6 +117,9 @@ class AssessmentService:
         self._allowed_hosts: set[str] = {"lab.test", "api.lab.test"}
         self._verified_external_hosts: dict[str, dict] = {}
         self._custom_resolver = None
+        # test seams for the proof re-check on address change (None = real lookups)
+        self._proof_dns_lookup = None
+        self._proof_file_fetch = None
         now = time.time()
         target = Target("lab", hosts=tuple(sorted(self._allowed_hosts)),
                         cidrs=("127.0.0.1/32",), ports=(lab_port,))
@@ -218,15 +233,68 @@ class AssessmentService:
                     raise NetworkError(f"external service host {h} resolved to an invalid address")
                 if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
                     ip = ip.ipv4_mapped
-                if not allow_loopback and not ip.is_global:
+                if not allow_loopback and public_address(str(ip)) is None:
                     raise NetworkError(
                         f"external service host {h} resolved to non-public IP {ip} (blocked)"
                     )
                 safe_addrs.append(str(ip))
+            if not allow_loopback:
+                self._require_addresses_covered_by_proof(h, ext, safe_addrs)
             return safe_addrs
         if h in self._allowed_hosts:
             return ["127.0.0.1"]
         return []
+
+    def _require_addresses_covered_by_proof(self, host: str, ext: dict, addrs: list[str]) -> None:
+        """Ownership was proven for a NAME; traffic goes to ADDRESSES. Whenever the
+        name resolves to an address that no proof has covered yet (first use, DNS
+        change, takeover of a dangling record), the proof is checked again before
+        anything is sent there. If it no longer holds, the scope is revoked.
+
+        The Gateway pins the worker to exactly the addresses returned by this
+        resolution, so what is checked here is what is contacted."""
+        known = set(ext.get("verified_addresses") or [])
+        new = [a for a in addrs if a not in known]
+        if not new:
+            return
+        token = challenge_for_host(host, self._ownership_secret)["token"]
+        method = str(ext.get("proof_method") or "dns_txt")
+        ok, detail = False, ""
+        try:
+            if method == "well_known":
+                fetch = self._proof_file_fetch or fetch_proof_file_pinned
+                ok = all(token in (fetch(host, a) or "") for a in new)
+                detail = "検証ファイルを新しいアドレスから取得して確認"
+            else:
+                res = verify_ownership_challenge(host, "dns_txt", expected_token=token,
+                                                 txt_lookup=self._proof_dns_lookup)
+                ok, detail = bool(res.get("verified")), "DNS TXT を再確認"
+        except Exception as e:      # any failure to re-prove is a failed proof
+            ok, detail = False, f"再確認に失敗: {type(e).__name__}"
+        with self._lock:
+            if ok:
+                live = self._verified_external_hosts.get(host)
+                if live is not None:
+                    live["verified_addresses"] = sorted(known | set(addrs))
+                    live["addresses_verified_at"] = time.time()
+                    self._save_state_locked()
+            else:
+                self._verified_external_hosts.pop(host, None)
+                for rec in (self.a.asset, *self._extra_assets):
+                    if rec.get("name", "").lower() == host:
+                        rec["scope_confirmed"] = False
+                        rec["ownership_verified"] = False
+                        rec.pop("ownership_proof", None)
+                        rec["status"] = "所有確認待ち"
+                        rec["note"] = "解決先のIPアドレスが変わり、所有を再確認できませんでした。所有確認からやり直してください"
+                self._save_state_locked()
+        self.audit.record("asset.addresses_reverified" if ok else "asset.scope_revoked_address_change",
+                          host=host, method=method, new_addresses=new, known_addresses=sorted(known),
+                          detail=detail)
+        if not ok:
+            raise NetworkError(
+                f"{host} が所有確認されていないアドレス {', '.join(new)} に解決されました。"
+                "所有を再確認できなかったため、診断範囲を取り消しました")
 
     def _ephemeral_worker_env(self, tool_name: str, args: dict) -> dict[str, str]:
         """Per-call worker environment (never argv, never audit). L2 test
@@ -276,6 +344,13 @@ class AssessmentService:
             }
         return {"verdict": outcome, "last_run_verdict": outcome, "verdict_note": note,
                 "what_was_established": None}
+
+    def _public_l2_request(self, finding_id: str) -> dict | None:
+        req = self._l2_requests.get(finding_id)
+        if (not req or req.get("host") != self.a.asset.get("name")
+                or time.time() - float(req.get("requested_at", 0)) > L2_REQUEST_MAX_AGE_S):
+            return None
+        return {"requested_by": req["requested_by"], "requested_at": req["requested_at"]}
 
     def _l2_check_for_finding(self, finding_id: str) -> dict | None:
         profile = self._l2_profile()
@@ -1109,8 +1184,12 @@ class AssessmentService:
                 "activity": self.a.activity,
                 "approvals": list(self.a.approvals.values()),
                 "findings": [{**f, "evidence_status": evidence_status(f),
-                              "requires_l2_approval": self.l2.has_check(f.get("reproduce_check"))}
+                              "requires_l2_approval": self.l2.has_check(f.get("reproduce_check")),
+                              "l2_request": self._public_l2_request(f["id"]),
+                              "l2_needs_request": bool(self.separate_l2_approver
+                                                       and self.l2.has_check(f.get("reproduce_check")))}
                              for f in self.a.findings.values()],
+                "l2_separation_required": self.separate_l2_approver,
                 "risk": risk,
                 "stop_report": self.a.stop_report,
                 "chat_messages": list(self.a.chat_messages),
@@ -1217,6 +1296,37 @@ class AssessmentService:
         )
 
     # ---- P2: On-demand single finding verification via real Gateway+Worker ---
+    def request_l2_run(self, finding_id: str, actor: str) -> dict:
+        """Record that `actor` asks for an L2 run of one item. It sends nothing and
+        approves nothing; under separation of duties it is the precondition for a
+        different approver to run that item."""
+        with self._lock:
+            check = self._l2_check_for_finding(finding_id)
+            if not self._is_external_service_asset() or check is None:
+                raise ValueError("L2検証の依頼は、実サービスの判定ルールに含まれる項目に対してのみ行えます")
+            if check["spec_status"] != "confirmed":
+                raise ValueError("この検証項目の判定ルールは対象APIの仕様と未照合（placeholder）のため、依頼できません")
+            if not actor or str(actor).startswith("policy:auto"):
+                raise ValueError("L2検証の依頼は人間の操作者だけが行えます")
+            self._l2_requests[finding_id] = {"requested_by": actor, "requested_at": time.time(),
+                                             "check": check["id"], "host": self.a.asset.get("name")}
+            self._save_state_locked()
+        self.audit.record("l2.run_requested", actor=actor, finding=finding_id, check=check["id"], risk_level="L2")
+        return self.snapshot()
+
+    def _take_l2_request(self, finding_id: str, check_id: str, approver: str) -> dict | None:
+        """Under separation of duties: the pending request this approval answers.
+        Raises unless a different operator requested this item for this host recently."""
+        if not self.separate_l2_approver:
+            return None
+        req = self._l2_requests.get(finding_id)
+        if (not req or req.get("check") != check_id or req.get("host") != self.a.asset.get("name")
+                or time.time() - float(req.get("requested_at", 0)) > L2_REQUEST_MAX_AGE_S):
+            raise ValueError("このL2検証には、別の担当者による実行依頼が必要です（依頼が無いか、期限切れです）")
+        if req.get("requested_by") == approver:
+            raise ValueError("依頼した本人は承認できません。別の承認責任者が承認してください")
+        return req
+
     def finding_requires_human_l2_approval(self, finding_id: str) -> bool:
         """Decided by the profile (finding id) as well as the stored record, so an
         edited finding cannot shed the approver requirement."""
@@ -1321,6 +1431,9 @@ class AssessmentService:
                 raise ValueError("L2再現試験には人間の個別承認が必要です（自動承認不可）")
             if not self._l2_transport_ok():
                 raise ValueError("検証用トークンを平文（http）で送信することはできません。https の対象でのみL2検証を実行できます")
+            with self._lock:
+                l2_request = self._take_l2_request(finding_id, dn_check, actor)
+                self._l2_requests.pop(finding_id, None)     # one request, one run
             self._think(
                 f"L2検証（{dn_check}）の個別承認実行",
                 f"人間承認者（{actor}）の承認に基づき、暗号化シークレットの検証用アカウントを用いて {target_f['title']} を非破壊検証します。",
@@ -1336,6 +1449,8 @@ class AssessmentService:
                 action="safe_reproduction",
                 check=dn_check,
                 risk_level="L2",
+                requested_by=(l2_request or {}).get("requested_by"),
+                separation_of_duties=self.separate_l2_approver,
             )
             try:
                 res, ev = self._exec(
@@ -1573,6 +1688,7 @@ class AssessmentService:
                 l2_wrule = self.l2.worker_rule(chk)
                 # only items a human already approved and ran once are re-run
                 if (fid in before_verdicts and chk in ready and l2_check["spec_status"] == "confirmed"
+                        and not self.separate_l2_approver    # then every L2 run needs its own request + approval
                         and self._l2_transport_ok()
                         and self.a.findings.get(fid, {}).get("reproduce_check") == chk):
                     apr_dn = self.approval_store.approve(actor, "eng_demo", "lab", "safe_reproduction")

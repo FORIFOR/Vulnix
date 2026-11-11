@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useState } from "react";
 import { postJSON } from "@/lib/api";
 import type { Finding, Snapshot } from "@/lib/types";
+import { canApprove, useSession } from "@/lib/useSession";
 import { HelpPopover } from "../learning/HelpPopover";
 import { Card, FixtureBadge, Pill, SeverityBadge, VerdictBadge } from "../ui";
 
@@ -29,6 +30,13 @@ export function FindingCard({
   // A rule that is not confirmed against the target API can never run (the server refuses it too).
   const unconfirmed = needsApproval && f.l2_spec_status === "placeholder";
   const blocked = unconfirmed || (needsApproval && f.l2_ready === false && f.evidence.length === 0);
+  // Separation of duties: one operator requests the run, a different approver approves it.
+  const { session } = useSession();
+  const separated = needsApproval && Boolean(f.l2_needs_request) && !blocked;
+  const request = f.l2_request ?? null;
+  const ownRequest = separated && request?.requested_by === session?.operator;
+  const mustRequest = separated && !request;
+  const waitingForOther = separated && !!request && (ownRequest || !canApprove(session));
 
   const runLiveVerify = async () => {
     setBusy(true);
@@ -36,9 +44,10 @@ export function FindingCard({
     onBusyChange?.(true);
     setErr(null);
     try {
-      const snap = await postJSON<Snapshot>(`/api/assessments/${assessmentId}/verify-finding`, {
-        finding_id: f.id,
-      });
+      const snap = await postJSON<Snapshot>(
+        `/api/assessments/${assessmentId}/${mustRequest ? "request-l2" : "verify-finding"}`,
+        { finding_id: f.id },
+      );
       onUpdate?.(snap);
     } catch (e) {
       setErr((e as Error).message);
@@ -121,7 +130,7 @@ export function FindingCard({
         <div className="flex items-center gap-2">
           <button
             type="button"
-            disabled={busy || blocked}
+            disabled={busy || blocked || waitingForOther}
             title={unconfirmed
               ? "この項目の判定ルールは対象APIの仕様と未照合のため、実行できません"
               : blocked ? "先に、診断画面上部の「L2検証用アカウント」でこの項目に必要なアカウントを設定してください" : undefined}
@@ -134,6 +143,12 @@ export function FindingCard({
                 ? "実行不可（判定ルールが仕様未照合）"
               : blocked
                 ? "検証用アカウント未設定"
+              : mustRequest
+                ? "L2検証の実行を依頼"
+              : waitingForOther
+                ? `別の承認責任者の承認待ち（依頼: ${request?.requested_by}）`
+              : separated
+                ? `✓ 承認してL2検証を実行（依頼: ${request?.requested_by}）`
                 : needsApproval
                   ? "✓ 承認してL2検証を実行"
                   : "▶ 実機Workerで今すぐ検証"}

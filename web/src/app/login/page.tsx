@@ -20,7 +20,6 @@ export default function LoginPage() {
   const [regDisplay, setRegDisplay] = useState("");
   const [regPassword, setRegPassword] = useState("");
   const [regConfirm, setRegConfirm] = useState("");
-  const [regApprover, setRegApprover] = useState(true);
 
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -69,7 +68,6 @@ export default function LoginPage() {
           name: regName.trim(),
           display: regDisplay.trim() || regName.trim(),
           password: regPassword,
-          roles: regApprover ? ["operator", "approver"] : ["operator"],
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -248,22 +246,12 @@ export default function LoginPage() {
               </div>
             </div>
 
-            <div className="mb-4 rounded-xl border border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-800 dark:bg-zinc-950/60">
-              <div className="mb-1.5 text-xs font-semibold">付与する権限ロール</div>
-              <label className="flex cursor-pointer items-start gap-2 text-xs">
-                <input
-                  type="checkbox"
-                  checked={regApprover}
-                  onChange={(e) => setRegApprover(e.target.checked)}
-                  className="mt-0.5 rounded border-zinc-300"
-                />
-                <span>
-                  <strong>承認責任者権限（approver）を含める</strong>
-                  <span className="block text-[11px] text-zinc-500">
-                    診断の開始・停止（operator）に加え、L2 侵入実証テストの人間承認および修正後の再検証を実行できます。
-                  </span>
-                </span>
-              </label>
+            <div className="mb-4 rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-xs dark:border-zinc-800 dark:bg-zinc-950/60">
+              <div className="mb-1 font-semibold">付与される権限ロール</div>
+              <p className="text-zinc-600 dark:text-zinc-400">
+                登録したアカウントは操作者（operator）になります。承認責任者（approver）のロールは自分では付与できません。
+                必要な場合は、管理者に「設定 → アカウントとロール」から付与を依頼してください。
+              </p>
             </div>
 
             {err && (

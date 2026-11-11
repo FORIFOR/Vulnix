@@ -32,9 +32,17 @@ ALLOWED_ORIGINS = {"http://localhost:3000", "http://127.0.0.1:3000"}
 COOKIE = "aegis_session"
 
 
+# GET endpoints that answer without a session. Everything else that is read
+# (assets, snapshots, logs, reports, evidence, the event stream, secrets status)
+# needs a login unless the operator opts out explicitly.
+PUBLIC_GET_PATHS = frozenset({"/api/auth/me", "/api/health"})
+
+
 def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_auth: bool | None = None):
+    # Secure by default: reads need a session. `AEGIS_REQUIRE_READ_AUTH=0` (or
+    # `--no-read-auth`) restores the old open-read behaviour for a local demo.
     enforce_read_auth = (
-        os.environ.get("AEGIS_REQUIRE_READ_AUTH") == "1"
+        os.environ.get("AEGIS_REQUIRE_READ_AUTH", "1") != "0"
         if require_read_auth is None
         else bool(require_read_auth)
     )
@@ -85,8 +93,17 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             sess = self._session()
             if p == "/api/auth/me":
                 return self._json(200, {"session": self._public_session(sess)})
+            if p == "/api/health":
+                return self._json(200, {"ok": True})
             if enforce_read_auth and not sess:
                 return self._json(401, {"error": "ログインが必要です"})
+            if p == "/api/operators":
+                # account list is for admins only, whatever the read-auth setting
+                if not sess or "admin" not in sess.roles:
+                    return self._json(403, {"error": "アカウント一覧の参照には管理者の権限が必要です"})
+                return self._json(200, {"operators": [
+                    {"name": o.name, "display": o.display, "roles": list(o.roles),
+                     "mfa_enabled": bool(o.totp_secret)} for o in ops.operators()]})
             if p == "/api/assets":
                 return self._json(200, svc.assets())
             if p == "/api/assets/secrets-status":
@@ -180,6 +197,8 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 return self._totp_confirm(body, sess)
             if p == "/api/auth/totp/disable":
                 return self._totp_disable(body, sess)
+            if p == "/api/operators/roles":
+                return self._set_roles(body, sess)
             return self._dispatch(p, body, sess)
 
         def _change_password(self, body, sess):
@@ -233,22 +252,40 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                               [("Set-Cookie", cookie)])
 
         def _register(self, body):
+            # Self-registration never grants more than `operator`. A `roles` field in
+            # the request is ignored (and the attempt is recorded).
             raw_roles = body.get("roles")
-            roles = [str(r) for r in raw_roles] if isinstance(raw_roles, list) else ["operator"]
+            asked = [str(r) for r in raw_roles] if isinstance(raw_roles, list) else []
             try:
                 sess = ops.register(
                     str(body.get("name", "")),
                     str(body.get("password", "")),
                     display=str(body.get("display", "")),
-                    roles=roles,
                 )
             except AuthError as e:
                 return self._json(400, {"error": str(e)})
-            svc.audit.record("auth.registered", actor=sess.operator, roles=list(sess.roles))
+            svc.audit.record("auth.registered", actor=sess.operator, roles=list(sess.roles),
+                             requested_roles_ignored=[r for r in asked if r not in sess.roles])
             cookie = (f"{COOKIE}={sess.token}; HttpOnly; SameSite=Strict; Path=/; "
                       f"Max-Age={int(sess.expires - time.time())}")
             return self._json(200, {"session": self._public_session(sess)},
                               [("Set-Cookie", cookie)])
+
+        def _set_roles(self, body, sess):
+            if "admin" not in sess.roles:
+                svc.audit.record("operator.roles_change_denied", actor=sess.operator,
+                                 target=str(body.get("name", ""))[:64])
+                return self._json(403, {"error": "ロールの変更には管理者の権限が必要です"})
+            raw = body.get("roles")
+            roles = [str(r) for r in raw] if isinstance(raw, list) else []
+            target = str(body.get("name", "")).strip()
+            try:
+                before, after = ops.set_roles(target, roles, actor=sess.operator)
+            except AuthError as e:
+                return self._json(409, {"error": str(e)})
+            svc.audit.record("operator.roles_changed", actor=sess.operator, target=target,
+                             before=list(before), after=list(after))
+            return self._json(200, {"name": target, "roles": list(after)})
 
         def _clear_cookie(self):
             return [("Set-Cookie", f"{COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0")]
@@ -285,6 +322,8 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     )
                     return self._json(200, {**res, "assets": svc.assets()})
                 elif p == "/api/assets/confirm-scope":
+                    if "approver" not in sess.roles:
+                        return self._json(403, {"error": "診断範囲の確定には承認責任者の権限が必要です"})
                     res = svc.confirm_asset_scope(
                         url_or_host=str(body.get("url") or body.get("host") or ""),
                         confirmed_prohibited=body.get("confirmed_prohibited") is True,   # must be stated explicitly
@@ -294,6 +333,8 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     )
                     return self._json(200, {**res, "assets": svc.assets(), "snapshot": svc.snapshot()})
                 elif p == "/api/assets/secrets":
+                    if "approver" not in sess.roles:
+                        return self._json(403, {"error": "検証用アカウントの設定には承認責任者の権限が必要です"})
                     raw_paths = body.get("mock_paths")
                     raw_tokens = body.get("tokens")
                     tokens = dict(raw_tokens) if isinstance(raw_tokens, dict) else {}
@@ -350,6 +391,11 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                             and "approver" not in sess.roles):
                         return self._json(403, {"error": "実サービスのL2再現試験には承認責任者の権限が必要です"})
                     return self._json(200, svc.verify_finding(fid, actor))
+                elif p == base + "/request-l2":
+                    fid = str(body.get("finding_id", "")).strip()
+                    if not fid:
+                        return self._json(400, {"error": "finding_id is required"})
+                    return self._json(200, svc.request_l2_run(fid, actor))
                 elif p == base + "/lab-mode":
                     mode = str(body.get("mode", "vulnerable")).strip()
                     set_lab_mode(mode)
@@ -389,18 +435,24 @@ def main() -> None:
     ap.add_argument("--verify-seconds", type=float, default=2.0)
     ap.add_argument("--data-dir", default=None)
     ap.add_argument("--require-read-auth", action="store_true",
-                    help="Require operator authentication on all GET endpoints")
+                    help="(default) Require operator authentication on GET endpoints")
+    ap.add_argument("--no-read-auth", action="store_true",
+                    help="Allow unauthenticated GET reads (local demo only)")
+    ap.add_argument("--separate-l2-approver", action="store_true",
+                    help="Real-service L2 runs need a request by one operator and approval by another")
     a = ap.parse_args()
     data = Path(a.data_dir or tempfile.mkdtemp(prefix="aegis-"))
     data.mkdir(parents=True, exist_ok=True)
     seed = data / "operators.json"
     first = not seed.exists()
     start_lab(a.lab_port)
-    svc = AssessmentService(data, a.lab_port, a.verify_seconds)
+    svc = AssessmentService(data, a.lab_port, a.verify_seconds,
+                            separate_l2_approver=a.separate_l2_approver or None)
     ops = OperatorStore(seed)
+    read_auth = False if a.no_read_auth else (True if a.require_read_auth else None)
     srv = ThreadingHTTPServer(
         ("127.0.0.1", a.port),
-        make_handler(svc, ops, require_read_auth=a.require_read_auth or None),
+        make_handler(svc, ops, require_read_auth=read_auth),
     )
     srv.daemon_threads = True
     print(f"Vulnix control plane: http://127.0.0.1:{a.port}  (audit: {data / 'audit.jsonl'})")
@@ -408,6 +460,8 @@ def main() -> None:
         print(f"初回起動: 操作者アカウントを生成しました（ハッシュのみ {seed} に保存）。")
         print(f"初期ログイン情報（平文・600権限）: {ops.credentials_path}")
         print("内容は手元で確認してください。再生成するにはこの2ファイルを削除して再起動します。")
+    if ops.admin_credentials_path:
+        print(f"管理者アカウントを作成しました（ロール付与用・平文・600権限）: {ops.admin_credentials_path}")
     srv.serve_forever()
 
 

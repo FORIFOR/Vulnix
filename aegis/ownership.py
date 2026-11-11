@@ -12,12 +12,13 @@ Implements the beginner-friendly 5-step registration model:
 from __future__ import annotations
 
 import hashlib
+import http.client
 import ipaddress
+import ssl
 import re
 import socket
 import subprocess
 import time
-import urllib.request
 from typing import Callable
 from urllib.parse import urlsplit
 
@@ -93,34 +94,72 @@ def default_dns_txt_lookup(txt_domain: str) -> list[str]:
         return []
 
 
-class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
+# Address ranges that `ipaddress.is_global` accepts but that carry an embedded
+# IPv4 destination (NAT64, 6to4, Teredo): the real target could be private.
+_EMBEDDED_V4_NETS = tuple(ipaddress.ip_network(n) for n in ("64:ff9b::/96", "64:ff9b:1::/48", "2002::/16", "2001::/32"))
+
+
+def public_address(raw: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    """The normalized address if it is a publicly routable unicast address, else None."""
+    try:
+        ip = ipaddress.ip_address(str(raw).split("%")[0])
+    except ValueError:
         return None
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.ipv4_mapped:
+            ip = ip.ipv4_mapped
+        elif any(ip in n for n in _EMBEDDED_V4_NETS):
+            return None
+    return ip if ip.is_global and not ip.is_multicast else None
 
 
-def _require_public_host(host: str) -> None:
-    """The control plane itself fetches the proof file, so refuse hosts that
-    resolve to loopback / private / link-local / metadata addresses."""
+def resolve_public_addresses(host: str) -> list[str]:
+    """Resolve once and require EVERY address to be public. Raises ValueError."""
     try:
         infos = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
     except OSError as e:
         raise ValueError(f"ホスト名を解決できません: {host}") from e
+    out: list[str] = []
     for info in infos:
-        ip = ipaddress.ip_address(info[4][0].split("%")[0])
-        if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
-            ip = ip.ipv4_mapped
-        if not ip.is_global:
+        ip = public_address(info[4][0])
+        if ip is None:
             raise ValueError(f"{host} は公開アドレスに解決されないため、検証ファイルを取得しません")
+        if str(ip) not in out:
+            out.append(str(ip))
+    if not out:
+        raise ValueError(f"ホスト名を解決できません: {host}")
+    return out
+
+
+def fetch_proof_file_pinned(host: str, address: str, *, path: str = "/.well-known/vulnix-verify.txt",
+                            timeout: float = 5.0) -> str:
+    """GET the proof file over TLS from exactly `address`, verifying the certificate
+    for `host`. The name is NOT resolved again here, so the address that was
+    checked is the address that is contacted (no DNS-rebinding window), and a
+    redirect is simply a non-200 answer (never followed)."""
+    if public_address(address) is None:
+        raise ValueError(f"{address} は公開アドレスではないため、検証ファイルを取得しません")
+    sock = socket.create_connection((address, 443), timeout=timeout)
+    try:
+        tls = ssl.create_default_context().wrap_socket(sock, server_hostname=host)
+    except Exception:
+        sock.close()
+        raise
+    conn = http.client.HTTPConnection(host, 443, timeout=timeout)
+    conn.sock = tls
+    try:
+        conn.request("GET", path, headers={"Host": host, "User-Agent": "vulnix-ownership-verifier/1.0"})
+        resp = conn.getresponse()
+        return resp.read(2048).decode("utf-8", "replace") if resp.status == 200 else ""
+    finally:
+        conn.close()
 
 
 def default_well_known_fetcher(url: str) -> str:
-    _require_public_host(urlsplit(url).hostname or "")
-    opener = urllib.request.build_opener(_NoRedirectHandler)
-    req = urllib.request.Request(url, headers={"User-Agent": "vulnix-ownership-verifier/1.0"}, method="GET")
-    with opener.open(req, timeout=5) as resp:  # pragma: no cover - live network
-        if resp.status != 200:
-            return ""
-        return resp.read(2048).decode("utf-8", "replace")
+    """Resolve once, validate every address, then fetch from the validated address."""
+    host = urlsplit(url).hostname or ""
+    addresses = resolve_public_addresses(host)
+    return fetch_proof_file_pinned(host, addresses[0])  # pragma: no cover - live network
 
 
 def verify_ownership_challenge(

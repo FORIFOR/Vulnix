@@ -25,3 +25,4 @@ export const SessionContext = createContext<SessionCtx>({
 
 export const useSession = () => useContext(SessionContext);
 export const canApprove = (s: SessionInfo | null) => !!s?.roles.includes("approver");
+export const isAdmin = (s: SessionInfo | null) => !!s?.roles.includes("admin");

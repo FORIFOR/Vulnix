@@ -56,7 +56,7 @@ export function AppSidebar() {
 function OperatorBadge() {
   const { session, logout } = useSession();
   if (!session) return null;
-  const role = session.roles.includes("approver") ? "承認責任者" : "診断オペレーター";
+  const role = session.roles.includes("approver") ? "承認責任者" : session.roles.includes("admin") ? "管理者" : "診断オペレーター";
   return (
     <div className="rounded-lg border border-zinc-200 px-2.5 py-2 text-xs dark:border-zinc-800">
       <div className="truncate font-semibold">{session.operator}</div>

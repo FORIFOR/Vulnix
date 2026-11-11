@@ -2,6 +2,7 @@
 
 import { useState, useSyncExternalStore } from "react";
 import { MfaSection } from "@/components/settings/MfaSection";
+import { RolesSection } from "@/components/settings/RolesSection";
 import { PasswordChangeForm } from "@/components/settings/PasswordChangeForm";
 import { Card, Pill } from "@/components/ui";
 import { command } from "@/lib/api";
@@ -113,7 +114,7 @@ export default function Settings() {
               <dd className="flex gap-1">
                 {session.roles.map((r) => (
                   <Pill key={r} className="bg-zinc-200 text-zinc-800 dark:bg-zinc-700 dark:text-zinc-100">
-                    {r === "approver" ? "承認責任者" : "診断オペレーター"}
+                    {r === "approver" ? "承認責任者" : r === "admin" ? "管理者" : "診断オペレーター"}
                   </Pill>
                 ))}
               </dd>
@@ -127,6 +128,13 @@ export default function Settings() {
         {session && <PasswordChangeForm />}
         {session && <MfaSection />}
       </Card>
+
+      {session && (
+        <Card>
+          <h2 className="mb-2 text-sm font-semibold">アカウントとロール</h2>
+          <RolesSection />
+        </Card>
+      )}
 
       <Card>
         <h2 className="mb-2 text-sm font-semibold">表示テーマ</h2>

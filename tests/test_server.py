@@ -99,7 +99,30 @@ class TestServer(unittest.TestCase):
     # ---- auth ---------------------------------------------------------------
     def test_requires_login(self):
         self.assertEqual(self.post("/start")[0], 401)
+        # reads need a session by default; only the session probe and health are public
+        for path in ("", "/logs", "/report", "/remotion", "/events"):
+            self.assertEqual(self._req(self.base + path)[0], 401, path)
+        for path in ("/assets", "/assets/secrets-status", "/router/status", "/cve/status",
+                     "/system/verify-controls", "/cve/real-software-verify", "/operators"):
+            self.assertEqual(self._req(self.root + path)[0], 401, path)
+        self.assertEqual(self._req(f"{self.root}/auth/me"), (200, {"session": None}))
+        self.assertEqual(self._req(f"{self.root}/health"), (200, {"ok": True}))
+        self.login("op", "op-pw")
         self.assertEqual(self.get()["state"], "idle")
+
+    def test_open_reads_remain_available_as_an_explicit_opt_out(self):
+        open_srv = ThreadingHTTPServer(("127.0.0.1", 0),
+                                       make_handler(self.svc, self.ops, require_read_auth=False))
+        open_srv.daemon_threads = True
+        threading.Thread(target=open_srv.serve_forever, daemon=True).start()
+        try:
+            root = f"http://127.0.0.1:{open_srv.server_port}/api"
+            self.assertEqual(self._req(f"{root}/assessments/scan_001")[0], 200)
+            self.assertEqual(self._req(f"{root}/assets")[0], 200)
+            self.assertEqual(self._req(f"{root}/operators")[0], 403)     # never open, whatever the setting
+        finally:
+            open_srv.shutdown()
+            open_srv.server_close()
 
     def test_bad_password_rejected(self):
         self.assertEqual(self.login("op", "wrong")[0], 401)
@@ -160,6 +183,7 @@ class TestServer(unittest.TestCase):
         self.assertIn("auth.mfa_enabled", events)
 
     def test_router_status_reports_no_autonomous_execution(self):
+        self.login("op", "op-pw")
         status = self._req(f"{self.root}/router/status")[1]
         self.assertFalse(status["autonomous_execution"])    # off by design
         self.assertIn("connected", status)
@@ -232,7 +256,8 @@ class TestServer(unittest.TestCase):
         self.login("appr", "appr-pw")
         self.post("/start")
         self.wait_for(lambda s: s["last_seq"] >= 5)
-        req = urllib.request.Request(self.base + "/events", headers={"Last-Event-ID": "evt_3"})
+        req = urllib.request.Request(self.base + "/events",
+                                     headers={"Last-Event-ID": "evt_3", "Cookie": self.cookie})
         with urllib.request.urlopen(req, timeout=5) as r:
             ids = []
             for line in r:
@@ -370,7 +395,11 @@ class TestServer(unittest.TestCase):
         })
         self.assertEqual(code, 200)
         self.assertEqual(body["session"]["operator"], "sec-lead")
-        self.assertIn("approver", body["session"]["roles"])
+        # self-registration never grants more than `operator`, whatever was asked for
+        self.assertEqual(body["session"]["roles"], ["operator"])
+        registered = [e for e in self.svc.audit.entries() if e["event"] == "auth.registered"][-1]["fields"]
+        self.assertEqual(registered["requested_roles_ignored"], ["approver"])
+        self.assertEqual(self.post("/verify-fix")[0], 403)
 
         # Duplicate username is rejected
         dup_code, _ = self._req(f"{self.root}/auth/register", {
@@ -378,6 +407,7 @@ class TestServer(unittest.TestCase):
             "password": "strong-password-123",
         })
         self.assertEqual(dup_code, 400)
+        self.login("appr", "appr-pw")        # the rest of this flow needs an approver
 
         # 2. Register an authorized target asset via POST /api/assets
         acode, abody = self._req(f"{self.root}/assets", {
