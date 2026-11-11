@@ -1,4 +1,5 @@
 """Proposal router: untrusted proposals in, Gateway decides. No self-authority."""
+import tests  # noqa: F401  (hermetic revocation-marker directory)
 import http.server
 import json
 import os

@@ -1,4 +1,5 @@
 """Control-plane API: auth, CSRF guard, approval gating, emergency stop, SSE resume."""
+import tests  # noqa: F401  (hermetic revocation-marker directory)
 import json
 import tempfile
 import threading
@@ -301,6 +302,7 @@ class TestServer(unittest.TestCase):
             "l2_approval_gate": True,
             "emergency_stop_sigkill": True,
             "netfilter_ruleset": True,
+            "l2_worker_confinement": True,
         })
 
         cve_st = self._req(f"{self.root}/cve/status")[1]

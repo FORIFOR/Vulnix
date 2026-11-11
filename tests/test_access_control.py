@@ -20,6 +20,7 @@ from aegis.operators import AuthError, OperatorStore, hash_password
 from aegis.server import make_handler
 from tests.test_real_service import (HOST, NOTE_A, NOTE_B, PROFILE_DIRS, TOKEN_A, TOKEN_B,
                                      LAB_PORT, RealServiceBase)
+from tests import TEST_CONFINEMENT
 from aegis.assessment import AssessmentService
 
 PUBLIC_1, PUBLIC_2 = "93.184.216.34", "93.184.216.35"
@@ -41,7 +42,7 @@ class ApiBase(RealServiceBase):
     def setUp(self):
         super().setUp()
         self.svc.workers.kill_all()
-        self.svc = AssessmentService(self.dir, LAB_PORT, verify_seconds=0.1, l2_profile_dirs=PROFILE_DIRS,
+        self.svc = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT, verify_seconds=0.1, l2_profile_dirs=PROFILE_DIRS,
                                      separate_l2_approver=self.SEPARATE)
         self.svc._custom_resolver = lambda h: ["127.0.0.1"] if h == HOST else []
         self.ops = OperatorStore(seed(self.dir))
@@ -428,12 +429,12 @@ class TestTrafficStaysOnProvenAddresses(RealServiceBase):
         self.svc._resolve_host(HOST)
         self.svc.workers.kill_all()
         state = json.loads((self.dir / "state.json").read_text())
-        again = AssessmentService(self.dir, LAB_PORT, l2_profile_dirs=PROFILE_DIRS)
+        again = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT, l2_profile_dirs=PROFILE_DIRS)
         self.assertEqual(again._verified_external_hosts[HOST]["verified_addresses"], [PUBLIC_1])
         again.workers.kill_all()
         state["verified_external_hosts"][HOST]["verified_addresses"] = [PUBLIC_1, "151.101.1.69"]
         (self.dir / "state.json").write_text(json.dumps(state))
-        forged = AssessmentService(self.dir, LAB_PORT, l2_profile_dirs=PROFILE_DIRS)
+        forged = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT, l2_profile_dirs=PROFILE_DIRS)
         self.assertEqual(forged._verified_external_hosts, {})
         forged.workers.kill_all()
 
@@ -466,7 +467,7 @@ class TestSecondReviewFindingsStayFixed(RealServiceBase):
 
     def restart(self):
         self.svc.workers.kill_all()
-        self.svc = AssessmentService(self.dir, LAB_PORT, verify_seconds=0.1, l2_profile_dirs=PROFILE_DIRS)
+        self.svc = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT, verify_seconds=0.1, l2_profile_dirs=PROFILE_DIRS)
         self.svc._custom_resolver = lambda h: ["127.0.0.1"] if h == HOST else []
         return self.svc
 

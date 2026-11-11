@@ -4,6 +4,7 @@ import { useState, type Dispatch, type SetStateAction } from "react";
 import { applyChatReply } from "@/lib/assessmentEvents";
 import { command } from "@/lib/api";
 import { fmtTime } from "@/lib/labels";
+import { failureHeadline, statusNotices } from "@/lib/statusNotices";
 import { canApprove, useSession } from "@/lib/useSession";
 import type { AegisEvent, Approval, AuditEntry, Snapshot } from "@/lib/types";
 import { HelpPopover } from "../learning/HelpPopover";
@@ -45,7 +46,7 @@ function headline(s: Snapshot): string {
     case "idle": return "診断はまだ開始していません。許可範囲を確認のうえ「診断を開始」を押してください。";
     case "paused": return "一時停止中です。新しい操作は実行されません（実行中の処理は完了まで続きます）。";
     case "stopped": return "緊急停止しました。実行許可を失効させ、実行中の処理を強制終了しました。";
-    case "failed": return "診断を中断しました。ログで理由を確認してください。";
+    case "failed": return failureHeadline(s);
     case "completed": return `診断が完了しました。${s.findings.filter((f) => !f.demo_fixture).length} 件の問題を記録しています。`;
     default: return running ? `${running.label}：${running.detail}` : "処理を進めています。";
   }
@@ -150,6 +151,21 @@ export function AgentActivity({
   return (
     <div className="min-w-0 space-y-4">
       <Bubble>{headline(snap)}</Bubble>
+
+      {statusNotices(snap).map((n) => (
+        <div
+          key={n.title}
+          role={n.tone === "error" ? "alert" : "status"}
+          className={`ml-11 rounded-xl border px-3 py-2 text-sm ${
+            n.tone === "error"
+              ? "border-red-300 bg-red-50 text-red-900 dark:border-red-900 dark:bg-red-950/40 dark:text-red-100"
+              : "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-100"
+          }`}
+        >
+          <div className="font-semibold">{n.title}</div>
+          <div className="mt-0.5 text-xs leading-relaxed">{n.detail}</div>
+        </div>
+      ))}
 
       <div className="ml-11">
         <ReasoningTrace

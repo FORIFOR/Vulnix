@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from aegis import operators as ops_mod
+from tests import TEST_CONFINEMENT
 from aegis.assessment import AssessmentService
 from aegis.l2_rules import BUILTIN_PROFILE_DIR
 from aegis.network import NetworkError
@@ -349,7 +350,7 @@ class TestPlantedOrEditedProfile(RealServiceBase):
 
     def start(self):
         self.svc.workers.kill_all()
-        self.svc = AssessmentService(self.dir, LAB_PORT, verify_seconds=0.1)        # default (site) profile dirs
+        self.svc = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT, verify_seconds=0.1)        # default (site) profile dirs
         self.svc._custom_resolver = lambda h: ["127.0.0.1"] if h == HOST else []
         return self.svc
 

@@ -1,4 +1,5 @@
 """Trust labels must not promote sample candidates to measured results."""
+import tests  # noqa: F401  (hermetic revocation-marker directory)
 import tempfile
 import unittest
 from pathlib import Path

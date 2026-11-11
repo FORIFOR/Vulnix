@@ -69,6 +69,7 @@ MAX_AUTH_FAILURES = 5          # failures ...
 AUTH_FAILURE_WINDOW = 15 * 60  # ... within this many seconds ...
 AUTH_LOCK_SECONDS = 15 * 60    # ... pause sign-in for this long
 _MAX_TRACKED_NAMES = 5000
+_OVERFLOW_BUCKETS = 4096      # shared counters used once the exact table is full
 
 
 def session_key(token: str) -> str:
@@ -177,6 +178,8 @@ class OperatorStore:
         self._ops: dict[str, Operator] = {}
         self._sessions: dict[str, Session] = {}     # keyed by session_key(token); never the token
         self._auth_failures: dict[str, list[float]] = {}
+        self._overflow_failures: dict[str, list[float]] = {}   # bucket -> attempts, when the table is full
+        self._throttle_secret = secrets.token_bytes(16)       # buckets cannot be predicted from outside
         self._locked_until: dict[str, float] = {}
         self._throttle_names: dict[str, str] = {}    # throttle key -> name as typed (for the admin view)
         self._totp_last_counter: dict[str, int] = {} # account -> last accepted TOTP step (no replay)
@@ -359,6 +362,32 @@ class OperatorStore:
         # the real account nor reset its counter. Hashed to bound the key size.
         return hashlib.sha256((name or "").encode("utf-8", "replace")).hexdigest()
 
+    def _slot_locked(self, name: str, *, assign: bool = False) -> tuple[dict, str]:
+        """Where the attempts for `name` are counted: (table, key).
+
+        Whether `name` is an account plays NO part in this, and nothing is ever
+        evicted - entries only expire with time. (Evicting made-up names but not
+        accounts let a flood reveal which names are accounts.) Names get an exact
+        entry while the table has room; after that they share one of a fixed
+        number of buckets, chosen by a keyed hash. Memory stays bounded, and a
+        flood can neither reset a counter nor tell accounts from made-up names."""
+        key = self._throttle_key(name)
+        if key in self._auth_failures or key in self._locked_until:
+            return self._auth_failures, key
+        if assign:
+            if len(self._auth_failures) >= _MAX_TRACKED_NAMES:
+                now = self._clock()
+                for k in [k for k, ts in self._auth_failures.items()
+                          if self._locked_until.get(k, 0.0) <= now
+                          and not any(now - t <= AUTH_FAILURE_WINDOW for t in ts)]:
+                    self._auth_failures.pop(k, None)        # expired by time only
+                    self._locked_until.pop(k, None)
+                    self._throttle_names.pop(k, None)
+            if len(self._auth_failures) < _MAX_TRACKED_NAMES:
+                return self._auth_failures, key
+        digest = hmac.new(self._throttle_secret, key.encode(), hashlib.sha256).digest()
+        return self._overflow_failures, f"ovf:{int.from_bytes(digest[:8], 'big') % _OVERFLOW_BUCKETS}"
+
     def _apply_file_unlock_locked(self) -> None:
         """Recovery without a session: someone with access to the data directory
         (the machine's operator) creates `unlock.request` next to the seed file,
@@ -394,9 +423,9 @@ class OperatorStore:
                                              "reason": "not a regular file owned by this user, or writable by others"})
             return
         for name in names:
-            key = self._throttle_key(name)
+            tab, key = self._slot_locked(name)
             was = self._locked_until.pop(key, 0.0) > self._clock()
-            self._auth_failures.pop(key, None)
+            tab.pop(key, None)
             self.recovery_events.append({"event": "auth.unlocked_by_file", "name": name[:64], "was_locked": was})
 
     def _check_not_locked(self, name: str) -> None:
@@ -406,68 +435,56 @@ class OperatorStore:
         """Reserve one attempt BEFORE the (slow) password check. Attempts in flight
         count, so firing many guesses in parallel gets no more evaluations than
         doing them one after another."""
-        key, now = self._throttle_key(name), self._clock()
+        now = self._clock()
         with self._lock:
             self._apply_file_unlock_locked()
             if len(self._locked_until) > 256:           # expired locks do not accumulate
                 for k in [k for k, t in self._locked_until.items() if t <= now]:
                     self._locked_until.pop(k, None)
                     self._throttle_names.pop(k, None)
+            tab, key = self._slot_locked(name, assign=True)
             until = self._locked_until.get(key, 0.0)
             if until > now:
                 raise LockedOut(until - now)
             if until:
                 self._locked_until.pop(key, None)
-                self._auth_failures.pop(key, None)
-            recent = [t for t in self._auth_failures.get(key, []) if now - t <= AUTH_FAILURE_WINDOW]
+                tab.pop(key, None)
+            recent = [t for t in tab.get(key, []) if now - t <= AUTH_FAILURE_WINDOW]
             if len(recent) >= MAX_AUTH_FAILURES:
                 self._locked_until[key] = now + AUTH_LOCK_SECONDS
-                self._auth_failures[key] = recent
+                tab[key] = recent
                 raise LockedOut(AUTH_LOCK_SECONDS, just_locked=True)
-            if (key not in self._auth_failures and len(self._auth_failures) >= _MAX_TRACKED_NAMES
-                    and name not in self._ops):
-                # only made-up names compete for the bounded table; a real account is
-                # always tracked, so filling the table cannot shut real users out
-                self._make_room_locked(name, now)
             recent.append(now)
-            self._auth_failures[key] = recent
+            tab[key] = recent
             self._throttle_names[key] = (name or "")[:64]
-
-    def _make_room_locked(self, name: str, now: float) -> None:
-        """Bounded memory without letting a flood of made-up names push out the
-        counter of a real account: only entries for names that are not accounts
-        (and are not locked) are ever evicted."""
-        account_keys = {self._throttle_key(n) for n in self._ops}
-        evictable = [k for k in self._auth_failures
-                     if k not in account_keys and self._locked_until.get(k, 0.0) <= now]
-        if not evictable:
-            raise LockedOut(60.0)
-        evictable.sort(key=lambda k: self._auth_failures[k][-1] if self._auth_failures[k] else 0.0)
-        for k in evictable[: max(1, len(evictable) // 10)]:
-            self._auth_failures.pop(k, None)
-            self._throttle_names.pop(k, None)
 
     def _note_failure(self, name: str) -> None:
         """The reserved attempt failed; raises LockedOut when it was the last one allowed."""
-        key, now = self._throttle_key(name), self._clock()
+        now = self._clock()
         with self._lock:
-            recent = [t for t in self._auth_failures.get(key, []) if now - t <= AUTH_FAILURE_WINDOW]
+            tab, key = self._slot_locked(name)
+            recent = [t for t in tab.get(key, []) if now - t <= AUTH_FAILURE_WINDOW]
             if len(recent) >= MAX_AUTH_FAILURES:
                 self._locked_until[key] = now + AUTH_LOCK_SECONDS
                 raise LockedOut(AUTH_LOCK_SECONDS, just_locked=True)
 
     def _forget_attempt(self, name: str) -> None:
         """The reserved attempt was not a guess after all (e.g. step 1 of a two-step login)."""
-        key = self._throttle_key(name)
         with self._lock:
-            recent = self._auth_failures.get(key)
+            tab, key = self._slot_locked(name)
+            recent = tab.get(key)
             if recent:
                 recent.pop()
 
     def _clear_failures(self, name: str) -> None:
-        key = self._throttle_key(name)
         with self._lock:
-            self._auth_failures.pop(key, None)
+            tab, key = self._slot_locked(name)
+            if tab is self._overflow_failures:
+                # a shared bucket: only this login's own reserved attempt is taken back
+                if tab.get(key):
+                    tab[key].pop()
+                return
+            tab.pop(key, None)
             self._locked_until.pop(key, None)
             self._throttle_names.pop(key, None)
 
@@ -486,9 +503,9 @@ class OperatorStore:
             acting = self._ops.get(actor)
             if acting is None or "admin" not in acting.roles:
                 raise AuthError("ロックを解除できるのは管理者だけです")
-            key = self._throttle_key(target)
+            tab, key = self._slot_locked(target)
             was_locked = self._locked_until.pop(key, 0.0) > self._clock()
-            self._auth_failures.pop(key, None)
+            tab.pop(key, None)
             return was_locked
 
     def _accept_totp(self, op: "Operator", code: str | None) -> bool:

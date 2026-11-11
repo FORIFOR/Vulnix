@@ -17,6 +17,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from aegis import evidence, l2_rules
+from tests import TEST_CONFINEMENT
 from aegis.assessment import AssessmentService
 from aegis.evidence import reproduction_verdict
 from aegis.l2_rules import BUILTIN_PROFILE_DIR, L2RuleSet, RuleError, validate_profile
@@ -420,7 +421,7 @@ class RealServiceBase(unittest.TestCase):
         set_lab_mode("vulnerable")
         self.tmp = tempfile.TemporaryDirectory()
         self.dir = Path(self.tmp.name)
-        self.svc = AssessmentService(self.dir, LAB_PORT, verify_seconds=0.1, l2_profile_dirs=PROFILE_DIRS)
+        self.svc = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT, verify_seconds=0.1, l2_profile_dirs=PROFILE_DIRS)
         self.fake = FakeService()
         threading.Thread(target=self.fake.serve_forever, daemon=True).start()
         self.url = f"http://{HOST}:{self.fake.server_port}"
@@ -550,7 +551,7 @@ class TestOwnershipGate(RealServiceBase):
         self.onboard()
         self.set_secrets()
         self.svc.workers.kill_all()
-        again = AssessmentService(self.dir, LAB_PORT, l2_profile_dirs=PROFILE_DIRS)
+        again = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT, l2_profile_dirs=PROFILE_DIRS)
         self.assertTrue(again._is_external_service_asset())
         self.assertEqual(again.snapshot()["target_url"], self.url + "/")
         self.assertTrue(again.secrets_status()["l2_ready"])
@@ -810,7 +811,7 @@ class TestUnconfirmedRulesCannotRun(RealServiceBase):
         self.svc.workers.kill_all()
         (self.dir / "l2_profiles").chmod(0o700)
         (self.dir / "l2_profiles" / "deepnote.json").chmod(0o600)
-        self.svc = AssessmentService(self.dir, LAB_PORT, verify_seconds=0.1)       # default profile dirs
+        self.svc = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT, verify_seconds=0.1)       # default profile dirs
         # a site profile is listed but nothing in it runs until an admin accepts its exact content
         self.assertEqual(self.svc.l2.runnable_check_ids(), ())
         status = self.svc.l2_profiles_status()["profiles"]
@@ -854,7 +855,7 @@ class TestUnconfirmedRulesCannotRun(RealServiceBase):
 
     def test_bundled_template_alone_binds_no_host(self):
         self.svc.workers.kill_all()
-        self.svc = AssessmentService(self.dir, LAB_PORT, verify_seconds=0.1)       # no site profile present
+        self.svc = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT, verify_seconds=0.1)       # no site profile present
         self.assertEqual(self.svc.l2.runnable_check_ids(), ())
         self.assertEqual([p["hosts"] for p in self.svc.l2.profiles.values()], [[]])
 
@@ -926,7 +927,7 @@ class TestReviewFindingsStayFixed(RealServiceBase):
         state = json.loads((self.dir / "state.json").read_text())
         self.assertEqual(oct((self.dir / "state.json").stat().st_mode & 0o777), "0o600")
         # (1) an honest restart keeps the scope but not the loopback test switch
-        again = AssessmentService(self.dir, LAB_PORT, l2_profile_dirs=PROFILE_DIRS)
+        again = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT, l2_profile_dirs=PROFILE_DIRS)
         self.assertTrue(again._is_external_service_asset(HOST))
         self.assertFalse(again._verified_external_hosts[HOST]["allow_loopback_test"])
         again._custom_resolver = lambda h: ["127.0.0.1"]
@@ -942,7 +943,7 @@ class TestReviewFindingsStayFixed(RealServiceBase):
             with self.subTest(mac=bool(mac)):
                 forged["authority_mac"] = mac
                 (self.dir / "state.json").write_text(json.dumps(forged))
-                svc = AssessmentService(self.dir, LAB_PORT, l2_profile_dirs=PROFILE_DIRS)
+                svc = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT, l2_profile_dirs=PROFILE_DIRS)
                 self.assertEqual(svc._verified_external_hosts, {})
                 self.assertFalse(svc._is_external_service_asset(HOST))
                 self.assertEqual(svc._resolve_host(HOST), [])            # not downgraded to the lab either
@@ -1017,13 +1018,13 @@ class TestNoServiceIsRegisteredImplicitly(RealServiceBase):
         for host in (keep, drop):                       # only issues a challenge: no traffic
             self.svc.issue_ownership_challenge(url=f"https://{host}", approver="appr")
         self.svc.workers.kill_all()
-        again = AssessmentService(self.dir, LAB_PORT, l2_profile_dirs=PROFILE_DIRS)
+        again = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT, l2_profile_dirs=PROFILE_DIRS)
         by_name = {a["name"]: a for a in again.assets()}
         self.assertEqual(by_name[keep]["status"], "所有確認待ち")       # existing data survives a restart
         self.assertIn(drop, by_name)
         again.delete_asset(by_name[drop]["id"])
         again.workers.kill_all()
-        third = AssessmentService(self.dir, LAB_PORT, l2_profile_dirs=PROFILE_DIRS)
+        third = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT, l2_profile_dirs=PROFILE_DIRS)
         names = {a["name"] for a in third.assets()}
         self.assertIn(keep, names)
         self.assertNotIn(drop, names)                    # not re-created at startup
@@ -1033,7 +1034,7 @@ class TestNoServiceIsRegisteredImplicitly(RealServiceBase):
 
     def test_service_without_a_profile_gets_l1_only(self):
         self.svc.workers.kill_all()
-        self.svc = AssessmentService(self.dir, LAB_PORT, verify_seconds=0.1,
+        self.svc = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT, verify_seconds=0.1,
                                      l2_profile_dirs=[BUILTIN_PROFILE_DIR])   # example profile not loaded
         self.svc._custom_resolver = lambda h: ["127.0.0.1"] if h == HOST else []
         self.onboard()

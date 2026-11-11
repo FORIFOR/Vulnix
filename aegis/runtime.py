@@ -32,10 +32,14 @@ class WorkerPool:
         self._sem = threading.BoundedSemaphore(max_concurrent)
         self._cpu = cpu_seconds
         self._procs: dict[int, subprocess.Popen] = {}
+        self._sessions: dict[int, object] = {}
         self._lock = threading.Lock()
         self._closed = False
 
-    def run(self, argv: list[str], timeout_s: float, *, extra_env: dict[str, str] | None = None) -> WorkerResult:
+    def run(self, argv: list[str], timeout_s: float, *, extra_env: dict[str, str] | None = None,
+            session=None) -> WorkerResult:
+        """`session` is a kernel confinement session (confinement.py): the worker is
+        started inside it, and killing the worker kills everything in it."""
         if not self._sem.acquire(blocking=False):
             raise RuntimeLimitError("concurrency limit reached")
         try:
@@ -46,6 +50,8 @@ class WorkerPool:
                 proc_env = {"PATH": "/usr/bin:/bin"}
                 if extra_env:
                     proc_env.update({str(k): str(v) for k, v in extra_env.items() if v is not None})
+                if session is not None:
+                    argv = session.wrap(argv, env_keys=tuple(proc_env), cpu_seconds=cpu)
                 proc = subprocess.Popen(
                     argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                     encoding="utf-8", errors="replace",      # a target cannot make decoding raise
@@ -53,11 +59,15 @@ class WorkerPool:
                     preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu)),
                 )
                 self._procs[proc.pid] = proc
+                if session is not None:
+                    self._sessions[proc.pid] = session
             t0 = time.monotonic()
             killed = False
             try:
                 out, err = proc.communicate(timeout=timeout_s)
             except subprocess.TimeoutExpired:
+                if session is not None:
+                    session.kill()
                 _killpg(proc.pid)
                 out, err = proc.communicate()
                 killed = True
@@ -68,6 +78,7 @@ class WorkerPool:
                 for pid, p in list(self._procs.items()):
                     if p.poll() is not None:
                         self._procs.pop(pid, None)
+                        self._sessions.pop(pid, None)
             self._sem.release()
 
     def active_pids(self) -> list[int]:
@@ -78,6 +89,9 @@ class WorkerPool:
         with self._lock:
             self._closed = True
             pids = list(self._procs)
+            sessions = list(self._sessions.values())
+        for sess in sessions:          # confined workers: kill the whole cgroup
+            sess.kill()
         for pid in pids:
             _killpg(pid)
         return pids
@@ -97,4 +111,8 @@ def _killpg(pgid: int) -> None:
     try:
         os.killpg(pgid, signal.SIGKILL)
     except ProcessLookupError:
+        pass
+    except PermissionError:
+        # a confined worker is started through sudo, whose process we may not
+        # signal; everything in its cgroup is killed by the session instead
         pass

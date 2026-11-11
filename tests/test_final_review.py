@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from aegis import cve, operators as ops_mod, router as router_mod
+from tests import TEST_CONFINEMENT
 from aegis.assessment import ApproverRequired, AssessmentService
 from aegis.network import NetworkError
 from aegis.operators import AuthError, LockedOut, OperatorStore, totp_code
@@ -698,7 +699,7 @@ class TestRevocationThatCannotBeSavedIsNotUndoneByARestart(RealServiceBase):
         self.assertIsNotNone(self.svc._persist_error)
         self.assertFalse((self.dir / "authority.epoch").exists())     # the stale state.json can no longer be honoured
         self.svc.workers.kill_all()
-        again = AssessmentService(self.dir, LAB_PORT, verify_seconds=0.1, l2_profile_dirs=PROFILE_DIRS)
+        again = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT, verify_seconds=0.1, l2_profile_dirs=PROFILE_DIRS)
         self.assertFalse(again._is_external_service_asset(HOST))      # not restored
         self.assertEqual(again._ownership_proofs, {})
         self.assertIn("state.authority_rejected", [e["event"] for e in again.audit.entries()])
@@ -710,7 +711,7 @@ class TestRevocationThatCannotBeSavedIsNotUndoneByARestart(RealServiceBase):
             self.svc._save_state_locked()                              # nothing about authority changed
         self.assertTrue((self.dir / "authority.epoch").exists())
         self.svc.workers.kill_all()
-        again = AssessmentService(self.dir, LAB_PORT, verify_seconds=0.1, l2_profile_dirs=PROFILE_DIRS)
+        again = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT, verify_seconds=0.1, l2_profile_dirs=PROFILE_DIRS)
         self.assertTrue(again._is_external_service_asset(HOST))        # a transient error does not cost the scope
         again.workers.kill_all()
 
@@ -718,7 +719,7 @@ class TestRevocationThatCannotBeSavedIsNotUndoneByARestart(RealServiceBase):
 class TestEpochCannotBeReplayedByCounting(RealServiceBase):
     def restart(self):
         self.svc.workers.kill_all()
-        self.svc = AssessmentService(self.dir, LAB_PORT, verify_seconds=0.1, l2_profile_dirs=PROFILE_DIRS)
+        self.svc = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT, verify_seconds=0.1, l2_profile_dirs=PROFILE_DIRS)
         self.svc._custom_resolver = lambda h: ["127.0.0.1"] if h == HOST else []
         return self.svc
 
@@ -906,7 +907,7 @@ class TestStaleRunnerAndRelabelling(Ready):
         with patch("aegis.secrets_store.EncryptedSecretStore._save_all", side_effect=OSError("disk full")):
             self.svc.verify_asset_ownership(url_or_host=self.url, dns_lookup=lambda n: [])   # revoke; rewrite fails
         self.svc.workers.kill_all()
-        again = AssessmentService(self.dir, LAB_PORT, verify_seconds=0.1, l2_profile_dirs=PROFILE_DIRS)
+        again = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT, verify_seconds=0.1, l2_profile_dirs=PROFILE_DIRS)
         self.assertFalse(again.secrets.has_any_token(HOST))
         self.assertTrue([e for e in again.audit.entries() if e["event"] == "secrets.orphan_cleared"])
         again.workers.kill_all()

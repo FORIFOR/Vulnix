@@ -13,7 +13,11 @@ export function applyEvent(s: Snapshot, ev: AegisEvent): Snapshot {
     case "phase.updated":
       return { ...s, phases: ev.phases as Snapshot["phases"] };
     case "assessment.state":
-      return { ...s, state: ev.state as Snapshot["state"], risk: ev.risk as Snapshot["risk"] };
+      return {
+        ...s, state: ev.state as Snapshot["state"], risk: ev.risk as Snapshot["risk"],
+        // the cause travels with the state; an event without one clears a stale cause
+        failure: (ev.failure ?? null) as Snapshot["failure"],
+      };
     case "activity.updated":
       return { ...s, activity: ev.activity as Snapshot["activity"] };
     case "approval.updated":

@@ -183,6 +183,14 @@ export interface Snapshot {
   target_url?: string;
   is_external_service?: boolean;
   l2_separation_required?: boolean;
+  /** Set while state cannot be written to disk; real-service work is refused meanwhile. */
+  persistence_error?: string | null;
+  /** Set when saved ownership/scope was not restored at startup. */
+  authority_notice?: string | null;
+  /** Why the assessment is "failed". */
+  failure?: { reason: string; kind: "run" | "persistence"; at?: number; error?: string } | null;
+  /** Kernel confinement of the L2 worker on this host; real-service L2 needs ok === true. */
+  l2_isolation?: { ok: boolean; reason: string; mechanism?: string } | null;
   lab_mode?: string;
   lab_endpoint: string;
   secrets_status?: SecretsStatus;

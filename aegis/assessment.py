@@ -16,6 +16,7 @@ import os
 import re
 import secrets
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -35,7 +36,8 @@ from .network import EgressGuard, NetworkError, system_resolver
 from .ownership import (PROHIBITED_ACTIONS_SUMMARY, fetch_proof_file_pinned, public_address,
                         challenge_for_host, parse_service_target,
                         verify_ownership_challenge)
-from .policy import ArgSpec, Budget, Tool
+from .confinement import ConfinementError, KernelConfinement
+from .policy import ArgSpec, Budget, PolicyError, Tool
 from .remotion_export import build_remotion_export
 from .router import (AbliterationBackend, ArtexEngine, ArtexplannerBackend,
                      ArtexSubprocessBackend, HttpModelBackend, ProposalRouter,
@@ -77,6 +79,8 @@ class Assessment:
     stop_report: dict | None = None
     chat_messages: list[dict] = field(default_factory=list)
     defense_comparison: dict | None = None
+    # why the assessment is in state "failed": {"reason", "kind", "at"[, "error"]}
+    failure: dict | None = None
 
 
 class ApproverRequired(PermissionError):
@@ -110,6 +114,18 @@ def _claim_data_dir(data_dir: Path) -> None:
     _DATA_DIR_LOCKS[key] = fh      # held for the life of the process
 
 
+def default_revocation_marker_dirs() -> list[Path]:
+    """Places OUTSIDE the data directory where "a revocation could not be saved"
+    is written down when the data directory itself cannot be changed. An operator
+    may point VULNIX_REVOCATION_MARKER_DIR at one directory of their choice."""
+    override = os.environ.get("VULNIX_REVOCATION_MARKER_DIR", "").strip()
+    if override:
+        return [Path(override)]
+    uid = os.getuid() if hasattr(os, "getuid") else 0
+    return [Path.home() / ".vulnix" / "revocations",
+            Path(tempfile.gettempdir()) / f"vulnix-revocations-{uid}"]
+
+
 # Findings whose single-item verification is a bundled-lab check (fixed lab paths).
 LAB_ONLY_FINDING_IDS = frozenset({"f_banner", "f_idor", "f_sqli", "fx_idor", "fx_sqli", "fx_banner"})
 
@@ -126,12 +142,24 @@ OWNERSHIP_PROOF_MAX_AGE_S = 24 * 3600
 class AssessmentService:
     def __init__(self, data_dir: Path, lab_port: int, verify_seconds: float = 1.5,
                  l2_profile_dirs: list[Path] | None = None,
-                 separate_l2_approver: bool | None = None):
+                 separate_l2_approver: bool | None = None,
+                 l2_confinement=None,
+                 revocation_marker_dirs: list[Path] | None = None):
         self.data_dir = Path(data_dir)
+        # Kernel confinement of the worker that carries test-account tokens to a real
+        # service. The default is the real thing (Linux only); it can be replaced only
+        # here, in code - there is no environment variable or API for it.
+        self._l2_confinement = l2_confinement if l2_confinement is not None else KernelConfinement()
+        self._marker_dirs = (list(revocation_marker_dirs) if revocation_marker_dirs is not None
+                             else default_revocation_marker_dirs())
+        self._marker_pending = False
+        self._persisted_epoch = ""         # epoch of the authority state last written to disk
+        self._authority_notice: str | None = None
         # Service profiles: per-API L2 rules. Loaded and validated once at start.
         # Explicitly passed directories are the caller's own (trusted like code); the
         # default is the bundled templates plus SITE profiles from the data directory,
         # which stay non-runnable until an admin accepts their exact content.
+        self.data_dir.mkdir(parents=True, exist_ok=True)
         _claim_data_dir(self.data_dir)
         # Every workspace reset starts a new generation. A runner thread belongs to
         # the generation it was started in; once that is over it may not write a
@@ -200,7 +228,9 @@ class AssessmentService:
             },
             budget=Budget(50),
             ephemeral_env_provider=self._ephemeral_worker_env,
-            secret_redactor=self.secrets.redact)
+            secret_redactor=self.secrets.redact,
+            confinement_provider=self._worker_confinement,
+            launch_guard=self._launch_guard)
 
         # Wire ARTEX (in-process + optional external CLI subprocess) + Abliteration ProposalRouter
         self._artex_cli_backend = ArtexSubprocessBackend()
@@ -248,14 +278,22 @@ class AssessmentService:
         # No service is registered on our behalf: real services enter only through
         # the ownership flow, and whatever was saved (including deletions) is kept.
         self._load_state_locked()
+        if (self._authority_notice or self._marker_pending) and not self._persist_error:
+            # Authority on disk was refused. Write that down now, so the disk no
+            # longer holds it (and a marker that asked for this can be retired).
+            with self._lock:
+                self._save_state_locked()
         self._apply_profile_acceptance_locked(startup=True)
         # Stored test accounts exist only for a service that currently has a proof
         # or a confirmed scope. Anything else (e.g. left behind when a revocation
         # could not rewrite the token file) is dropped at startup.
         for orphan in self.secrets.asset_ids():
             if orphan not in self._ownership_proofs and orphan not in self._verified_external_hosts:
-                self.secrets.clear_credentials(orphan)
-                self.audit.record("secrets.orphan_cleared", host=orphan)
+                try:
+                    self.secrets.clear_credentials(orphan)
+                    self.audit.record("secrets.orphan_cleared", host=orphan)
+                except OSError:
+                    pass        # unwritable store: nothing is sent while saving is broken
 
     def _external_entry(self, host: str | None) -> dict | None:
         """The verified-external record for `host`, only while it is fully valid
@@ -425,10 +463,69 @@ class AssessmentService:
         rule = self._active_l2_check(args.get("check")) if tool_name == "reproduction_probe" else None
         if rule is not None and not self._stored_overrides_allowed(rule):
             rule = None          # a stored path no longer fits what the accepted profile allows
+        if rule is not None and not getattr(self._tls, "confined", False):
+            rule = None          # no kernel confinement was set up for this worker: no tokens
         if rule is not None and self._l2_transport_ok():
             env.update(self.secrets.worker_env_for_check(
                 self.a.asset.get("name", "").lower(), rule))
         return env
+
+    def _worker_confinement(self, tool_name: str, args: dict, dest):
+        """Gateway hook. A worker that takes test-account tokens to a real service
+        is started only inside kernel confinement that was applied and confirmed
+        for that run. Not Linux, or not confirmable: the worker is not started."""
+        self._tls.confined = False
+        if tool_name != "reproduction_probe":
+            return None
+        with self._lock:
+            real = self._in_ownership_flow(self.a.asset.get("name"))
+        if not real:
+            return None
+        try:
+            session = self._l2_confinement.session(dest.ip, dest.port)
+            self._tls.confined = True       # this thread's next worker starts inside it
+            return session
+        except ConfinementError as e:
+            raise PolicyError(f"実サービスのL2検証はカーネル隔離を確認できる Linux ホストでのみ実行します: {e}") from None
+
+    def _launch_guard(self, tool_name: str, args: dict, dest) -> None:
+        """Gateway hook, the last step before a worker starts. Between the first
+        checks and this point the request may have waited in name resolution or a
+        proof re-check; whatever was revoked, deleted, stopped or switched in the
+        meantime is seen here."""
+        host = (urllib.parse.urlsplit(str(args.get("url") or "")).hostname or "").rstrip(".").lower()
+        with self._lock:
+            if self._stale_runner():
+                raise PolicyError("この要求を出したワークスペースは停止または切り替え済みです")
+            if not self._in_ownership_flow(host):
+                return
+            ext = self._external_entry(host)
+            if ext is None:
+                raise PolicyError(f"{host} の診断範囲は取り消されています")
+            if (self.a.asset.get("name") or "").lower() != host:
+                raise PolicyError(f"{host} は現在の診断対象ではありません")
+            if not ext.get("allow_loopback_test") and dest.ip not in (ext.get("verified_addresses") or []):
+                raise PolicyError(f"{host} の送信先 {dest.ip} は所有確認済みのアドレスではありません")
+            if self._persist_error:
+                raise PolicyError("状態を保存できないため、送信を中止しました")
+
+    def _require_working_store(self) -> None:
+        """Nothing that looks up, fetches from, or grants authority over a real
+        service happens while a save is known to be failing."""
+        with self._lock:
+            if self._persist_error:
+                self._save_state_locked()          # it may work again by now
+            if self._persist_error:
+                raise ValueError("状態をディスクに保存できないため、実サービスの所有確認・範囲確認は行えません。"
+                                 "保存先を確認してください")
+
+    def l2_isolation_status(self) -> dict:
+        try:
+            st = dict(self._l2_confinement.status())
+        except Exception as e:          # an unknown isolation state is "not available"
+            st = {"ok": False, "reason": f"隔離状態を確認できません（{type(e).__name__}）"}
+        return {"ok": bool(st.get("ok")), "reason": str(st.get("reason") or ""),
+                "mechanism": str(st.get("mechanism") or "")}
 
     def _is_external_service_asset(self, host: str | None = None) -> bool:
         """True only for a real service that completed ownership + scope
@@ -586,6 +683,10 @@ class AssessmentService:
             return ("対象の解決先アドレスが所有確認後に変わりました（"
                     + "、".join(ext["address_change_pending"])
                     + "）。承認責任者が所有確認と範囲確認をやり直すまで、検証用トークンは送信しません")
+        iso = self.l2_isolation_status()
+        if not iso["ok"]:
+            return ("実サービスのL2検証は、Workerのカーネル隔離を適用して確認できる Linux ホストでのみ実行します（"
+                    + (iso["reason"] or "隔離を確認できません") + "）")
         return None
 
     def _l2_transport_ok(self) -> bool:
@@ -621,6 +722,7 @@ class AssessmentService:
                 "stop_report": self.a.stop_report,
                 "chat_messages": self.a.chat_messages,
                 "defense_comparison": self.a.defense_comparison,
+                "failure": self.a.failure,
                 "extra_assets": self._extra_assets,
                 "allowed_hosts": sorted(self._allowed_hosts),
                 "verified_external_hosts": self._verified_external_hosts,
@@ -635,9 +737,16 @@ class AssessmentService:
             fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 fh.write(json.dumps(payload, ensure_ascii=False, indent=2))
+                fh.flush()
+                os.fsync(fh.fileno())
             os.replace(tmp_path, self.state_path)
+            self._sync_dir(self.data_dir)      # durable before any marker is retired
             self._persist_error = None
             self._persisted_authority_digest = self._authority_digest
+            self._persisted_epoch = self._authority_epoch
+            if self._marker_pending:
+                # what is on disk is the current truth again
+                self._clear_revocation_markers()
         except Exception as e:      # OSError, but also anything that makes the state unserialisable
             # If the authority tables changed since the last successful save (e.g. a
             # revocation), the copy on disk is now WRONG, and it would be honoured
@@ -648,10 +757,7 @@ class AssessmentService:
                 current = hashlib.sha256(self._canonical(self._authority_tables()).encode("utf-8")).hexdigest()
                 if current != self._persisted_authority_digest:
                     self._authority_digest = ""          # a later successful save issues a new epoch
-                    try:
-                        os.unlink(self._epoch_path())
-                    except FileNotFoundError:
-                        pass
+                    self._invalidate_persisted_authority_locked()
             except Exception:
                 pass
             # Not persisted: what is on disk may still grant authority that was just
@@ -659,11 +765,180 @@ class AssessmentService:
             # refuse real-service work until saving works again.
             first = self._persist_error is None
             self._persist_error = type(e).__name__
+            if self.a.state == "completed":
+                # "completed" promises that the results are on disk. Whatever was
+                # just changed is not, so the state no longer says so.
+                self.a.state = "failed"
+                self.a.failure = {
+                    "reason": "結果をディスクに保存できなかったため、完了として扱いません。保存先を確認してから再実行してください",
+                    "kind": "persistence", "error": self._persist_error, "at": time.time()}
+                try:
+                    self.bus.publish(self.a.id, "assessment.state", state="failed", risk=self._risk(),
+                                     failure=self.a.failure)
+                except Exception:
+                    pass
             if first:
                 try:
                     self.audit.record("state.persist_failed", error=type(e).__name__)
                 except Exception:
                     pass
+
+    # ---- a revocation that cannot be written where the state lives ----------
+    def _invalidate_persisted_authority_locked(self) -> None:
+        """The authority on disk is stale (e.g. it still grants what was just
+        revoked) and could not be replaced. Make it unacceptable after a restart,
+        by whichever means still works:
+          1. remove the epoch record (needs a writable directory, no free space);
+          2. empty it in place (needs only a writable file);
+          3. leave a signed marker OUTSIDE the data directory naming the stale epoch.
+        If none works, the stale state can only be refused while this process lives
+        (`_persist_error` blocks all real-service work) - that is recorded."""
+        gone = False
+        try:
+            os.unlink(self._epoch_path())
+            gone = True
+        except FileNotFoundError:
+            gone = True
+        except OSError:
+            try:
+                with open(self._epoch_path(), "r+b") as fh:
+                    fh.truncate(0)
+                    os.fsync(fh.fileno())
+                gone = True
+            except OSError:
+                pass
+        if gone:
+            self._sync_dir(self.data_dir)
+            return                      # the copy on disk can no longer verify
+        written = self._write_revocation_markers()
+        self._marker_pending = self._marker_pending or written > 0
+        if not written:
+            try:
+                self.audit.record("state.revocation_not_durable",
+                                  reason="data directory and marker locations are all unwritable")
+            except Exception:
+                pass
+
+    @staticmethod
+    def _sync_dir(path: Path) -> None:
+        """Make a rename in `path` durable (best effort where directories cannot be synced)."""
+        try:
+            fd = os.open(path, os.O_RDONLY)
+        except OSError:
+            return
+        try:
+            os.fsync(fd)
+        except OSError:
+            pass
+        finally:
+            os.close(fd)
+
+    def _marker_key(self) -> str:
+        return hashlib.sha256(str(self.data_dir.resolve()).encode("utf-8")).hexdigest()[:32]
+
+    def _marker_paths(self) -> list[Path]:
+        return [Path(d) / f"{self._marker_key()}.revoked" for d in self._marker_dirs]
+
+    def _marker_mac(self, epochs: list[str]) -> str:
+        msg = f"revoked|{self._marker_key()}|{'|'.join(sorted(epochs))}"
+        return hmac.new(self._state_mac_key, msg.encode("utf-8"), hashlib.sha256).hexdigest()
+
+    def _read_marker(self, path: Path) -> list[str] | None:
+        """The epochs a marker of ours names; None if it cannot be read or verified."""
+        try:
+            body = json.loads(path.read_text(encoding="utf-8"))
+            epochs = body["epochs"]
+            if not isinstance(epochs, list) or not all(isinstance(e, str) for e in epochs):
+                return None
+            ok = hmac.compare_digest(str(body.get("mac") or ""), self._marker_mac(epochs))
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+        return epochs if ok else None
+
+    def _write_revocation_markers(self) -> int:
+        written = 0
+        for path in self._marker_paths():
+            # Name the state that is on disk NOW, and keep whatever an earlier
+            # marker already named: a marker is only ever widened, never narrowed.
+            stale = {self._read_epoch() or "", self._persisted_epoch}
+            try:
+                if os.lstat(path).st_uid == (os.getuid() if hasattr(os, "getuid") else 0):
+                    stale |= set(self._read_marker(path) or [])
+            except OSError:
+                pass
+            epochs = sorted(stale)[-64:]
+            body = json.dumps({"epochs": epochs, "at": time.time(), "mac": self._marker_mac(epochs)})
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                st = os.lstat(path.parent)
+                if hasattr(os, "getuid") and st.st_uid != os.getuid():
+                    continue            # somebody else's directory (shared temp): not ours to trust
+                tmp = path.with_suffix(".tmp")
+                fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    fh.write(body)
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                os.replace(tmp, path)
+                self._sync_dir(path.parent)
+                written += 1
+            except OSError:
+                continue
+        return written
+
+    def _clear_revocation_markers(self) -> None:
+        left = False
+        for path in self._marker_paths():
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                left = True             # tried again after the next successful save
+        self._marker_pending = left
+
+    def _revocation_marker_hit(self, epochs: set[str]) -> str | None:
+        """A reason to refuse the authority on disk, or None. A marker that is ours
+        but cannot be read or verified counts as a hit: unknown means refuse."""
+        for path in self._marker_paths():
+            try:
+                st = os.lstat(path)
+            except FileNotFoundError:
+                continue
+            except OSError:
+                self._marker_pending = True
+                return "a revocation marker exists but cannot be read"
+            if hasattr(os, "getuid") and st.st_uid != os.getuid():
+                continue                # not written by this account: ignored
+            self._marker_pending = True
+            named = self._read_marker(path)
+            if named is None:
+                return "a revocation marker exists but cannot be read or does not verify"
+            if epochs & set(named):
+                return "a revocation could not be saved before the last shutdown"
+            # it names an older state than the one on disk: a later save succeeded
+        return None
+
+    def _data_dir_writable(self) -> str | None:
+        """None when a file can be created, written, synced and removed in the data
+        directory right now; otherwise the error. Checked at startup: authority is
+        only honoured by a process that could also record its revocation."""
+        probe = self.data_dir / f".write-probe-{secrets.token_hex(6)}"
+        try:
+            fd = os.open(probe, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            try:
+                os.write(fd, b"x")
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            os.unlink(probe)
+            return None
+        except OSError as e:
+            try:
+                os.unlink(probe)
+            except OSError:
+                pass
+            return type(e).__name__
 
     @staticmethod
     def _canonical(obj) -> str:
@@ -693,7 +968,10 @@ class AssessmentService:
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(json.dumps(body))
+            fh.flush()
+            os.fsync(fh.fileno())
         os.replace(tmp, self._epoch_path())
+        self._sync_dir(self.data_dir)
 
     def _read_epoch(self) -> str | None:
         try:
@@ -731,13 +1009,28 @@ class AssessmentService:
         # The epoch record is read first and unconditionally: a missing, empty or
         # corrupt state.json must not restart the epoch sequence.
         self._authority_epoch = self._read_epoch() or ""
+        self._persisted_epoch = self._authority_epoch     # what the disk holds, accepted or not
+        unwritable = self._data_dir_writable()
+        if unwritable:
+            # nothing can be recorded here: no authority is honoured, and every
+            # real-service request is refused until a save succeeds
+            self._persist_error = f"data directory not writable ({unwritable})"
         if not self.state_path.exists():
+            if self._revocation_marker_hit({self._authority_epoch}):
+                self._authority_notice = "保存できなかった取り消しの記録が見つかりました"
             return
         try:
             data = json.loads(self.state_path.read_text(encoding="utf-8"))
             if not isinstance(data, dict):
-                return
-        except (OSError, ValueError):
+                raise ValueError("not an object")
+        except (OSError, ValueError) as e:
+            # unknown persistent state: start with no authority, and say so
+            self._authority_notice = "保存された状態を読み取れないため、実サービスの所有確認・範囲確認は引き継いでいません"
+            self.audit.record("state.unreadable", error=type(e).__name__)
+            try:        # keep what was there for whoever has to find out why
+                os.replace(self.state_path, self.data_dir / f"state.unreadable-{int(time.time())}.json")
+            except OSError:
+                pass
             return
 
         saved = {
@@ -756,10 +1049,23 @@ class AssessmentService:
                 rejected_reason = "integrity check failed (unsigned or modified)"
             elif stored_epoch is None or not hmac.compare_digest(epoch, stored_epoch):
                 rejected_reason = "not the latest authority state (older copy or missing epoch record)"
+            elif unwritable:
+                rejected_reason = "data directory is not writable; a revocation could not have been recorded"
+        marker = self._revocation_marker_hit({stored_epoch or "", str(data.get("authority_epoch") or "")})
+        if marker and not rejected_reason:
+            rejected_reason = marker
+        if any(saved.values()) or marker:
             if rejected_reason:
                 # Restore nothing that grants authority. The assets stay listed and
                 # have to be verified and confirmed again.
                 authority_rejected = True
+                # "This name is a real service" only ever RESTRICTS (never a lab
+                # alias, never an external model), so it is kept even from a state
+                # that is not trusted.
+                for name in (*saved["real_service_hosts"], *saved["verified_external_hosts"],
+                             *saved["ownership_proofs"]):
+                    if isinstance(name, str) and name:
+                        self._real_service_hosts.add(name.rstrip(".").lower())
             else:
                 self._verified_external_hosts = {
                     str(k).lower(): {**dict(v), "allow_loopback_test": False}   # never restored
@@ -770,6 +1076,7 @@ class AssessmentService:
                 self._accepted_profiles = {str(k): str(v) for k, v in saved["accepted_profiles"].items()}
         # never go backwards, whatever was on disk
         self._authority_epoch = stored_epoch or self._authority_epoch
+        self._persisted_epoch = stored_epoch or ""        # what the disk holds, accepted or not
         if not authority_rejected:
             self._authority_digest = hashlib.sha256(
                 self._canonical(self._authority_tables()).encode("utf-8")).hexdigest()
@@ -815,8 +1122,12 @@ class AssessmentService:
                 rec["ownership_verified"] = False
                 rec.pop("ownership_proof", None)
         if authority_rejected:
+            self._authority_notice = ("保存されていた所有確認・範囲確認は引き継いでいません"
+                                      "（保存状態を信頼できないため）。所有確認からやり直してください")
             self.audit.record("state.authority_rejected",
                               reason=rejected_reason + "; ownership proofs and scope not restored")
+        if isinstance(data.get("failure"), dict):
+            self.a.failure = dict(data["failure"])
         if isinstance(data.get("chat_messages"), list):
             self.a.chat_messages = [dict(m) for m in data["chat_messages"] if isinstance(m, dict)]
         if isinstance(data.get("stop_report"), dict):
@@ -1171,6 +1482,7 @@ class AssessmentService:
                         "environment": "ローカル検証ラボ（127.0.0.1）",
                     }
                     self._sync_scope_for_host("lab.test", "DEMO-AUTH-001（ローカル検証ラボ）")
+                self.a.chat_messages = []      # the conversation was about the deleted asset
                 self._reset_workspace_locked()
             else:
                 target = next((x for x in self._extra_assets if x["id"] == asset_id), None)
@@ -1308,6 +1620,7 @@ class AssessmentService:
         /.well-known/vulnix-verify.txt. Ownership verification NEVER auto-approves L2."""
         parsed = parse_service_target(url_or_host)
         host = parsed["host"]
+        self._require_working_store()
         with self._lock:
             # no lookup or fetch for a name nobody registered here
             if host not in self._real_service_hosts or self._asset_record(host) is None:
@@ -1407,6 +1720,7 @@ class AssessmentService:
         parsed = parse_service_target(url_or_host)
         host = parsed["host"]
 
+        self._require_working_store()
         with self._lock:
             target_asset = next(
                 (x for x in self._extra_assets if x.get("name", "").lower() == host),
@@ -1466,6 +1780,7 @@ class AssessmentService:
                 raise ValueError("検証ファイルによる所有確認で診断できるのは https の443番ポートだけです。"
                                  "他のポートを診断するには DNS TXT で所有確認してください")
 
+            self._authority_notice = None      # the operator has re-established authority since
             self._verified_external_hosts[host] = {
                 "host": host,
                 "scheme": scheme,
@@ -1581,6 +1896,7 @@ class AssessmentService:
 
     def _reset_workspace_locked(self) -> None:
         self._run_generation += 1          # any runner of the previous workspace is now stale
+        self.gateway.invalidate_pending()  # and a request still waiting in the Gateway cannot launch
         self.workers.kill_all()
         self.workers = WorkerPool(max_concurrent=2)
         self.gateway.workers = self.workers
@@ -1650,6 +1966,9 @@ class AssessmentService:
                              for f in self.a.findings.values()],
                 "l2_separation_required": self.separate_l2_approver,
                 "persistence_error": self._persist_error,
+                "authority_notice": self._authority_notice,
+                "failure": self.a.failure,
+                "l2_isolation": self.l2_isolation_status(),
                 "risk": risk,
                 "stop_report": self.a.stop_report,
                 "chat_messages": list(self.a.chat_messages),
@@ -1689,6 +2008,13 @@ class AssessmentService:
         with self._lock:
             if self.a.state == "running":
                 raise ValueError("既に診断が実行中です")
+            if self._in_ownership_flow(self.a.asset.get("name")):
+                # refuse BEFORE the previous results are cleared: a run that cannot
+                # be recorded will not start, so there is nothing to replace them
+                self._save_state_locked()
+                if self._persist_error:
+                    raise ValueError("状態をディスクに保存できないため、実サービスへの診断を停止しています。"
+                                     "データディレクトリの書き込み権限と空き容量を確認してください")
             self._reset_workspace_locked()
             self._ensure_active_window_locked()
             set_lab_mode("vulnerable")
@@ -1715,6 +2041,10 @@ class AssessmentService:
             self._set_state("running")
 
     def emergency_stop(self, actor: str) -> dict:
+        with self._lock:
+            # The stop ends the generation: a runner that is past its last checkpoint
+            # can no longer write "done"/"completed" over what the stop records.
+            self._run_generation += 1
         rep = self.gateway.emergency_stop(actor)
         report = {"actor": actor, "confirmed": rep.confirmed, "killed_pids": rep.killed_pids,
                   "survivors": rep.survivors,
@@ -1809,9 +2139,13 @@ class AssessmentService:
         which a concurrent asset switch could invalidate. (`None` = an in-process
         caller that vouches for the actor itself.)"""
         self._begin_operation()        # the active asset cannot be switched while this runs
+        prev = getattr(self._tls, "gen", None)
         try:
             return self._verify_finding(finding_id, actor, roles)
+        except _Stopped:
+            raise ValueError("停止またはリセットされたため、検証を中止しました") from None
         finally:
+            self._tls.gen = prev
             self._end_operation()
 
     def _verify_finding(self, finding_id: str, actor: str, roles=None) -> dict:
@@ -1822,6 +2156,9 @@ class AssessmentService:
             with self._lock:
                 if self.gateway.state is State.STOPPED:
                     self._reset_workspace_locked()
+                # this thread now belongs to the workspace it verifies: after a stop
+                # or reset it can neither write a result nor send a request
+                self._tls.gen = self._run_generation
                 self._ensure_active_window_locked()
                 url = self.a.target_url
                 is_ext = self._is_external_service_asset()
@@ -1835,9 +2172,12 @@ class AssessmentService:
             res, ev = self._exec("http_probe", "read_only_probe",
                                  {"url": url, "method": "GET"},
                                  approval_actor=f"verify:{actor}")
-            if res and ev:
-                with self._lock:
-                    self._analyze(res, ev)
+            if not (res and ev):
+                # nothing was measured (refused, not saved, worker failed): the
+                # reason is already recorded by _fail - this is not a completed run
+                return self.snapshot()
+            with self._lock:
+                self._analyze(res, ev)
             if is_ext:
                 # A bulk action is never an approval for L2 on a real service:
                 # each L2 item needs its own explicit human approval.
@@ -1850,6 +2190,8 @@ class AssessmentService:
                 for fid in ("f_banner", "f_idor", "f_sqli"):
                     if fid in self.a.findings:
                         self.verify_finding(fid, actor=actor)
+                        if self.a.state == "failed":
+                            return self.snapshot()      # that item's failure stands
             with self._lock:
                 self._phase("scope", "done", f"{url} は許可範囲内")
                 self._phase("config", "done", "公開設定・HTTPヘッダーを検査済み")
@@ -1874,6 +2216,7 @@ class AssessmentService:
                 raise ValueError("指定された問題が見つかりません")
             if self.gateway.state is State.STOPPED:
                 self._reset_workspace_locked()
+            self._tls.gen = self._run_generation
             self._ensure_active_window_locked()
             was_failed = self.a.state == "failed"
             if was_failed:
@@ -2141,7 +2484,10 @@ class AssessmentService:
             # a single-item run started from a failed assessment must not leave the
             # workspace looking as if nothing had been diagnosed yet
             if was_failed and self.a.state == "idle":
-                self._set_state("completed" if res and ev else "failed")
+                if res and ev:
+                    self._set_state("completed")
+                else:
+                    self._set_state("failed", reason="Workerの応答を取得できなかったため、検証を完了できませんでした")
         return self.snapshot()
 
     # ---- P2: Post-patch defense verification & before/after comparison ------
@@ -2150,15 +2496,20 @@ class AssessmentService:
         external target after remediation) and re-run the exact same probe and
         reproduction checks through the Gateway to prove mitigation."""
         self._begin_operation()        # the active asset cannot be switched while this runs
+        prev = getattr(self._tls, "gen", None)
         try:
             return self._verify_fix(actor)
+        except _Stopped:
+            raise ValueError("停止またはリセットされたため、再検証を中止しました") from None
         finally:
+            self._tls.gen = prev
             self._end_operation()
 
     def _verify_fix(self, actor: str) -> dict:
         with self._lock:
             if self.a.state not in ("completed", "idle"):
                 raise ValueError("診断完了後に修正後の再検証を実行してください")
+            self._tls.gen = self._run_generation
             self._ensure_active_window_locked()
             before_risk = self._risk()
             is_ext = self._is_external_service_asset()
@@ -2306,9 +2657,13 @@ class AssessmentService:
                 tool="Gateway",
                 level="L1",
             )
-            self._set_state("failed" if any(
-                f["verdict"] == "unverified" or f.get("last_run_verdict") == "unverified"
-                for f in self._real_findings()) else "completed")
+            if self.a.state == "failed":
+                pass        # a step already failed and recorded why; it is not overwritten
+            elif any(f["verdict"] == "unverified" or f.get("last_run_verdict") == "unverified"
+                     for f in self._real_findings()):
+                self._set_state("failed", reason="一部の項目で応答を取得できず、修正後の再検証を完了できませんでした")
+            else:
+                self._set_state("completed")
             return self.snapshot()
 
     # ---- runner -------------------------------------------------------------
@@ -2607,7 +2962,7 @@ class AssessmentService:
                 # durable - so nothing is sent.
                 self._save_state_locked()
                 if self._persist_error:
-                    self._fail("状態をディスクに保存できないため、実サービスへの送信を中止しました")
+                    self._fail("状態をディスクに保存できないため、実サービスへの送信を中止しました", kind="persistence")
                     return None, None
         with self._lock:
             origin = "real_service" if self._in_ownership_flow(self.a.asset.get("name")) else "lab"
@@ -2812,12 +3167,28 @@ class AssessmentService:
             self.a.activity = {"title": title, "tool": tool, "risk_level": level, **EXECUTOR}
             self.bus.publish(self.a.id, "activity.updated", activity=self.a.activity)
 
-    def _set_state(self, state):
+    def _set_state(self, state, reason: str | None = None, kind: str = "run"):
         if self._stale_runner():
             raise _Stopped()
+        if state == "failed":
+            if reason or not self.a.failure:
+                self.a.failure = {"reason": reason or "診断を完了できませんでした", "kind": kind,
+                                  "at": time.time()}
+        elif state in ("idle", "running", "completed"):
+            self.a.failure = None
         self.a.state = state
         self._save_state_locked()
-        self.bus.publish(self.a.id, "assessment.state", state=state, risk=self._risk())
+        if state == "completed" and self._persist_error:
+            state = self.a.state        # the failed save has already made it "failed"
+            try:
+                self.audit.record("assessment.failed", reason="results could not be saved",
+                                  error=self._persist_error)
+            except Exception:
+                pass
+        elif state == "failed" and self._persist_error and self.a.failure:
+            self.a.failure.setdefault("error", self._persist_error)    # saving is ALSO broken
+        self.bus.publish(self.a.id, "assessment.state", state=state, risk=self._risk(),
+                         failure=self.a.failure)
 
     def _upsert_finding(self, f):
         with self._lock:
@@ -2835,7 +3206,7 @@ class AssessmentService:
         if f:
             self._upsert_finding({**f, "_in_verification": flag})
 
-    def _fail(self, msg):
+    def _fail(self, msg, kind: str = "run"):
         with self._lock:
             if self._stale_runner():
                 return          # not this workspace's failure to report
@@ -2845,7 +3216,7 @@ class AssessmentService:
                 if p["status"] == "running":
                     self._phase(p["key"], "aborted", msg)
             self.a.activity = None
-            self._set_state("failed")
+            self._set_state("failed", reason=msg, kind=kind)
 
     def _real_findings(self):
         return [f for f in self.a.findings.values() if not f["demo_fixture"]]
