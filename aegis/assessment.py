@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import hmac
 import ipaddress
 import json
 import os
@@ -38,7 +39,7 @@ from .router import (AbliterationBackend, ArtexEngine, ArtexplannerBackend,
                      verify_planner_connections)
 from .runtime import WorkerPool
 from .secrets_store import EncryptedSecretStore
-from .l2_rules import L2RuleSet
+from .l2_rules import L2RuleSet, default_profile_dirs
 from .service_diag import analyze_l1_service_response, build_l2_candidates
 
 SEVERITY_WEIGHT = {"critical": 40, "high": 25, "medium": 10, "low": 3, "info": 0}
@@ -75,18 +76,26 @@ class Assessment:
     defense_comparison: dict | None = None
 
 
+# Findings whose single-item verification is a bundled-lab check (fixed lab paths).
+LAB_ONLY_FINDING_IDS = frozenset({"f_banner", "f_idor", "f_sqli", "fx_idor", "fx_sqli", "fx_banner"})
+
+# A scope confirmation (and every renewal of it) needs a proof at most this old.
+OWNERSHIP_PROOF_MAX_AGE_S = 24 * 3600
+
+
 class AssessmentService:
     def __init__(self, data_dir: Path, lab_port: int, verify_seconds: float = 1.5,
                  l2_profile_dirs: list[Path] | None = None):
         self.data_dir = Path(data_dir)
         # Service profiles: per-API L2 rules. Loaded and validated once at start.
-        self.l2 = L2RuleSet.load(l2_profile_dirs)
+        self.l2 = L2RuleSet.load(l2_profile_dirs or default_profile_dirs(self.data_dir))
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.state_path = self.data_dir / "state.json"
         self.secrets = EncryptedSecretStore(self.data_dir)
         self._ownership_secret = hashlib.sha256(
             self.secrets._master_key + b":vulnix-ownership-v1"
         ).hexdigest()
+        self._state_mac_key = hashlib.sha256(self.secrets._master_key + b":vulnix-state-authority-v1").digest()
         self.bus = EventBus()
         self.audit = AuditLog(self.data_dir / "audit.jsonl")
         self.audit.listeners.append(self._on_audit)
@@ -165,20 +174,35 @@ class AssessmentService:
     def _external_entry(self, host: str | None) -> dict | None:
         """The verified-external record for `host`, only while it is fully valid
         (ownership verified + scope confirmed + inside its time window)."""
-        ext = self._verified_external_hosts.get((host or "").rstrip(".").lower())
+        h = (host or "").rstrip(".").lower()
+        ext = self._verified_external_hosts.get(h)
         if not ext or not ext.get("ownership_verified") or not ext.get("scope_confirmed"):
             return None
+        try:
+            ipaddress.ip_address(h)
+            return None          # a real service is always a DNS name, never an address
+        except ValueError:
+            pass
         now = time.time()
         if not (float(ext.get("not_before", 0)) <= now <= float(ext.get("not_after", 0))):
             return None
         return ext
+
+    def _in_ownership_flow(self, host: str | None) -> bool:
+        """True for a host that was registered as a real service (it has, or had,
+        an ownership challenge). Such a host is never treated as a lab alias."""
+        h = (host or "").rstrip(".").lower()
+        if h in self._verified_external_hosts:
+            return True
+        return any(x.get("name", "").lower() == h and x.get("challenge")
+                   for x in (self.a.asset, *self._extra_assets))
 
     def _resolve_host(self, host: str) -> list[str]:
         """Resolve host strictly according to verified scope."""
         h = (host or "").rstrip(".").lower()
         if h in {"lab.test", "api.lab.test"}:
             return ["127.0.0.1"]
-        if h in self._verified_external_hosts:
+        if self._in_ownership_flow(h):
             # A host that went through the ownership flow is NEVER silently
             # redirected to the local lab: it resolves for real or not at all.
             ext = self._external_entry(h)
@@ -214,7 +238,7 @@ class AssessmentService:
         if cafile:
             env["VULNIX_TEST_CA_FILE"] = cafile
         rule = self._active_l2_check(args.get("check")) if tool_name == "reproduction_probe" else None
-        if rule is not None:
+        if rule is not None and self._l2_transport_ok():
             env.update(self.secrets.worker_env_for_check(
                 self.a.asset.get("name", "").lower(), rule))
         return env
@@ -236,12 +260,41 @@ class AssessmentService:
             return None
         return next((c for c in profile["checks"] if c["id"] == check_id), None)
 
+    @staticmethod
+    def _l2_result_fields(finding: dict, outcome: str, note: str) -> dict:
+        """Verdict fields after one L2 rule run.
+
+        An inconclusive run never erases an earlier proof: the weakness was
+        observed and nothing has shown it fixed. (The reverse does not hold: an
+        earlier "not reproduced" is not kept when the latest run is inconclusive.)"""
+        if outcome == "unverified" and finding.get("verdict") == "proven" and evidence_status(finding) == "proven":
+            return {
+                "verdict": "proven",
+                "last_run_verdict": "unverified",
+                "verdict_note": ("今回の再検証は判定できませんでした。" + note
+                                 + " 前回の実証結果は取り消されていません（修正は未確認です）。"),
+            }
+        return {"verdict": outcome, "last_run_verdict": outcome, "verdict_note": note,
+                "what_was_established": None}
+
+    def _l2_check_for_finding(self, finding_id: str) -> dict | None:
+        profile = self._l2_profile()
+        if profile is None:
+            return None
+        return next((c for c in profile["checks"] if c["finding"]["id"] == finding_id), None)
+
+    def _l2_transport_ok(self) -> bool:
+        """Test-account tokens only travel over TLS (loopback test targets excepted)."""
+        ext = self._external_entry(self.a.asset.get("name"))
+        return bool(ext and (ext.get("scheme") == "https" or ext.get("allow_loopback_test")))
+
     def _ready_l2_checks(self, host: str | None = None) -> set[str]:
         h = (host or self.a.asset.get("name") or "").lower()
         profile = self._l2_profile(h)
         if profile is None:
             return set()
-        return {c["id"] for c in profile["checks"] if not self.secrets.missing_for_check(h, c)}
+        return {c["id"] for c in profile["checks"]
+                if c["spec_status"] == "confirmed" and not self.secrets.missing_for_check(h, c)}
 
     def _l2_candidates(self) -> list[dict]:
         return build_l2_candidates(self.a.target_url, self._l2_profile(), self._ready_l2_checks())
@@ -272,11 +325,22 @@ class AssessmentService:
                 "artex_cli_verified": self._artex_cli_verified,
                 "last_planner_verification": self._last_planner_verification,
             }
+            payload["authority_mac"] = self._authority_mac(payload["verified_external_hosts"])
             tmp_path = self.state_path.with_suffix(".json.tmp")
-            tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps(payload, ensure_ascii=False, indent=2))
             os.replace(tmp_path, self.state_path)
         except OSError:
             pass
+
+    def _authority_mac(self, verified_hosts) -> str:
+        """MAC over the part of state.json that grants authority (verified real
+        services and their scope). Keyed from the 0600 master key, so an edited or
+        copied state file cannot grant ownership or scope."""
+        canonical = json.dumps(json.loads(json.dumps(verified_hosts)), sort_keys=True,
+                               separators=(",", ":"), ensure_ascii=True)
+        return hmac.new(self._state_mac_key, canonical.encode("utf-8"), hashlib.sha256).hexdigest()
 
     def _load_state_locked(self) -> None:
         """Restore persisted assessment state, findings, evidence, and approvals across restarts."""
@@ -289,12 +353,20 @@ class AssessmentService:
         except (OSError, ValueError):
             return
 
-        if isinstance(data.get("verified_external_hosts"), dict):
-            self._verified_external_hosts = {
-                str(k).lower(): dict(v)
-                for k, v in data["verified_external_hosts"].items()
-                if isinstance(v, dict)
-            }
+        saved_hosts = data.get("verified_external_hosts")
+        authority_rejected = False
+        if isinstance(saved_hosts, dict) and saved_hosts:
+            mac = str(data.get("authority_mac") or "")
+            if hmac.compare_digest(mac, self._authority_mac(saved_hosts)):
+                self._verified_external_hosts = {
+                    str(k).lower(): {**dict(v), "allow_loopback_test": False}   # never restored
+                    for k, v in saved_hosts.items()
+                    if isinstance(v, dict)
+                }
+            else:
+                # Unsigned or modified: restore nothing that grants authority. The
+                # assets stay listed and have to be verified and confirmed again.
+                authority_rejected = True
         if isinstance(data.get("allowed_hosts"), list):
             self._allowed_hosts = {str(h) for h in data["allowed_hosts"] if h} | {"lab.test", "api.lab.test"}
         if isinstance(data.get("asset"), dict) and data["asset"].get("name"):
@@ -315,6 +387,18 @@ class AssessmentService:
                     )
         if isinstance(data.get("extra_assets"), list):
             self._extra_assets = [dict(x) for x in data["extra_assets"] if isinstance(x, dict)]
+        # The asset records are display state; authority lives only in the signed
+        # host table. Make the records agree with it.
+        for rec in (self.a.asset, *self._extra_assets):
+            if rec.get("challenge") and self._external_entry(rec.get("name")) is None and rec.get("scope_confirmed"):
+                rec["scope_confirmed"] = False
+                rec["ownership_verified"] = False
+                rec.pop("ownership_proof", None)
+                rec["status"] = "所有確認待ち"
+                rec["note"] = "診断範囲の確認が失効または無効になりました。所有確認からやり直してください"
+        if authority_rejected:
+            self.audit.record("state.authority_rejected",
+                              reason="verified host table failed its integrity check; scope not restored")
         if isinstance(data.get("chat_messages"), list):
             self.a.chat_messages = [dict(m) for m in data["chat_messages"] if isinstance(m, dict)]
         if isinstance(data.get("stop_report"), dict):
@@ -369,7 +453,19 @@ class AssessmentService:
     def _ensure_active_window_locked(self) -> None:
         now = time.time()
         e = self.a.engagement
-        if not (e.not_before <= now < e.not_after - 3600):
+        name = self.a.asset.get("name")
+        if self._in_ownership_flow(name):
+            # A real service's window is the confirmed scope window. It is never
+            # extended here; expiry or revocation needs a new proof + confirmation.
+            ext = self._external_entry(name)
+            if ext is None:
+                raise ValueError("診断範囲の確認が失効または取り消されています。所有確認と範囲確認をやり直してください")
+            self.a.engagement = Engagement(
+                e.id, True, e.authorization_ref, e.not_before,
+                min(e.not_after, float(ext["not_after"])), e.targets, e.allowed_actions,
+            )
+            self.gateway.engagement = self.a.engagement
+        elif not (e.not_before <= now < e.not_after - 3600):
             self.a.engagement = Engagement(
                 e.id, e.ownership_verified, e.authorization_ref,
                 now - 60, now + 30 * 86400, e.targets, e.allowed_actions,
@@ -382,9 +478,16 @@ class AssessmentService:
         now = time.time()
         e = self.a.engagement
         ext = self._external_entry(h)
-        if ext is None and h not in self._verified_external_hosts:
+        revoked_real_service = ext is None and self._in_ownership_flow(h)
+        if ext is None and not revoked_real_service:
             self._allowed_hosts.add(h)     # local simulated-lab alias only
-        if ext is not None:
+        if revoked_real_service:
+            # registered as a real service but not (or no longer) verified + confirmed:
+            # nothing is in scope, and it is not downgraded to the local lab.
+            self._allowed_hosts.discard(h)
+            target = Target("lab", hosts=(), cidrs=("127.0.0.1/32",), ports=(self.lab_port,))
+            self.a.target_url = str(self.a.asset.get("target_url") or f"https://{h}/")
+        elif ext is not None:
             scheme = str(ext.get("scheme", "https"))
             port = int(ext.get("port", 443))
             cidrs = tuple(ext.get("cidrs", ("0.0.0.0/0", "::/0")))
@@ -400,7 +503,7 @@ class AssessmentService:
         if ext is not None:   # never outlive the ownership/scope confirmation window
             not_after = min(not_after, float(ext["not_after"]))
         self.a.engagement = Engagement(
-            e.id, True, auth_ref or e.authorization_ref,
+            e.id, not revoked_real_service, auth_ref or e.authorization_ref,
             now - 60, not_after, {"lab": target}, e.allowed_actions
         )
         self.gateway.engagement = self.a.engagement
@@ -634,6 +737,16 @@ class AssessmentService:
                 None,
             )
             if existing is not None:
+                if (existing.get("scheme"), existing.get("port")) != (parsed["scheme"], parsed["port"]) and (
+                        existing.get("ownership_verified") or existing.get("scope_confirmed")):
+                    # a different endpoint of the host: the earlier proof and scope do not carry over
+                    self._verified_external_hosts.pop(host, None)
+                    self.secrets.clear_credentials(host)
+                    existing["ownership_verified"] = False
+                    existing["scope_confirmed"] = False
+                    existing["authorization_ref"] = ""
+                    existing["assessment_id"] = None
+                    existing.pop("ownership_proof", None)
                 existing["target_url"] = parsed["target_url"]
                 existing["scheme"] = parsed["scheme"]
                 existing["port"] = parsed["port"]
@@ -723,7 +836,11 @@ class AssessmentService:
                 target_asset = self.a.asset
             if target_asset is not None:
                 target_asset["ownership_verified"] = verified
-                target_asset["ownership_proof"] = res
+                # The proof record is what scope confirmation checks, not the flag.
+                target_asset["ownership_proof"] = {
+                    **res, "host": host,
+                    "token_sha256": hashlib.sha256(ch["token"].encode("utf-8")).hexdigest(),
+                }
                 if verified and not target_asset.get("scope_confirmed"):
                     target_asset["status"] = "範囲確認待ち"
                     target_asset["note"] = "Step 3: 診断対象スコープと禁止事項を確認してください（L2実証は自動承認されません）"
@@ -783,10 +900,25 @@ class AssessmentService:
                 target_asset = self.a.asset
             if target_asset is None:
                 raise ValueError("先に Step 1-2 で対象URL登録と所有確認を行ってください")
-            if not target_asset.get("ownership_verified"):
-                raise ValueError("所有確認（DNS TXT または検証ファイル）が完了していません")
-
             now = time.time()
+            proof = target_asset.get("ownership_proof")
+            expected = hashlib.sha256(
+                challenge_for_host(host, self._ownership_secret)["token"].encode("utf-8")).hexdigest()
+            proof_ok = (
+                isinstance(proof, dict) and proof.get("verified") is True
+                and proof.get("method") in ("dns_txt", "well_known")
+                and proof.get("host") == host
+                and hmac.compare_digest(str(proof.get("token_sha256") or ""), expected)
+                and isinstance(proof.get("verified_at"), (int, float))
+            )
+            # The `ownership_verified` flag alone is never enough: the legacy lab
+            # registration can set it from a checkbox. Only a recorded challenge
+            # proof for THIS host and THIS installation's token counts.
+            if not (target_asset.get("ownership_verified") and target_asset.get("challenge") and proof_ok):
+                raise ValueError("所有確認（DNS TXT または検証ファイル）が完了していません")
+            if now - float(proof["verified_at"]) > OWNERSHIP_PROOF_MAX_AGE_S:
+                raise ValueError("所有確認から時間が経過しています。所有確認をやり直してから範囲を確認してください")
+
             auth_ref = (
                 (sow_id or "").strip()[:80]
                 or target_asset.get("authorization_ref")
@@ -795,6 +927,11 @@ class AssessmentService:
             )
             scheme = str(target_asset.get("scheme") or parsed["scheme"])
             port = int(target_asset.get("port") or parsed["port"])
+            if proof["method"] == "well_known" and (scheme, port) != ("https", 443) and not allow_loopback_test:
+                # the proof file was served by the HTTPS service on 443; it says
+                # nothing about who operates another port of the same host
+                raise ValueError("検証ファイルによる所有確認で診断できるのは https の443番ポートだけです。"
+                                 "他のポートを診断するには DNS TXT で所有確認してください")
 
             self._verified_external_hosts[host] = {
                 "host": host,
@@ -810,6 +947,8 @@ class AssessmentService:
                 "not_after": now + 30 * 86400,
                 "allow_loopback_test": bool(allow_loopback_test),
                 "confirmed_at": now,
+                "proof_method": proof["method"],
+                "proof_verified_at": proof["verified_at"],
             }
             target_asset["authorization_ref"] = auth_ref
             target_asset["scope_confirmed"] = True
@@ -1079,9 +1218,12 @@ class AssessmentService:
 
     # ---- P2: On-demand single finding verification via real Gateway+Worker ---
     def finding_requires_human_l2_approval(self, finding_id: str) -> bool:
+        """Decided by the profile (finding id) as well as the stored record, so an
+        edited finding cannot shed the approver requirement."""
         with self._lock:
             f = self.a.findings.get(finding_id) or {}
-            return self.l2.has_check(f.get("reproduce_check"))
+            return (self.l2.has_check(f.get("reproduce_check"))
+                    or self._l2_check_for_finding(finding_id) is not None)
 
     def verify_finding(self, finding_id: str, actor: str) -> dict:
         """Execute a real Gateway + Worker probe for a specific finding on demand
@@ -1143,18 +1285,30 @@ class AssessmentService:
             if self.gateway.state is State.STOPPED:
                 self._reset_workspace_locked()
             self._ensure_active_window_locked()
-            if self.a.state == "failed":
+            was_failed = self.a.state == "failed"
+            if was_failed:
                 self._set_state("idle")
             url = self.a.target_url
             target_f = dict(self.a.findings[finding_id])
 
         dn_check = target_f.get("reproduce_check")
-        if self.l2.has_check(dn_check):
+        profile_check = self._l2_check_for_finding(finding_id)
+        if self._is_external_service_asset():
+            if finding_id in LAB_ONLY_FINDING_IDS or target_f.get("demo_fixture"):
+                raise ValueError("模擬ラボ専用の検証は、実サービスに対しては実行できません")
+            if profile_check is not None and dn_check != profile_check["id"]:
+                # the stored finding was altered; the profile decides, not the record
+                raise ValueError("この検証項目の内容が判定ルール（サービスプロファイル）と一致しません")
+        if self.l2.has_check(dn_check) or profile_check is not None:
             if not self._is_external_service_asset():
                 raise ValueError("L2再現試験は、所有確認と診断範囲確認が完了した実サービスでのみ実行できます")
             l2_check = self._active_l2_check(dn_check)
             if l2_check is None:
                 raise ValueError("この検証項目は、現在の対象に適用された判定ルール（サービスプロファイル）に含まれていません")
+            if l2_check["spec_status"] != "confirmed":
+                raise ValueError(
+                    "この検証項目の判定ルールは対象APIの仕様と未照合（placeholder）のため、実行できません。"
+                    "仕様に基づいてルールを確定し、根拠（spec_evidence）を記録してください")
             l2_wrule = self.l2.worker_rule(dn_check)
             missing = self.secrets.missing_for_check(self.a.asset.get("name", "").lower(), l2_check)
             if missing:
@@ -1165,6 +1319,8 @@ class AssessmentService:
                 )
             if not actor or str(actor).startswith("policy:auto"):
                 raise ValueError("L2再現試験には人間の個別承認が必要です（自動承認不可）")
+            if not self._l2_transport_ok():
+                raise ValueError("検証用トークンを平文（http）で送信することはできません。https の対象でのみL2検証を実行できます")
             self._think(
                 f"L2検証（{dn_check}）の個別承認実行",
                 f"人間承認者（{actor}）の承認に基づき、暗号化シークレットの検証用アカウントを用いて {target_f['title']} を非破壊検証します。",
@@ -1181,12 +1337,15 @@ class AssessmentService:
                 check=dn_check,
                 risk_level="L2",
             )
-            res, ev = self._exec(
-                "reproduction_probe",
-                "safe_reproduction",
-                {"url": url, "check": dn_check},
-                approval_id=apr,
-            )
+            try:
+                res, ev = self._exec(
+                    "reproduction_probe",
+                    "safe_reproduction",
+                    {"url": url, "check": dn_check},
+                    approval_id=apr,
+                )
+            finally:
+                self.approval_store.revoke(apr)     # one approval, one run of one item
             if res and ev:
                 outcome = reproduction_verdict(res, dn_check, worker_rule=l2_wrule)
                 l2_note = reproduction_note(res, dn_check, rule=l2_check, worker_rule=l2_wrule)
@@ -1207,16 +1366,15 @@ class AssessmentService:
                 with self._lock:
                     f = self.a.findings[finding_id]
                     prev_ev = [e for e in f.get("evidence", []) if e.get("audit_hash")]
+                    fields = self._l2_result_fields(f, outcome, l2_note)
+                    if est:
+                        fields["what_was_established"] = (
+                            f"検証用アカウントを用いた非破壊プローブ（{dn_check}）で、権限のないアカウントへの応答に所有者側の模擬データが含まれることを確認しました。")
                     self._upsert_finding({
                         **f,
                         "demo_fixture": False,
-                        "verdict": outcome,
                         "_in_verification": False,
-                        "what_was_established": (
-                            f"検証用アカウントを用いた非破壊プローブ（{dn_check}）で、権限のないアカウントへの応答に所有者側の模擬データが含まれることを確認しました。"
-                            if est else None
-                        ),
-                        "verdict_note": l2_note,
+                        **fields,
                         "executor": {**EXECUTOR, "tool": "reproduction_probe"},
                         "evidence": prev_ev + [ev_enriched],
                     })
@@ -1354,11 +1512,24 @@ class AssessmentService:
         if not res or not ev:
             with self._lock:
                 finding = self.a.findings[finding_id]
-                self._upsert_finding({
-                    **finding, "verdict": "unverified", "_in_verification": False,
-                    "what_was_established": None,
-                    "verdict_note": "修正確認できず。今回のWorker応答を取得できませんでした。過去の証拠を現在の結果とは扱いません。",
-                })
+                if profile_check is not None:
+                    # same rule as any inconclusive L2 run: an earlier proof is kept
+                    self._upsert_finding({
+                        **finding, "_in_verification": False,
+                        **self._l2_result_fields(finding, "unverified",
+                                                 "判定できず。今回のWorker応答を取得できませんでした。再現せずとは判定しません。"),
+                    })
+                else:
+                    self._upsert_finding({
+                        **finding, "verdict": "unverified", "_in_verification": False,
+                        "what_was_established": None,
+                        "verdict_note": "修正確認できず。今回のWorker応答を取得できませんでした。過去の証拠を現在の結果とは扱いません。",
+                    })
+        with self._lock:
+            # a single-item run started from a failed assessment must not leave the
+            # workspace looking as if nothing had been diagnosed yet
+            if was_failed and self.a.state == "idle":
+                self._set_state("completed" if res and ev else "failed")
         return self.snapshot()
 
     # ---- P2: Post-patch defense verification & before/after comparison ------
@@ -1401,21 +1572,27 @@ class AssessmentService:
                 chk = l2_check["id"]
                 l2_wrule = self.l2.worker_rule(chk)
                 # only items a human already approved and ran once are re-run
-                if fid in before_verdicts and chk in ready:
+                if (fid in before_verdicts and chk in ready and l2_check["spec_status"] == "confirmed"
+                        and self._l2_transport_ok()
+                        and self.a.findings.get(fid, {}).get("reproduce_check") == chk):
                     apr_dn = self.approval_store.approve(actor, "eng_demo", "lab", "safe_reproduction")
                     self.audit.record("approval.approved", request=f"req_reverify_{fid}", actor=actor,
                                       action="safe_reproduction", check=chk, risk_level="L2")
-                    r_dn, e_dn = self._exec("reproduction_probe", "safe_reproduction",
-                                            {"url": url, "check": chk}, approval_id=apr_dn)
+                    try:
+                        r_dn, e_dn = self._exec("reproduction_probe", "safe_reproduction",
+                                                {"url": url, "check": chk}, approval_id=apr_dn)
+                    finally:
+                        self.approval_store.revoke(apr_dn)
                     with self._lock:
                         finding = self.a.findings[fid]
                         verdict = reproduction_verdict(r_dn, chk, worker_rule=l2_wrule)
                         l2_note = reproduction_note(r_dn, chk, rule=l2_check, worker_rule=l2_wrule)
                         latest_ids[fid] = e_dn["evidence_id"] if e_dn else None
+                        fields = self._l2_result_fields(finding, verdict, l2_note)
+                        if verdict == "proven":
+                            fields["what_was_established"] = l2_note
                         self._upsert_finding({
-                            **finding, "verdict": verdict, "_in_verification": False,
-                            "what_was_established": l2_note if verdict == "proven" else None,
-                            "verdict_note": l2_note,
+                            **finding, "_in_verification": False, **fields,
                             "evidence": finding["evidence"] + ([e_dn] if e_dn else []),
                         })
         else:
@@ -1489,7 +1666,9 @@ class AssessmentService:
                     "title": binfo["title"],
                     "severity": binfo["severity"],
                     "before_verdict": binfo["verdict"],
-                    "after_verdict": cur_f.get("verdict", "unverified"),
+                    # what THIS re-verification observed, even where an earlier proof is kept
+                    "after_verdict": (cur_f.get("last_run_verdict") if fid in latest_ids and cur_f.get("last_run_verdict")
+                                      else cur_f.get("verdict", "unverified")),
                     "latest_evidence_id": latest_ids.get(fid),
                 })
             self.a.defense_comparison = {
@@ -1507,7 +1686,9 @@ class AssessmentService:
                 tool="Gateway",
                 level="L1",
             )
-            self._set_state("failed" if any(f["verdict"] == "unverified" for f in self._real_findings()) else "completed")
+            self._set_state("failed" if any(
+                f["verdict"] == "unverified" or f.get("last_run_verdict") == "unverified"
+                for f in self._real_findings()) else "completed")
             return self.snapshot()
 
     # ---- runner -------------------------------------------------------------
@@ -1977,13 +2158,18 @@ class AssessmentService:
     def _risk(self) -> dict:
         # Unmeasured candidates (no recorded evidence) are not counted either way:
         # they are neither a confirmed risk nor a confirmed absence of one.
-        fs = [f for f in self._real_findings() if evidence_status(f) != "candidate"]
+        # An L2 rule check that ended inconclusive (preconditions not met, response
+        # not matching the rule) says nothing about the boundary, so it does not
+        # move the score either; such an item counts only once it is proven.
+        fs = [f for f in self._real_findings()
+              if evidence_status(f) != "candidate"
+              and not (self.l2.has_check(f.get("reproduce_check")) and f.get("verdict") != "proven")]
         score = min(100, round(sum(SEVERITY_WEIGHT[f["severity"]] * VERDICT_FACTOR[f["verdict"]]
                                    for f in fs)))
         label = "高リスク" if score >= 70 else "中リスク" if score >= 40 else "低リスク"
         return {"score": score, "label": label,
                 "provisional": self.a.state != "completed",
-                "basis": "架空データと未計測の候補を除く検出結果の深刻度 × 判定（実証=1.0, 検出・未検証=0.6, 再現せず=0）の合計（上限100）"}
+                "basis": "架空データ・未計測の候補・判定できなかったL2検証を除く検出結果の深刻度 × 判定（実証=1.0, 検出・未検証=0.6, 再現せず=0）の合計（上限100）"}
 
     def _on_audit(self, entry: dict) -> None:
         self.bus.publish(self.a.id if hasattr(self, "a") else "scan_001", "audit.recorded",

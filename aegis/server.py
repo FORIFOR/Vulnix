@@ -287,7 +287,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 elif p == "/api/assets/confirm-scope":
                     res = svc.confirm_asset_scope(
                         url_or_host=str(body.get("url") or body.get("host") or ""),
-                        confirmed_prohibited=bool(body.get("confirmed_prohibited", True)),
+                        confirmed_prohibited=body.get("confirmed_prohibited") is True,   # must be stated explicitly
                         approver=actor,
                         sow_id=str(body.get("sow_id", "")),
                         activate_workspace=bool(body.get("activate_workspace", False)),

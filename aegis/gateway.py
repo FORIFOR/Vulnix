@@ -74,7 +74,8 @@ def reproduction_probe_tool(l2_rules=None) -> Tool:
     workers = Path(__file__).parent / "workers"
     worker = str(workers / "reproduction_probe.py")
     sentinel = str(workers / "egress_sentinel.py")
-    rule_checks = tuple(l2_rules.check_ids()) if l2_rules is not None else ()
+    # only rules confirmed against the target API are executable at all
+    rule_checks = tuple(l2_rules.runnable_check_ids()) if l2_rules is not None else ()
 
     def build(args: dict, d: PinnedDestination) -> list[str]:
         check = args.get("check", "idor")

@@ -18,6 +18,12 @@ must declare:
 If any precondition is missing or fails, or the subject response matches
 neither `denied` nor `exposed`, the result is "unverified".
 
+Every check also carries `spec_status`. Only a check marked "confirmed" - with
+`spec_evidence` naming where in the target's own API definition the paths,
+statuses and response fields were read - can be executed. A "placeholder" check
+is listed as an unmeasured candidate and is refused by the control plane and by
+the Gateway tool schema, so guessed values can never produce a verdict.
+
 Loading a profile grants nothing: execution still needs a verified asset,
 confirmed scope, stored test accounts, and a per-item human approval.
 """
@@ -33,6 +39,7 @@ BUILTIN_PROFILE_DIR = Path(__file__).parent / "l2_profiles"
 PROFILE_DIR_ENV = "VULNIX_L2_PROFILE_DIR"
 
 SEVERITIES = ("critical", "high", "medium", "low", "info")
+SPEC_STATUSES = ("confirmed", "placeholder")
 # A rejected test token, a proxy challenge, a timeout or a rate limit says nothing
 # about the authorization boundary, so these can never be declared as a denial.
 NEVER_A_DENIAL = frozenset({401, 407, 408, 429})
@@ -144,6 +151,21 @@ def _validate_check(raw, where: str, tokens: dict, paths: dict) -> dict:
         _need(all(200 <= s <= 299 for s in expect["status"]), pw, "a positive control must expect 2xx")
         pres.append({**req, "name": name, "label": p["label"].strip(), "expect": expect})
 
+    # The controls have to be about THIS request, not just any request that works:
+    #  (1) the subject's own token must be shown to be valid, so a denial is an
+    #      authorization decision and not a rejected credential;
+    #  (2) the subject's path must be shown to serve the resource to another,
+    #      entitled identity, so a denial is not a wrong path. Where no such
+    #      identity can exist (e.g. an expired link nobody can open) the rule must
+    #      say why, and then "not found" can never count as a denial.
+    _need(any(p["token"] == subject["token"] for p in pres), where,
+          "needs a precondition that uses the subject's token (proves the test account is authenticated)")
+    has_owner_control = any(p["path"] == subject["path"] and p["token"] != subject["token"] for p in pres)
+    control_exception = str(raw.get("owner_control_exception") or "").strip()
+    _need(has_owner_control or control_exception, where,
+          "needs a precondition on the subject's path with a different account (owner control), "
+          "or `owner_control_exception` explaining why none can exist")
+
     exposed = _validate_expect(raw.get("exposed"), f"{where} exposed", need_content=True)
     _need(all(200 <= s <= 299 for s in exposed["status"]), where, "`exposed.status` must be 2xx")
     _need("body_contains" in exposed, where, "`exposed.body_contains` is required")
@@ -151,14 +173,26 @@ def _validate_check(raw, where: str, tokens: dict, paths: dict) -> dict:
     denied = _validate_expect(raw.get("denied"), f"{where} denied", need_content=False)
     _need(all(400 <= s <= 499 and s not in NEVER_A_DENIAL for s in denied["status"]), where,
           f"`denied.status` must be 4xx and must not include {sorted(NEVER_A_DENIAL)}")
+    _need(has_owner_control or 404 not in denied["status"], where,
+          "without an owner control on the subject's path, 404 cannot be a denial (a wrong path looks the same)")
     missing = set(exposed["body_contains"]) - set(denied.get("body_not_contains", []))
     _need(not missing, where,
           f"`denied.body_not_contains` must include every exposed marker (missing {sorted(missing)})")
+
+    spec_status = raw.get("spec_status", "placeholder")
+    _need(spec_status in SPEC_STATUSES, where, f"`spec_status` must be one of {SPEC_STATUSES}")
+    evidence = _str_list(raw.get("spec_evidence"), where, "spec_evidence", required=False)
+    _need(spec_status != "confirmed" or bool(evidence), where,
+          "a confirmed check must list `spec_evidence` (where the API behaviour was read from)")
 
     return {
         "id": cid,
         "category": raw["category"].strip(),
         "label": raw["label"].strip(),
+        "spec_status": spec_status,
+        "spec_evidence": evidence,
+        "spec_note": str(raw.get("spec_note") or ""),
+        "owner_control_exception": control_exception,
         "finding": {
             "id": finding["id"], "title": finding["title"], "severity": finding["severity"],
             "category": finding["category"], "help_term": finding.get("help_term") or "idor",
@@ -223,7 +257,10 @@ def validate_profile(raw, source: str = "<profile>") -> dict:
     return {
         "id": pid,
         "label": raw["label"].strip(),
-        "spec_status": raw.get("spec_status") if raw.get("spec_status") in ("confirmed", "placeholder") else "placeholder",
+        # derived, never declared: a profile is only as confirmed as its checks
+        "spec_status": ("confirmed" if all(c["spec_status"] == "confirmed" for c in checks)
+                        else "partial" if any(c["spec_status"] == "confirmed" for c in checks)
+                        else "placeholder"),
         "spec_note": str(raw.get("spec_note") or ""),
         "hosts": hosts,
         "tokens": tokens,
@@ -239,6 +276,19 @@ def canonical_json(obj) -> str:
 
 def rule_digest(rule_json: str) -> str:
     return hashlib.sha256(rule_json.encode("utf-8")).hexdigest()
+
+
+def default_profile_dirs(data_dir: Path | None = None) -> list[Path]:
+    """Bundled templates, then the installation's own profiles (`<data_dir>/l2_profiles`,
+    never in git: it may name private hosts and cite a private API), then the
+    directory named by `VULNIX_L2_PROFILE_DIR`."""
+    dirs = [BUILTIN_PROFILE_DIR]
+    if data_dir is not None and (Path(data_dir) / "l2_profiles").is_dir():
+        dirs.append(Path(data_dir) / "l2_profiles")
+    extra = os.environ.get(PROFILE_DIR_ENV)
+    if extra:
+        dirs.append(Path(extra))
+    return dirs
 
 
 class L2RuleSet:
@@ -264,22 +314,31 @@ class L2RuleSet:
     @classmethod
     def load(cls, dirs: list[Path] | None = None) -> "L2RuleSet":
         if dirs is None:
-            dirs = [BUILTIN_PROFILE_DIR]
-            extra = os.environ.get(PROFILE_DIR_ENV)
-            if extra:
-                dirs.append(Path(extra))
-        profiles = []
+            dirs = default_profile_dirs()
+        # A later directory replaces a profile with the same id from an earlier one,
+        # so a site-specific (private) profile can supersede the bundled template.
+        by_id: dict[str, dict] = {}
         for d in dirs:
+            seen_here: set[str] = set()
             for f in sorted(Path(d).glob("*.json")):
                 try:
                     raw = json.loads(f.read_text(encoding="utf-8"))
                 except ValueError as e:
                     raise RuleError(f"L2 profile {f.name}: invalid JSON ({e})") from None
-                profiles.append(validate_profile(raw, f.name))
-        return cls(profiles)
+                profile = validate_profile(raw, f.name)
+                _need(profile["id"] not in seen_here, f.name, "duplicate profile id within one directory")
+                seen_here.add(profile["id"])
+                by_id.pop(profile["id"], None)
+                by_id[profile["id"]] = profile
+        return cls(list(by_id.values()))
 
     def check_ids(self) -> tuple[str, ...]:
         return tuple(sorted(self._checks))
+
+    def runnable_check_ids(self) -> tuple[str, ...]:
+        """Checks whose rule was confirmed against the target API. Only these are
+        accepted by the Gateway tool schema."""
+        return tuple(sorted(cid for cid, (_, c) in self._checks.items() if c["spec_status"] == "confirmed"))
 
     def has_check(self, check_id) -> bool:
         return check_id in self._checks

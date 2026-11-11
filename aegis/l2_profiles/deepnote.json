@@ -1,14 +1,9 @@
 {
   "id": "deepnote",
-  "label": "DeepNote",
-  "spec_status": "placeholder",
-  "spec_note": "パス・応答マーカー・拒否ステータスは仮の値です。DeepNote APIの仕様と、対象環境に用意した模擬データで確認してから spec_status を confirmed に変更してください。",
+  "label": "DeepNote API",
+  "spec_note": "公開リポジトリ用のひな形です。適用ホストは空で、すべての項目が仕様未照合（placeholder）のため、このままでは何も実行されません。対象APIの仕様に基づく確定済みルールと、その根拠・適用ホストは、リポジトリ外の data/l2_profiles/（git管理外）に同じ id で置いてください。",
   "applies_to": {
-    "hosts": [
-      "deepnote-api-stg-mur5rvqgga-an.a.run.app",
-      "deepnote-mopita-stg-mur5rvqgga-an.a.run.app",
-      "stgdeepnote.mopita.com"
-    ]
+    "hosts": []
   },
   "tokens": {
     "user_a_token": {
@@ -21,7 +16,7 @@
       "label": "Freeプランのアカウント"
     },
     "premium_plan_token": {
-      "label": "上位プランのアカウント（課金項目の対照用）"
+      "label": "有料プランのアカウント（対照用）"
     }
   },
   "distinct_tokens": [
@@ -35,104 +30,102 @@
     ]
   ],
   "paths": {
-    "mock_note_path": {
-      "label": "模擬ノート（B所有）",
-      "default": "/api/v1/notes/mock_note_user_b"
+    "resource_b_path": {
+      "label": "未確定：アカウントB所有の模擬データ",
+      "default": "/unconfirmed"
     },
-    "mock_self_note_path": {
-      "label": "模擬ノート（A所有・A自身の認証確認用）",
-      "default": "/api/v1/notes/mock_note_user_a"
+    "resource_a_path": {
+      "label": "未確定：アカウントA所有の模擬データ（Aの認証確認用）",
+      "default": "/unconfirmed"
     },
-    "mock_share_path": {
-      "label": "失効済みの模擬共有リンク",
-      "default": "/api/v1/shares/expired_mock_token"
+    "share_expired_path": {
+      "label": "未確定：失効・期限切れの模擬共有リンク",
+      "default": "/unconfirmed"
     },
-    "mock_share_valid_path": {
-      "label": "有効な模擬共有リンク（対照用）",
-      "default": "/api/v1/shares/valid_mock_token"
+    "share_valid_path": {
+      "label": "未確定：有効な模擬共有リンク（対照用）",
+      "default": "/unconfirmed"
     },
-    "mock_gcs_path": {
-      "label": "模擬ストレージオブジェクト（B所有）",
-      "default": "/storage/v1/b/deepnote-stg-mock/o/mock_voice_b.wav"
+    "storage_b_path": {
+      "label": "未確定：アカウントB所有の模擬ファイル",
+      "default": "/unconfirmed"
     },
-    "mock_chat_path": {
-      "label": "AIチャットのコンテキスト（Bのノート指定）",
-      "default": "/api/v1/ai/chat/context?note_id=mock_note_user_b"
+    "ai_context_b_path": {
+      "label": "未確定：Bのデータを指定したAI機能",
+      "default": "/unconfirmed"
     },
-    "mock_chat_self_path": {
-      "label": "AIチャットのコンテキスト（Aのノート指定・認証確認用）",
-      "default": "/api/v1/ai/chat/context?note_id=mock_note_user_a"
+    "paid_only_path": {
+      "label": "未確定：有料プラン専用の機能",
+      "default": "/unconfirmed"
     },
-    "mock_billing_path": {
-      "label": "上位プラン専用API",
-      "default": "/api/v1/billing/premium-summary-check"
-    },
-    "mock_free_path": {
-      "label": "Freeプランで利用できるAPI（認証確認用）",
-      "default": "/api/v1/billing/plan"
+    "plan_path": {
+      "label": "未確定：自分の契約プランを確認するAPI",
+      "default": "/unconfirmed"
     }
   },
   "checks": [
     {
       "id": "deepnote_idor_notes",
       "category": "idor",
-      "label": "他ユーザーのノート（IDOR）",
+      "label": "他ユーザーのデータ（議事録）の取得",
+      "spec_status": "placeholder",
+      "spec_evidence": [],
+      "spec_note": "仕様未照合。パス・拒否応答・応答内容の条件は未確定です。",
       "finding": {
         "id": "f_dn_idor",
-        "title": "他ユーザーの議事録・音声・文字起こし・要約へのアクセス制御（IDOR/BOLA）",
+        "title": "他ユーザーの議事録セッションへのアクセス制御（IDOR/BOLA）",
         "severity": "high",
         "category": "アクセス制御（IDOR/BOLA）",
         "help_term": "idor",
-        "summary": "検証用アカウントAのトークンで別テナント模擬データ（議事録・音声・文字起こし・要約）のオブジェクトIDへアクセスし、認可境界が強制されているか検証します。",
-        "impact": "認可不備がある場合、推測または列挙したIDを通じて他ユーザーの非公開議事録・音声・要約データが閲覧される恐れがあります。",
+        "summary": "検証用アカウントAのトークンで、アカウントBが所有する模擬セッションのIDを指定して取得を試み、所有者照合が強制されているか検証します。",
+        "impact": "認可不備がある場合、セッションIDを知った第三者に他ユーザーの議事録・文字起こし・要約が閲覧される恐れがあります。",
         "steps": [
-          "すべての議事録・音声・文字起こし・要約取得APIで、認証ユーザーの user_id / tenant_id とリソース所有者のサーバー側照合を必須化する",
-          "不一致時は HTTP 403 Forbidden または 404 Not Found を返却する"
+          "セッションを返すすべての取得APIで、認証ユーザーとセッションの所有者・共有先・メンバーをサーバー側で照合する",
+          "照合に失敗した場合は HTTP 403 を返し、応答本文にセッションの内容を含めない"
         ],
-        "how_to_verify": "検証用アカウントA・Bを用いたL2検証を実行し、Bは模擬ノートを取得でき、Aは拒否され、Aへの応答にBのデータが含まれないことを確認します。"
+        "how_to_verify": "所有者Bは模擬セッションを取得でき（isOwner=true）、Aは 403 で拒否され、Aへの応答にBのセッション内容が含まれないことを同じ実行内で確認します。"
       },
       "subject": {
         "token": "user_a_token",
-        "path": "mock_note_path",
+        "path": "resource_b_path",
         "headers": {}
       },
       "preconditions": [
         {
           "name": "owner_access",
-          "label": "所有者（アカウントB）が同じ模擬データを取得できる",
+          "label": "所有者Bが模擬データを取得できる",
           "token": "user_b_token",
-          "path": "mock_note_path",
+          "path": "resource_b_path",
           "expect": {
             "status": [
               200
             ],
             "body_contains": [
-              "DEEPNOTE_MOCK_NOTE_USER_B"
+              "VULNIX_MOCK_OWNER_B_DATA"
             ]
           }
         },
         {
           "name": "subject_authenticated",
-          "label": "アカウントAのトークンが有効で、自分の模擬データは取得できる",
+          "label": "Aのトークンが有効で、A自身の模擬データは取得できる",
           "token": "user_a_token",
-          "path": "mock_self_note_path",
+          "path": "resource_a_path",
           "expect": {
             "status": [
               200
             ],
             "body_contains": [
-              "DEEPNOTE_MOCK_NOTE_USER_A"
+              "VULNIX_MOCK_OWNER_A_DATA"
             ]
           }
         }
       ],
       "denied": {
         "status": [
-          403,
-          404
+          403
         ],
         "body_not_contains": [
-          "DEEPNOTE_MOCK_NOTE_USER_B"
+          "VULNIX_MOCK_OWNER_B_DATA"
         ]
       },
       "exposed": {
@@ -140,14 +133,17 @@
           200
         ],
         "body_contains": [
-          "DEEPNOTE_MOCK_NOTE_USER_B"
+          "VULNIX_MOCK_OWNER_B_DATA"
         ]
       }
     },
     {
       "id": "deepnote_share_link",
       "category": "share_link",
-      "label": "失効済み共有リンク",
+      "label": "失効・期限切れの共有リンク",
+      "spec_status": "placeholder",
+      "spec_evidence": [],
+      "spec_note": "仕様未照合。パス・拒否応答・応答内容の条件は未確定です。",
       "finding": {
         "id": "f_dn_share",
         "title": "共有リンクの失効・有効期限切れ後のアクセス制御",
@@ -155,42 +151,40 @@
         "category": "セッション・共有管理",
         "help_term": "idor",
         "summary": "失効済みまたは有効期限切れの模擬共有トークンへアクセスし、サーバー側で確実に拒否されるか検証します。",
-        "impact": "失効後もトークンやキャッシュが有効な場合、共有解除したはずの議事録へ第三者が継続アクセスできるリスクがあります。",
+        "impact": "失効後もトークンが有効な場合、共有解除したはずの議事録へ第三者が継続アクセスできるリスクがあります。",
         "steps": [
-          "共有リンク参照時にDB上の revoked_at および expires_at を毎回サーバー側で検証する",
-          "失効時はキャッシュを無効化し即座に HTTP 403/404/410 を返却する"
+          "共有リンク参照時に失効状態と有効期限を毎回サーバー側で検証する",
+          "失効・期限切れの場合は内容を返さず拒否する"
         ],
-        "how_to_verify": "有効な模擬共有リンクでは内容を取得でき、失効済みの模擬共有リンクでは拒否されて内容が返らないことを同じ実行内で確認します。"
+        "how_to_verify": "有効な模擬共有リンクでは内容を取得でき、失効・期限切れの模擬共有リンクでは拒否されて内容が返らないことを同じ実行内で確認します。"
       },
       "subject": {
         "token": "user_a_token",
-        "path": "mock_share_path",
+        "path": "share_expired_path",
         "headers": {}
       },
       "preconditions": [
         {
           "name": "valid_link_works",
-          "label": "有効な模擬共有リンクでは共有内容を取得できる",
+          "label": "有効な模擬共有リンクでは内容を取得できる",
           "token": "user_a_token",
-          "path": "mock_share_valid_path",
+          "path": "share_valid_path",
           "expect": {
             "status": [
               200
             ],
             "body_contains": [
-              "DEEPNOTE_MOCK_SHARED_NOTE"
+              "VULNIX_MOCK_OWNER_B_DATA"
             ]
           }
         }
       ],
       "denied": {
         "status": [
-          403,
-          404,
-          410
+          403
         ],
         "body_not_contains": [
-          "DEEPNOTE_MOCK_SHARED_NOTE"
+          "VULNIX_MOCK_OWNER_B_DATA"
         ]
       },
       "exposed": {
@@ -198,70 +192,73 @@
           200
         ],
         "body_contains": [
-          "DEEPNOTE_MOCK_SHARED_NOTE"
+          "VULNIX_MOCK_OWNER_B_DATA"
         ]
-      }
+      },
+      "owner_control_exception": "失効・期限切れのリンクは誰も開けないため、同じパスでの所有者対照は存在しない。有効なリンクでの取得成功を対照とする。"
     },
     {
       "id": "deepnote_gcs_acl",
       "category": "storage_acl",
-      "label": "Cloud Storage のアクセス制御",
+      "label": "音声・文字起こしファイルのアクセス制御",
+      "spec_status": "placeholder",
+      "spec_evidence": [],
+      "spec_note": "仕様未照合。パス・拒否応答・応答内容の条件は未確定です。",
       "finding": {
         "id": "f_dn_gcs",
-        "title": "Cloud Storage（音声・文字起こしデータ）のアクセス制御",
+        "title": "音声・文字起こしデータ（Cloud Storage）のアクセス制御",
         "severity": "high",
         "category": "クラウドストレージ設定",
         "help_term": "idor",
-        "summary": "音声・文字起こし保存用ストレージパスに対して、別テナントのアカウントから直接取得できないか検証します。",
-        "impact": "バケットまたはオブジェクトACLが公開状態、あるいは署名なしURLで取得可能な場合、録音データや文字起こしファイルが直接漏えいします。",
+        "summary": "別アカウントのセッションの音声について、署名付きURLの発行が所有者照合で保護されているか検証します。",
+        "impact": "所有者以外に署名付きURLが発行される、またはバケットが公開状態の場合、録音データが漏えいします。",
         "steps": [
-          "Cloud Storage バケットの公開アクセス防止（Public Access Prevention）を有効化する",
-          "Uniform bucket-level access を適用し、短寿命のV4署名付きURL（Signed URL）のみを経由して配信する"
+          "音声URLの発行APIでセッションの所有者・共有先をサーバー側で照合する",
+          "バケットの公開アクセス防止と Uniform bucket-level access を有効にし、短寿命の署名付きURLだけで配信する"
         ],
-        "how_to_verify": "所有者Bは模擬オブジェクトを取得でき、アカウントAは拒否されて内容が返らないことを同じ実行内で確認します。"
+        "how_to_verify": "所有者Bには音声URLが発行され、アカウントAは拒否されて応答にURLが含まれないことを同じ実行内で確認します。"
       },
       "subject": {
         "token": "user_a_token",
-        "path": "mock_gcs_path",
+        "path": "storage_b_path",
         "headers": {}
       },
       "preconditions": [
         {
           "name": "owner_access",
-          "label": "所有者（アカウントB）が同じ模擬データを取得できる",
+          "label": "所有者Bが模擬ファイルを取得できる",
           "token": "user_b_token",
-          "path": "mock_gcs_path",
+          "path": "storage_b_path",
           "expect": {
             "status": [
               200
             ],
             "body_contains": [
-              "DEEPNOTE_MOCK_VOICE_USER_B"
+              "VULNIX_MOCK_OWNER_B_DATA"
             ]
           }
         },
         {
           "name": "subject_authenticated",
-          "label": "アカウントAのトークンが有効で、自分の模擬データは取得できる",
+          "label": "Aのトークンが有効で、A自身の模擬データは取得できる",
           "token": "user_a_token",
-          "path": "mock_self_note_path",
+          "path": "resource_a_path",
           "expect": {
             "status": [
               200
             ],
             "body_contains": [
-              "DEEPNOTE_MOCK_NOTE_USER_A"
+              "VULNIX_MOCK_OWNER_A_DATA"
             ]
           }
         }
       ],
       "denied": {
         "status": [
-          403,
-          404
+          403
         ],
         "body_not_contains": [
-          "DEEPNOTE_MOCK_VOICE_USER_B"
+          "VULNIX_MOCK_OWNER_B_DATA"
         ]
       },
       "exposed": {
@@ -269,7 +266,7 @@
           200
         ],
         "body_contains": [
-          "DEEPNOTE_MOCK_VOICE_USER_B"
+          "VULNIX_MOCK_OWNER_B_DATA"
         ]
       }
     },
@@ -277,62 +274,64 @@
       "id": "deepnote_ai_chat_isolation",
       "category": "ai_chat_isolation",
       "label": "AIチャットのテナント分離",
+      "spec_status": "placeholder",
+      "spec_evidence": [],
+      "spec_note": "仕様未照合。パス・拒否応答・応答内容の条件は未確定です。",
       "finding": {
         "id": "f_dn_aichat",
         "title": "AIチャットにおける権限外データ参照・プロンプト境界分離",
         "severity": "high",
         "category": "AI / LLM セキュリティ",
         "help_term": "idor",
-        "summary": "AIチャット/要約エンドポイントへ別テナントの模擬ノートIDを指定し、RAG検索やコンテキスト注入で権限外データが参照されないか検証します。",
-        "impact": "AI検索インデックスやコンテキスト取得時にテナント分離が欠落している場合、プロンプト経由で他ユーザーの議事録内容がAI応答に混入・漏えいします。",
+        "summary": "AIチャットで別アカウントのセッションIDを指定した場合に、その内容がコンテキストへ混入しないか検証します。",
+        "impact": "コンテキスト取得時の所有者照合が欠落している場合、他ユーザーの議事録内容がAI応答に混入・漏えいします。",
         "steps": [
-          "ベクトル検索・RAGコンテキスト取得クエリにおいて、LLM呼び出し前に必ず認証ユーザーの tenant_id / user_id でフィルタリングする",
-          "指定された context_note_id の所有権をサーバー側で検証してからプロンプトへ組み込む"
+          "チャットのコンテキストに読み込むすべてのセッションIDについて、LLM呼び出し前に所有者・共有先をサーバー側で照合する",
+          "照合に失敗したセッションはコンテキストから除外し、記録する"
         ],
-        "how_to_verify": "所有者Bは自分のノートのコンテキストを取得でき、アカウントAがBのノートIDを指定した場合は拒否されて応答にBの内容が混入しないことを確認します。"
+        "how_to_verify": "所有者Bは自分のセッションを参照でき、アカウントAがBのセッションIDを指定してもBの内容が応答に混入しないことを確認します。"
       },
       "subject": {
         "token": "user_a_token",
-        "path": "mock_chat_path",
+        "path": "ai_context_b_path",
         "headers": {}
       },
       "preconditions": [
         {
           "name": "owner_access",
-          "label": "所有者（アカウントB）は自分のノートのコンテキストを取得できる",
+          "label": "所有者Bは自分のデータを参照できる",
           "token": "user_b_token",
-          "path": "mock_chat_path",
+          "path": "ai_context_b_path",
           "expect": {
             "status": [
               200
             ],
             "body_contains": [
-              "DEEPNOTE_MOCK_NOTE_USER_B"
+              "VULNIX_MOCK_OWNER_B_DATA"
             ]
           }
         },
         {
           "name": "subject_authenticated",
-          "label": "アカウントAのトークンが有効で、自分の模擬データは取得できる",
+          "label": "Aのトークンが有効で、A自身の模擬データは取得できる",
           "token": "user_a_token",
-          "path": "mock_chat_self_path",
+          "path": "resource_a_path",
           "expect": {
             "status": [
               200
             ],
             "body_contains": [
-              "DEEPNOTE_MOCK_NOTE_USER_A"
+              "VULNIX_MOCK_OWNER_A_DATA"
             ]
           }
         }
       ],
       "denied": {
         "status": [
-          403,
-          404
+          403
         ],
         "body_not_contains": [
-          "DEEPNOTE_MOCK_NOTE_USER_B"
+          "VULNIX_MOCK_OWNER_B_DATA"
         ]
       },
       "exposed": {
@@ -340,7 +339,7 @@
           200
         ],
         "body_contains": [
-          "DEEPNOTE_MOCK_NOTE_USER_B"
+          "VULNIX_MOCK_OWNER_B_DATA"
         ]
       }
     },
@@ -348,62 +347,64 @@
       "id": "deepnote_billing_plan",
       "category": "billing_plan",
       "label": "課金プランのサーバー側制御",
+      "spec_status": "placeholder",
+      "spec_evidence": [],
+      "spec_note": "仕様未照合。パス・拒否応答・応答内容の条件は未確定です。",
       "finding": {
         "id": "f_dn_billing",
         "title": "課金・契約プラン上限のサーバー側権限制御",
         "severity": "medium",
         "category": "ビジネスロジック・認可",
         "help_term": "idor",
-        "summary": "Freeプラン相当の検証用アカウントから上位プラン専用APIへリクエストし、クライアント側表示だけでなくサーバー側で権限制御されているか検証します。",
-        "impact": "フロントエンドのUI非表示のみで制限している場合、APIの直接呼び出しにより無制限の文字起こしや上位AI機能が不正利用される恐れがあります。",
+        "summary": "Freeプランの検証用アカウントから有料プラン専用の機能を呼び出し、サーバー側で権限制御されているか検証します。",
+        "impact": "画面側の非表示だけで制限している場合、APIの直接呼び出しで有料機能が不正利用される恐れがあります。",
         "steps": [
-          "すべての有料機能・利用上限対象APIにおいて、サーバー側の認可ミドルウェアで契約プラン（Entitlement）と月間クォータ残量を検証する",
-          "権限不足時は HTTP 402 Payment Required または 403 Forbidden を返却する"
+          "有料機能と利用上限の対象APIすべてで、サーバー側で契約プランと残量を検証する",
+          "権限不足の場合は機能を実行せず拒否する"
         ],
-        "how_to_verify": "上位プランの検証用アカウントでは専用APIを利用でき、Freeプランの検証用アカウントでは拒否されて上位プランの内容が返らないことを同じ実行内で確認します。"
+        "how_to_verify": "有料プランの検証用アカウントでは利用でき、Freeプランの検証用アカウントでは拒否されることを同じ実行内で確認します。"
       },
       "subject": {
         "token": "free_plan_token",
-        "path": "mock_billing_path",
+        "path": "paid_only_path",
         "headers": {}
       },
       "preconditions": [
         {
           "name": "premium_access",
-          "label": "上位プランのアカウントでは専用APIを利用できる",
+          "label": "有料プランのアカウントでは利用できる",
           "token": "premium_plan_token",
-          "path": "mock_billing_path",
+          "path": "paid_only_path",
           "expect": {
             "status": [
               200
             ],
             "body_contains": [
-              "DEEPNOTE_MOCK_PREMIUM_SUMMARY"
+              "VULNIX_MOCK_OWNER_B_DATA"
             ]
           }
         },
         {
           "name": "subject_authenticated",
-          "label": "Freeプランのトークンが有効で、Freeプランで使えるAPIは利用できる",
+          "label": "Freeプランのトークンが有効",
           "token": "free_plan_token",
-          "path": "mock_free_path",
+          "path": "plan_path",
           "expect": {
             "status": [
               200
             ],
-            "json_fields": {
-              "plan": "free"
-            }
+            "body_contains": [
+              "VULNIX_MOCK_OWNER_A_DATA"
+            ]
           }
         }
       ],
       "denied": {
         "status": [
-          402,
           403
         ],
         "body_not_contains": [
-          "DEEPNOTE_MOCK_PREMIUM_SUMMARY"
+          "VULNIX_MOCK_OWNER_B_DATA"
         ]
       },
       "exposed": {
@@ -411,7 +412,7 @@
           200
         ],
         "body_contains": [
-          "DEEPNOTE_MOCK_PREMIUM_SUMMARY"
+          "VULNIX_MOCK_OWNER_B_DATA"
         ]
       }
     }

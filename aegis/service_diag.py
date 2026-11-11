@@ -416,9 +416,12 @@ def build_l2_candidates(
 
     for check in profile["checks"]:
         spec = check["finding"]
-        ready = check["id"] in ready_checks
+        runnable = check["spec_status"] == "confirmed"
+        ready = runnable and check["id"] in ready_checks
         cred_note = (
-            "暗号化シークレット（検証用アカウント）設定済み・人間の個別承認待ち"
+            "未検査（判定ルールが対象APIの仕様と未照合のため実行できません）"
+            if not runnable
+            else "暗号化シークレット（検証用アカウント）設定済み・人間の個別承認待ち"
             if ready
             else "未検査（この項目に必要なL2検証用アカウントが未設定・人間の個別承認待ち）"
         )
@@ -441,11 +444,13 @@ def build_l2_candidates(
                 "target_path": profile["paths"][check["subject"]["path"]]["default"],
                 "l2_preconditions": [p["label"] for p in check["preconditions"]],
                 "l2_ready": ready,
+                "l2_spec_status": check["spec_status"],
                 "risk_score": r_score,
                 "risk_rationale": r_rat,
                 "summary": f"{spec['summary']} （現在の状態: {cred_note} ※未検査項目を安全とは判定しません）",
                 "why_detected": f"{profile['label']} 向け判定ルールの診断項目として登録されました。所有確認のみで自動実行されることはなく、個別の人間承認と検証用アカウント設定が必要です。",
-                "caveat": f"未検証候補（{cred_note}）。承認されるまで実行されません。",
+                "caveat": (f"未検証候補（{cred_note}）。承認されるまで実行されません。" if runnable
+                           else f"未検証候補（{cred_note}）。仕様を確認してルールを確定するまで、承認しても実行されません。"),
                 "impact": spec["impact"],
                 "evidence": [],
                 "remediation": {

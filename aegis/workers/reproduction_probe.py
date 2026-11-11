@@ -68,7 +68,7 @@ def _scrub(obj, secrets_to_redact: list[str]):
                 obj = obj.replace(secret, REDACTED)
         return obj
     if isinstance(obj, dict):
-        return {k: _scrub(v, secrets_to_redact) for k, v in obj.items()}
+        return {_scrub(k, secrets_to_redact): _scrub(v, secrets_to_redact) for k, v in obj.items()}
     if isinstance(obj, list):
         return [_scrub(v, secrets_to_redact) for v in obj]
     return obj
@@ -257,7 +257,9 @@ def run_rule_check(a, rule_json: str) -> dict:
         if obs["truncated"]:
             reasons.append("response_truncated")
 
-    excerpt = obs["body"][:EXCERPT]
+    # Redact over the whole body BEFORE cutting the excerpt, so a token echoed
+    # across the excerpt boundary cannot survive as a fragment.
+    excerpt = _scrub(obs["body"], secrets_to_redact)[:EXCERPT]
     try:
         parsed = json.loads(excerpt)
     except ValueError:

@@ -6,6 +6,7 @@ server reached through the injected resolver and the service-level-only
 `allow_loopback_test` switch (which the HTTP API cannot set).
 """
 import http.server
+import re
 import importlib.util
 import json
 import tempfile
@@ -58,6 +59,7 @@ class FakeService(http.server.ThreadingHTTPServer):
       a_token_invalid  account A's token is rejected with 403 everywhere
       leaky_denial     A gets 403 on B's note, but the body still carries B's content
       odd_denial       A gets 403 on B's note with an unexpected error body
+      echo_boundary    A can read B's note and the response echoes the Authorization header
     """
     daemon_threads = True
 
@@ -103,6 +105,10 @@ class _FakeHandler(http.server.BaseHTTPRequestHandler):
                 return self._send(200, {**NOTE_B_BODY, "echo": auth})
             if token == TOKEN_A and mode == "vulnerable":
                 return self._send(200, NOTE_B_BODY)
+            if token == TOKEN_A and mode == "echo_boundary":
+                # the Authorization value straddles the 4096-character evidence excerpt
+                at = len(json.dumps({**NOTE_B_BODY, "pad": "", "echo": ""})) - 2
+                return self._send(200, {**NOTE_B_BODY, "pad": "x" * (4096 - at - 12), "echo": auth})
             if mode == "leaky_denial":
                 return self._send(403, {"error": "forbidden", "debug": NOTE_B_BODY})
             if mode == "odd_denial":
@@ -162,7 +168,14 @@ class TestRulesAreConfigurationNotCode(unittest.TestCase):
         (profile,) = builtin.profiles.values()
         self.assertEqual(sorted(c["category"] for c in profile["checks"]),
                          ["ai_chat_isolation", "billing_plan", "idor", "share_link", "storage_acl"])
-        self.assertEqual(profile["spec_status"], "placeholder")      # not yet matched against the real API
+        # The bundled profile is a public template: bound to no host, nothing confirmed,
+        # nothing executable, and no detail of the (private) target API.
+        self.assertEqual((profile["spec_status"], profile["hosts"]), ("placeholder", []))
+        self.assertEqual(builtin.runnable_check_ids(), ())
+        for c in profile["checks"]:
+            self.assertEqual((c["spec_status"], c["spec_evidence"]), ("placeholder", []))
+        raw = (BUILTIN_PROFILE_DIR / "deepnote.json").read_text(encoding="utf-8")
+        self.assertIsNone(re.search(r"run\.app|\.py:\d+|mopita|classnote", raw))
         for c in profile["checks"]:
             with self.subTest(check=c["id"]):
                 self.assertTrue(c["preconditions"])
@@ -190,6 +203,15 @@ class TestRulesAreConfigurationNotCode(unittest.TestCase):
         broken(lambda c, p: p.update(distinct_tokens=[]))                            # A may equal B
         broken(lambda c, p: c["subject"].update(headers={"Authorization": "Bearer x"}))
         broken(lambda c, p: p["paths"]["note_b_path"].update(default="/a b"))
+        broken(lambda c, p: c["preconditions"].pop(1))                                # subject token never shown valid
+        broken(lambda c, p: c["preconditions"][0].update(path="note_a_path"))        # no owner control on the subject path
+        broken(lambda c, p: p["checks"][1]["denied"].update(status=[404, 410]))      # 404 as denial without owner control
+        broken(lambda c, p: p["checks"][1].pop("owner_control_exception"))
+        broken(lambda c, p: c.update(spec_evidence=[]))                              # "confirmed" without a source
+        broken(lambda c, p: c.update(spec_status="looks-fine"))
+        unmarked = json.loads(json.dumps(base))
+        del unmarked["checks"][0]["spec_status"]                                      # unmarked means unconfirmed
+        self.assertEqual(validate_profile(unmarked)["checks"][0]["spec_status"], "placeholder")
         with self.assertRaises(RuleError):                                             # one host, two profiles
             L2RuleSet([validate_profile(base), {**validate_profile(base), "id": "other", "checks": []}])
 
@@ -658,6 +680,7 @@ class TestL2HumanApprovedChecks(RealServiceBase):
 
     def test_insufficient_conditions_are_unverified_and_stop_before_the_cross_account_request(self):
         self.set_secrets()
+        baseline = self.svc._risk()["score"]
         for mode, sent in (("missing", [NOTE_B, NOTE_A]),           # mock data absent: 404 for the owner too
                            ("token_expired", [NOTE_B, NOTE_A]),     # 401 everywhere
                            ("a_token_invalid", [NOTE_B, NOTE_A])):  # A's 403 is authentication, not authorization
@@ -669,6 +692,8 @@ class TestL2HumanApprovedChecks(RealServiceBase):
                 self.assertEqual([p for p, _ in self.fake.seen], sent)
                 content = json.loads(f["evidence"][-1]["content"])
                 self.assertFalse(content["subject"]["performed"])
+                self.assertEqual(self.svc._risk()["score"], baseline)   # inconclusive: score unchanged
+        self.assertGreater(self.run_check("f_ex_idor", "vulnerable") and self.svc._risk()["score"], baseline)
 
     def test_denial_status_with_wrong_content_is_unverified(self):
         self.set_secrets()
@@ -713,12 +738,265 @@ class TestL2HumanApprovedChecks(RealServiceBase):
         self.fake.mode = "token_expired"
         snap = self.svc.verify_fix("appr")
         items = {i["id"]: i for i in snap["defense_comparison"]["items"]}
-        self.assertNotEqual(items["f_ex_idor"]["after_verdict"], "not_reproduced")
+        self.assertEqual(items["f_ex_idor"]["after_verdict"], "unverified")
+        self.assertEqual(snap["state"], "failed")
+        # ...and never erases the earlier result in either direction: the last conclusive
+        # observation before this was "not reproduced", which an inconclusive run does not keep
         self.assertEqual(self.finding("f_ex_idor")["evidence_status"], "incomplete")
+
+    def test_inconclusive_rerun_keeps_an_earlier_proof_and_its_risk(self):
+        self.set_secrets()
+        l1_only = self.svc._risk()["score"]
+        self.assertEqual(self.run_check("f_ex_idor")["evidence_status"], "proven")
+        proven_score = self.svc._risk()["score"]
+        self.assertGreater(proven_score, l1_only + 10)
+        for rerun in (lambda: self.svc.verify_fix("appr"), lambda: self.svc.verify_finding("f_ex_idor", actor="appr")):
+            self.fake.mode = "token_expired"
+            rerun()
+            f = self.finding("f_ex_idor")
+            self.assertEqual((f["evidence_status"], f["last_run_verdict"]), ("proven", "unverified"))
+            self.assertIn("取り消されていません", f["verdict_note"])
+            # the proven weakness still counts (L1 items may move a little when re-probed)
+            self.assertGreater(self.svc._risk()["score"], l1_only + 10)
+        self.fake.mode = "patched"
+        f = self.run_check("f_ex_idor")
+        self.assertEqual((f["evidence_status"], f["last_run_verdict"]), ("not_reproduced", "not_reproduced"))
+        self.assertEqual(self.svc.snapshot()["state"], "completed")      # not reset to "not started"
+        self.assertLess(self.svc._risk()["score"], proven_score)
+
+
+class TestUnconfirmedRulesCannotRun(RealServiceBase):
+    """A rule that was not matched against the target's API definition is listed
+    as an unmeasured candidate and refused at every layer."""
+
+    def test_placeholder_check_is_refused_by_service_secret_store_and_gateway(self):
+        self.onboard()
+        self.run_l1()
+        self.set_secrets(billing=True)
+        self.fake.seen.clear()
+        f = self.finding("f_ex_unconfirmed")
+        self.assertEqual((f["evidence_status"], f["l2_ready"], f["l2_spec_status"]),
+                         ("candidate", False, "placeholder"))
+        with self.assertRaises(ValueError) as cm:
+            self.svc.verify_finding("f_ex_unconfirmed", actor="appr")
+        self.assertIn("placeholder", str(cm.exception))
+        with self.assertRaises(ValueError):                     # its credential is not even stored
+            self.svc.configure_asset_secrets(host=HOST, tokens={"export_token": "tok-EXPORT-0123456789"},
+                                             actor="appr")
+        status = self.svc.secrets_status()
+        self.assertFalse(status["checks"]["ex_unconfirmed_export"]["ready"])
+        self.assertFalse(next(t for t in status["tokens"] if t["key"] == "export_token")["usable"])
+        self.assertEqual(self.svc._ephemeral_worker_env("reproduction_probe", {"check": "ex_unconfirmed_export"}), {})
+        self.assertNotIn("ex_unconfirmed_export", RULES.runnable_check_ids())
+        # even with a human approval in hand, the Gateway tool schema rejects the check
+        apr = self.svc.approval_store.approve("appr", "eng_demo", "lab", "safe_reproduction")
+        res, ev = self.svc._exec("reproduction_probe", "safe_reproduction",
+                                 {"url": self.svc.a.target_url, "check": "ex_unconfirmed_export"}, approval_id=apr)
+        self.assertEqual((res, ev), (None, None))
+        self.assertEqual(self.fake.seen, [])
+        self.assertEqual(self.finding("f_ex_unconfirmed")["evidence_status"], "candidate")
+
+    def test_site_profile_in_the_data_dir_supersedes_the_template_and_only_its_confirmed_rule_runs(self):
+        host = "api.stg.example.org"
+        # An installation's own profile (git-ignored data dir): same id as the bundled
+        # template, bound to a host, with ONE rule confirmed and its mock paths not yet set.
+        site = json.loads((BUILTIN_PROFILE_DIR / "deepnote.json").read_text(encoding="utf-8"))
+        site["applies_to"]["hosts"] = [host]
+        site["paths"]["resource_b_path"]["default"] = "/items/REPLACE_WITH_ID_OWNED_BY_B"
+        site["paths"]["resource_a_path"]["default"] = "/items/REPLACE_WITH_ID_OWNED_BY_A"
+        site["checks"][0].update(spec_status="confirmed", spec_evidence=["backend@abc123 app/routes/items.py:10-20"])
+        (self.dir / "l2_profiles").mkdir()
+        (self.dir / "l2_profiles" / "deepnote.json").write_text(json.dumps(site), encoding="utf-8")
+        self.svc.workers.kill_all()
+        self.svc = AssessmentService(self.dir, LAB_PORT, verify_seconds=0.1)       # default profile dirs
+        self.assertEqual(self.svc.l2.runnable_check_ids(), ("deepnote_idor_notes",))
+        # the hostname is only a label here: the injected resolver pins it to loopback
+        self.svc._custom_resolver = lambda h: ["127.0.0.1"] if h == host else []
+        self.url = f"http://{host}:{self.fake.server_port}"
+        self.onboard()
+        snap = self.run_l1()
+        self.assertEqual(snap["state"], "completed")
+        self.assertEqual(snap["secrets_status"]["profile"]["spec_status"], "partial")
+        l2 = {f["reproduce_check"]: f for f in snap["findings"] if f.get("requires_l2_approval")}
+        self.assertEqual(len(l2), 5)
+        placeholders = [f for f in l2.values() if f["l2_spec_status"] == "placeholder"]
+        self.assertEqual(len(placeholders), 4)
+        with self.assertRaises(ValueError):          # tokens used only by placeholder rules are not stored
+            self.svc.configure_asset_secrets(host=host, actor="appr", tokens={
+                "free_plan_token": TOKEN_FREE, "premium_plan_token": TOKEN_PREMIUM})
+        self.svc.configure_asset_secrets(host=host, actor="appr",
+                                         tokens={"user_a_token": TOKEN_A, "user_b_token": TOKEN_B})
+        self.fake.seen.clear()
+        for f in placeholders:
+            with self.assertRaises(ValueError):
+                self.svc.verify_finding(f["id"], actor="appr")
+        self.assertEqual(self.fake.seen, [])
+        # The confirmed rule runs, but its mock paths were not configured: the owner
+        # control fails, so no cross-account request is sent and no defense is claimed.
+        self.svc.verify_finding("f_dn_idor", actor="appr")
+        f = self.finding("f_dn_idor")
+        self.assertEqual(f["evidence_status"], "incomplete")
+        content = json.loads(f["evidence"][-1]["content"])
+        self.assertFalse(content["subject"]["performed"])
+        self.assertEqual([a for _, a in self.fake.seen], [f"Bearer {TOKEN_B}", f"Bearer {TOKEN_A}"])
+        self.assertTrue(all(p.startswith("/items/REPLACE_WITH_") for p, _ in self.fake.seen))
+        self.svc.verify_finding("all", actor="appr")
+        self.assert_no_token_anywhere()
+
+    def test_bundled_template_alone_binds_no_host(self):
+        self.svc.workers.kill_all()
+        self.svc = AssessmentService(self.dir, LAB_PORT, verify_seconds=0.1)       # no site profile present
+        self.assertEqual(self.svc.l2.runnable_check_ids(), ())
+        self.assertEqual([p["hosts"] for p in self.svc.l2.profiles.values()], [[]])
+
+
+class TestReviewFindingsStayFixed(RealServiceBase):
+    """Regressions for the bypasses found in the final review of this change."""
+
+    def test_legacy_registration_cannot_stand_in_for_an_ownership_proof(self):
+        self.svc.register_asset(name="victim.example.org", kind="API", environment="stg",
+                                authorization_ref="SOW-1", ownership_verified=True)
+        with self.assertRaises(ValueError):
+            self.svc.confirm_asset_scope(url_or_host="https://victim.example.org", approver="appr",
+                                         activate_workspace=True)
+        self.assertNotIn("victim.example.org", self.svc._verified_external_hosts)
+        self.assertFalse(self.svc._is_external_service_asset("victim.example.org"))
+        # a proof for one host is not a proof for another, and a hand-set flag is not a proof
+        ch = self.svc.issue_ownership_challenge(url=self.url, approver="appr")["challenge"]
+        rec = next(x for x in self.svc._extra_assets if x["name"] == HOST)
+        rec["ownership_verified"] = True
+        with self.assertRaises(ValueError):
+            self.svc.confirm_asset_scope(url_or_host=self.url, approver="appr")
+        rec["ownership_proof"] = {"verified": True, "method": "dns_txt", "host": "other.example.org",
+                                  "verified_at": time.time(), "token_sha256": "0" * 64}
+        with self.assertRaises(ValueError):
+            self.svc.confirm_asset_scope(url_or_host=self.url, approver="appr")
+        self.assertTrue(ch["token"])
+        self.assertEqual(self.fake.seen, [])
+
+    def test_ip_literals_are_never_a_real_service(self):
+        for raw in ("http://127.0.0.1:8080", "10.0.0.5", "https://169.254.169.254/", "2130706433",
+                    "http://[::1]:8080/"):
+            with self.subTest(raw=raw):
+                with self.assertRaises(ValueError):
+                    parse_service_target(raw)
+                with self.assertRaises(ValueError):
+                    self.svc.issue_ownership_challenge(url=raw, approver="appr")
+        # even a forged table entry for an address is not honoured
+        self.svc._verified_external_hosts["127.0.0.1"] = {
+            "ownership_verified": True, "scope_confirmed": True, "allow_loopback_test": True,
+            "not_before": 0, "not_after": time.time() + 999, "scheme": "http", "port": self.fake.server_port}
+        self.assertIsNone(self.svc._external_entry("127.0.0.1"))
+        self.assertEqual(self.svc._resolve_host("127.0.0.1"), [])
+
+    def test_proof_must_be_fresh_and_bound_to_the_endpoint(self):
+        ch = self.svc.issue_ownership_challenge(url=self.url, approver="appr")["challenge"]
+        self.svc.verify_asset_ownership(url_or_host=self.url, method="well_known", actor="appr",
+                                        http_fetch=lambda u: ch["well_known_content"])
+        with self.assertRaises(ValueError):          # proof file on https:443 does not cover another port
+            self.svc.confirm_asset_scope(url_or_host=self.url, approver="appr")
+        self.svc.verify_asset_ownership(url_or_host=self.url, method="dns_txt", actor="appr",
+                                        dns_lookup=self._token_lookup(ch))
+        rec = next(x for x in self.svc._extra_assets if x["name"] == HOST)
+        rec["ownership_proof"]["verified_at"] = time.time() - 25 * 3600
+        with self.assertRaises(ValueError):          # stale proof cannot open or renew a scope window
+            self.svc.confirm_asset_scope(url_or_host=self.url, approver="appr")
+        self.onboard()
+        self.assertTrue(self.svc._is_external_service_asset(HOST))
+        # pointing the same host at another port drops the proof, the scope and the stored tokens
+        self.set_secrets()
+        self.svc.select_asset("lab")
+        self.svc.issue_ownership_challenge(url=f"http://{HOST}:{self.fake.server_port + 1}", approver="appr")
+        self.assertFalse(self.svc._is_external_service_asset(HOST))
+        self.assertFalse(self.svc.secrets.has_any_token(HOST))
+        self.assertEqual(self.fake.seen, [])
+
+    def test_state_file_cannot_grant_ownership_scope_or_loopback(self):
+        self.onboard()
+        self.svc.workers.kill_all()
+        state = json.loads((self.dir / "state.json").read_text())
+        self.assertEqual(oct((self.dir / "state.json").stat().st_mode & 0o777), "0o600")
+        # (1) an honest restart keeps the scope but not the loopback test switch
+        again = AssessmentService(self.dir, LAB_PORT, l2_profile_dirs=PROFILE_DIRS)
+        self.assertTrue(again._is_external_service_asset(HOST))
+        self.assertFalse(again._verified_external_hosts[HOST]["allow_loopback_test"])
+        again._custom_resolver = lambda h: ["127.0.0.1"]
+        with self.assertRaises(NetworkError):
+            again._resolve_host(HOST)
+        again.workers.kill_all()
+        # (2) an edited table (longer window, another host, loopback) is not restored at all
+        forged = json.loads(json.dumps(state))
+        entry = dict(forged["verified_external_hosts"][HOST], allow_loopback_test=True,
+                     not_after=time.time() + 10 * 365 * 86400)
+        forged["verified_external_hosts"] = {HOST: entry, "victim.example.org": dict(entry, host="victim.example.org")}
+        for mac in (forged.get("authority_mac"), "", None):
+            with self.subTest(mac=bool(mac)):
+                forged["authority_mac"] = mac
+                (self.dir / "state.json").write_text(json.dumps(forged))
+                svc = AssessmentService(self.dir, LAB_PORT, l2_profile_dirs=PROFILE_DIRS)
+                self.assertEqual(svc._verified_external_hosts, {})
+                self.assertFalse(svc._is_external_service_asset(HOST))
+                self.assertEqual(svc._resolve_host(HOST), [])            # not downgraded to the lab either
+                self.assertFalse(svc.snapshot()["asset"].get("scope_confirmed"))
+                self.assertIn("state.authority_rejected", [e["event"] for e in svc.audit.entries()])
+                with self.assertRaises(ValueError):
+                    svc.start()
+                svc.workers.kill_all()
+        self.assertEqual(self.fake.seen, [])
+
+    def test_expired_scope_is_not_extended_by_starting_a_run(self):
+        self.onboard()
+        self.svc._verified_external_hosts[HOST]["not_after"] = time.time() - 1
+        for call in (self.svc.start, lambda: self.svc.verify_finding("all", actor="appr"),
+                     lambda: self.svc.verify_fix("appr")):
+            with self.assertRaises(ValueError):
+                call()
+        self.assertEqual(self.fake.seen, [])
+
+    def test_edited_findings_cannot_reach_lab_checks_or_shed_the_approver_requirement(self):
+        self.onboard()
+        self.run_l1()
+        self.set_secrets()
+        self.fake.seen.clear()
+        self.svc.a.findings["f_idor"] = {"id": "f_idor", "title": "x", "severity": "high", "verdict": "detected",
+                                         "evidence": [], "category": "c", "cve": [], "risk_level": "L2"}
+        with self.assertRaises(ValueError):          # the lab IDOR probe is never sent to a real service
+            self.svc.verify_finding("f_idor", actor="appr")
+        del self.svc.a.findings["f_ex_idor"]["reproduce_check"]
+        self.assertTrue(self.svc.finding_requires_human_l2_approval("f_ex_idor"))
+        with self.assertRaises(ValueError):
+            self.svc.verify_finding("f_ex_idor", actor="appr")
+        self.assertEqual(self.fake.seen, [])
+
+    def test_tokens_are_not_sent_in_cleartext_to_a_non_test_target(self):
+        self.onboard()
+        self.run_l1()
+        self.set_secrets()
+        self.fake.seen.clear()
+        self.svc._verified_external_hosts[HOST]["allow_loopback_test"] = False     # plain http, not a test target
+        self.assertEqual(self.svc._ephemeral_worker_env("reproduction_probe", {"check": "ex_idor_notes"}), {})
+        with self.assertRaises(ValueError) as cm:
+            self.svc.verify_finding("f_ex_idor", actor="appr")
+        self.assertIn("平文", str(cm.exception))
+        self.assertEqual(self.fake.seen, [])
+
+    def test_token_echoed_across_the_excerpt_boundary_leaves_no_fragment(self):
+        self.onboard()
+        self.run_l1()
+        self.set_secrets()
+        self.fake.mode = "echo_boundary"
+        self.svc.verify_finding("f_ex_idor", actor="appr")
+        f = self.finding("f_ex_idor")
+        self.assertEqual(f["evidence_status"], "proven")
+        content = json.loads(f["evidence"][-1]["content"])
+        self.assertEqual(len(content["response_text"]), 4096)
+        self.assertNotIn("tok-A", json.dumps(content))
+        self.assertNotIn("tok-A", (self.dir / "state.json").read_text())
+        self.assertNotIn("tok-A", self.svc.report_markdown())
 
 
 class TestNoServiceIsRegisteredImplicitly(RealServiceBase):
-    PRESET_HOSTS = tuple(L2RuleSet.load([BUILTIN_PROFILE_DIR]).profiles["deepnote"]["hosts"])
+    PRESET_HOSTS = ("keep.example.org", "drop.example.org", "never-registered.example.org")
 
     def test_fresh_install_lists_no_real_service(self):
         names = {a["name"] for a in self.svc.assets()}
@@ -850,6 +1128,9 @@ class TestRealServiceApi(RealServiceBase):
         code, body, _ = self.call("/assets/confirm-scope", {"url": self.url, "confirmed_prohibited": False}, appr)
         self.assertEqual(code, 409)
         code, body, _ = self.call("/assets/confirm-scope", {"url": self.url, "activate_workspace": True}, appr)
+        self.assertEqual(code, 409)                                   # the confirmation must be explicit
+        code, body, _ = self.call("/assets/confirm-scope", {"url": self.url, "activate_workspace": True,
+                                                            "confirmed_prohibited": True}, appr)
         self.assertEqual(code, 200)
         self.assertTrue(body["snapshot"]["is_external_service"])
         self.assertFalse(self.svc._verified_external_hosts[HOST]["allow_loopback_test"])

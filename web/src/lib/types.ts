@@ -31,6 +31,9 @@ export interface Finding {
   /** True for profile-defined L2 checks: needs an approver, per item. */
   requires_l2_approval?: boolean;
   l2_preconditions?: string[];
+  l2_spec_status?: "confirmed" | "placeholder";
+  /** Verdict of the most recent L2 run; differs from `verdict` when an earlier proof is kept. */
+  last_run_verdict?: Verdict;
   risk_score?: number;
   risk_rationale?: string;
   impact?: string;
@@ -158,11 +161,16 @@ export interface SecretsStatus {
   l2_ready?: boolean;
   encryption: string;
   /** null when no L2 rule profile applies to this asset (L1 only). */
-  profile: { id: string; label: string; spec_status: "confirmed" | "placeholder"; spec_note: string } | null;
-  tokens: { key: string; label: string; set: boolean; fingerprint: string | null }[];
+  profile: { id: string; label: string; spec_status: "confirmed" | "partial" | "placeholder"; spec_note: string } | null;
+  /** usable=false: only needed by rules that are not confirmed against the API, so it cannot be stored. */
+  tokens: { key: string; label: string; set: boolean; usable: boolean; fingerprint: string | null }[];
   paths: { key: string; label: string; default: string; value?: string | null }[];
   /** Per-check readiness: which test-account tokens are still missing. */
-  checks: Record<string, { label: string; category: string; ready: boolean; missing: string[]; preconditions: string[] }>;
+  checks: Record<string, {
+    label: string; category: string; ready: boolean; missing: string[]; preconditions: string[];
+    /** "placeholder": the rule is not matched against the target API and cannot be executed. */
+    spec_status: "confirmed" | "placeholder"; spec_note: string;
+  }>;
 }
 
 export interface Snapshot {

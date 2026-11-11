@@ -26,7 +26,9 @@ export function FindingCard({
   const latestEv = f.evidence.at(-1);
   // L2 on a real service: an explicit, per-item approval by an approver.
   const needsApproval = Boolean(f.requires_l2_approval);
-  const blocked = needsApproval && f.l2_ready === false && f.evidence.length === 0;
+  // A rule that is not confirmed against the target API can never run (the server refuses it too).
+  const unconfirmed = needsApproval && f.l2_spec_status === "placeholder";
+  const blocked = unconfirmed || (needsApproval && f.l2_ready === false && f.evidence.length === 0);
 
   const runLiveVerify = async () => {
     setBusy(true);
@@ -47,7 +49,7 @@ export function FindingCard({
   };
 
   return (
-    <Card className="flex flex-col justify-between">
+    <Card className="flex min-w-0 flex-col justify-between">
       <div>
         <div className="flex flex-wrap items-center gap-2">
           <SeverityBadge s={f.severity} />
@@ -100,11 +102,11 @@ export function FindingCard({
                   <li>2. Gateway検査：単一使用トークン発行・EgressGuard ({labEndpoint}) 固定・egress_sentinel 隔離起動</li>
                   <li>
                     3. Worker結果：
-                    {busy ? " 応答待機中…" : ` 判定=${f.verdict} / 監査ハッシュ #${latestEv?.audit_hash?.slice(0, 12) ?? "—"}`}
+                    {busy ? " 応答待機中…" : ` 今回の判定=${f.last_run_verdict ?? f.verdict} / 監査ハッシュ #${latestEv?.audit_hash?.slice(0, 12) ?? "—"}`}
                   </li>
                 </ol>
                 {latestEv?.content && (
-                  <pre className="max-h-36 overflow-auto rounded-lg bg-zinc-950 p-2 font-mono text-[11px] text-emerald-300">
+                  <pre className="max-h-36 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-zinc-950 p-2 font-mono text-[11px] text-emerald-300">
                     {latestEv.content}
                   </pre>
                 )}
@@ -120,12 +122,16 @@ export function FindingCard({
           <button
             type="button"
             disabled={busy || blocked}
-            title={blocked ? "先に、診断画面上部の「L2検証用アカウント」でこの項目に必要なアカウントを設定してください" : undefined}
+            title={unconfirmed
+              ? "この項目の判定ルールは対象APIの仕様と未照合のため、実行できません"
+              : blocked ? "先に、診断画面上部の「L2検証用アカウント」でこの項目に必要なアカウントを設定してください" : undefined}
             onClick={runLiveVerify}
             className="rounded-lg bg-zinc-900 px-2.5 py-1 text-xs font-semibold text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-white dark:text-zinc-900"
           >
             {busy
               ? "Worker実行中…"
+              : unconfirmed
+                ? "実行不可（判定ルールが仕様未照合）"
               : blocked
                 ? "検証用アカウント未設定"
                 : needsApproval

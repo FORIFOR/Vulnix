@@ -45,6 +45,17 @@ def parse_service_target(raw_input: str, *, default_lab_port: int = 18081) -> di
     if not host or len(host) > 180 or " " in host or not re.match(r"^[a-z0-9.-]+$", host):
         raise ValueError("有効な対象ドメインまたはホスト名を入力してください")
 
+    # A real service is identified by a DNS name. IP literals (and all-numeric
+    # names that resolvers read as addresses) cannot carry a DNS/TLS ownership
+    # proof and would bypass the resolver-side public-address check.
+    try:
+        ipaddress.ip_address(host)
+        is_ip = True
+    except ValueError:
+        is_ip = False
+    if is_ip or not re.search(r"[a-z]", host.rsplit(".", 1)[-1]):
+        raise ValueError("IPアドレスでは登録できません。対象のドメイン名（ホスト名）を入力してください")
+
     is_lab = host in ("lab.test", "api.lab.test") or host.endswith(".lab.test")
     scheme = "http" if is_lab else parts.scheme
     port = parts.port or (default_lab_port if is_lab else (443 if scheme == "https" else 80))

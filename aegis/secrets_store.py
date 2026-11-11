@@ -89,6 +89,7 @@ class EncryptedSecretStore:
 
     def _load_or_create_key(self) -> bytes:
         if self._key_path.exists():
+            os.chmod(self._key_path, 0o600)
             raw = self._key_path.read_bytes().strip()
             if len(raw) >= 32:
                 return base64.b64decode(raw)
@@ -128,6 +129,15 @@ class EncryptedSecretStore:
                    and k not in profile["tokens"] and k not in profile["paths"]]
         if unknown:
             raise ValueError(f"この対象の判定ルールで定義されていない項目です: {', '.join(sorted(unknown))}")
+        usable_tokens = {t for c in profile["checks"] if c["spec_status"] == "confirmed"
+                         for t in tokens_needed(c)}
+        unusable = [k for k in profile["tokens"]
+                    if isinstance(payload.get(k), str) and payload[k].strip() and k not in usable_tokens]
+        if unusable:
+            # do not hold a credential that no executable rule can use
+            raise ValueError(
+                "仕様未照合（placeholder）の判定ルールでしか使われないトークンは保存できません: "
+                + "、".join(profile["tokens"][k]["label"] for k in unusable))
         rec = dict(self._cache.get(asset_id) or {})
         for k in profile["tokens"]:
             if isinstance(payload.get(k), str) and payload[k].strip():
@@ -171,8 +181,9 @@ class EncryptedSecretStore:
 
     def worker_env_for_check(self, asset_id: str, check: dict) -> dict[str, str]:
         """Minimal environment for ONE approved worker run of `check`: only the
-        tokens and path overrides that rule uses. Never log the return value."""
-        if self.missing_for_check(asset_id, check):
+        tokens and path overrides that rule uses. Never log the return value.
+        Nothing is released for a rule that is not confirmed against the API."""
+        if check.get("spec_status") != "confirmed" or self.missing_for_check(asset_id, check):
             return {}
         rec = self._cache[asset_id]
         env = {"VULNIX_L2_TOKENS": json.dumps({k: rec[k] for k in tokens_needed(check)})}
@@ -201,6 +212,8 @@ class EncryptedSecretStore:
                              "spec_status": profile["spec_status"], "spec_note": profile["spec_note"]}
         status["tokens"] = [
             {"key": k, "label": meta["label"], "set": bool(rec.get(k)),
+             "usable": any(c["spec_status"] == "confirmed" and k in tokens_needed(c)
+                           for c in profile["checks"]),
              "fingerprint": hashlib.sha256(rec[k].encode()).hexdigest()[:8] if rec.get(k) else None}
             for k, meta in profile["tokens"].items()]
         status["paths"] = [
@@ -208,9 +221,11 @@ class EncryptedSecretStore:
             for k, meta in profile["paths"].items()]
         for c in profile["checks"]:
             missing = self.missing_for_check(asset_id, c)
+            runnable = c["spec_status"] == "confirmed"
             status["checks"][c["id"]] = {
                 "label": c["label"], "category": c["category"],
-                "ready": not missing, "missing": missing,
+                "spec_status": c["spec_status"], "spec_note": c["spec_note"],
+                "ready": runnable and not missing, "missing": missing if runnable else [],
                 "preconditions": [p["label"] for p in c["preconditions"]],
             }
         status["l2_ready"] = any(c["ready"] for c in status["checks"].values())

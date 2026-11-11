@@ -109,7 +109,10 @@ export function RealServicePanel({ snap, onUpdate }: { snap: Snapshot; onUpdate:
             <h3 className="font-semibold">項目ごとの準備状況（判定ルール：{profile.label}）</h3>
             {profile.spec_status !== "confirmed" && (
               <p role="note" className="rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
-                この判定ルールは対象APIの仕様と未照合の仮設定です。{profile.spec_note}
+                {profile.spec_status === "placeholder"
+                  ? "この判定ルールはすべて対象APIの仕様と未照合のため、L2検証は実行できません。"
+                  : "仕様と未照合の項目は実行できません（承認しても送信されません）。"}
+                {profile.spec_note}
               </p>
             )}
             <ul className="space-y-1.5">
@@ -118,16 +121,22 @@ export function RealServicePanel({ snap, onUpdate }: { snap: Snapshot; onUpdate:
                   <div className="flex items-center justify-between gap-2">
                     <span>{c.label}</span>
                     <span className={c.ready ? "font-semibold text-emerald-700 dark:text-emerald-300" : "text-amber-800 dark:text-amber-300"}>
-                      {c.ready ? "実行可能（承認待ち）" : `未設定: ${c.missing.map(tokenLabel).join("・")}`}
+                      {c.spec_status !== "confirmed"
+                        ? "実行不可（仕様未照合）"
+                        : c.ready ? "実行可能（承認待ち）" : `未設定: ${c.missing.map(tokenLabel).join("・")}`}
                     </span>
                   </div>
-                  <p className="text-[11px] text-sky-900 dark:text-sky-200">同時に確認する前提：{c.preconditions.join("／")}</p>
+                  {c.spec_status === "confirmed" ? (
+                    <p className="text-[11px] text-sky-900 dark:text-sky-200">同時に確認する前提：{c.preconditions.join("／")}</p>
+                  ) : (
+                    c.spec_note && <p className="break-words text-[11px] text-amber-900 dark:text-amber-200">{c.spec_note}</p>
+                  )}
                 </li>
               ))}
             </ul>
             <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 pt-1 text-[11px] text-sky-900 dark:text-sky-200">
               <dt>保存方式</dt><dd>{status?.encryption ?? "—"}</dd>
-              {tokenFields.map((t) => (
+              {tokenFields.filter((t) => t.usable).map((t) => (
                 <div key={t.key} className="contents">
                   <dt>{t.label} 指紋</dt><dd className="font-mono">{t.fingerprint ?? "未設定"}</dd>
                 </div>
@@ -145,7 +154,7 @@ export function RealServicePanel({ snap, onUpdate }: { snap: Snapshot; onUpdate:
               本番利用者のものではない、検証専用アカウントのトークンだけを入力してください。役割の異なるアカウントには別々のアカウントを使う必要があります。
               空欄の項目は変更しません。
             </p>
-            {tokenFields.map((t) => (
+            {tokenFields.filter((t) => t.usable).map((t) => (
               <label key={t.key} className="block">
                 <span className="mb-0.5 block font-semibold">{t.label}{t.set ? "（設定済み）" : ""}</span>
                 <input
@@ -175,9 +184,14 @@ export function RealServicePanel({ snap, onUpdate }: { snap: Snapshot; onUpdate:
                 ))}
               </div>
             </details>
+            {tokenFields.some((t) => !t.usable) && (
+              <p className="text-[11px] text-sky-900 dark:text-sky-200">
+                仕様未照合の項目でしか使わないアカウント（{tokenFields.filter((t) => !t.usable).map((t) => t.label).join("・")}）は保存できないため、入力欄を表示していません。
+              </p>
+            )}
             <button
               type="submit"
-              disabled={busy}
+              disabled={busy || !tokenFields.some((t) => t.usable)}
               className="rounded-lg bg-sky-900 px-3 py-1.5 font-semibold text-white hover:bg-sky-800 disabled:opacity-50 dark:bg-sky-200 dark:text-sky-950"
             >
               {busy ? "保存中…" : "暗号化して保存"}
