@@ -481,11 +481,18 @@ class ArtexEngine:
         self.tasks: list[ArtexTask] = []
         assert not hasattr(self, "tokens") and not hasattr(self, "approvals")
 
-    def plan_phase(self, phase: str, context: dict) -> list[ArtexTask]:
-        routed_list = self.router.collect({**context, "phase": phase})
+    def plan_phase(self, phase: str, context: dict, *, router=None, accept=None) -> list[ArtexTask]:
+        """`router`: the router to ask for THIS call (the engine's own by default) -
+        the caller chooses it per call instead of swapping a shared field.
+        `accept`: called after the backends answered; if it returns False the
+        proposals are dropped (the caller's workspace is gone)."""
+        router = router or self.router
+        routed_list = router.collect({**context, "phase": phase})
+        if accept is not None and not accept():
+            return []
         created: list[ArtexTask] = []
         seen_keys: set[tuple[str, str, str, str]] = set()
-        gateway_tools = getattr(self.router.gateway, "tools", None)
+        gateway_tools = getattr(router.gateway, "tools", None)
         for r in routed_list:
             p = r.proposal
             dedup_key = (
@@ -511,7 +518,7 @@ class ArtexEngine:
                         unsupported_reason = f"未対応の検証項目: {chk}"
 
             if unsupported_reason:
-                self.router.audit.record(
+                router.audit.record(
                     "proposal.unsupported",
                     backend=r.backend,
                     tool=p["tool"],

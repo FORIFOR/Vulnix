@@ -951,5 +951,73 @@ class TestSeventhReviewDetails(unittest.TestCase):
         self.assertEqual(clean_target_text("nginx/1.25.3 (Ubuntu) é 日本語"), "nginx/1.25.3 (Ubuntu) é 日本語")
 
 
+# ------------------------------------------------------------------ eighth review
+class TestGenerationGuardIsComplete(Ready):
+    def test_a_stale_runner_cannot_raise_an_approval_request_or_touch_the_trail(self):
+        from aegis.assessment import _Stopped
+        old_gen = self.svc._run_generation
+        self.svc.emergency_stop("appr")
+        self.svc.select_asset("lab")
+        real_id = next(a["id"] for a in self.svc.assets() if a["name"] == HOST)
+        self.svc.select_asset(real_id)                               # the real service's fresh workspace
+        thoughts_before = len([e for e in self.svc.audit.entries() if e["event"] == "agent.thought"])
+        outcome = {}
+
+        def stale():
+            self.svc._tls.gen = old_gen
+            for name, call in (
+                ("approval", lambda: self.svc._request_approval("safe_reproduction", "L2", "t", "d")),
+                ("activity", lambda: self.svc._activity("t", "http_probe", "L1")),
+                ("think", lambda: self.svc._think("s", "d")),
+                ("plan", lambda: self.svc._plan("verification", {"target_id": "lab", "target_url": "http://lab.test/"})),
+            ):
+                try:
+                    call()
+                    outcome[name] = "ran"
+                except _Stopped:
+                    outcome[name] = "stopped"
+        t = threading.Thread(target=stale)
+        t.start()
+        t.join(20)
+        self.assertEqual(set(outcome.values()), {"stopped"}, outcome)
+        snap = self.svc.snapshot()
+        self.assertEqual(snap["approvals"], [])
+        self.assertEqual(self.svc.artex.tasks, [])
+        self.assertEqual(len([e for e in self.svc.audit.entries() if e["event"] == "agent.thought"]), thoughts_before)
+
+    def test_the_planner_router_is_chosen_by_what_the_context_is_about(self):
+        external = RecordingBackend()
+        self.svc.router.register(external)
+        real_url = self.svc.a.target_url
+        self.svc.select_asset("lab")
+        self.svc._plan("config", {"target_id": "lab", "target_url": real_url})        # a real URL, lab active
+        self.svc._plan("config", {"target_id": "lab", "target_url": "http://unknown.example.org/"})
+        self.assertEqual(external.contexts, [])
+        self.svc._plan("config", {"target_id": "lab", "target_url": self.svc.a.target_url})
+        self.assertEqual(len(external.contexts), 1)                  # the lab itself may use the external planner
+        self.assertNotIn(HOST, json.dumps(external.contexts))
+        self.assertIs(self.svc.artex.router, self.svc.router)        # no shared field is swapped any more
+
+    def test_chat_history_does_not_follow_to_another_asset(self):
+        self.svc.ask_chat("この対象の問題は？", "appr")
+        self.assertTrue(self.svc.snapshot()["chat_messages"])
+        self.svc.select_asset("lab")
+        self.assertEqual(self.svc.snapshot()["chat_messages"], [])
+        self.assertNotIn(HOST, json.dumps(self.svc.snapshot(), ensure_ascii=False))
+
+
+class TestEighthReviewDetails(unittest.TestCase):
+    def test_pattern_digits_are_ascii_and_no_trailing_dot_segment(self):
+        t = TestOverridePatternLanguage()
+        for bad in ("/api/notes/[a-z]{\u0663}", "/api/notes/[a-z]{1,\u0663}", "/api/notes/[a-z]{1,3}/\\."):
+            with self.subTest(pattern=bad):
+                self.assertFalse(t.check(bad))
+
+    def test_decomposed_text_is_composed_not_mangled(self):
+        import unicodedata
+        self.assertEqual(clean_target_text(unicodedata.normalize("NFD", "がぎぐ café")), "がぎぐ café")
+        self.assertEqual(clean_target_text("a\u200bb\u202ec"), "abc")
+
+
 if __name__ == "__main__":
     unittest.main()

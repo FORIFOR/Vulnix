@@ -1084,6 +1084,7 @@ class AssessmentService:
             # Nothing measured on one asset may remain in the workspace of another:
             # findings and evidence are cleared on EVERY switch, whichever route made it.
             self._reset_workspace_locked()
+            self.a.chat_messages = []      # answers may quote the previous asset's findings
 
     def select_asset(self, asset_id: str, actor: str = "operator") -> dict:
         with self._lock:
@@ -1747,6 +1748,8 @@ class AssessmentService:
             self._decide(approval_id, decision, actor)
 
     def _think(self, step: str, detail: str, *, phase: str = "", tool: str = "", level: str = "L1") -> None:
+        if self._stale_runner():
+            raise _Stopped()
         self.audit.record(
             "agent.thought",
             step=step,
@@ -2309,6 +2312,23 @@ class AssessmentService:
             return self.snapshot()
 
     # ---- runner -------------------------------------------------------------
+    def _plan(self, phase: str, context: dict) -> list:
+        """Ask the planner for one phase. The router is chosen for this call from
+        what the context is ABOUT: anything that names a real-service host is
+        planned by the built-in planner only, whatever asset is active. A runner
+        whose workspace is gone neither asks nor records."""
+        with self._lock:
+            if self._stale_runner():
+                raise _Stopped()
+            host = (urllib.parse.urlsplit(str(context.get("target_url") or "")).hostname or "").lower()
+            real = (self._in_ownership_flow(self.a.asset.get("name")) or self._in_ownership_flow(host)
+                    or (host != "" and host not in self._allowed_hosts))
+            router = self._local_router if real else self.router
+        tasks = self.artex.plan_phase(phase, context, router=router, accept=lambda: not self._stale_runner())
+        if self._stale_runner():
+            raise _Stopped()
+        return tasks
+
     def _stale_runner(self) -> bool:
         """True in a runner thread whose workspace generation is over."""
         gen = getattr(self._tls, "gen", None)
@@ -2354,11 +2374,7 @@ class AssessmentService:
         )
         # by REGISTRATION (once a real service, always planned locally), not by whether
         # its scope happens to be valid at this instant
-        if is_ext or self._in_ownership_flow(self.a.asset.get("name")):
-            self.artex.router = self._local_router
-        else:
-            self.artex.router = self.router
-        tasks_l1 = self.artex.plan_phase("config", {"target_id": "lab", "target_url": url})
+        tasks_l1 = self._plan("config", {"target_id": "lab", "target_url": url})
 
         def _is_the_executed_probe(tk) -> bool:
             # Only the fixed read-only GET below is ever executed in this phase. Any
@@ -2423,7 +2439,7 @@ class AssessmentService:
                 tool="reproduction_probe",
                 level="L2",
             )
-            tasks_l2 = self.artex.plan_phase("verification", {
+            tasks_l2 = self._plan("verification", {
                 "target_id": "lab", "target_url": url, "has_cve_2021_41773": banner_id in self.a.findings,
             })
             for tk in tasks_l2:
@@ -2741,6 +2757,8 @@ class AssessmentService:
         aid = "req_" + secrets.token_hex(4)
         ev = threading.Event()
         with self._lock:
+            if self._stale_runner():
+                raise _Stopped()        # never raise an approval request in someone else's workspace
             self._approval_events[aid] = ev
             self.a.approvals[aid] = {"id": aid, "action": action, "risk_level": level,
                                      "title": title, "description": description,
@@ -2789,6 +2807,8 @@ class AssessmentService:
 
     def _activity(self, title, tool, level):
         with self._lock:
+            if self._stale_runner():
+                raise _Stopped()
             self.a.activity = {"title": title, "tool": tool, "risk_level": level, **EXECUTOR}
             self.bus.publish(self.a.id, "activity.updated", activity=self.a.activity)
 

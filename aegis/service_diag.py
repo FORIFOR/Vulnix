@@ -70,7 +70,9 @@ def clean_target_text(value, limit: int = 512) -> str:
     and the Markdown report: bounded length, no control characters, no HTML tags
     and no Markdown link/code syntax."""
     kept = []
-    for ch in _UNSAFE_TEXT.sub("", str(value)):
+    # compose first, so ordinary accented or voiced letters written with combining
+    # marks survive as single letters; marks that remain stand-alone are dropped
+    for ch in unicodedata.normalize("NFC", _UNSAFE_TEXT.sub("", str(value))):
         cat = unicodedata.category(ch)
         # control, format, surrogate, private-use, unassigned, line/paragraph
         # separators and combining marks (variation selectors, joiners, fillers)
