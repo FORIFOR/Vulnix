@@ -105,7 +105,7 @@ class TestServer(unittest.TestCase):
         for path in ("/assets", "/assets/secrets-status", "/router/status", "/cve/status",
                      "/system/verify-controls", "/cve/real-software-verify", "/operators"):
             self.assertEqual(self._req(self.root + path)[0], 401, path)
-        self.assertEqual(self._req(f"{self.root}/auth/me"), (200, {"session": None}))
+        self.assertEqual(self._req(f"{self.root}/auth/me"), (200, {"session": None, "self_registration": False}))
         self.assertEqual(self._req(f"{self.root}/health"), (200, {"ok": True}))
         self.login("op", "op-pw")
         self.assertEqual(self.get()["state"], "idle")
@@ -386,13 +386,18 @@ class TestServer(unittest.TestCase):
         self.assertTrue(all(it["latest_evidence_id"] is None for it in after["defense_comparison"]["items"]))
 
     def test_operator_registration_and_asset_registration(self):
-        # 1. Register a new account via /api/auth/register
-        code, body = self._req(f"{self.root}/auth/register", {
+        # 1. Self-registration is refused outside development mode ...
+        registration = {
             "name": "sec-lead",
             "display": "セキュリティ責任者",
             "password": "strong-password-123",
             "roles": ["operator", "approver"],
-        })
+        }
+        self.assertEqual(self._req(f"{self.root}/auth/register", registration)[0], 403)
+        self.assertNotIn("sec-lead", [o.name for o in self.ops.operators()])
+        # ... and in development mode it creates an operator, never more
+        with patch.dict("os.environ", {"AEGIS_ENV": "development"}):
+            code, body = self._req(f"{self.root}/auth/register", registration)
         self.assertEqual(code, 200)
         self.assertEqual(body["session"]["operator"], "sec-lead")
         # self-registration never grants more than `operator`, whatever was asked for
@@ -402,10 +407,11 @@ class TestServer(unittest.TestCase):
         self.assertEqual(self.post("/verify-fix")[0], 403)
 
         # Duplicate username is rejected
-        dup_code, _ = self._req(f"{self.root}/auth/register", {
-            "name": "sec-lead",
-            "password": "strong-password-123",
-        })
+        with patch.dict("os.environ", {"AEGIS_ENV": "development"}):
+            dup_code, _ = self._req(f"{self.root}/auth/register", {
+                "name": "sec-lead",
+                "password": "strong-password-123",
+            })
         self.assertEqual(dup_code, 400)
         self.login("appr", "appr-pw")        # the rest of this flow needs an approver
 

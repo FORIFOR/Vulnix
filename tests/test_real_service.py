@@ -897,10 +897,10 @@ class TestReviewFindingsStayFixed(RealServiceBase):
             self.svc.confirm_asset_scope(url_or_host=self.url, approver="appr")
         self.svc.verify_asset_ownership(url_or_host=self.url, method="dns_txt", actor="appr",
                                         dns_lookup=self._token_lookup(ch))
-        rec = next(x for x in self.svc._extra_assets if x["name"] == HOST)
-        rec["ownership_proof"]["verified_at"] = time.time() - 25 * 3600
-        with self.assertRaises(ValueError):          # stale proof cannot open or renew a scope window
-            self.svc.confirm_asset_scope(url_or_host=self.url, approver="appr")
+        for bad_time in (time.time() - 25 * 3600, time.time() + 3600):     # stale, or dated in the future
+            self.svc._ownership_proofs[HOST]["verified_at"] = bad_time
+            with self.assertRaises(ValueError):      # cannot open or renew a scope window
+                self.svc.confirm_asset_scope(url_or_host=self.url, approver="appr")
         self.onboard()
         self.assertTrue(self.svc._is_external_service_asset(HOST))
         # pointing the same host at another port drops the proof, the scope and the stored tokens

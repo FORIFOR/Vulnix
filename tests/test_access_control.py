@@ -83,11 +83,27 @@ class ApiBase(RealServiceBase):
 
 
 class TestRolesAreGrantedByAnAdminOnly(ApiBase):
-    def test_self_registration_cannot_grant_roles(self):
-        code, body = self.call("/auth/register", {"name": "newcomer", "password": "long-enough-password",
-                                                  "roles": ["operator", "approver", "admin"]})
+    def test_accounts_are_created_by_an_admin_and_never_with_extra_roles(self):
+        new = {"name": "newcomer", "password": "long-enough-password", "roles": ["operator", "approver", "admin"]}
+        # anonymous, operator and approver callers cannot create accounts in production mode
+        for who in (None, "op", "appr"):
+            self.assertEqual(self.call("/auth/register", new, who)[0], 403)
+        self.assertNotIn("newcomer", [o.name for o in self.ops.operators()])
+        self.assertEqual(len(self.events("auth.registration_refused")), 3)
+        self.assertFalse(self.call("/auth/me")[1]["self_registration"])
+        # an admin creates it: operator only, no session handed out, on the record
+        code, body = self.call("/auth/register", new, "root")
+        self.assertEqual((code, body), (200, {"created": {"name": "newcomer", "display": "newcomer", "roles": ["operator"]}}))
+        created = self.events("operator.created")[-1]
+        self.assertEqual((created["actor"], created["target"], created["requested_roles_ignored"]),
+                         ("root", "newcomer", ["approver", "admin"]))
+        self.assertFalse(self.ops.is_self_registered("newcomer"))
+        # development mode: self-registration exists, still operator only, and is marked as such
+        with patch.dict("os.environ", {"AEGIS_ENV": "development"}):
+            code, body = self.call("/auth/register", {**new, "name": "devuser"})
         self.assertEqual((code, body["session"]["roles"]), (200, ["operator"]))
         self.assertEqual(self.events("auth.registered")[-1]["requested_roles_ignored"], ["approver", "admin"])
+        self.assertTrue(self.ops.is_self_registered("devuser"))
         with self.assertRaises(TypeError):                     # the store has no way to self-assign either
             self.ops.register("x-user", "long-enough-password", roles=("approver",))
 
@@ -149,6 +165,66 @@ class TestRolesAreGrantedByAnAdminOnly(ApiBase):
             self.assertEqual(len(OperatorStore(p).operators()), 2)               # created once, not per start
 
 
+class TestLegacyApproversAreFlaggedForReview(ApiBase):
+    def test_approver_without_a_grant_on_record_is_flagged_until_an_admin_decides(self):
+        def review():
+            return {o["name"]: o["needs_role_review"] for o in self.call("/operators", who="root")[1]["operators"]}
+        # `appr`/`appr2` come from the seed file: no admin ever granted them the role
+        self.assertEqual(review(), {"op": False, "op2": False, "appr": True, "appr2": True, "root": False})
+        # the admin attests one (same roles re-submitted) and revokes the other
+        self.assertEqual(self.call("/operators/roles", {"name": "appr", "roles": ["operator", "approver"]}, "root")[0], 200)
+        self.assertTrue(self.events("operator.roles_changed")[-1]["attested_unchanged"])
+        self.call("/operators/roles", {"name": "appr2", "roles": ["operator"]}, "root")
+        self.call("/operators/roles", {"name": "op", "roles": ["approver"]}, "root")       # a fresh grant
+        self.assertEqual(review(), {"op": False, "op2": False, "appr": False, "appr2": False, "root": False})
+        # granted, then revoked, then present again without a record would be flagged again
+        self.call("/operators/roles", {"name": "op", "roles": ["operator"]}, "root")
+        self.ops._ops["op"].roles = ("operator", "approver")          # e.g. an edited seed file
+        self.assertTrue(review()["op"])
+
+
+class TestOpenReadsAreDevelopmentOnly(ApiBase):
+    def handler_allows_anonymous_read(self):
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(self.svc, self.ops))
+        srv.daemon_threads = True
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            req = urllib.request.Request(f"http://127.0.0.1:{srv.server_port}/api/assets")
+            try:
+                with urllib.request.urlopen(req) as r:
+                    return r.status == 200
+            except urllib.error.HTTPError as e:
+                return e.code != 401
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
+    def test_environment_opt_out_is_ignored_outside_development_mode(self):
+        with patch.dict("os.environ", {"AEGIS_REQUIRE_READ_AUTH": "0"}, clear=False):
+            with patch.dict("os.environ", {"AEGIS_ENV": "production"}):
+                self.assertFalse(self.handler_allows_anonymous_read())
+            with patch.dict("os.environ", {"AEGIS_ENV": ""}):
+                self.assertFalse(self.handler_allows_anonymous_read())          # unmarked = production
+            self.assertEqual(self.events("config.read_auth_disabled"), [])
+            with patch.dict("os.environ", {"AEGIS_ENV": "development"}):
+                self.assertTrue(self.handler_allows_anonymous_read())
+            self.assertEqual(len(self.events("config.read_auth_disabled")), 1)   # and it is on the record
+
+    def test_server_refuses_to_start_with_open_reads_in_production(self):
+        from aegis import server
+        for argv, env in ((["aegis", "--no-read-auth"], {"AEGIS_ENV": "production"}),
+                          (["aegis", "--no-read-auth"], {"AEGIS_ENV": ""}),
+                          (["aegis"], {"AEGIS_ENV": "", "AEGIS_REQUIRE_READ_AUTH": "0"})):
+            with self.subTest(argv=argv, env=env):
+                with patch("sys.argv", argv), patch.dict("os.environ", env), \
+                        patch("aegis.server.start_lab") as lab, patch("aegis.server.ThreadingHTTPServer") as http_srv:
+                    with self.assertRaises(SystemExit) as cm:
+                        server.main()
+                    self.assertIn("開発モード", str(cm.exception))
+                    lab.assert_not_called()                                     # nothing was started
+                    http_srv.assert_not_called()
+
+
 class TestAuthorityBearingActionsNeedAnApprover(ApiBase):
     def test_scope_confirmation_and_test_accounts_are_approver_only(self):
         code, body = self.call("/assets/challenge", {"url": self.url}, "op")
@@ -165,7 +241,39 @@ class TestAuthorityBearingActionsNeedAnApprover(ApiBase):
         self.assertFalse(self.svc.secrets.has_any_token(HOST))
         self.assertEqual(self.call("/assets/secrets", tokens, "appr")[0], 200)
         self.assertEqual(self.call(f"/assets/secrets-status?host={HOST}")[0], 401)   # reads need a session
+        # an operator can neither delete the verified service nor re-point it (both drop scope and tokens)
+        asset_id = self.svc.a.asset["id"]
+        self.assertEqual(self.call("/assets/delete", {"id": asset_id}, "op")[0], 403)
+        self.assertEqual(self.call("/assets/challenge", {"url": f"http://{HOST}:1"}, "op")[0], 403)
+        self.assertTrue(self.svc._is_external_service_asset(HOST))
+        self.assertTrue(self.svc.secrets.has_any_token(HOST))
+        self.assertEqual(self.call("/assets/delete", {"id": asset_id}, "appr")[0], 200)
+        self.assertFalse(self.svc.secrets.has_any_token(HOST))
         self.assertEqual(self.fake.seen, [])
+
+    def test_no_lookup_is_made_for_a_name_that_was_never_registered(self):
+        with patch("aegis.ownership.default_dns_txt_lookup") as txt, \
+                patch("aegis.ownership.default_well_known_fetcher") as fetch:
+            for method in ("dns_txt", "well_known"):
+                code, _ = self.call("/assets/verify-ownership",
+                                    {"url": "https://someone-else.example.org", "method": method}, "appr")
+                self.assertEqual(code, 409)
+            txt.assert_not_called()
+            fetch.assert_not_called()
+
+    def test_oversized_or_non_object_bodies_are_rejected(self):
+        def raw(payload: bytes, length=None):
+            req = urllib.request.Request(self.api + "/auth/login", payload, {
+                "Content-Type": "application/json", "X-Aegis-Request": "1",
+                "Content-Length": str(len(payload) if length is None else length)})
+            try:
+                with urllib.request.urlopen(req) as r:
+                    return r.status
+            except urllib.error.HTTPError as e:
+                return e.code
+        self.assertEqual(raw(b"[1, 2, 3]"), 400)
+        self.assertEqual(raw(b'"text"'), 400)
+        self.assertEqual(raw(b"{}", length=5_000_000), 413)
 
 
 class TestSeparationOfDutiesForL2(ApiBase):
@@ -214,6 +322,22 @@ class TestSeparationOfDutiesForL2(ApiBase):
         # re-verification does not re-run L2 on its own under separation of duties
         self.assertEqual(self.call(self.base + "/verify-fix", {}, "appr2")[0], 200)
         self.assertEqual({p for p, _ in self.fake.seen}, {"/"})
+
+    def test_a_self_registered_second_identity_cannot_satisfy_the_separation(self):
+        # the approver mints a second account for themselves (only possible in development mode at all)
+        with patch.dict("os.environ", {"AEGIS_ENV": "development"}):
+            code, _ = self.call("/auth/register", {"name": "sock", "password": "sock-password"})
+            self.assertEqual(code, 200)
+        self.cookies["sock"] = None
+        req = urllib.request.Request(self.api + "/auth/login", json.dumps(
+            {"name": "sock", "password": "sock-password"}).encode(),
+            {"Content-Type": "application/json", "X-Aegis-Request": "1"})
+        with urllib.request.urlopen(req) as r:
+            self.cookies["sock"] = r.headers["Set-Cookie"].split(";")[0]
+        code, body = self.call(self.base + "/request-l2", {"finding_id": "f_ex_idor"}, "sock")
+        self.assertEqual(code, 403)
+        self.assertEqual(self.run_l2("appr")[0], 409)
+        self.assertEqual(self.fake.seen, [])
 
     def test_requests_expire_are_not_restored_and_cover_only_runnable_items(self):
         self.call(self.base + "/request-l2", {"finding_id": "f_ex_idor"}, "op")
@@ -335,3 +459,149 @@ class TestProofFileFetchIsPinned(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSecondReviewFindingsStayFixed(RealServiceBase):
+    """Regressions for the second independent review."""
+
+    def restart(self):
+        self.svc.workers.kill_all()
+        self.svc = AssessmentService(self.dir, LAB_PORT, verify_seconds=0.1, l2_profile_dirs=PROFILE_DIRS)
+        self.svc._custom_resolver = lambda h: ["127.0.0.1"] if h == HOST else []
+        return self.svc
+
+    def events(self, name):
+        return [e["fields"] for e in self.svc.audit.entries() if e["event"] == name]
+
+    def test_a_proof_written_into_the_state_file_is_not_a_proof(self):
+        ch = self.svc.issue_ownership_challenge(url=self.url, approver="appr")["challenge"]   # never verified
+        state = json.loads((self.dir / "state.json").read_text())
+        import hashlib
+        forged_proof = {"verified": True, "method": "dns_txt", "host": HOST, "verified_at": time.time(),
+                        "token_sha256": hashlib.sha256(ch["token"].encode()).hexdigest()}
+        for rec in state["extra_assets"]:
+            if rec["name"] == HOST:
+                rec.update(ownership_verified=True, ownership_proof=forged_proof)
+        # (a) only the display record is edited: the signed tables still load, the record is corrected
+        (self.dir / "state.json").write_text(json.dumps(state))
+        svc = self.restart()
+        with self.assertRaises(ValueError):
+            svc.confirm_asset_scope(url_or_host=self.url, approver="appr", activate_workspace=True)
+        self.assertFalse(next(a for a in svc.assets() if a["name"] == HOST)["ownership_verified"])
+        # (b) the proof table itself is edited: the whole authority state is refused
+        state["ownership_proofs"] = {HOST: forged_proof}
+        (self.dir / "state.json").write_text(json.dumps(state))
+        svc = self.restart()
+        self.assertEqual(svc._ownership_proofs, {})
+        self.assertIn("state.authority_rejected", [e["event"] for e in svc.audit.entries()])
+        with self.assertRaises(ValueError):
+            svc.confirm_asset_scope(url_or_host=self.url, approver="appr", activate_workspace=True)
+        self.assertEqual(self.fake.seen, [])
+
+    def test_an_older_signed_state_file_does_not_bring_back_revoked_authority(self):
+        self.onboard()
+        self.set_secrets()
+        before = (self.dir / "state.json").read_bytes()              # validly signed, scope confirmed
+        for revoke in (lambda s: s.delete_asset(s.a.asset["id"]),
+                       lambda s: s.verify_asset_ownership(url_or_host=self.url, dns_lookup=lambda n: [])):
+            with self.subTest():
+                svc = self.restart()
+                if not svc._is_external_service_asset(HOST):         # re-onboard for the second variant
+                    self.onboard()
+                    before = (self.dir / "state.json").read_bytes()
+                    svc = self.svc
+                revoke(svc)
+                self.assertFalse(svc._is_external_service_asset(HOST))
+                (self.dir / "state.json").write_bytes(before)        # put the old copy back
+                svc = self.restart()
+                self.assertFalse(svc._is_external_service_asset(HOST))
+                self.assertEqual(svc._verified_external_hosts, {})
+                self.assertIn("older copy", self.events("state.authority_rejected")[-1]["reason"])
+                self.assertEqual(svc._resolve_host(HOST), [])
+        # removing the epoch record does not help either
+        self.onboard()
+        (self.dir / "authority.epoch").unlink()
+        self.assertFalse(self.restart()._is_external_service_asset(HOST))
+        self.assertEqual(oct((self.dir / "audit.jsonl").stat().st_mode & 0o777), "0o600")
+
+    def test_active_and_inactive_assets_are_treated_alike_when_re_registered(self):
+        self.onboard()                                               # HOST is the ACTIVE asset
+        self.set_secrets()
+        with self.assertRaises(ValueError):                          # lab names never enter the ownership flow
+            self.svc.issue_ownership_challenge(url="http://lab.test:18097", approver="appr")
+        self.svc.issue_ownership_challenge(url=f"http://{HOST}:{self.fake.server_port + 1}", approver="appr")
+        self.assertFalse(self.svc._is_external_service_asset(HOST))
+        self.assertNotIn(HOST, self.svc._ownership_proofs)
+        self.assertFalse(self.svc.secrets.has_any_token(HOST))
+        self.assertEqual([a["name"] for a in self.svc.assets()].count(HOST), 1)      # no hidden duplicate
+        self.assertEqual(len([x for x in (self.svc.a.asset, *self.svc._extra_assets) if x["name"] == HOST]), 1)
+        with self.assertRaises(ValueError):
+            self.svc.start()
+        self.assertEqual(self.fake.seen, [])
+
+    def test_a_real_service_never_becomes_a_lab_alias(self):
+        self.onboard()
+        active_id = self.svc.a.asset["id"]
+        self.svc.select_asset("lab")                                 # HOST becomes an inactive, verified asset
+        for _ in range(4):                                           # delete lab aliases until HOST is promoted
+            if self.svc.a.asset["id"] == active_id:
+                break
+            self.svc.delete_asset(self.svc.a.asset["id"])
+        self.assertEqual(self.svc.a.asset["id"], active_id)
+        self.assertTrue(self.svc.a.asset.get("challenge"))           # registration metadata survives promotion
+        self.svc.verify_asset_ownership(url_or_host=self.url, dns_lookup=lambda n: [])   # proof now fails
+        for svc in (self.svc, self.restart()):
+            with self.assertRaises(ValueError):                      # the legacy checkbox cannot adopt the name
+                svc.register_asset(name=HOST, kind="API", environment="stg",
+                                   authorization_ref="SOW-1", ownership_verified=True, activate_workspace=True)
+            self.assertNotIn(HOST, svc._allowed_hosts)
+            self.assertEqual(svc._resolve_host(HOST), [])            # not 127.0.0.1
+            self.assertFalse(svc.snapshot()["target_url"].startswith(f"http://{HOST}:{LAB_PORT}"))
+
+    def test_dns_txt_must_equal_the_token(self):
+        token = "vulnix-verify=abc"
+        def check(records):
+            return ownership.verify_ownership_challenge("example.org", "dns_txt", expected_token=token,
+                                                        txt_lookup=lambda n: records)["verified"]
+        self.assertTrue(check([token]))
+        self.assertTrue(check([f'_vulnix-verify.example.org\\ttext = "{token}"']))
+        for bad in ([f'text = "note: {token} was requested"'], [f"{token}-extra"], [f'text = "x{token}"'],
+                    ["Server: 10.0.0.1\\n** server can't find _vulnix-verify.example.org: NXDOMAIN"], []):
+            self.assertFalse(check(bad), bad)
+        for addr in ("::127.0.0.1", "fec0::1", "::ffff:10.0.0.1"):
+            self.assertIsNone(ownership.public_address(addr))
+
+
+class TestAddressChangeWithholdsTokens(TestTrafficStaysOnProvenAddresses):
+    def test_after_a_dns_proven_host_moves_l2_waits_for_an_approver(self):
+        self.prepare()                                               # dns_txt proof, https
+        self.svc._resolve_host(HOST)
+        self.assertIsNone(self.svc._l2_block_reason())
+        self.addrs = [PUBLIC_2]                                      # the name now points elsewhere; TXT still there
+        self.assertEqual(self.svc._resolve_host(HOST), [PUBLIC_2])   # read-only L1 may follow the name
+        self.assertEqual(self.svc._verified_external_hosts[HOST]["address_change_pending"], [PUBLIC_2])
+        self.assertIn(PUBLIC_2, self.svc._l2_block_reason())
+        self.assertEqual(self.svc._ephemeral_worker_env("reproduction_probe", {"check": "ex_idor_notes"}), {})
+        # an approver re-confirming the scope (which needs a fresh proof) lifts it
+        self.svc.verify_asset_ownership(url_or_host=HOST, method="dns_txt", dns_lookup=lambda n: list(self.txt))
+        self.svc.confirm_asset_scope(url_or_host=HOST, approver="appr", activate_workspace=True)
+        self.svc._resolve_host(HOST)
+        self.assertIsNone(self.svc._l2_block_reason())
+
+    def test_a_file_proven_host_that_moves_is_bound_by_the_file_and_needs_no_pause(self):
+        self.prepare("well_known")
+        self.svc._resolve_host(HOST)
+        self.addrs = [PUBLIC_2]
+        self.svc._resolve_host(HOST)                                 # the new address itself served the token
+        self.assertFalse(self.svc._verified_external_hosts[HOST].get("address_change_pending"))
+        self.assertIsNone(self.svc._l2_block_reason())
+
+    def test_known_addresses_are_re_checked_against_the_proof_periodically(self):
+        self.prepare()
+        self.svc._resolve_host(HOST)
+        self.txt = []                                                # the record is removed later
+        self.assertEqual(self.svc._resolve_host(HOST), [PUBLIC_1])   # still fresh: no lookup
+        self.svc._verified_external_hosts[HOST]["addresses_verified_at"] = time.time() - 25 * 3600
+        with self.assertRaises(NetworkError):
+            self.svc._resolve_host(HOST)
+        self.assertNotIn(HOST, self.svc._verified_external_hosts)

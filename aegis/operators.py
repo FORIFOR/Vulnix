@@ -113,6 +113,7 @@ class Operator:
     password_hash: str
     roles: tuple[str, ...]
     totp_secret: str | None = None     # set => a second factor is required at login
+    created_by: str | None = None      # admin who created it; "self" = self-registered (development mode)
 
 
 @dataclass
@@ -150,7 +151,7 @@ class OperatorStore:
                 self._ops[o["name"]] = Operator(o["name"], o.get("display", o["name"]),
                                                 o["password_hash"],
                                                 tuple(r for r in o["roles"] if r in ROLES),
-                                                o.get("totp_secret"))
+                                                o.get("totp_secret"), o.get("created_by"))
             self._ensure_admin()
             return None
         # First run: generate the accounts with random passwords and write the seed.
@@ -168,16 +169,15 @@ class OperatorStore:
             out["operators"].append({"name": name, "display": display,
                                      "roles": list(roles),
                                      "password_hash": self._ops[name].password_hash})
-        self.seed_path.write_text(json.dumps(out, ensure_ascii=False, indent=2))
-        self.seed_path.chmod(0o600)
+        self._write_private(self.seed_path, json.dumps(out, ensure_ascii=False, indent=2))
         # Write plaintext to a 0600 side file the operator reads themselves;
         # it is never printed to logs or returned over the API.
         cred = self.seed_path.with_name("operators.initial-credentials.txt")
-        cred.write_text(
+        self._write_private(
+            cred,
             "Aegis 初期ログイン情報（ローカル用・このファイルは手元で確認してください）\n"
             "ログイン後は漏えいに注意し、本番運用では必ず変更してください。\n\n"
             + "".join(f"ユーザー名: {n}\nパスワード: {p}\n\n" for n, p in generated.items()))
-        cred.chmod(0o600)
         self.credentials_path = cred
         return generated
 
@@ -193,11 +193,11 @@ class OperatorStore:
         self._ops[name] = Operator(name, "管理者", hash_password(password), ("operator", "admin"))
         self._persist_operators()
         cred = self.seed_path.with_name("operators.admin-credentials.txt")
-        cred.write_text(
+        self._write_private(
+            cred,
             "Aegis 管理者アカウント（ロール付与用・このファイルは手元で確認してください）\n"
             "ログイン後にパスワードを変更し、このファイルは削除してください。\n\n"
             f"ユーザー名: {name}\nパスワード: {password}\n")
-        cred.chmod(0o600)
         self.admin_credentials_path = cred
 
     def _load_sessions(self) -> None:
@@ -225,11 +225,18 @@ class OperatorStore:
         """Write 0600 via a temp file + rename so a reader never sees a half file."""
         tmp = path.with_name(path.name + f".tmp.{os.getpid()}")
         try:
-            tmp.write_text(data)
-            tmp.chmod(0o600)
+            self._write_private(tmp, data)
             os.replace(tmp, path)
         except OSError:
             tmp.unlink(missing_ok=True)   # best-effort: a write failure must not break the request
+
+    @staticmethod
+    def _write_private(path: Path, data: str) -> None:
+        """Create the file 0600 from the start (no window in which it is readable)."""
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(data)
+        os.chmod(path, 0o600)
 
     def _persist_sessions(self) -> None:
         """Atomically write current sessions. The snapshot and the write are
@@ -249,7 +256,8 @@ class OperatorStore:
             payload = {"operators": [
                 {"name": o.name, "display": o.display, "roles": list(o.roles),
                  "password_hash": o.password_hash,
-                 **({"totp_secret": o.totp_secret} if o.totp_secret else {})}
+                 **({"totp_secret": o.totp_secret} if o.totp_secret else {}),
+                 **({"created_by": o.created_by} if o.created_by else {})}
                 for o in self._ops.values()
             ]}
             self._atomic_write(self.seed_path, json.dumps(payload, ensure_ascii=False, indent=2))
@@ -319,10 +327,28 @@ class OperatorStore:
         if removed:
             self._persist_sessions()
 
-    def register(self, name: str, password: str, *, display: str = "") -> Session:
-        """Self-registration: creates an `operator` account (storing only its scrypt
-        password hash) and returns an authenticated session. It can never grant
-        `approver` or `admin`; those are assigned by an admin via `set_roles`."""
+    def create_account(self, name: str, password: str, *, display: str = "", actor: str) -> Operator:
+        """An admin creates an `operator` account for someone else. No session is
+        issued; the new operator logs in with the password they were given."""
+        with self._lock:
+            acting = self._ops.get(actor)
+            if acting is None or "admin" not in acting.roles:
+                raise AuthError("アカウントを作成できるのは管理者だけです")
+        sess = self.register(name, password, display=display, _created_by=actor, _issue_session=False)
+        with self._lock:
+            return self._ops[sess.operator]
+
+    def is_self_registered(self, name: str) -> bool:
+        with self._lock:
+            op = self._ops.get(name)
+            return bool(op and op.created_by == "self")
+
+    def register(self, name: str, password: str, *, display: str = "",
+                 _created_by: str = "self", _issue_session: bool = True) -> Session:
+        """Creates an `operator` account (storing only its scrypt password hash).
+        Called directly it is SELF-registration, which the server allows only in
+        development mode. It can never grant `approver` or `admin`; those are
+        assigned by an admin via `set_roles`."""
         clean_name = (name or "").strip()
         if not clean_name or len(clean_name) < 2 or len(clean_name) > 32:
             raise AuthError("ユーザー名は2〜32文字で入力してください")
@@ -337,11 +363,14 @@ class OperatorStore:
         with self._lock:
             if clean_name in self._ops:
                 raise AuthError("このユーザー名は既に登録されています")
-            self._ops[clean_name] = Operator(clean_name, clean_display, pw_hash, clean_roles)
+            self._ops[clean_name] = Operator(clean_name, clean_display, pw_hash, clean_roles,
+                                             created_by=_created_by)
             sess = Session(secrets.token_urlsafe(32), clean_name, clean_roles, now, now + SESSION_TTL)
-            self._sessions[sess.token] = sess
+            if _issue_session:
+                self._sessions[sess.token] = sess
         self._persist_operators()
-        self._persist_sessions()
+        if _issue_session:
+            self._persist_sessions()
         return sess
 
     def operators(self) -> list[Operator]:

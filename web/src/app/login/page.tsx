@@ -28,6 +28,17 @@ export default function LoginPage() {
     if (!loading && session) router.replace("/dashboard");
   }, [loading, session, router]);
 
+  // Self-registration exists only in development mode; otherwise an admin creates accounts.
+  const [selfRegistration, setSelfRegistration] = useState(false);
+  useEffect(() => {
+    let live = true;
+    fetch("/api/auth/me", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((d) => { if (live) setSelfRegistration(Boolean(d?.self_registration)); })
+      .catch(() => {});
+    return () => { live = false; };
+  }, []);
+
   const submitLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setBusy(true);
@@ -97,7 +108,7 @@ export default function LoginPage() {
         </div>
 
         {/* Mode Switcher: Login vs Register */}
-        <div role="tablist" className="mb-5 grid grid-cols-2 rounded-xl bg-zinc-100 p-1 text-xs font-semibold dark:bg-zinc-800">
+        <div role="tablist" className={`mb-5 grid ${selfRegistration ? "grid-cols-2" : "grid-cols-1"} rounded-xl bg-zinc-100 p-1 text-xs font-semibold dark:bg-zinc-800`}>
           <button
             type="button"
             role="tab"
@@ -114,7 +125,7 @@ export default function LoginPage() {
           >
             ログイン
           </button>
-          <button
+          {selfRegistration && <button
             type="button"
             role="tab"
             aria-selected={mode === "register"}
@@ -128,8 +139,8 @@ export default function LoginPage() {
                 : "text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
             }`}
           >
-            新規アカウント登録
-          </button>
+            新規アカウント登録（開発モード）
+          </button>}
         </div>
 
         {mode === "login" ? (
@@ -186,7 +197,10 @@ export default function LoginPage() {
               {busy ? "確認中…" : "ログイン"}
             </button>
             <p className="mt-4 text-xs leading-relaxed text-zinc-500">
-              アカウントをお持ちでない場合は上の「<strong>新規アカウント登録</strong>」タブから即座に登録できます。初期生成アカウント情報は
+              {selfRegistration
+                ? "アカウントをお持ちでない場合は上の「新規アカウント登録」タブから登録できます（開発モードのみ）。"
+                : "アカウントは管理者が作成します（設定 → アカウントとロール）。"}
+              初期生成アカウント情報は
               <code className="mx-1 rounded bg-zinc-100 px-1 dark:bg-zinc-800">operators.initial-credentials.txt</code>
               にも保存されています。
             </p>

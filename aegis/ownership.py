@@ -96,7 +96,11 @@ def default_dns_txt_lookup(txt_domain: str) -> list[str]:
 
 # Address ranges that `ipaddress.is_global` accepts but that carry an embedded
 # IPv4 destination (NAT64, 6to4, Teredo): the real target could be private.
-_EMBEDDED_V4_NETS = tuple(ipaddress.ip_network(n) for n in ("64:ff9b::/96", "64:ff9b:1::/48", "2002::/16", "2001::/32"))
+_EMBEDDED_V4_NETS = tuple(ipaddress.ip_network(n) for n in (
+    "64:ff9b::/96", "64:ff9b:1::/48", "2002::/16", "2001::/32",
+    "::/96",        # IPv4-compatible (deprecated), e.g. ::127.0.0.1
+    "fec0::/10",    # site-local (deprecated)
+))
 
 
 def public_address(raw: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
@@ -162,6 +166,13 @@ def default_well_known_fetcher(url: str) -> str:
     return fetch_proof_file_pinned(host, addresses[0])  # pragma: no cover - live network
 
 
+def _txt_values(record: str) -> list[str]:
+    """TXT strings in one lookup result: the quoted strings of resolver output
+    (`name text = "value"`), or the record itself when it is already a bare value."""
+    quoted = re.findall(r'"([^"]*)"', str(record))
+    return quoted if quoted else [str(record).strip()]
+
+
 def verify_ownership_challenge(
     host: str,
     method: str,
@@ -178,7 +189,9 @@ def verify_ownership_challenge(
     if method == "dns_txt":
         lookup = txt_lookup or default_dns_txt_lookup
         records = lookup(chal["dns_txt_name"])
-        matched = any(token in r for r in records)
+        # A TXT string has to EQUAL the token. Substring matching over raw resolver
+        # output would accept the token appearing anywhere (another record, a comment).
+        matched = any(token == value for r in records for value in _txt_values(r))
         return {
             "verified": matched,
             "method": "dns_txt",

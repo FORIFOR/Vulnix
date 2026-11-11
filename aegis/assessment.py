@@ -82,6 +82,9 @@ LAB_ONLY_FINDING_IDS = frozenset({"f_banner", "f_idor", "f_sqli", "fx_idor", "fx
 # Under separation of duties, a request for an L2 run can be approved for this long.
 L2_REQUEST_MAX_AGE_S = 24 * 3600
 
+# Addresses a proof has covered are re-checked against the proof after this long.
+ADDRESS_PROOF_MAX_AGE_S = 24 * 3600
+
 # A scope confirmation (and every renewal of it) needs a proof at most this old.
 OWNERSHIP_PROOF_MAX_AGE_S = 24 * 3600
 
@@ -116,6 +119,13 @@ class AssessmentService:
         self.verify_seconds = verify_seconds
         self._allowed_hosts: set[str] = {"lab.test", "api.lab.test"}
         self._verified_external_hosts: dict[str, dict] = {}
+        # Everything that grants authority over a real service lives in these three
+        # tables and nowhere else. They are persisted signed (HMAC + epoch); the
+        # asset records shown in the UI are display state only.
+        self._ownership_proofs: dict[str, dict] = {}      # host -> recorded challenge proof
+        self._real_service_hosts: set[str] = set()        # hosts registered through the ownership flow
+        self._authority_epoch = 0
+        self._authority_digest = ""
         self._custom_resolver = None
         # test seams for the proof re-check on address change (None = real lookups)
         self._proof_dns_lookup = None
@@ -203,11 +213,40 @@ class AssessmentService:
             return None
         return ext
 
+    def _asset_record(self, host: str) -> dict | None:
+        """The asset record for a host, whether it is the active asset or not. Every
+        ownership function goes through this, so the two cases cannot diverge."""
+        h = (host or "").rstrip(".").lower()
+        if self.a.asset.get("name", "").lower() == h:
+            return self.a.asset
+        return next((x for x in self._extra_assets if x.get("name", "").lower() == h), None)
+
+    def _revoke_real_service_locked(self, host: str, *, note: str, keep_proof: bool = False) -> None:
+        """Drop scope (and, unless told otherwise, the proof) and the stored test
+        accounts of a real service, and make its record say so."""
+        h = (host or "").rstrip(".").lower()
+        self._verified_external_hosts.pop(h, None)
+        if not keep_proof:
+            self._ownership_proofs.pop(h, None)
+        self.secrets.clear_credentials(h)
+        self._l2_requests = {k: v for k, v in self._l2_requests.items() if v.get("host") != h}
+        for rec in (self.a.asset, *self._extra_assets):
+            if rec.get("name", "").lower() == h:
+                rec["scope_confirmed"] = False
+                rec["authorization_ref"] = ""
+                if not keep_proof:
+                    rec["ownership_verified"] = False
+                    rec.pop("ownership_proof", None)
+                rec["status"] = "範囲確認待ち" if keep_proof else "所有確認待ち"
+                rec["note"] = note
+                if rec is not self.a.asset:
+                    rec["assessment_id"] = None
+
     def _in_ownership_flow(self, host: str | None) -> bool:
         """True for a host that was registered as a real service (it has, or had,
         an ownership challenge). Such a host is never treated as a lab alias."""
         h = (host or "").rstrip(".").lower()
-        if h in self._verified_external_hosts:
+        if h in self._verified_external_hosts or h in self._real_service_hosts:
             return True
         return any(x.get("name", "").lower() == h and x.get("challenge")
                    for x in (self.a.asset, *self._extra_assets))
@@ -255,17 +294,23 @@ class AssessmentService:
         resolution, so what is checked here is what is contacted."""
         known = set(ext.get("verified_addresses") or [])
         new = [a for a in addrs if a not in known]
-        if not new:
+        first_use = not known
+        stale = time.time() - float(ext.get("addresses_verified_at") or 0) > ADDRESS_PROOF_MAX_AGE_S
+        if not new and not stale:
             return
         token = challenge_for_host(host, self._ownership_secret)["token"]
         method = str(ext.get("proof_method") or "dns_txt")
-        ok, detail = False, ""
+        ok, detail, address_bound = False, "", False
         try:
             if method == "well_known":
+                # binds the ADDRESS: the file is fetched from each address itself
                 fetch = self._proof_file_fetch or fetch_proof_file_pinned
-                ok = all(token in (fetch(host, a) or "") for a in new)
-                detail = "検証ファイルを新しいアドレスから取得して確認"
+                ok = all(token in (fetch(host, a) or "") for a in (new or addrs))
+                address_bound = ok
+                detail = "検証ファイルを各アドレスから取得して確認"
             else:
+                # binds the NAME only: it shows the DNS zone is still the owner's,
+                # not that a new address is (dangling record, takeover of a released IP)
                 res = verify_ownership_challenge(host, "dns_txt", expected_token=token,
                                                  txt_lookup=self._proof_dns_lookup)
                 ok, detail = bool(res.get("verified")), "DNS TXT を再確認"
@@ -277,16 +322,16 @@ class AssessmentService:
                 if live is not None:
                     live["verified_addresses"] = sorted(known | set(addrs))
                     live["addresses_verified_at"] = time.time()
+                    if new and not first_use and not address_bound:
+                        # The name moved to an address nobody has vouched for. The
+                        # read-only L1 probe may follow the name, but test-account
+                        # tokens are withheld until an approver re-confirms the scope.
+                        live["address_change_pending"] = sorted(
+                            set(live.get("address_change_pending") or []) | set(new))
                     self._save_state_locked()
             else:
-                self._verified_external_hosts.pop(host, None)
-                for rec in (self.a.asset, *self._extra_assets):
-                    if rec.get("name", "").lower() == host:
-                        rec["scope_confirmed"] = False
-                        rec["ownership_verified"] = False
-                        rec.pop("ownership_proof", None)
-                        rec["status"] = "所有確認待ち"
-                        rec["note"] = "解決先のIPアドレスが変わり、所有を再確認できませんでした。所有確認からやり直してください"
+                self._revoke_real_service_locked(
+                    host, note="解決先のIPアドレスが変わり、所有を再確認できませんでした。所有確認からやり直してください")
                 self._save_state_locked()
         self.audit.record("asset.addresses_reverified" if ok else "asset.scope_revoked_address_change",
                           host=host, method=method, new_addresses=new, known_addresses=sorted(known),
@@ -358,10 +403,23 @@ class AssessmentService:
             return None
         return next((c for c in profile["checks"] if c["finding"]["id"] == finding_id), None)
 
-    def _l2_transport_ok(self) -> bool:
-        """Test-account tokens only travel over TLS (loopback test targets excepted)."""
+    def _l2_block_reason(self) -> str | None:
+        """Why test-account tokens may not be sent to the active asset right now."""
         ext = self._external_entry(self.a.asset.get("name"))
-        return bool(ext and (ext.get("scheme") == "https" or ext.get("allow_loopback_test")))
+        if not ext:
+            return "診断範囲が確認されていません"
+        if not (ext.get("scheme") == "https" or ext.get("allow_loopback_test")):
+            return "検証用トークンを平文（http）で送信することはできません。https の対象でのみL2検証を実行できます"
+        if ext.get("address_change_pending"):
+            return ("対象の解決先アドレスが所有確認後に変わりました（"
+                    + "、".join(ext["address_change_pending"])
+                    + "）。承認責任者が所有確認と範囲確認をやり直すまで、検証用トークンは送信しません")
+        return None
+
+    def _l2_transport_ok(self) -> bool:
+        """Tokens travel only over TLS, and only to addresses an approver's scope
+        confirmation still covers (loopback test targets excepted)."""
+        return self._l2_block_reason() is None
 
     def _ready_l2_checks(self, host: str | None = None) -> set[str]:
         h = (host or self.a.asset.get("name") or "").lower()
@@ -400,7 +458,7 @@ class AssessmentService:
                 "artex_cli_verified": self._artex_cli_verified,
                 "last_planner_verification": self._last_planner_verification,
             }
-            payload["authority_mac"] = self._authority_mac(payload["verified_external_hosts"])
+            payload.update(self._signed_authority_locked())
             tmp_path = self.state_path.with_suffix(".json.tmp")
             fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -409,13 +467,59 @@ class AssessmentService:
         except OSError:
             pass
 
-    def _authority_mac(self, verified_hosts) -> str:
-        """MAC over the part of state.json that grants authority (verified real
-        services and their scope). Keyed from the 0600 master key, so an edited or
-        copied state file cannot grant ownership or scope."""
-        canonical = json.dumps(json.loads(json.dumps(verified_hosts)), sort_keys=True,
-                               separators=(",", ":"), ensure_ascii=True)
-        return hmac.new(self._state_mac_key, canonical.encode("utf-8"), hashlib.sha256).hexdigest()
+    @staticmethod
+    def _canonical(obj) -> str:
+        return json.dumps(json.loads(json.dumps(obj)), sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+
+    def _authority_tables(self) -> dict:
+        return {"verified_external_hosts": self._verified_external_hosts,
+                "ownership_proofs": self._ownership_proofs,
+                "real_service_hosts": sorted(self._real_service_hosts)}
+
+    def _authority_mac(self, tables: dict, epoch: int) -> str:
+        """MAC over everything in state.json that grants authority, bound to an
+        epoch. Keyed from the 0600 master key, so an edited state file cannot grant
+        ownership, a proof, scope, a window or addresses."""
+        msg = f"{int(epoch)}|{self._canonical(tables)}".encode("utf-8")
+        return hmac.new(self._state_mac_key, msg, hashlib.sha256).hexdigest()
+
+    def _epoch_path(self) -> Path:
+        return self.data_dir / "authority.epoch"
+
+    def _write_epoch_locked(self) -> None:
+        body = {"epoch": self._authority_epoch,
+                "mac": hmac.new(self._state_mac_key, f"epoch|{self._authority_epoch}".encode(),
+                                hashlib.sha256).hexdigest()}
+        tmp = self._epoch_path().with_suffix(".tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(body))
+        os.replace(tmp, self._epoch_path())
+
+    def _read_epoch(self) -> int | None:
+        try:
+            body = json.loads(self._epoch_path().read_text(encoding="utf-8"))
+            epoch = int(body["epoch"])
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+        want = hmac.new(self._state_mac_key, f"epoch|{epoch}".encode(), hashlib.sha256).hexdigest()
+        return epoch if hmac.compare_digest(str(body.get("mac") or ""), want) else None
+
+    def _signed_authority_locked(self) -> dict:
+        """The authority tables plus epoch and MAC. Every change to the tables
+        advances the epoch (kept in a second 0600 file), so an older signed copy
+        of state.json - e.g. from before a revocation or deletion - is not accepted
+        again. (Rolling back BOTH files together needs write access to the whole
+        data directory, which is the same trust level as the master key.)"""
+        tables = self._authority_tables()
+        digest = hashlib.sha256(self._canonical(tables).encode("utf-8")).hexdigest()
+        if digest != self._authority_digest:
+            self._authority_epoch += 1
+            self._authority_digest = digest
+            self._write_epoch_locked()          # epoch first: a crash in between fails closed
+        return {**json.loads(self._canonical(tables)),
+                "authority_epoch": self._authority_epoch,
+                "authority_mac": self._authority_mac(tables, self._authority_epoch)}
 
     def _load_state_locked(self) -> None:
         """Restore persisted assessment state, findings, evidence, and approvals across restarts."""
@@ -428,20 +532,42 @@ class AssessmentService:
         except (OSError, ValueError):
             return
 
-        saved_hosts = data.get("verified_external_hosts")
+        saved = {
+            "verified_external_hosts": data.get("verified_external_hosts") if isinstance(data.get("verified_external_hosts"), dict) else {},
+            "ownership_proofs": data.get("ownership_proofs") if isinstance(data.get("ownership_proofs"), dict) else {},
+            "real_service_hosts": data.get("real_service_hosts") if isinstance(data.get("real_service_hosts"), list) else [],
+        }
         authority_rejected = False
-        if isinstance(saved_hosts, dict) and saved_hosts:
+        rejected_reason = ""
+        stored_epoch = self._read_epoch()
+        if any(saved.values()):
+            try:
+                epoch = int(data.get("authority_epoch"))
+            except (TypeError, ValueError):
+                epoch = -1
             mac = str(data.get("authority_mac") or "")
-            if hmac.compare_digest(mac, self._authority_mac(saved_hosts)):
+            if not hmac.compare_digest(mac, self._authority_mac(saved, epoch)):
+                rejected_reason = "integrity check failed (unsigned or modified)"
+            elif stored_epoch is None or epoch != stored_epoch:
+                rejected_reason = "not the latest authority state (older copy or missing epoch record)"
+            if rejected_reason:
+                # Restore nothing that grants authority. The assets stay listed and
+                # have to be verified and confirmed again.
+                authority_rejected = True
+            else:
                 self._verified_external_hosts = {
                     str(k).lower(): {**dict(v), "allow_loopback_test": False}   # never restored
-                    for k, v in saved_hosts.items()
-                    if isinstance(v, dict)
-                }
-            else:
-                # Unsigned or modified: restore nothing that grants authority. The
-                # assets stay listed and have to be verified and confirmed again.
-                authority_rejected = True
+                    for k, v in saved["verified_external_hosts"].items() if isinstance(v, dict)}
+                self._ownership_proofs = {str(k).lower(): dict(v)
+                                          for k, v in saved["ownership_proofs"].items() if isinstance(v, dict)}
+                self._real_service_hosts = {str(h).lower() for h in saved["real_service_hosts"]}
+        # never go backwards, whatever was on disk
+        self._authority_epoch = max(stored_epoch or 0, self._authority_epoch)
+        if not authority_rejected:
+            self._authority_digest = hashlib.sha256(
+                self._canonical(self._authority_tables()).encode("utf-8")).hexdigest()
+            if any(saved.values()) and self._verified_external_hosts != saved["verified_external_hosts"]:
+                self._authority_digest = ""      # loopback switch was stripped: re-sign on next save
         if isinstance(data.get("allowed_hosts"), list):
             self._allowed_hosts = {str(h) for h in data["allowed_hosts"] if h} | {"lab.test", "api.lab.test"}
         if isinstance(data.get("asset"), dict) and data["asset"].get("name"):
@@ -455,7 +581,9 @@ class AssessmentService:
         if isinstance(data.get("approvals"), dict):
             self.a.approvals = {str(k): dict(v) for k, v in data["approvals"].items() if isinstance(v, dict)}
             for ap in self.a.approvals.values():
-                if ap.get("status") == "approved":
+                # approvals in state.json are unsigned: they are only re-issued for the
+                # local lab, never for a real service
+                if ap.get("status") == "approved" and not self._in_ownership_flow(self.a.asset.get("name")):
                     ap["approval_ref"] = self.approval_store.approve(
                         str(ap.get("decided_by") or "approver"),
                         "eng_demo", "lab", str(ap.get("action") or "safe_reproduction"),
@@ -465,15 +593,22 @@ class AssessmentService:
         # The asset records are display state; authority lives only in the signed
         # host table. Make the records agree with it.
         for rec in (self.a.asset, *self._extra_assets):
-            if rec.get("challenge") and self._external_entry(rec.get("name")) is None and rec.get("scope_confirmed"):
+            name = str(rec.get("name", "")).lower()
+            if rec.get("challenge"):
+                self._real_service_hosts.add(name)      # once a real service, never a lab alias
+            if not (rec.get("challenge") or name in self._real_service_hosts):
+                continue
+            has_proof = name in self._ownership_proofs
+            if self._external_entry(name) is None and rec.get("scope_confirmed"):
                 rec["scope_confirmed"] = False
+                rec["status"] = "所有確認待ち" if not has_proof else "範囲確認待ち"
+                rec["note"] = "診断範囲の確認が失効または無効になりました。所有確認からやり直してください"
+            if not has_proof and (rec.get("ownership_verified") or rec.get("ownership_proof")):
                 rec["ownership_verified"] = False
                 rec.pop("ownership_proof", None)
-                rec["status"] = "所有確認待ち"
-                rec["note"] = "診断範囲の確認が失効または無効になりました。所有確認からやり直してください"
         if authority_rejected:
             self.audit.record("state.authority_rejected",
-                              reason="verified host table failed its integrity check; scope not restored")
+                              reason=rejected_reason + "; ownership proofs and scope not restored")
         if isinstance(data.get("chat_messages"), list):
             self.a.chat_messages = [dict(m) for m in data["chat_messages"] if isinstance(m, dict)]
         if isinstance(data.get("stop_report"), dict):
@@ -617,10 +752,7 @@ class AssessmentService:
         authorized = bool(ownership_verified and clean_ref)
 
         with self._lock:
-            in_ownership_flow = (
-                clean_name in self._verified_external_hosts
-                or (self.a.asset["name"].lower() == clean_name and self.a.asset.get("challenge"))
-                or any(x["name"].lower() == clean_name and x.get("challenge") for x in self._extra_assets))
+            in_ownership_flow = self._in_ownership_flow(clean_name)
             if in_ownership_flow:   # checked BEFORE anything is added to the lab allow-list
                 raise ValueError("この資産は実サービスとして登録されています。所有確認（DNS TXT / 検証ファイル）の手順で登録してください")
             if authorized:
@@ -732,12 +864,26 @@ class AssessmentService:
                 raise ValueError("指定された診断対象が見つかりません")
             if not target_asset.get("ownership_verified") or not target_asset.get("authorization_ref"):
                 raise ValueError("この資産は書面許可（SOW）が未登録のため診断できません")
-            if target_asset.get("challenge") and self._external_entry(target_asset["name"]) is None:
+            if self._in_ownership_flow(target_asset["name"]) and self._external_entry(target_asset["name"]) is None:
                 raise ValueError("所有確認・診断範囲確認が未完了か有効期限切れです。資産管理から所有確認をやり直してください")
             self._activate_asset_locked(target_asset, str(target_asset["authorization_ref"]))
             self._reset_workspace_locked()
         self.audit.record("asset.selected", actor=actor, asset_id=asset_id, name=self.a.asset["name"])
         return self.snapshot()
+
+    def asset_is_real_service(self, asset_id: str = "", host: str = "") -> bool:
+        """Whether an asset (by id or host) was registered through the ownership flow."""
+        with self._lock:
+            if asset_id:
+                rec = next((x for x in (self.a.asset, *self._extra_assets) if x.get("id") == asset_id), None)
+                host = (rec or {}).get("name", "")
+            return bool(host) and self._in_ownership_flow(host)
+
+    def real_service_has_authority(self, host: str) -> bool:
+        """True if the host currently has a recorded proof or a confirmed scope."""
+        h = (host or "").rstrip(".").lower()
+        with self._lock:
+            return h in self._ownership_proofs or h in self._verified_external_hosts
 
     def delete_asset(self, asset_id: str, actor: str = "operator") -> list[dict]:
         with self._lock:
@@ -747,7 +893,10 @@ class AssessmentService:
                 deleted_name = self.a.asset["name"]
                 # Promote next authorized extra asset, or recreate default lab.test
                 next_auth = next(
-                    (x for x in self._extra_assets if x.get("ownership_verified") and x.get("authorization_ref")),
+                    (x for x in self._extra_assets
+                     if x.get("ownership_verified") and x.get("authorization_ref")
+                     # a real service is only promoted while its signed scope is valid
+                     and (not self._in_ownership_flow(x["name"]) or self._external_entry(x["name"]) is not None)),
                     None,
                 )
                 if next_auth is not None:
@@ -757,6 +906,11 @@ class AssessmentService:
                         "name": next_auth["name"],
                         "kind": next_auth["kind"],
                         "environment": next_auth["environment"],
+                        # a real service keeps its registration metadata when promoted
+                        **{k: next_auth[k] for k in (
+                            "display_name", "target_url", "scheme", "port", "gcp_project",
+                            "scope_confirmed", "challenge", "ownership_proof", "approver",
+                            "sow_optional_ref") if k in next_auth},
                     }
                     self._sync_scope_for_host(next_auth["name"], str(next_auth["authorization_ref"]))
                 else:
@@ -777,9 +931,14 @@ class AssessmentService:
                 self._save_state_locked()
             # Deleting a real-service asset revokes its scope and its stored test credentials.
             gone = str(deleted_name).lower()
-            if self._verified_external_hosts.pop(gone, None) is not None:
-                self._save_state_locked()
+            was_real = self._in_ownership_flow(gone) or gone in self._ownership_proofs
+            self._verified_external_hosts.pop(gone, None)
+            self._ownership_proofs.pop(gone, None)
+            self._real_service_hosts.discard(gone)
+            self._l2_requests = {k: v for k, v in self._l2_requests.items() if v.get("host") != gone}
             self.secrets.clear_credentials(gone)
+            if was_real:
+                self._save_state_locked()
         self.audit.record("asset.deleted", actor=actor, asset_id=asset_id, name=deleted_name)
         return self.assets()
 
@@ -806,22 +965,26 @@ class AssessmentService:
         )
         now = time.time()
 
+        if parsed["is_local_lab"] or host in ("lab.test", "api.lab.test", "localhost"):
+            raise ValueError("模擬ラボの対象は、実サービスの所有確認フローでは登録できません")
+
         with self._lock:
-            existing = next(
-                (x for x in self._extra_assets if x.get("name", "").lower() == host),
-                None,
-            )
+            existing = self._asset_record(host)        # active asset or not: same handling
+            if existing is not None and not self._in_ownership_flow(host):
+                raise ValueError("この名前は模擬ラボの対象として登録されています。先に削除してから実サービスとして登録してください")
+            if existing is self.a.asset and self.a.state == "running":
+                raise ValueError("診断実行中の対象は変更できません。先に停止してください")
+            self._real_service_hosts.add(host)
             if existing is not None:
                 if (existing.get("scheme"), existing.get("port")) != (parsed["scheme"], parsed["port"]) and (
-                        existing.get("ownership_verified") or existing.get("scope_confirmed")):
-                    # a different endpoint of the host: the earlier proof and scope do not carry over
-                    self._verified_external_hosts.pop(host, None)
-                    self.secrets.clear_credentials(host)
-                    existing["ownership_verified"] = False
-                    existing["scope_confirmed"] = False
-                    existing["authorization_ref"] = ""
-                    existing["assessment_id"] = None
-                    existing.pop("ownership_proof", None)
+                        host in self._ownership_proofs or host in self._verified_external_hosts):
+                    # a different endpoint of the host: the earlier proof, scope and
+                    # stored test accounts do not carry over
+                    self._revoke_real_service_locked(
+                        host, note="対象のポートまたはスキームが変更されました。所有確認からやり直してください")
+                    if existing is self.a.asset:
+                        self._sync_scope_for_host(host, "")
+                        self._reset_workspace_locked()
                 existing["target_url"] = parsed["target_url"]
                 existing["scheme"] = parsed["scheme"]
                 existing["port"] = parsed["port"]
@@ -891,6 +1054,10 @@ class AssessmentService:
         /.well-known/vulnix-verify.txt. Ownership verification NEVER auto-approves L2."""
         parsed = parse_service_target(url_or_host)
         host = parsed["host"]
+        with self._lock:
+            # no lookup or fetch for a name nobody registered here
+            if host not in self._real_service_hosts or self._asset_record(host) is None:
+                raise ValueError("先に対象URLを登録して検証トークンを発行してください")
         ch = challenge_for_host(host, self._ownership_secret)
 
         res = verify_ownership_challenge(
@@ -912,10 +1079,13 @@ class AssessmentService:
             if target_asset is not None:
                 target_asset["ownership_verified"] = verified
                 # The proof record is what scope confirmation checks, not the flag.
-                target_asset["ownership_proof"] = {
+                target_asset["ownership_proof"] = {     # display copy only
                     **res, "host": host,
                     "token_sha256": hashlib.sha256(ch["token"].encode("utf-8")).hexdigest(),
                 }
+                if verified:
+                    # the authoritative, signed record that scope confirmation checks
+                    self._ownership_proofs[host] = dict(target_asset["ownership_proof"])
                 if verified and not target_asset.get("scope_confirmed"):
                     target_asset["status"] = "範囲確認待ち"
                     target_asset["note"] = "Step 3: 診断対象スコープと禁止事項を確認してください（L2実証は自動承認されません）"
@@ -923,6 +1093,7 @@ class AssessmentService:
                 # A failed (re-)verification revokes any previously confirmed scope:
                 # no further traffic is sent to this host until it is proven again.
                 self._verified_external_hosts.pop(host, None)
+                self._ownership_proofs.pop(host, None)
                 if target_asset is not None:
                     target_asset["scope_confirmed"] = False
                     target_asset["authorization_ref"] = ""
@@ -976,7 +1147,9 @@ class AssessmentService:
             if target_asset is None:
                 raise ValueError("先に Step 1-2 で対象URL登録と所有確認を行ってください")
             now = time.time()
-            proof = target_asset.get("ownership_proof")
+            # Only the signed proof table counts. The asset record is display state
+            # (it is restored from disk unsigned) and is never consulted here.
+            proof = self._ownership_proofs.get(host)
             expected = hashlib.sha256(
                 challenge_for_host(host, self._ownership_secret)["token"].encode("utf-8")).hexdigest()
             proof_ok = (
@@ -989,9 +1162,9 @@ class AssessmentService:
             # The `ownership_verified` flag alone is never enough: the legacy lab
             # registration can set it from a checkbox. Only a recorded challenge
             # proof for THIS host and THIS installation's token counts.
-            if not (target_asset.get("ownership_verified") and target_asset.get("challenge") and proof_ok):
+            if not (host in self._real_service_hosts and proof_ok):
                 raise ValueError("所有確認（DNS TXT または検証ファイル）が完了していません")
-            if now - float(proof["verified_at"]) > OWNERSHIP_PROOF_MAX_AGE_S:
+            if not (0 <= now - float(proof["verified_at"]) <= OWNERSHIP_PROOF_MAX_AGE_S):
                 raise ValueError("所有確認から時間が経過しています。所有確認をやり直してから範囲を確認してください")
 
             auth_ref = (
@@ -1429,8 +1602,17 @@ class AssessmentService:
                 )
             if not actor or str(actor).startswith("policy:auto"):
                 raise ValueError("L2再現試験には人間の個別承認が必要です（自動承認不可）")
-            if not self._l2_transport_ok():
-                raise ValueError("検証用トークンを平文（http）で送信することはできません。https の対象でのみL2検証を実行できます")
+            blocked = self._l2_block_reason()
+            if blocked:
+                raise ValueError(blocked)
+            # resolve now, so an address change is noticed BEFORE the decision to release tokens
+            try:
+                self._resolve_host(self.a.asset.get("name", ""))
+            except NetworkError as e:
+                raise ValueError(str(e)) from None
+            blocked = self._l2_block_reason()
+            if blocked:
+                raise ValueError(blocked)
             with self._lock:
                 l2_request = self._take_l2_request(finding_id, dn_check, actor)
                 self._l2_requests.pop(finding_id, None)     # one request, one run

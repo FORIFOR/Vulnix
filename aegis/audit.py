@@ -27,7 +27,8 @@ class AuditLog:
             body = {"ts": time.time(), "event": event, "fields": fields, "prev": self._prev}
             digest = hashlib.sha256(_canon(body).encode()).hexdigest()
             entry = {**body, "hash": digest}
-            with open(self.path, "a", encoding="utf-8") as f:
+            fd = os.open(self.path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+            with os.fdopen(fd, "a", encoding="utf-8") as f:
                 f.write(json.dumps(entry, ensure_ascii=False, sort_keys=True) + "\n")
                 f.flush()
                 os.fsync(f.fileno())

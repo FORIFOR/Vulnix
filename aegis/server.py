@@ -26,6 +26,7 @@ from .assessment import AssessmentService
 from .control_verification import run_live_control_verification
 from .lab import set_lab_mode, start_lab
 from .operators import AuthError, MFAChallenge, OperatorStore
+from .ownership import parse_service_target
 from .real_software_cve import run_real_software_cve_comparison
 
 ALLOWED_ORIGINS = {"http://localhost:3000", "http://127.0.0.1:3000"}
@@ -38,14 +39,43 @@ COOKIE = "aegis_session"
 PUBLIC_GET_PATHS = frozenset({"/api/auth/me", "/api/health"})
 
 
-def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_auth: bool | None = None):
-    # Secure by default: reads need a session. `AEGIS_REQUIRE_READ_AUTH=0` (or
-    # `--no-read-auth`) restores the old open-read behaviour for a local demo.
-    enforce_read_auth = (
-        os.environ.get("AEGIS_REQUIRE_READ_AUTH", "1") != "0"
-        if require_read_auth is None
-        else bool(require_read_auth)
-    )
+def development_mode() -> bool:
+    """Open reads are a local-development convenience only. Anything that is not
+    explicitly marked as development is treated as production."""
+    return os.environ.get("AEGIS_ENV", "").strip().lower() in ("development", "dev")
+
+
+MAX_BODY_BYTES = 1_000_000
+
+
+def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_auth: bool | None = None,
+                 allow_self_registration: bool | None = None):
+    def self_registration_allowed() -> bool:
+        # Anyone who can reach the port could otherwise mint themselves a session
+        # (and a second identity). Outside development mode accounts are created
+        # by an admin only.
+        return development_mode() if allow_self_registration is None else bool(allow_self_registration)
+
+    # Secure by default: reads need a session. The environment switch
+    # `AEGIS_REQUIRE_READ_AUTH=0` is honoured ONLY in development mode
+    # (`AEGIS_ENV=development`); in production it is ignored. Passing
+    # `require_read_auth=False` in code is the caller's explicit choice (tests).
+    if require_read_auth is None:
+        enforce_read_auth = not (development_mode() and os.environ.get("AEGIS_REQUIRE_READ_AUTH") == "0")
+    else:
+        enforce_read_auth = bool(require_read_auth)
+    if not enforce_read_auth:
+        svc.audit.record("config.read_auth_disabled", development_mode=development_mode())
+
+    def approver_grant_recorded(name: str) -> bool:
+        """Whether the audit log shows an admin granting (or attesting) this
+        account's approver role. Accounts that became approvers before roles
+        were admin-granted have no such record and should be reviewed."""
+        latest = None
+        for e in svc.audit.entries():
+            if e["event"] == "operator.roles_changed" and e["fields"].get("target") == name:
+                latest = e["fields"]
+        return bool(latest and "approver" in (latest.get("after") or []))
 
     class H(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -92,7 +122,8 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             p = u.path.rstrip("/")
             sess = self._session()
             if p == "/api/auth/me":
-                return self._json(200, {"session": self._public_session(sess)})
+                return self._json(200, {"session": self._public_session(sess),
+                                        "self_registration": self_registration_allowed()})
             if p == "/api/health":
                 return self._json(200, {"ok": True})
             if enforce_read_auth and not sess:
@@ -103,7 +134,10 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     return self._json(403, {"error": "アカウント一覧の参照には管理者の権限が必要です"})
                 return self._json(200, {"operators": [
                     {"name": o.name, "display": o.display, "roles": list(o.roles),
-                     "mfa_enabled": bool(o.totp_secret)} for o in ops.operators()]})
+                     "mfa_enabled": bool(o.totp_secret),
+                     # approver without an admin's grant on record -> needs review
+                     "needs_role_review": "approver" in o.roles and not approver_grant_recorded(o.name)}
+                    for o in ops.operators()]})
             if p == "/api/assets":
                 return self._json(200, svc.assets())
             if p == "/api/assets/secrets-status":
@@ -168,11 +202,19 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             origin = self.headers.get("Origin")
             if self.headers.get("X-Aegis-Request") != "1" or (origin and origin not in ALLOWED_ORIGINS):
                 return self._json(403, {"error": "csrf check failed"})
-            n = int(self.headers.get("Content-Length") or 0)
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                return self._json(400, {"error": "invalid content-length"})
+            if n < 0 or n > MAX_BODY_BYTES:
+                self.close_connection = True
+                return self._json(413, {"error": "request body too large"})
             try:
                 body = json.loads(self.rfile.read(n) or b"{}") if n else {}
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, UnicodeDecodeError):
                 return self._json(400, {"error": "invalid json"})
+            if not isinstance(body, dict):
+                return self._json(400, {"error": "request body must be a JSON object"})
             p = urlsplit(self.path).path.rstrip("/")
 
             if p == "/api/auth/login":
@@ -252,19 +294,31 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                               [("Set-Cookie", cookie)])
 
         def _register(self, body):
-            # Self-registration never grants more than `operator`. A `roles` field in
-            # the request is ignored (and the attempt is recorded).
+            # Roles are never taken from the request: every new account is an `operator`.
             raw_roles = body.get("roles")
             asked = [str(r) for r in raw_roles] if isinstance(raw_roles, list) else []
+            name, password = str(body.get("name", "")), str(body.get("password", ""))
+            display = str(body.get("display", ""))
+            caller = self._session()
+            if caller and "admin" in caller.roles:
+                # an admin creates the account for someone else; the admin stays logged in
+                try:
+                    op = ops.create_account(name, password, display=display, actor=caller.operator)
+                except AuthError as e:
+                    return self._json(400, {"error": str(e)})
+                svc.audit.record("operator.created", actor=caller.operator, target=op.name, roles=list(op.roles),
+                                 requested_roles_ignored=[r for r in asked if r not in op.roles])
+                return self._json(200, {"created": {"name": op.name, "display": op.display, "roles": list(op.roles)}})
+            if not self_registration_allowed():
+                svc.audit.record("auth.registration_refused", name=name[:32])
+                return self._json(403, {"error": "アカウントの作成は管理者が行います（設定 → アカウントとロール）。"
+                                                 "自己登録は開発モードでのみ利用できます"})
             try:
-                sess = ops.register(
-                    str(body.get("name", "")),
-                    str(body.get("password", "")),
-                    display=str(body.get("display", "")),
-                )
+                sess = ops.register(name, password, display=display)
             except AuthError as e:
                 return self._json(400, {"error": str(e)})
             svc.audit.record("auth.registered", actor=sess.operator, roles=list(sess.roles),
+                             self_registered=True,
                              requested_roles_ignored=[r for r in asked if r not in sess.roles])
             cookie = (f"{COOKIE}={sess.token}; HttpOnly; SameSite=Strict; Path=/; "
                       f"Max-Age={int(sess.expires - time.time())}")
@@ -284,7 +338,8 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             except AuthError as e:
                 return self._json(409, {"error": str(e)})
             svc.audit.record("operator.roles_changed", actor=sess.operator, target=target,
-                             before=list(before), after=list(after))
+                             before=list(before), after=list(after),
+                             attested_unchanged=set(before) == set(after))
             return self._json(200, {"name": target, "roles": list(after)})
 
         def _clear_cookie(self):
@@ -306,6 +361,15 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     )
                     return self._json(200, {"asset": asset, "assets": svc.assets()})
                 elif p == "/api/assets/challenge":
+                    target_host = ""
+                    try:
+                        target_host = parse_service_target(str(body.get("url", "")))["host"]
+                    except ValueError:
+                        pass                       # reported by the service call below
+                    if (target_host and svc.real_service_has_authority(target_host)
+                            and "approver" not in sess.roles):
+                        # re-registering a verified service can drop its proof, scope and tokens
+                        return self._json(403, {"error": "所有確認済みの対象の再登録には承認責任者の権限が必要です"})
                     res = svc.issue_ownership_challenge(
                         url=str(body.get("url", "")),
                         sow_id=str(body.get("sow_id", "")),
@@ -349,6 +413,9 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     )
                     return self._json(200, {"secrets_status": res, "snapshot": svc.snapshot()})
                 elif p == "/api/assets/delete":
+                    if svc.asset_is_real_service(asset_id=str(body.get("id", ""))) and "approver" not in sess.roles:
+                        # deleting a real service revokes its scope and stored test accounts
+                        return self._json(403, {"error": "実サービスの削除には承認責任者の権限が必要です"})
                     assets = svc.delete_asset(str(body.get("id", "")), actor=actor)
                     return self._json(200, {"assets": assets, "snapshot": svc.snapshot()})
                 elif p == "/api/assets/select":
@@ -395,6 +462,10 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     fid = str(body.get("finding_id", "")).strip()
                     if not fid:
                         return self._json(400, {"error": "finding_id is required"})
+                    if svc.separate_l2_approver and ops.is_self_registered(actor):
+                        # a second identity anyone can mint is not a second person
+                        return self._json(403, {"error": "自己登録のアカウントはL2検証を依頼できません。"
+                                                         "管理者が作成したアカウントで依頼してください"})
                     return self._json(200, svc.request_l2_run(fid, actor))
                 elif p == base + "/lab-mode":
                     mode = str(body.get("mode", "vulnerable")).strip()
@@ -437,10 +508,19 @@ def main() -> None:
     ap.add_argument("--require-read-auth", action="store_true",
                     help="(default) Require operator authentication on GET endpoints")
     ap.add_argument("--no-read-auth", action="store_true",
-                    help="Allow unauthenticated GET reads (local demo only)")
+                    help="Allow unauthenticated GET reads. Development only: refused unless "
+                         "AEGIS_ENV=development is set")
     ap.add_argument("--separate-l2-approver", action="store_true",
                     help="Real-service L2 runs need a request by one operator and approval by another")
     a = ap.parse_args()
+    env_opt_out = os.environ.get("AEGIS_REQUIRE_READ_AUTH") == "0"
+    if (a.no_read_auth or env_opt_out) and not development_mode():
+        # refuse to start rather than silently serving open reads (or silently
+        # ignoring what the operator asked for)
+        raise SystemExit(
+            "読み取りAPIの認証を無効にできるのは開発モードだけです。"
+            "ローカル開発で必要な場合は AEGIS_ENV=development を明示してください。"
+            "本番運用では --no-read-auth / AEGIS_REQUIRE_READ_AUTH=0 を使用しないでください。")
     data = Path(a.data_dir or tempfile.mkdtemp(prefix="aegis-"))
     data.mkdir(parents=True, exist_ok=True)
     seed = data / "operators.json"
@@ -460,6 +540,8 @@ def main() -> None:
         print(f"初回起動: 操作者アカウントを生成しました（ハッシュのみ {seed} に保存）。")
         print(f"初期ログイン情報（平文・600権限）: {ops.credentials_path}")
         print("内容は手元で確認してください。再生成するにはこの2ファイルを削除して再起動します。")
+    if a.no_read_auth or env_opt_out:
+        print("警告: 開発モードのため、読み取りAPIの認証を無効にしています（本番運用では使用不可）。")
     if ops.admin_credentials_path:
         print(f"管理者アカウントを作成しました（ロール付与用・平文・600権限）: {ops.admin_credentials_path}")
     srv.serve_forever()
