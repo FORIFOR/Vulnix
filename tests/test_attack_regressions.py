@@ -451,7 +451,7 @@ class TestPlantedOrEditedProfile(RealServiceBase):
                 svc.accept_l2_profile("deepnote", sha, actor="root")
         self.assertEqual(svc._accepted_profiles, {})
         self.assertEqual(svc.l2.runnable_check_ids(), ())
-        self.assertTrue((self.dir / "authority.epoch").exists())     # nothing else was invalidated
+        self.assertGreater((self.dir / "authority.epoch").stat().st_size, 0)     # nothing else was invalidated
         self.assertEqual(self.start()._accepted_profiles, {})
 
     def test_acceptance_cannot_be_written_into_the_state_file(self):

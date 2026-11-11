@@ -268,10 +268,12 @@ class AssessmentService:
         # No service is registered on our behalf: real services enter only through
         # the ownership flow, and whatever was saved (including deletions) is kept.
         self._unstopped: list[dict] = []         # workers a withdrawal or stop could not confirm dead
+        self._state_had_ledger_flag = False
         self._load_state_locked()
         with self._lock:
             self._reconcile_assets_with_ledger_locked()
-        if (self._authority_notice or self._marker_pending or self.ledger.dirty()) and not self._persist_error:
+        if (self._authority_notice or self._marker_pending or self.ledger.dirty()
+                or not self._state_had_ledger_flag) and not self._persist_error:
             # Authority on disk was refused. Write that down now, so the disk no
             # longer holds it (and a marker that asked for this can be retired).
             with self._lock:
@@ -374,7 +376,6 @@ class AssessmentService:
                                 "environment": "ローカル検証ラボ（127.0.0.1）"}
                 self._sync_scope_for_host("lab.test", "DEMO-AUTH-001（ローカル検証ラボ）")
                 self.a.chat_messages = []
-                self.gateway._state = State.RUNNING
                 self._reset_workspace_locked()
             else:
                 self._extra_assets = [x for x in self._extra_assets if x is not rec]
@@ -418,7 +419,9 @@ class AssessmentService:
 
     def _note_unstopped_locked(self, host: str, survivors: list[int], pool) -> None:
         if survivors:
-            self._unstopped.append({"host": host, "pids": list(survivors), "at": time.time(), "pool": pool})
+            self._unstopped.append({"host": host, "pids": list(survivors), "at": time.time(), "pool": pool,
+                                    # kept here: the pool forgets a session once its direct child is reaped
+                                    "sessions": pool.sessions_for(survivors)})
             self.audit.record("workers.stop_unconfirmed", host=host, survivors=list(survivors))
 
     def _raise_if_unstopped(self, done: str) -> None:
@@ -434,9 +437,21 @@ class AssessmentService:
         are STILL not confirmed dead. While there are any, nothing new launches."""
         keep = []
         for u in self._unstopped:
-            alive = u["pool"].confirm_stopped(u["pids"], 0.0)      # one more kill, one more look
-            if alive:
-                u["pids"] = alive
+            pool, sessions = u.get("pool"), u.get("sessions") or []
+            # LOOK first. A process that is gone is never signalled again (its pid
+            # may belong to something else by now).
+            if pool is not None:
+                alive = pool.still_running(u["pids"])
+            else:           # restored after a control-plane restart: we can only look
+                alive = [p for p in u["pids"] if WorkerPool.group_alive(p)]
+            not_empty = [x for x in sessions if not x.empty()]
+            if alive and pool is not None:
+                alive = pool.confirm_stopped(alive, 0.0)        # still there: kill again
+            for x in not_empty:
+                x.kill()
+            if alive or not_empty:
+                u["pids"] = alive or u["pids"]
+                u["sessions"] = not_empty
                 keep.append(u)
             else:
                 self.audit.record("workers.stop_confirmed_late", host=u["host"], pids=u["pids"])
@@ -546,6 +561,7 @@ class AssessmentService:
 
     def _withdrawn_since_locked(self, host: str, ext: dict, epoch0: int | None) -> bool:
         return (self._verified_external_hosts.get(host) is not ext
+                or self._external_entry(host) is not ext          # e.g. the window closed meanwhile
                 or self.gateway.state is not State.RUNNING
                 or self._stale_runner()
                 or (epoch0 is not None and self.gateway._launch_epoch != epoch0))
@@ -917,6 +933,9 @@ class AssessmentService:
                 "chat_messages": self.a.chat_messages,
                 "defense_comparison": self.a.defense_comparison,
                 "failure": self.a.failure,
+                # survivors of a stop/withdrawal outlive the control plane: so does their record
+                "unstopped_workers": [{"host": u["host"], "pids": u["pids"], "at": u["at"]}
+                                      for u in self._unstopped],
                 # authority lives in authority.ledger; this only says that one is in use,
                 # so that a ledger that disappears is noticed as a loss
                 "authority_ledger": True,
@@ -981,7 +1000,7 @@ class AssessmentService:
                 data = json.loads(self.state_path.read_text(encoding="utf-8"))
                 if not isinstance(data, dict):
                     raise ValueError("not an object")
-            except (OSError, ValueError) as e:
+            except (OSError, ValueError, RecursionError) as e:
                 data, unreadable = None, type(e).__name__
         had_ledger = self.ledger.path.exists()
         rejected_reason = self.ledger.load(legacy=data, expect_ledger=bool(data and data.get("authority_ledger")))
@@ -1052,6 +1071,15 @@ class AssessmentService:
                 rec.pop("ownership_proof", None)
         if isinstance(data.get("failure"), dict):
             self.a.failure = dict(data["failure"])
+        for u in (data.get("unstopped_workers") if isinstance(data.get("unstopped_workers"), list) else []):
+            try:
+                pids = [int(p) for p in u["pids"] if WorkerPool.group_alive(int(p))]
+                if pids:
+                    self._unstopped.append({"host": str(u.get("host") or ""), "pids": pids,
+                                            "at": float(u.get("at") or time.time()), "pool": None, "sessions": []})
+            except (KeyError, TypeError, ValueError):
+                continue
+        self._state_had_ledger_flag = bool(data.get("authority_ledger"))
         if isinstance(data.get("chat_messages"), list):
             self.a.chat_messages = [dict(m) for m in data["chat_messages"] if isinstance(m, dict)]
         if isinstance(data.get("stop_report"), dict):
@@ -1069,6 +1097,11 @@ class AssessmentService:
             # A process restart interrupted an in-flight thread; preserve progress as paused
             self.a.state = "paused"
             self.gateway._state = State.PAUSED
+        if self._stop_flag().exists():
+            # an emergency stop was begun and never ended by a new run - whatever
+            # state.json managed to record about it
+            self.a.state = "stopped"
+            self.gateway._state = State.STOPPED
         self._artex_cli_verified = bool(data.get("artex_cli_verified", False))
         if isinstance(data.get("last_planner_verification"), dict):
             self._last_planner_verification = dict(data["last_planner_verification"])
@@ -1484,12 +1517,15 @@ class AssessmentService:
             # the name must be durably recorded as a real service before a challenge
             # for it exists anywhere
             self._require_working_store()
+            ledger_before = self.ledger.snapshot()
+            endpoint_revoked = False
             self._real_service_hosts.add(host)
             if existing is not None:
                 if (existing.get("scheme"), existing.get("port")) != (parsed["scheme"], parsed["port"]) and (
                         host in self._ownership_proofs or host in self._verified_external_hosts):
                     # a different endpoint of the host: the earlier proof, scope and
                     # stored test accounts do not carry over
+                    endpoint_revoked = True
                     self._revoke_real_service_locked(
                         host, note="対象のポートまたはスキームが変更されました。所有確認からやり直してください")
                     if existing is self.a.asset:
@@ -1532,14 +1568,21 @@ class AssessmentService:
                     "note": "Step 2: DNS TXT または検証ファイルで管理権限を確認してください",
                 }
                 self._extra_assets.insert(0, asset_rec)
-            self._save_state_locked()
-            if self.ledger.error:
-                # the registration is not in the ledger: a challenge is not handed out
-                # for a name that a restart would not know as a real service
-                if existing is None:
-                    self._extra_assets = [x for x in self._extra_assets if x is not asset_rec]
-                raise ValueError("権限台帳に保存できないため、登録できませんでした。保存先を確認してください")
-        self._raise_if_unstopped("対象の宛先を変更し、以前の診断許可を取り消しました")
+            if endpoint_revoked:
+                self._save_state_locked()          # a reduction: kept in memory whatever the disk does
+                if self.ledger.error:
+                    raise ValueError("権限台帳に保存できないため、登録できませんでした。保存先を確認してください")
+            else:
+                # The registration (name + asset) is committed to the ledger BEFORE
+                # the card is written anywhere. If it cannot be, nothing was
+                # registered - and nothing else in the ledger is disturbed.
+                try:
+                    self._commit_grant_locked(ledger_before, "登録")
+                except ValueError:
+                    if existing is None:
+                        self._extra_assets = [x for x in self._extra_assets if x is not asset_rec]
+                    raise
+                self._save_state_locked()
 
         self.audit.record(
             "asset.challenge_issued",
@@ -1550,6 +1593,8 @@ class AssessmentService:
             well_known_url=ch["well_known_url"],
             authorization_ref=internal_auth_ref,
         )
+        if endpoint_revoked:
+            self._raise_if_unstopped("対象の宛先を変更し、以前の診断許可を取り消しました")
         return {
             "asset": asset_rec,
             "challenge": ch,
@@ -1574,6 +1619,9 @@ class AssessmentService:
         host = parsed["host"]
         self._require_working_store()
         with self._lock:
+            if self.gateway.state is State.STOPPED or self.a.state == "stopped":
+                raise ValueError("緊急停止中は所有確認（DNS 参照・検証ファイルの取得）を行いません。"
+                                 "「再診断を実行」で停止を解除してからやり直してください")
             # no lookup or fetch for a name nobody registered here
             if host not in self._real_service_hosts or self._asset_record(host) is None:
                 raise ValueError("先に対象URLを登録して検証トークンを発行してください")
@@ -1645,8 +1693,6 @@ class AssessmentService:
                         target_asset["assessment_id"] = None
                         target_asset["note"] = "所有確認に失敗しました。DNS TXT または検証ファイルを確認してください"
             self._save_state_locked()
-        if not verified:
-            self._raise_if_unstopped("所有確認に失敗したため診断許可を取り消しました")
 
         self.audit.record(
             "asset.ownership_verified" if verified else "asset.ownership_failed",
@@ -1656,6 +1702,8 @@ class AssessmentService:
             verified=verified,
             detail=res.get("detail", ""),
         )
+        if not verified:
+            self._raise_if_unstopped("所有確認に失敗したため診断許可を取り消しました")
         return {
             "host": host,
             "verified": verified,
@@ -1864,7 +1912,13 @@ class AssessmentService:
             secret_redactor=self.secrets.redact,
         )
 
-    def _reset_workspace_locked(self) -> None:
+    def _stop_flag(self) -> Path:
+        return self.data_dir / "emergency-stop.flag"
+
+    def _reset_workspace_locked(self, end_stop: bool = False) -> None:
+        """A fresh workspace for the active asset. An emergency stop survives it:
+        only `restart()` (end_stop=True) - an explicit new run - ends a stop."""
+        stays_stopped = (not end_stop) and (self.gateway.state is State.STOPPED or self.a.state == "stopped")
         self._run_generation += 1          # any runner of the previous workspace is now stale
         self.gateway.invalidate_pending()  # and a request still waiting in the Gateway cannot launch
         old = self.workers
@@ -1874,8 +1928,13 @@ class AssessmentService:
                                     old.confirm_stopped(old.kill_all(), 5.0), old)
         self.workers = WorkerPool(max_concurrent=2)
         self.gateway.workers = self.workers
-        self.gateway._state = State.RUNNING
-        self.gateway.egress = EgressGuard(self._resolve_host)
+        if not stays_stopped:
+            self.gateway._state = State.RUNNING
+            self.gateway.egress = EgressGuard(self._resolve_host)
+            try:
+                os.unlink(self._stop_flag())
+            except OSError:
+                pass
         self.gateway.budget = Budget(50)
         self.a.phases = self._default_phases()
         if self._is_external_service_asset():
@@ -1884,10 +1943,11 @@ class AssessmentService:
             self.a.findings = {f["id"]: f for f in _fixture_findings()}
         self.a.approvals = {}
         self.a.activity = None
-        self.a.stop_report = None
+        if not stays_stopped:
+            self.a.stop_report = None
         self.a.defense_comparison = None
         self.artex.tasks = []
-        self._set_state("idle")
+        self._set_state("stopped" if stays_stopped else "idle")
 
     def planner_status(self) -> dict:
         """Report loaded configuration, never pretend configuration proves connectivity."""
@@ -1991,7 +2051,9 @@ class AssessmentService:
                 if self._persist_error:
                     raise ValueError("状態をディスクに保存できないため、実サービスへの診断を停止しています。"
                                      "データディレクトリの書き込み権限と空き容量を確認してください")
-            self._reset_workspace_locked()
+            if self._unstopped_now_locked():
+                raise ValueError("停止を確認できていないWorkerが残っているため、新しい診断は開始できません")
+            self._reset_workspace_locked(end_stop=True)      # the one explicit way out of an emergency stop
             self._ensure_active_window_locked()
             set_lab_mode("vulnerable")
             self._set_state("running")
@@ -2024,6 +2086,15 @@ class AssessmentService:
             # can no longer write "done"/"completed" over what the stop records.
             self._run_generation += 1
             pool = self.workers
+            try:
+                # written before anything else, so that the stop holds after a restart
+                # even if the state cannot be saved afterwards
+                fd = os.open(self._stop_flag(), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                os.fsync(fd)
+                os.close(fd)
+                self._sync_dir(self.data_dir)
+            except OSError:
+                pass
             rep = self.gateway.emergency_stop(actor)
             report = {"actor": actor, "confirmed": rep.confirmed, "killed_pids": rep.killed_pids,
                       "survivors": rep.survivors,

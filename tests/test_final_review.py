@@ -691,13 +691,13 @@ class TestRevocationThatCannotBeSavedIsNotUndoneByARestart(RealServiceBase):
     def test_stale_authority_on_disk_is_made_unacceptable(self):
         self.onboard()
         self.set_secrets()
-        self.assertTrue((self.dir / "authority.epoch").exists())
+        self.assertGreater((self.dir / "authority.epoch").stat().st_size, 0)
         with patch("aegis.assessment.os.replace", side_effect=OSError("disk full")):
             # an approver's failed re-check revokes scope and proof in memory; the save fails
             self.svc.verify_asset_ownership(url_or_host=self.url, dns_lookup=lambda n: [])
         self.assertFalse(self.svc._is_external_service_asset(HOST))
         self.assertIsNotNone(self.svc._persist_error)
-        self.assertFalse((self.dir / "authority.epoch").exists())     # the stale state.json can no longer be honoured
+        self.assertEqual((self.dir / "authority.epoch").stat().st_size, 0)   # emptied: the stale ledger can no longer be honoured
         self.svc.workers.kill_all()
         again = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT, verify_seconds=0.1, l2_profile_dirs=PROFILE_DIRS)
         self.assertFalse(again._is_external_service_asset(HOST))      # not restored
@@ -709,7 +709,7 @@ class TestRevocationThatCannotBeSavedIsNotUndoneByARestart(RealServiceBase):
         self.onboard()
         with patch("aegis.assessment.os.replace", side_effect=OSError("disk full")):
             self.svc._save_state_locked()                              # nothing about authority changed
-        self.assertTrue((self.dir / "authority.epoch").exists())
+        self.assertGreater((self.dir / "authority.epoch").stat().st_size, 0)
         self.svc.workers.kill_all()
         again = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT, verify_seconds=0.1, l2_profile_dirs=PROFILE_DIRS)
         self.assertTrue(again._is_external_service_asset(HOST))        # a transient error does not cost the scope

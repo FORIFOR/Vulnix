@@ -143,15 +143,15 @@ class TestRevocationSurvivesAnUnwritableDataDirectory(PersistenceBase):
 class TestRevocationMarkers(PersistenceBase):
     def fail_saves(self):
         """state.json cannot be replaced AND the epoch record cannot be removed or emptied."""
-        real_open = open
+        real_open = os.open
 
-        def no_truncate(path, mode="r", *a, **kw):
-            if str(path).endswith("authority.epoch") and "+" in mode:
+        def no_truncate(path, flags, *a, **kw):
+            if str(path).endswith("authority.epoch") and flags & (os.O_TRUNC | os.O_WRONLY):
                 raise PermissionError("read-only")
-            return real_open(path, mode, *a, **kw)
+            return real_open(path, flags, *a, **kw)
         return (patch("aegis.assessment.os.replace", side_effect=self._replace_except_markers),
                 patch("aegis.assessment.os.unlink", side_effect=self._unlink_except_epoch),
-                patch("aegis.authority_ledger.open", side_effect=no_truncate, create=True))
+                patch("aegis.authority_ledger.os.open", side_effect=no_truncate))
 
     def _replace_except_markers(self, src, dst):
         if str(dst).endswith(".revoked"):

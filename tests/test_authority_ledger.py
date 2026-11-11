@@ -56,6 +56,8 @@ class LedgerBase(unittest.TestCase):
             led.real_service_hosts.add("svc.example.test")
             led.ownership_proofs["svc.example.test"] = {"method": "dns_txt", "verified_at": 1.0}
             led.verified_external_hosts["svc.example.test"] = {"host": "svc.example.test", "port": 443}
+        with led.transaction():                     # a second commit: no longer a first-generation ledger
+            led.verified_external_hosts["svc.example.test"]["confirmed_at"] = 2.0
         return led
 
 
@@ -109,7 +111,7 @@ class TestLedgerCommit(LedgerBase):
             self.assertFalse(led.commit())
         self.assertEqual(led.error, "OSError")
         self.assertNotIn("svc.example.test", led.verified_external_hosts)        # memory keeps the reduction
-        self.assertFalse((self.dir / "authority.epoch").exists())
+        self.assertEqual((self.dir / "authority.epoch").stat().st_size, 0)     # emptied, not removed
         again = self.open()
         self.assertIn("epoch", again.reason)
         self.assertEqual(again.verified_external_hosts, {})
@@ -280,6 +282,85 @@ class TestLedgerReviewFindings(LedgerBase):
         self.assertFalse(refused.names_unknown)
 
 
+class TestFirstCommitAndInvalidation(LedgerBase):
+    def first(self):
+        led = self.open()
+        with led.transaction():
+            led.real_service_hosts.add("svc.example.test")
+            led.verified_external_hosts["svc.example.test"] = {"host": "svc.example.test"}
+        return led
+
+    def test_a_first_commit_interrupted_before_its_epoch_record_is_not_a_lost_ledger(self):
+        self.first()
+        os.unlink(self.dir / "authority.epoch")         # as if killed right after the ledger rename
+        led = self.open()
+        self.assertEqual(led.reason, "")
+        self.assertFalse(led.names_unknown)
+        self.assertIn("svc.example.test", led.verified_external_hosts)
+        self.assertTrue(led.commit())
+        self.assertFalse(self.open().dirty())
+
+    def test_an_invalidated_first_generation_ledger_is_still_refused(self):
+        led = self.first()
+        led.verified_external_hosts.clear()
+        with patch("aegis.authority_ledger.os.replace", side_effect=OSError("disk full")):
+            self.assertFalse(led.commit())
+        self.assertTrue((self.dir / "authority.epoch").exists())               # present...
+        self.assertEqual((self.dir / "authority.epoch").stat().st_size, 0)     # ...and empty
+        again = self.open()
+        self.assertTrue(again.reason)
+        self.assertEqual(again.verified_external_hosts, {})
+
+    def test_a_ledger_refused_at_load_is_named_when_the_epoch_record_cannot_follow(self):
+        led = self.granted()
+        stale = (self.dir / "authority.ledger").read_bytes()
+        epoch = (self.dir / "authority.epoch").read_bytes()
+        led.verified_external_hosts["x.example.test"] = {"host": "x.example.test"}
+        led.commit()
+        (self.dir / "authority.ledger").write_bytes(stale)    # an older copy is on disk at start
+        refused = self.open()
+        self.assertTrue(refused.reason)
+        real = os.replace
+
+        def only_ledger(src, dst):
+            if str(dst).endswith("authority.epoch"):
+                raise OSError("no")
+            return real(src, dst)
+        with patch("aegis.authority_ledger.os.replace", side_effect=only_ledger):
+            refused.commit()                                   # records the refusal; the epoch record lags
+        (self.dir / "authority.ledger").write_bytes(stale)
+        (self.dir / "authority.epoch").write_bytes(epoch)
+        self.assertEqual(self.open().verified_external_hosts, {} if self.open().reason else None)
+        self.assertTrue(self.open().reason, "the refused older ledger was accepted later")
+
+    def test_an_unreadable_ledger_does_not_let_the_copy_named_by_the_epoch_record_back_in(self):
+        self.granted()
+        good = (self.dir / "authority.ledger").read_bytes()       # what the epoch record names
+        (self.dir / "authority.ledger").write_text("{ truncated")
+        refused = self.open()
+        self.assertTrue(refused.reason)
+        real = os.replace
+
+        def only_ledger(src, dst):
+            if str(dst).endswith("authority.epoch"):
+                raise OSError("no")
+            return real(src, dst)
+        with patch("aegis.authority_ledger.os.replace", side_effect=only_ledger):
+            self.assertFalse(refused.commit())                     # the refusal is committed; the record lags
+        self.assertTrue(list(self.markers.glob("*.revoked")))
+        (self.dir / "authority.ledger").write_bytes(good)
+        back = self.open()
+        self.assertTrue(back.reason)
+        self.assertEqual(back.verified_external_hosts, {})
+
+    def test_deeply_nested_json_does_not_stop_the_start(self):
+        self.granted()
+        (self.dir / "authority.ledger").write_text("[" * 100000 + "]" * 100000)
+        led = self.open()
+        self.assertTrue(led.reason)
+        self.assertEqual(led.verified_external_hosts, {})
+
+
 # ---- crash at every durable step --------------------------------------------
 CHILD = r"""
 import os, sys
@@ -413,7 +494,7 @@ class TestDisplayStateCannotBlockTheLedger(PersistenceBase):
         self.revoke()                                       # state.json cannot be serialised
         self.assertIsNotNone(self.svc._persist_error)       # reported, and real-service work stops
         self.assertIsNone(self.svc.ledger.error)            # but the ledger commit went through
-        self.assertTrue((self.dir / "authority.epoch").exists())
+        self.assertGreater((self.dir / "authority.epoch").stat().st_size, 0)
         again = self.restart()
         self.assertEqual(again.ledger.rejected_reason, "")
         self.assertFalse(again._is_external_service_asset(HOST))
@@ -746,15 +827,10 @@ class TestReviewFindingsStayFixed(PersistenceBase):
             self.assertFalse(rep["confirmed"])
             self.assertEqual(rep["survivors"], [pid])
             self.assertEqual(self.svc.snapshot()["unstopped_workers"]["pids"], [pid])
-            self.svc.restart("appr")                     # a new run clears the stop report...
-            end = time.time() + 20
-            while time.time() < end and self.svc.snapshot()["state"] == "running":
-                time.sleep(0.05)
-            snap = self.svc.snapshot()
-            self.assertEqual(snap["unstopped_workers"]["pids"], [pid])       # ...but not the survivor
-            self.assertEqual(snap["state"], "failed")                        # and nothing new was launched
+            with self.assertRaises(ValueError):          # no new run beside a worker that may still be alive
+                self.svc.restart("appr")
+            self.assertEqual(self.svc.snapshot()["unstopped_workers"]["pids"], [pid])
             self.assertEqual(self.fake.seen, [])
-            self.assertTrue(any("停止を確認できていない" in e["fields"].get("reason", "") for e in self.events("deny")))
             self.svc.select_asset("lab")
             with self.assertRaises(StopNotConfirmed):
                 self.svc.delete_asset(next(x["id"] for x in self.svc.assets() if x["name"] == HOST), actor="appr")
@@ -812,3 +888,153 @@ class TestReviewFindingsStayFixed(PersistenceBase):
         self.assertEqual(snap["state"], "failed")
         self.assertIn("診断許可が終了", snap["failure"]["reason"])
         self.assertFalse([f for f in snap["findings"] if f.get("evidence")])
+
+
+class TestSecondVerificationReview(PersistenceBase):
+    def wait_idle(self):
+        end = time.time() + 20
+        while time.time() < end and self.svc.snapshot()["state"] == "running":
+            time.sleep(0.05)
+
+    def test_nothing_but_restart_ends_an_emergency_stop(self):
+        self.onboard()
+        self.run_l1()
+        self.svc.emergency_stop("appr")
+        self.assertTrue((self.dir / "emergency-stop.flag").exists())
+        seen = len(self.fake.seen)
+        # re-confirming the scope (what the registration wizard does)
+        self.svc.confirm_asset_scope(url_or_host=self.url, approver="appr", activate_workspace=True,
+                                     allow_loopback_test=True)
+        # switching to another asset and back
+        self.svc.select_asset("lab")
+        self.svc.select_asset(next(x["id"] for x in self.svc.assets() if x["name"] == HOST))
+        # registering a lab alias with activation
+        self.svc.register_asset(name="alias.lab.example", kind="API", environment="x", ownership_verified=True,
+                                authorization_ref="DEMO-X", activate_workspace=True)
+        self.svc.select_asset(next(x["id"] for x in self.svc.assets() if x["name"] == HOST))
+        self.assertEqual(self.svc.gateway.state.value, "stopped")
+        self.assertEqual(self.svc.snapshot()["state"], "stopped")
+        self.assertIsNotNone(self.svc.snapshot()["stop_report"])
+        for call in (lambda: self.svc.verify_finding("all", actor="op"), self.svc.start,
+                     lambda: self.svc.verify_fix("appr")):
+            with self.assertRaises(ValueError):
+                call()
+        self.assertEqual(len(self.fake.seen), seen)
+        self.svc.restart("appr")
+        self.wait_idle()
+        self.assertEqual(self.svc.snapshot()["state"], "completed")
+        self.assertFalse((self.dir / "emergency-stop.flag").exists())
+
+    def test_no_ownership_lookup_during_an_emergency_stop(self):
+        self.onboard()
+        self.svc.emergency_stop("appr")
+        looked = []
+        with self.assertRaises(ValueError):
+            self.svc.verify_asset_ownership(url_or_host=self.url, method="dns_txt", actor="appr",
+                                            dns_lookup=lambda n: looked.append(n) or [])
+        self.assertEqual(looked, [])
+        self.assertTrue(self.svc._is_external_service_asset(HOST))     # refused, not treated as a failed proof
+
+    def test_a_stop_whose_state_could_not_be_saved_is_still_a_stop_after_a_restart(self):
+        self.onboard()
+        self.svc.start()
+        real = os.replace
+
+        def state_fails(src, dst):
+            if str(dst).endswith("state.json"):
+                raise OSError("disk full")
+            return real(src, dst)
+        with patch("aegis.assessment.os.replace", side_effect=state_fails):
+            self.svc.emergency_stop("appr")
+        again = self.restart()
+        self.assertEqual(again.snapshot()["state"], "stopped")
+        self.assertEqual(again.gateway.state.value, "stopped")
+        with self.assertRaises(ValueError):
+            again.resume("appr")
+
+    def test_survivors_are_still_on_record_after_the_control_plane_restarts(self):
+        self.onboard()
+        t = threading.Thread(target=lambda: self.svc.workers.run(SLEEPER, 120))
+        t.start()
+        end = time.time() + 5
+        while time.time() < end and not self.svc.workers.active_pids():
+            time.sleep(0.01)
+        pid = self.svc.workers.active_pids()[0]
+        with patch("aegis.runtime._killpg"):
+            with self.assertRaises(StopNotConfirmed):
+                self.svc.verify_asset_ownership(url_or_host=self.url, dns_lookup=lambda n: [])
+            self.assertTrue(self.events("asset.ownership_failed"))          # recorded although the call raised
+            again = self.open()                                             # the control plane is restarted
+            try:
+                self.assertEqual(again.system_status()["unstopped_workers"]["pids"], [pid])
+                again.select_asset("lab")
+                with self.assertRaises(ValueError):
+                    again.restart("appr")                                   # nothing new starts beside it
+            finally:
+                again.workers.kill_all()
+        os.killpg(pid, 9)
+        t.join(10)
+
+    def test_a_worker_that_is_gone_is_never_signalled_again(self):
+        self.onboard()
+        t = threading.Thread(target=lambda: self.svc.workers.run(SLEEPER, 120))
+        t.start()
+        end = time.time() + 5
+        while time.time() < end and not self.svc.workers.active_pids():
+            time.sleep(0.01)
+        pid = self.svc.workers.active_pids()[0]
+        with patch("aegis.runtime._killpg"):
+            self.svc.emergency_stop("appr")
+            self.assertEqual(self.svc.system_status()["unstopped_workers"]["pids"], [pid])
+        try:
+            os.killpg(pid, 9)                            # it dies by other means
+        except OSError:
+            pass
+        t.join(10)
+        self.assertFalse(WorkerPool.group_alive(pid))
+        with patch("aegis.runtime._killpg") as kill, patch("aegis.runtime.os.killpg", wraps=os.killpg) as raw:
+            for _ in range(3):
+                self.svc.system_status()
+                self.svc.snapshot()
+            kill.assert_not_called()
+            self.assertFalse([c for c in raw.call_args_list if c.args[1] != 0], "a dead worker's pid was signalled")
+        self.assertIsNone(self.svc.system_status()["unstopped_workers"])
+
+    def test_a_new_registration_is_not_an_error_because_of_someone_elses_survivor(self):
+        self.svc._unstopped.append({"host": "other.example.test", "pids": [os.getpid()], "at": time.time(),
+                                    "pool": None, "sessions": []})       # some survivor is on record
+        out = self.svc.issue_ownership_challenge(url=self.url, approver="appr")
+        self.assertIn("challenge", out)
+        self.assertTrue(self.events("asset.challenge_issued"))
+        self.svc._unstopped.clear()
+
+    def test_a_registration_that_cannot_be_committed_disturbs_nothing_else(self):
+        self.onboard()
+        other = f"http://other-{HOST}:{self.fake.server_port}"
+        real = os.replace
+
+        def ledger_fails(src, dst):
+            if str(dst).endswith("authority.ledger"):
+                raise OSError("disk full")
+            return real(src, dst)
+        with patch("aegis.authority_ledger.os.replace", side_effect=ledger_fails):
+            with self.assertRaises(ValueError):
+                self.svc.issue_ownership_challenge(url=other, approver="appr")
+        self.assertGreater((self.dir / "authority.epoch").stat().st_size, 0)    # the epoch record was not touched
+        self.assertNotIn(f"other-{HOST}", (self.dir / "state.json").read_text())    # and no card was written
+        again = self.restart()
+        self.assertEqual(again.ledger.rejected_reason, "")
+        self.assertFalse(again.ledger.names_unknown)
+        self.assertIn(HOST, again._verified_external_hosts)                     # the existing scope is intact
+        self.assertNotIn(f"other-{HOST}", [x["name"] for x in again.assets()])
+
+    def test_scope_that_expires_during_name_resolution_gets_no_proof_lookup(self):
+        self.onboard()
+        looked = []
+        self.svc._proof_dns_lookup = lambda name: looked.append(name) or []
+        ext = self.svc._verified_external_hosts[HOST]
+        epoch0 = self.svc.gateway._launch_epoch
+        ext["not_after"] = time.time() - 1
+        with self.assertRaises(NetworkError):
+            self.svc._require_addresses_covered_by_proof(HOST, ext, ["203.0.113.9"], epoch0)
+        self.assertEqual(looked, [])

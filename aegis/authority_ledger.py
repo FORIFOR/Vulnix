@@ -244,7 +244,7 @@ class AuthorityLedger:
                 generation, previous = str(body["generation"]), str(body.get("previous") or "")
                 if not isinstance(tables, dict):
                     raise ValueError("tables")
-            except (OSError, ValueError, KeyError, TypeError) as e:
+            except (OSError, ValueError, KeyError, TypeError, RecursionError) as e:
                 reason = f"the authority ledger cannot be read ({type(e).__name__})"
                 try:        # keep it for whoever has to find out why
                     os.replace(self.path, self.data_dir / f"authority.unreadable-{int(time.time())}.ledger")
@@ -256,11 +256,20 @@ class AuthorityLedger:
                     reason = "integrity check failed (unsigned or modified)"
                 elif not _GENERATION.fullmatch(generation):
                     reason = "integrity check failed (generation)"
+                elif epoch is None and previous == "" and not self.epoch_path.exists():
+                    # The very first commit, interrupted before its epoch record was
+                    # written. (Invalidation never leaves this picture: it EMPTIES the
+                    # record, it does not remove it.)
+                    self._counter = max(self._counter, self._count(generation))
+                    candidate, cand_generation = tables, generation
+                    self.assets_known = True
                 elif epoch is None:
                     self._counter = max(self._counter, self._count(generation))     # verified: safe to count from
+                    self._superseded.add(generation)                                # never acceptable again
                     reason = "not the latest authority state (missing or emptied epoch record)"
                 elif not (hmac.compare_digest(epoch, generation)
                           or (previous and hmac.compare_digest(epoch, previous))):
+                    self._superseded.add(generation)
                     reason = "not the latest authority state (older copy)"
                 else:
                     self._counter = max(self._counter, self._count(generation))
@@ -316,6 +325,10 @@ class AuthorityLedger:
                 # Which names are real services can no longer be known for certain
                 # (the list may be gone, edited, or older than the truth).
                 self.names_unknown = True
+        if reason and epoch:
+            # whatever the epoch record still names is refused from now on, also if
+            # the record cannot be advanced when the refusal is committed
+            self._superseded.add(epoch)
         self.rejected_reason = reason
         if reason:
             self.notice = ("保存されていた所有確認・範囲確認は引き継いでいません"
@@ -414,20 +427,22 @@ class AuthorityLedger:
 
     def _invalidate(self) -> None:
         self._committed = None
+        # The record is EMPTIED, not removed: "no record at all" is what an
+        # interrupted first commit looks like, and that is accepted at load.
         gone = False
-        try:
-            os.unlink(self.epoch_path)
-            gone = True
-        except FileNotFoundError:
-            gone = True
-        except OSError:
+        for attempt in ("in place", "recreate"):
             try:
-                with open(self.epoch_path, "r+b") as fh:
-                    fh.truncate(0)
-                    os.fsync(fh.fileno())
+                if attempt == "recreate":
+                    os.unlink(self.epoch_path)          # e.g. a read-only file in a writable directory
+                fd = os.open(self.epoch_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                try:
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
                 gone = True
+                break
             except OSError:
-                pass
+                continue
         if gone:
             self._epoch_on_disk = ""
             sync_dir(self.data_dir)

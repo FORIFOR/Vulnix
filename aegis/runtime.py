@@ -126,19 +126,24 @@ class WorkerPool:
         deadline = time.monotonic() + confirm_timeout_s
         last_kill = 0.0
         while True:
+            alive = self.still_running(pids)        # look first: nothing dead is signalled again
+            if not alive:
+                return []
             now = time.monotonic()
             if now - last_kill >= 0.25:
                 last_kill = now
-                with self._lock:
-                    sessions = [self._sessions[p] for p in pids if p in self._sessions]
-                for sess in sessions:
+                for sess in self.sessions_for(alive):
                     sess.kill()
-                for pid in pids:
+                for pid in alive:
                     _killpg(pid)
-            alive = self.still_running(pids)
+                alive = self.still_running(alive)
             if not alive or time.monotonic() > deadline:
                 return alive
             time.sleep(0.02)
+
+    def sessions_for(self, pids: list[int]) -> list:
+        with self._lock:
+            return [self._sessions[p] for p in pids if p in self._sessions]
 
     def terminate_active(self, confirm_timeout_s: float = 5.0) -> list[int]:
         """Kill every worker that is running now WITHOUT closing the pool, wait
