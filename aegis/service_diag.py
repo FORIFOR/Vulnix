@@ -55,7 +55,8 @@ def compute_finding_risk_score(
 
 
 MAX_TARGET_HEADERS = 100
-_UNSAFE_TEXT = re.compile(r"[\x00-\x1f\x7f<>`\[\]]")
+# control characters (C0, DEL, C1), line/paragraph separators, bidi overrides, markup
+_UNSAFE_TEXT = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029\u200e\u200f\u202a-\u202e\u2066-\u2069<>`\[\]]")
 
 
 def clean_target_text(value, limit: int = 512) -> str:
@@ -66,7 +67,7 @@ def clean_target_text(value, limit: int = 512) -> str:
 
 
 def _hsts_effective(value: str) -> bool:
-    m = re.search(r"max-age\s*=\s*\"?(\d{1,12})", value.lower())
+    m = re.search(r"(?:^|[;\s])max-age\s*=\s*\"?(\d{1,12})", value.lower())
     return bool(m) and int(m.group(1)) > 0
 
 
@@ -154,8 +155,9 @@ def analyze_l1_service_response(
                 }
             )
 
-    # 1b. No TLS at all
-    if not is_https:
+    # 1b. No TLS at all (an http endpoint that only redirects to https is the recommended setup)
+    redirects_to_https = is_redirect and headers_lower.get("location", "").lower().startswith("https://")
+    if not is_https and not redirects_to_https:
         r_score, r_rat = compute_finding_risk_score("high", "proven", internet_facing=False)
         findings.append(
             {

@@ -42,7 +42,7 @@ from .router import (AbliterationBackend, ArtexEngine, ArtexplannerBackend,
 from .runtime import WorkerPool
 from .secrets_store import EncryptedSecretStore
 from .l2_rules import BUILTIN_PROFILE_DIR, L2RuleSet, site_profile_dirs
-from .service_diag import analyze_l1_service_response, build_l2_candidates
+from .service_diag import analyze_l1_service_response, build_l2_candidates, clean_target_text
 
 SEVERITY_WEIGHT = {"critical": 40, "high": 25, "medium": 10, "low": 3, "info": 0}
 VERDICT_FACTOR = {"proven": 1.0, "detected": 0.6, "unverified": 0.6, "aborted": 0.6,
@@ -1272,6 +1272,14 @@ class AssessmentService:
             )
             if target_asset is None and self.a.asset.get("name", "").lower() == host:
                 target_asset = self.a.asset
+            if (not verified and roles is not None and "approver" not in roles
+                    and (host in self._ownership_proofs or host in self._verified_external_hosts)):
+                # Decided now, under the lock, and BEFORE anything is changed: someone
+                # else may have verified or confirmed this host while our lookup was
+                # in flight. Nothing about the asset is touched.
+                self.audit.record("asset.reverification_denied", actor=actor, host=host, method=method,
+                                  reason="approver role required for a host that holds authority")
+                raise ApproverRequired("所有確認済みの対象の再確認には承認責任者の権限が必要です")
             if target_asset is not None:
                 target_asset["ownership_verified"] = verified
                 # The proof record is what scope confirmation checks, not the flag.
@@ -1290,11 +1298,6 @@ class AssessmentService:
                 if verified and not target_asset.get("scope_confirmed"):
                     target_asset["status"] = "範囲確認待ち"
                     target_asset["note"] = "Step 3: 診断対象スコープと禁止事項を確認してください（L2実証は自動承認されません）"
-            if (not verified and roles is not None and "approver" not in roles
-                    and (host in self._ownership_proofs or host in self._verified_external_hosts)):
-                # decided now, under the lock: someone else may have verified or
-                # confirmed this host while our lookup was in flight
-                raise ApproverRequired("所有確認済みの対象の再確認には承認責任者の権限が必要です")
             if not verified:
                 # A failed (re-)verification revokes any previously confirmed scope:
                 # no further traffic is sent to this host until it is proven again.
@@ -1385,7 +1388,10 @@ class AssessmentService:
             # endpoint from the SIGNED proof, not from the (unsigned) display record
             scheme = str(proof.get("scheme") or target_asset.get("scheme") or parsed["scheme"])
             port = int(proof.get("port") or target_asset.get("port") or parsed["port"])
-            if "://" in (url_or_host or "") and (parsed["scheme"], int(parsed["port"])) != (scheme, port):
+            names_port = re.search(r":\d{1,5}(?:/|$)", (url_or_host or "").split("://", 1)[-1]) is not None
+            if (("://" in (url_or_host or "") and parsed["scheme"] != scheme)
+                    or (names_port and int(parsed["port"]) != port)
+                    or ("://" in (url_or_host or "") and int(parsed["port"]) != port)):
                 # the approver named one endpoint, the proof is for another: do not
                 # silently confirm something different from what was asked
                 raise ValueError(
@@ -1742,6 +1748,9 @@ class AssessmentService:
             self._end_operation()
 
     def _verify_finding(self, finding_id: str, actor: str, roles=None) -> dict:
+        if self.gateway.state is State.PAUSED:
+            # it would wait for "resume" while blocking every asset switch
+            raise ValueError("診断を一時停止中です。再開または停止してから検証を実行してください")
         if finding_id == "all":
             with self._lock:
                 if self.gateway.state is State.STOPPED:
@@ -2301,7 +2310,7 @@ class AssessmentService:
         banner_id = self._analyze(res, ev)
         self._think(
             "CVE/CISA KEV 照合と検証仮説の構築",
-            f"応答バナー（{res.get('headers', {}).get('Server', 'unknown')}）およびAPI境界から {len(self._real_findings())} 件の項目を特定しました。",
+            f"応答バナー（{clean_target_text(res.get('headers', {}).get('Server', 'unknown'), 120)}）およびAPI境界から {len(self._real_findings())} 件の項目を特定しました。",
             phase="analysis",
             tool="cve_engine",
             level="L1",
@@ -2759,6 +2768,9 @@ class AssessmentService:
         # Inference can be slow. Never hold the control-plane lock while waiting:
         # snapshots, worker updates and emergency stop must remain responsive.
         source, answer_text = self._answer_question(q, term=term, finding_id=finding_id)
+        # A model's answer is outside text too: make sure it can always be stored
+        # (an unpaired surrogate would otherwise make every later save fail).
+        answer_text = str(answer_text).encode("utf-8", "replace").decode("utf-8")[:20000]
         with self._lock:
             ai_msg = {
                 "id": "msg_" + secrets.token_hex(4),

@@ -49,6 +49,13 @@ _ID_RE = re.compile(r"[a-z][a-z0-9_]{1,60}")
 _TOKEN_KEY_RE = re.compile(r"[a-z][a-z0-9_]{0,40}_token")
 _PATH_KEY_RE = re.compile(r"[a-z][a-z0-9_]{0,40}_path")
 _PATH_RE = re.compile(r"/[!-~]{0,299}")
+_SAFE_OVERRIDE_PATTERN = re.compile(
+    r"(?:"
+    r"[A-Za-z0-9/_=&?~:@!,;-]"                      # a literal character
+    r"|\\[.?+*()\[\]{}|^$\\/-]"                         # an escaped metacharacter, e.g. \. or \?
+    r"|\[[A-Za-z0-9_\-]+\](?:\{\d{1,3}(?:,\d{1,3})?\})?"   # [class]{m,n}: letters, digits, _ and - only
+    r")+"
+)
 _HOST_RE = re.compile(r"[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?")
 _HEADER_NAME_RE = re.compile(r"[A-Za-z0-9-]{1,64}")
 _HEADER_VALUE_RE = re.compile(r"[ -~]{0,200}")
@@ -242,6 +249,16 @@ def validate_profile(raw, source: str = "<profile>") -> dict:
             # accepted it - allows. Without a pattern the path cannot be overridden.
             _need(isinstance(pattern, str) and 0 < len(pattern) <= 200, where,
                   f"`paths.{k}.override_pattern` must be a regular expression of at most 200 characters")
+            # Only literals, escaped characters, positive character classes and bounded
+            # repeats: no ".", "*", "+", groups, alternation or negated classes. Such a
+            # pattern cannot backtrack catastrophically and cannot quietly allow
+            # "anything" (path traversal, extra query parameters).
+            _need(_SAFE_OVERRIDE_PATTERN.fullmatch(pattern) is not None, where,
+                  f"`paths.{k}.override_pattern` may use only literal characters, [classes] and {{m,n}} repeats")
+            _need(all(int(n) <= 300 for n in re.findall(r"\{\d+,?(\d*)\}", pattern) if n), where,
+                  f"`paths.{k}.override_pattern` repeat counts must be at most 300")
+            _need("%" not in pattern and ".." not in pattern.replace("\\.", "."), where,
+                  f"`paths.{k}.override_pattern` must not allow '%' or '..'")
             try:
                 compiled = re.compile(pattern)
             except re.error as e:

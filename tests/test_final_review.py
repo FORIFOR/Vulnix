@@ -406,3 +406,71 @@ class TestExport(Ready):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ------------------------------------------------------------------ verification-review follow-ups
+class TestVerificationReviewFollowUps(Ready):
+    def test_a_refused_operator_recheck_leaves_the_asset_usable_and_is_audited(self):
+        with self.assertRaises(ApproverRequired):
+            self.svc.verify_asset_ownership(url_or_host=self.url, dns_lookup=lambda n: [], roles=("operator",), actor="op")
+        self.assertTrue(self.svc.a.asset.get("ownership_verified", True))
+        self.assertEqual(self.events("asset.reverification_denied")[-1]["actor"], "op")
+        real_id = self.svc.a.asset["id"]
+        self.svc.select_asset("lab")
+        self.svc.select_asset(real_id)                            # still selectable by the approver
+        self.assertTrue(self.svc._is_external_service_asset())
+
+    def test_text_from_a_model_cannot_make_state_unsaveable(self):
+        class Model:
+            _model = "stub"
+
+            def chat(self, q, ctx):
+                return "answer with a lone surrogate \ud800 and more"
+        self.svc.select_asset("lab")
+        self.svc._chat_backend = Model()
+        self.svc.ask_chat("IDORとは", "appr")
+        self.svc._save_state_locked()
+        self.assertIsNone(self.svc._persist_error)
+        json.loads((self.dir / "state.json").read_text(encoding="utf-8"))
+
+    def test_scheme_less_host_with_another_port_is_refused_too(self):
+        with self.assertRaises(ValueError):
+            self.svc.confirm_asset_scope(url_or_host=f"{HOST}:{self.fake.server_port + 1}", approver="appr",
+                                         allow_loopback_test=True)
+        self.svc.confirm_asset_scope(url_or_host=HOST, approver="appr", allow_loopback_test=True)   # no port named
+
+    def test_verification_is_refused_while_paused_instead_of_blocking_asset_switches(self):
+        from aegis.gateway import State
+        self.svc.gateway._state = State.PAUSED
+        try:
+            with self.assertRaises(ValueError):
+                self.svc.verify_finding("f_headers", "appr")
+            self.assertEqual(self.svc._inflight, 0)
+        finally:
+            self.svc.gateway._state = State.RUNNING if hasattr(State, "RUNNING") else list(State)[0]
+
+
+class TestOverridePatternsAreASafeSubset(unittest.TestCase):
+    def test_wildcards_groups_and_negated_classes_are_rejected_at_load(self):
+        from aegis.l2_rules import RuleError, validate_profile
+        base = json.loads((Path(__file__).parent / "fixtures" / "l2_profiles" / "example.json").read_text(encoding="utf-8"))
+        validate_profile(base)
+        for bad in (".*", "/.*", "a|/.*", "/(a+)+b", "/api/notes/[^/]+", "/api/notes/.+", "/api/notes/[A-Za-z0-9%]{1,9}",
+                    "/api/notes/[A-Za-z0-9_-]{1,9999}", "/api/notes/[a-z.]{1,9}"):
+            raw = json.loads(json.dumps(base))
+            raw["paths"]["note_b_path"]["override_pattern"] = bad
+            with self.subTest(pattern=bad):
+                with self.assertRaises(RuleError):
+                    validate_profile(raw)
+
+
+class TestAnalyzerFollowUps(unittest.TestCase):
+    def test_http_endpoint_that_only_redirects_to_https_is_not_reported_as_plain_http(self):
+        ok = analyze({"Location": "https://x.example/"}, url="http://x.example/", status=301, tls=False)
+        self.assertNotIn("f_l1_no_tls", ok)
+        self.assertIn("f_l1_no_tls", analyze({"Location": "http://x.example/login"}, url="http://x.example/",
+                                             status=302, tls=False))
+
+    def test_lookalike_hsts_directive_and_invisible_characters(self):
+        self.assertIn("f_headers", analyze({**GOOD, "Strict-Transport-Security": "xmax-age=600"}))
+        self.assertEqual(clean_target_text("a‮b c\x85d"), "abcd")
