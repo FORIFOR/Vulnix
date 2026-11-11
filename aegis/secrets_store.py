@@ -173,9 +173,17 @@ class EncryptedSecretStore:
         self._save_all()
         return self.public_status(asset_id, profile)
 
-    def clear_credentials(self, asset_id: str) -> None:
+    def clear_credentials(self, asset_id: str) -> bool:
+        """Forget an asset's tokens. Returns False if the file could not be rewritten:
+        the tokens are gone from this process, but the old ciphertext is still on
+        disk. A revocation must never be aborted because of that, so this does not
+        raise; the caller's scope/proof revocation makes those tokens unusable."""
         self._cache.pop(asset_id, None)
-        self._save_all()
+        try:
+            self._save_all()
+            return True
+        except OSError:
+            return False
 
     def has_any_token(self, asset_id: str) -> bool:
         rec = self._cache.get(asset_id) or {}

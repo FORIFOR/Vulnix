@@ -49,13 +49,20 @@ _ID_RE = re.compile(r"[a-z][a-z0-9_]{1,60}")
 _TOKEN_KEY_RE = re.compile(r"[a-z][a-z0-9_]{0,40}_token")
 _PATH_KEY_RE = re.compile(r"[a-z][a-z0-9_]{0,40}_path")
 _PATH_RE = re.compile(r"/[!-~]{0,299}")
+# An override pattern is a deliberately tiny language, not general regex:
+#   literal text, where the only metacharacter-like items are "\\." and "\\?";
+#   variable parts are a class made of A-Z / a-z / 0-9 / _ / - with a mandatory
+#   bounded repeat, and each one is followed by a separator that cannot be in a
+#   class (or by the end).
+# No ".", "*", "+", bare "?", groups, alternation, negated classes or free ranges.
+# Matching is therefore deterministic (no backtracking), and a value can never
+# contain "/", "..", "%", "?", "#", ";", "@" or whitespace unless the profile
+# spelled that character out literally.
+_OV_LIT = r"(?:[A-Za-z0-9/_=&~:,-]|\\[.?])"
+_OV_SEP = r"(?:[/=&~:,]|\\[.?])"
+_OV_CLASS = r"\[(?:A-Z|a-z|0-9|_|-)+\]\{\d{1,3}(?:,\d{1,3})?\}"
 _SAFE_OVERRIDE_PATTERN = re.compile(
-    r"(?:"
-    r"[A-Za-z0-9/_=&?~:@!,;-]"                      # a literal character
-    r"|\\[.?+*()\[\]{}|^$\\/-]"                         # an escaped metacharacter, e.g. \. or \?
-    r"|\[[A-Za-z0-9_\-]+\](?:\{\d{1,3}(?:,\d{1,3})?\})?"   # [class]{m,n}: letters, digits, _ and - only
-    r")+"
-)
+    rf"{_OV_LIT}+(?:{_OV_CLASS}{_OV_SEP}{_OV_LIT}*)*(?:{_OV_CLASS})?")
 _HOST_RE = re.compile(r"[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?")
 _HEADER_NAME_RE = re.compile(r"[A-Za-z0-9-]{1,64}")
 _HEADER_VALUE_RE = re.compile(r"[ -~]{0,200}")
@@ -254,11 +261,13 @@ def validate_profile(raw, source: str = "<profile>") -> dict:
             # pattern cannot backtrack catastrophically and cannot quietly allow
             # "anything" (path traversal, extra query parameters).
             _need(_SAFE_OVERRIDE_PATTERN.fullmatch(pattern) is not None, where,
-                  f"`paths.{k}.override_pattern` may use only literal characters, [classes] and {{m,n}} repeats")
-            _need(all(int(n) <= 300 for n in re.findall(r"\{\d+,?(\d*)\}", pattern) if n), where,
-                  f"`paths.{k}.override_pattern` repeat counts must be at most 300")
-            _need("%" not in pattern and ".." not in pattern.replace("\\.", "."), where,
-                  f"`paths.{k}.override_pattern` must not allow '%' or '..'")
+                  f"`paths.{k}.override_pattern` must be literal text with variable parts written as "
+                  "[A-Za-z0-9_-]{m,n}, each followed by a separator (/ = & : ~ , \\. \\?) or the end")
+            for lo, hi in re.findall(r"\{(\d+)(?:,(\d+))?\}", pattern):
+                _need(int(lo) <= int(hi or lo) <= 300, where,
+                      f"`paths.{k}.override_pattern` repeat counts must satisfy m <= n <= 300")
+            _need("\\.\\." not in pattern and "/\\./" not in pattern, where,
+                  f"`paths.{k}.override_pattern` must not contain '..' or '/./'")
             try:
                 compiled = re.compile(pattern)
             except re.error as e:

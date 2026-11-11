@@ -409,6 +409,10 @@ class OperatorStore:
         key, now = self._throttle_key(name), self._clock()
         with self._lock:
             self._apply_file_unlock_locked()
+            if len(self._locked_until) > 256:           # expired locks do not accumulate
+                for k in [k for k, t in self._locked_until.items() if t <= now]:
+                    self._locked_until.pop(k, None)
+                    self._throttle_names.pop(k, None)
             until = self._locked_until.get(key, 0.0)
             if until > now:
                 raise LockedOut(until - now)

@@ -2,7 +2,11 @@
 
 Produces an anonymized, strictly evidence-backed JSON payload from an
 Assessment snapshot and audit log for Remotion video rendering:
-- Anonymizes target hostnames and URLs by default.
+- The default (anonymized) export is PUBLISHABLE: it is rebuilt from an allow-list
+  (`to_public_export`), so it contains only enum values, numbers, booleans, hex
+  digest prefixes and fixed texts from this module - never text copied from the
+  assessment (titles, summaries, URLs, model output, target responses).
+- `anonymize=False` returns the full, identifying export (role-gated by the API).
 - Excludes ``demo_fixture`` / ``fixture`` and unmeasured ``candidate`` findings
   from confirmed findings, clearly distinguishing ``proven`` (L2 reproduction
   confirmed) vs ``detected`` (L1 observation confirmed) vs ``not_reproduced``.
@@ -247,7 +251,7 @@ def build_remotion_export(
         )
         frame += 75
 
-    return {
+    payload = {
         "schema_version": "vulnix-remotion-v1",
         "exported_at": datetime.now(timezone.utc).isoformat(),
         "anonymized": anonymize,
@@ -288,3 +292,182 @@ def build_remotion_export(
             "events": timeline_events,
         },
     }
+    # The anonymized export is meant to be published. It is not "the full export
+    # with names scrubbed": it is rebuilt from an allow-list, so a field or a text
+    # that nobody decided to publish cannot be in it.
+    return to_public_export(payload) if anonymize else payload
+
+
+# --------------------------------------------------------------------------
+# Public (publishable) export: allow-list only
+# --------------------------------------------------------------------------
+PUBLIC_SERVICE_NAME = "所有確認済みクラウドWebサービス（匿名化済み）"
+PUBLIC_LAB_NAME = "診断対象サービス（匿名化済み）"
+PUBLIC_TARGET_URL = "https://verified-service.example/"
+WITHHELD = "[非公開]"
+
+_SEVERITIES = ("critical", "high", "medium", "low", "info")
+_STATUSES = ("proven", "detected", "not_reproduced", "candidate", "incomplete", "unverified")
+_STATES = ("idle", "running", "paused", "completed", "stopped", "failed")
+_PHASES = ("scope", "config", "analysis", "verification", "report", "L1", "L2")
+_TOOLS = {"http_probe": "読み取り専用のHTTP検査", "reproduction_probe": "承認制の再現検証",
+          "demo_verify": "模擬検証", "cve_engine": "既知脆弱性の照合"}
+_RISK_LABELS = ("高リスク", "中リスク", "低リスク")
+
+# Text is never copied from a finding. It comes from this table, keyed by the
+# built-in finding id; anything else gets a generic label by level.
+PUBLIC_FINDING_TEXT = {
+    "f_headers": ("セキュリティヘッダーの未設定", "ブラウザ側の防御が働かず、攻撃の影響が大きくなるおそれがあります。",
+                  "不足しているセキュリティヘッダーを設定します。"),
+    "f_l1_cookies": ("Cookie の保護属性の不足", "Cookie が盗み見や不正な送信に使われるおそれがあります。",
+                     "Secure・HttpOnly・SameSite を設定します。"),
+    "f_l1_cors": ("CORS 設定の過剰な許可", "信頼していないサイトから応答を読み取られるおそれがあります。",
+                  "許可するオリジンを信頼できるものだけに限定します。"),
+    "f_powered": ("製品名・バージョン情報の露出", "既知の脆弱性を探す手がかりを与えます。",
+                  "応答ヘッダーから製品名とバージョンを取り除きます。"),
+    "f_l1_unauth_api": ("認証なしで応答するAPIの可能性", "認証が必要なデータが公開されているおそれがあります。",
+                        "APIの認証・認可の設定を確認します。"),
+    "f_l1_tls": ("旧世代のTLSプロトコル", "通信内容を解読されるおそれがあります。", "TLS 1.2 以上だけを許可します。"),
+    "f_l1_no_tls": ("HTTPS 未使用", "通信内容を読み取られ、改ざんされるおそれがあります。", "すべての通信を HTTPS で提供します。"),
+    "f_banner": ("既知の脆弱性に該当する可能性のあるバージョン", "公開済みの攻撃手法の対象になるおそれがあります。",
+                 "修正済みのバージョンへ更新します。"),
+    "f_idor": ("他ユーザーのデータへのアクセス制御（IDOR）", "他の利用者のデータを閲覧されるおそれがあります。",
+               "サーバー側でデータの所有者を照合します。"),
+    "f_sqli": ("入力値の検証不備（SQLインジェクション）", "データベースの内容を読み取られるおそれがあります。",
+               "プレースホルダを使ってクエリを組み立てます。"),
+}
+_GENERIC_L2 = ("認可・アクセス制御の検証項目", "権限のない利用者にデータや機能が開放されるおそれがあります。",
+               "サーバー側で権限を照合します。")
+_GENERIC = ("検出事項", WITHHELD, WITHHELD)
+
+_BADGES = {
+    ("proven", True): "実証済み（L2再現確認）",
+    ("proven", False): "実測で確認（L1読み取り専用の観測）",
+    ("detected", False): "検出済み（L1観測・実証未実施）", ("detected", True): "検出済み（L1観測・実証未実施）",
+    ("not_reproduced", False): "再現せず（防御有効）", ("not_reproduced", True): "再現せず（防御有効）",
+}
+_HEX = re.compile(r"[0-9a-f]{1,64}")
+
+
+def _enum(value, allowed, default):
+    return value if isinstance(value, str) and value in allowed else default
+
+
+def _score(value):
+    return max(0, min(100, int(value))) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def _hash16(value) -> str:
+    v = str(value or "").lower()[:16]
+    return v if _HEX.fullmatch(v) else ""
+
+
+def to_public_export(full: dict) -> dict:
+    """Rebuild the export from an allow-list. Every string in the result is a
+    constant from this module, an enum value, or a hex digest prefix; every other
+    value is a number or a boolean. Identifiers are replaced by neutral ones."""
+    ids: dict[str, str] = {}
+
+    def neutral(raw) -> str:
+        return ids.setdefault(str(raw), f"finding-{len(ids) + 1}")
+
+    def finding(f: dict) -> dict:
+        status = _enum(f.get("verification_status"), _STATUSES, "candidate")
+        is_l2 = "L2" in str(f.get("verification_badge", "")) or str(f.get("tool")) == "reproduction_probe"
+        title, impact, fix = PUBLIC_FINDING_TEXT.get(str(f.get("id")), _GENERIC_L2 if is_l2 else _GENERIC)
+        return {
+            "id": neutral(f.get("id")),
+            "title": title,
+            "severity": _enum(f.get("severity"), _SEVERITIES, "medium"),
+            "risk_score": _score(f.get("risk_score")),
+            "verification_status": status,
+            "verification_badge": _BADGES.get((status, is_l2), "未計測の候補（未検証）"),
+            "is_reproduction_proven": status == "proven",
+            "tool": _enum(f.get("tool"), tuple(_TOOLS), "other"),
+            "target_url": PUBLIC_TARGET_URL,
+            "audit_hash": _hash16(f.get("audit_hash")),
+            "impact": impact,
+            "fix": fix,
+        }
+
+    confirmed = [finding(f) for f in full.get("confirmed_findings", [])]
+    candidates = [finding(f) for f in full.get("unverified_candidates", [])]
+    checks = [{
+        "id": f"check-{i + 1}",
+        "phase": _enum(c.get("phase"), _PHASES, "L1"),
+        "title": _TOOLS.get(str(c.get("tool")), "検査"),
+        "tool": _enum(c.get("tool"), tuple(_TOOLS), "other"),
+        "status": "completed",
+    } for i, c in enumerate(full.get("executed_checks", []))]
+    comparisons = [{
+        "check_key": neutral(c.get("check_key")),
+        "before_status": _enum(c.get("before_status"), _STATUSES, "unverified"),
+        "after_status": _enum(c.get("after_status"), _STATUSES, "unverified"),
+        "defense_verified": c.get("defense_verified") is True,
+    } for c in full.get("before_after_comparisons", [])]
+
+    svc = full.get("service") or {}
+    ownership = svc.get("ownership_and_scope_confirmed") is True
+    name = PUBLIC_SERVICE_NAME if ownership else PUBLIC_LAB_NAME
+    risk = svc.get("risk") if isinstance(svc.get("risk"), dict) else {}
+
+    events, frame = [], 0
+    if ownership:
+        events.append({"frame": frame, "duration_frames": 60, "scene": "ownership_verified",
+                       "title": "Step 1-3: 所有確認・スコープ検証完了", "subtitle": name})
+        frame += 60
+    for c in checks[:8]:
+        events.append({"frame": frame, "duration_frames": 45, "scene": "check_execution",
+                       "phase": c["phase"], "title": c["title"], "tool": c["tool"]})
+        frame += 45
+    for f in confirmed:
+        events.append({"frame": frame, "duration_frames": 60, "scene": "finding_card", "finding_id": f["id"],
+                       "title": f["title"], "severity": f["severity"],
+                       "verification_status": f["verification_status"],
+                       "verification_badge": f["verification_badge"], "audit_hash": f["audit_hash"]})
+        frame += 60
+    for c in comparisons:
+        events.append({"frame": frame, "duration_frames": 75, "scene": "before_after_comparison", **c})
+        frame += 75
+
+    summary = full.get("summary") or {}
+    return {
+        "schema_version": "vulnix-remotion-v1",
+        "anonymized": True,
+        "service": {
+            "display_name": name,
+            "target_url": PUBLIC_TARGET_URL,
+            "ownership_and_scope_confirmed": ownership,
+            "local_lab_demo": svc.get("local_lab_demo") is True,
+            "state": _enum(svc.get("state"), _STATES, "idle"),
+            "risk": {"score": _score(risk.get("score")),
+                     "label": _enum(risk.get("label"), _RISK_LABELS, WITHHELD),
+                     "provisional": risk.get("provisional") is True},
+        },
+        "summary": {
+            "executed_checks_count": len(checks),
+            "confirmed_findings_count": len(confirmed),
+            "proven_count": sum(1 for f in confirmed if f["verification_status"] == "proven"),
+            "detected_count": sum(1 for f in confirmed if f["verification_status"] == "detected"),
+            "not_reproduced_count": sum(1 for f in confirmed if f["verification_status"] == "not_reproduced"),
+            "unverified_candidate_count": len(candidates),
+            "unsupported_ai_proposals_count": _score(summary.get("unsupported_ai_proposals_count")) or 0,
+            "fictional_or_unmeasured_excluded": True,
+        },
+        "executed_checks": checks,
+        "confirmed_findings": confirmed,
+        "unverified_candidates": candidates,
+        "before_after_comparisons": comparisons,
+        "remotion_timeline": {"fps": 30, "total_frames": max(frame, 90), "events": events},
+    }
+
+
+def public_strings() -> set[str]:
+    """Every string the public export may contain (besides neutral ids and hex digests)."""
+    out = {"vulnix-remotion-v1", PUBLIC_SERVICE_NAME, PUBLIC_LAB_NAME, PUBLIC_TARGET_URL, WITHHELD, "completed",
+           "other", "検査", "未計測の候補（未検証）", "Step 1-3: 所有確認・スコープ検証完了",
+           "ownership_verified", "check_execution", "finding_card", "before_after_comparison"}
+    out.update(_SEVERITIES, _STATUSES, _STATES, _PHASES, _RISK_LABELS, _TOOLS, _TOOLS.values(), _BADGES.values())
+    for triple in (*PUBLIC_FINDING_TEXT.values(), _GENERIC_L2, _GENERIC):
+        out.update(triple)
+    return out

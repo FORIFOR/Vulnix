@@ -56,7 +56,9 @@ def compute_finding_risk_score(
 
 MAX_TARGET_HEADERS = 100
 # control characters (C0, DEL, C1), line/paragraph separators, bidi overrides, markup
-_UNSAFE_TEXT = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029\u200e\u200f\u202a-\u202e\u2066-\u2069<>`\[\]]")
+_UNSAFE_TEXT = re.compile(
+    r"[\x00-\x1f\x7f-\x9f\u00ad\u061c\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff\ud800-\udfff"
+    r"\U000e0000-\U000e007f<>`\[\]]")
 
 
 def clean_target_text(value, limit: int = 512) -> str:
@@ -156,7 +158,10 @@ def analyze_l1_service_response(
             )
 
     # 1b. No TLS at all (an http endpoint that only redirects to https is the recommended setup)
-    redirects_to_https = is_redirect and headers_lower.get("location", "").lower().startswith("https://")
+    location = urllib.parse.urlsplit(headers_lower.get("location", "").strip())
+    redirects_to_https = (isinstance(status_code, int) and status_code in (301, 302, 303, 307, 308)
+                          and location.scheme.lower() == "https"
+                          and (location.hostname or "").lower() == (parsed_url.hostname or "").lower())
     if not is_https and not redirects_to_https:
         r_score, r_rat = compute_finding_risk_score("high", "proven", internet_facing=False)
         findings.append(

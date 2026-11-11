@@ -390,8 +390,10 @@ class TestExport(Ready):
         self.assertTrue(l1)
         self.assertTrue(all("L2" not in f["verification_badge"] for f in l1))
         self.svc.verify_finding("f_ex_idor", "appr")
-        proven_l2 = next(f for f in self.svc.remotion_export()["confirmed_findings"] if f["id"] == "f_ex_idor")
-        self.assertIn("L2", proven_l2["verification_badge"])
+        public = self.svc.remotion_export()
+        self.assertEqual([f["title"] for f in public["confirmed_findings"] if "L2" in f["verification_badge"]],
+                         ["認可・アクセス制御の検証項目"])
+        self.assertNotIn("f_ex_idor", json.dumps(public))          # profile-defined ids are not published either
         self.assertNotIn(TOKEN_A, text)
 
     def test_the_identifying_export_needs_authority_and_is_recorded(self):
@@ -403,9 +405,6 @@ class TestExport(Ready):
         self.assertIn(HOST, json.dumps(body))
         self.assertEqual(self.events("export.remotion_identified")[-1]["actor"], "appr")
 
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 # ------------------------------------------------------------------ verification-review follow-ups
@@ -474,3 +473,356 @@ class TestAnalyzerFollowUps(unittest.TestCase):
     def test_lookalike_hsts_directive_and_invisible_characters(self):
         self.assertIn("f_headers", analyze({**GOOD, "Strict-Transport-Security": "xmax-age=600"}))
         self.assertEqual(clean_target_text("a‮b c\x85d"), "abcd")
+
+
+# ------------------------------------------------------------------ publishable export: allow-list
+class TestPublicExportIsAnAllowList(unittest.TestCase):
+    MARK = "LEAK-MARKER"
+
+    def snapshot(self):
+        m = self.MARK
+        ev = {"evidence_id": f"ev_{m}", "audit_hash": "ab12cd34ef56ab12cd34", "saved_at": 1.0, "tool": "http_probe",
+              "target_url": f"https://{m}.internal.example:8443/{m}", "content": f"Set-Cookie: sid={m}"}
+        def finding(fid, status, level="L1", **extra):
+            return {"id": fid, "title": f"{m} title", "severity": "high", "risk_score": 71, "risk_level": level,
+                    "risk_rationale": f"{m} rationale", "evidence_status": status, "summary": f"{m} summary",
+                    "impact": f"{m} impact", "category": f"{m} category", "verdict_note": f"{m} note",
+                    "why_detected": f"{m} why", "remediation": {"steps": [f"{m} step"], "how_to_verify": f"{m} how"},
+                    "executor": {"tool": "http_probe", "agent": f"{m} agent"}, "evidence": [ev], **extra}
+        return {
+            "id": f"scan_{m}", "demo": False, "is_external_service": True, "state": "completed",
+            "target_url": f"https://{m}.internal.example:8443/", "risk": {"score": 64, "label": "中リスク", "basis": f"{m} basis"},
+            "asset": {"id": f"asset_{m}", "name": f"{m}.internal.example", "display_name": f"{m} display",
+                      "approver": f"{m}-approver", "challenge": {"token": f"vulnix-verify={m}"}, "environment": f"{m} env"},
+            "authorization": {"ref": f"SOW-{m}"},
+            "findings": [finding("f_headers", "proven"), finding(f"f_{m}_custom", "detected"),
+                         finding(f"f_{m}_l2", "proven", "L2", executor={"tool": "reproduction_probe"}),
+                         finding("f_l1_cors", "candidate"), finding(f"f_{m}_sev", "detected", severity=f"{m}-sev")],
+            "artex_tasks": [{"id": f"t_{m}", "phase": "config", "title": f"{m} model rationale", "tool": "http_probe",
+                             "status": "completed"},
+                            {"id": "t2", "phase": f"{m}-phase", "title": "x", "tool": f"{m}-tool", "status": "completed"},
+                            {"id": "t3", "title": f"{m} unsupported", "tool": "x", "status": "unsupported"}],
+            "defense_comparison": {"actor": f"{m}-actor", "items": [
+                {"id": f"f_{m}_l2", "title": f"{m} cmp", "severity": "high", "before_verdict": "proven",
+                 "after_verdict": f"{m}-verdict", "latest_evidence_id": f"ev_{m}"}]},
+            "secrets_status": {"host": f"{m}.internal.example"}, "chat_messages": [{"text": m}],
+        }
+
+    def test_no_text_from_the_assessment_reaches_the_public_export(self):
+        from aegis import remotion_export as rx
+        out = build_remotion_export(self.snapshot(), [{"event": "auth.login", "fields": {"actor": self.MARK}}])
+        text = json.dumps(out, ensure_ascii=False)
+        self.assertNotIn(self.MARK, text)
+        self.assertNotIn("internal.example", text)
+        self.assertNotIn("8443", text)
+        allowed = rx.public_strings()
+        seen: list[str] = []
+
+        def walk(node):
+            if isinstance(node, dict):
+                for k, v in node.items():
+                    self.assertIsInstance(k, str)
+                    walk(v)
+            elif isinstance(node, list):
+                for v in node:
+                    walk(v)
+            elif isinstance(node, str):
+                seen.append(node)
+            else:
+                self.assertTrue(node is None or isinstance(node, (bool, int, float)), node)
+        walk(out)
+        for s in seen:
+            ok = (s in allowed or s == "" or rx._HEX.fullmatch(s) is not None
+                  or __import__("re").fullmatch(r"(finding|check)-\d{1,4}", s) is not None)
+            self.assertTrue(ok, f"string not on the allow-list: {s!r}")
+        # still useful: counts, statuses, badges and evidence digests survive
+        self.assertEqual(out["summary"]["confirmed_findings_count"], 4)
+        self.assertEqual(out["summary"]["proven_count"], 2)
+        badges = [f["verification_badge"] for f in out["confirmed_findings"]]
+        self.assertIn("実証済み（L2再現確認）", badges)
+        self.assertIn("実測で確認（L1読み取り専用の観測）", badges)
+        self.assertEqual(out["confirmed_findings"][0]["title"], "セキュリティヘッダーの未設定")
+        self.assertEqual(out["confirmed_findings"][0]["audit_hash"], "ab12cd34ef56ab12")
+        self.assertEqual(out["confirmed_findings"][-1]["severity"], "medium")        # unknown value -> default
+        self.assertEqual(out["service"]["target_url"], "https://verified-service.example/")
+        self.assertEqual(out["before_after_comparisons"][0]["after_status"], "unverified")
+        self.assertNotIn("exported_at", out)
+
+    def test_the_identifying_export_is_unchanged_and_opt_in(self):
+        out = build_remotion_export(self.snapshot(), anonymize=False)
+        self.assertIn(self.MARK, json.dumps(out, ensure_ascii=False))
+        self.assertFalse(out["anonymized"])
+
+
+# ------------------------------------------------------------------ fail closed when state cannot be saved
+class TestNothingIsSentWhileStateCannotBeSaved(Ready):
+    def broken_disk(self):
+        return patch("aegis.assessment.os.replace", side_effect=OSError("read-only file system"))
+
+    def test_every_entry_point_sends_nothing(self):
+        real_id = self.svc.a.asset["id"]
+        with self.broken_disk():
+            for name, call in (
+                ("verify L1 item", lambda: self.svc.verify_finding("f_headers", "appr")),
+                ("verify L2 item", lambda: self.svc.verify_finding("f_ex_idor", "appr", roles=("approver",))),
+                ("verify all", lambda: self.svc.verify_finding("all", "appr")),
+                ("verify fix", lambda: self.svc.verify_fix("appr")),
+                ("restart", lambda: self.svc.restart("appr")),
+                ("direct exec", lambda: self.svc._exec("http_probe", "read_only_probe",
+                                                       {"url": self.svc.a.target_url, "method": "GET"},
+                                                       approval_actor="verify:appr")),
+            ):
+                with self.subTest(entry=name):
+                    try:
+                        result = call()
+                    except (ValueError, NetworkError):
+                        result = None
+                    time.sleep(0.3)
+                    self.assertEqual(self.fake.seen, [], name)
+                    if name == "direct exec":
+                        self.assertEqual(result, (None, None))
+            self.assertIsNotNone(self.svc.snapshot()["persistence_error"])
+        self.assertTrue(self.events("state.persist_failed"))
+        self.assertEqual(self.svc.a.asset["id"], real_id)
+
+    def test_a_run_already_in_progress_stops_before_its_next_request(self):
+        # saving breaks AFTER the run was allowed to start: the request inside the run is still refused
+        self.svc._reset_workspace_locked()
+        self.fake.seen.clear()
+        real_ensure = self.svc._ensure_active_window_locked
+        state = {"armed": False}
+
+        def ensure_then_break():
+            real_ensure()
+            state["armed"] = True
+        real_replace = __import__("os").replace
+
+        def flaky_replace(src, dst):
+            if state["armed"] and str(dst).endswith("state.json"):
+                raise OSError("disk full")
+            return real_replace(src, dst)
+        with patch.object(self.svc, "_ensure_active_window_locked", side_effect=ensure_then_break), \
+                patch("aegis.assessment.os.replace", side_effect=flaky_replace):
+            self.svc.start()
+            end = time.time() + 15
+            while time.time() < end and self.svc.snapshot()["state"] == "running":
+                time.sleep(0.05)
+        self.assertEqual(self.svc.snapshot()["state"], "failed")
+        self.assertEqual(self.fake.seen, [])                      # not even the read-only GET went out
+
+    def test_proof_recheck_is_not_attempted_either(self):
+        lookups = []
+        self.svc._proof_dns_lookup = lambda n: lookups.append(n) or []
+        self.svc._verified_external_hosts[HOST]["allow_loopback_test"] = False
+        self.svc._custom_resolver = lambda h: ["93.184.216.34"]
+        self.svc._persist_error = "OSError"
+        with self.assertRaises(NetworkError):
+            self.svc._resolve_host(HOST)
+        self.assertEqual(lookups, [])
+        self.assertIn(HOST, self.svc._verified_external_hosts)    # and nothing was revoked on a guess
+
+    def test_work_resumes_once_saving_works_again(self):
+        with self.broken_disk():
+            try:
+                self.svc.verify_finding("f_headers", "appr")       # refused or recorded as failed - never sent
+            except ValueError:
+                pass
+        self.assertEqual(self.fake.seen, [])
+        self.svc.verify_finding("f_headers", "appr")
+        self.assertEqual([p for p, _ in self.fake.seen], ["/"])
+        self.assertIsNone(self.svc.snapshot()["persistence_error"])
+
+
+# ------------------------------------------------------------------ sixth review: workspace residue, epoch, patterns
+class TestNoResidueAcrossAssets(Ready):
+    def external(self):
+        ext = RecordingBackend()
+        self.svc._chat_backend = ext
+        return ext
+
+    def test_registering_and_activating_a_lab_alias_does_not_carry_real_evidence_along(self):
+        ext = self.external()
+        real_findings = [f["id"] for f in self.svc.snapshot()["findings"] if f.get("evidence")]
+        self.assertTrue(real_findings)
+        self.svc.register_asset(name="alias.lab.test", kind="API", environment="x", authorization_ref="SOW-1",
+                                ownership_verified=True, activate_workspace=True, actor="op")
+        snap = self.svc.snapshot()
+        self.assertEqual(snap["asset"]["name"], "alias.lab.test")
+        self.assertFalse([f for f in snap["findings"] if any(HOST in json.dumps(e) for e in f.get("evidence", []))])
+        for fid in real_findings + [f["id"] for f in snap["findings"]]:
+            self.svc.ask_chat("説明して", "op", finding_id=fid)
+        sent = json.dumps(ext.chats, ensure_ascii=False)
+        for leak in (HOST, "sid=abc", str(self.fake.server_port)):
+            self.assertNotIn(leak, sent)
+
+    def test_the_active_asset_cannot_change_while_a_run_is_paused_or_running(self):
+        from aegis.gateway import State
+        for state, gw in (("paused", State.PAUSED), ("running", State.RUNNING)):
+            self.svc.a.state = state
+            self.svc.gateway._state = gw
+            for call in (lambda: self.svc.select_asset("lab"),
+                         lambda: self.svc.register_asset(name="alias2.lab.test", kind="API", environment="x",
+                                                         authorization_ref="S", ownership_verified=True,
+                                                         activate_workspace=True),
+                         lambda: self.svc.delete_asset(self.svc.a.asset["id"])):
+                with self.subTest(state=state):
+                    try:
+                        call()                                   # refused, or done without activating
+                    except ValueError:
+                        pass
+                    self.assertEqual(self.svc.a.asset["name"], HOST)
+                    self.assertIn("f_headers", self.svc.a.findings)   # the workspace was not replaced
+        self.svc.a.state = "completed"
+        self.svc.gateway._state = State.RUNNING
+
+    def test_evidence_from_a_real_host_is_never_sent_out_even_under_a_lab_asset(self):
+        ext = self.external()
+        real = next(f for f in self.svc.snapshot()["findings"] if f.get("evidence"))
+        self.svc.select_asset("lab")
+        self.svc.a.findings["planted"] = {**real, "id": "planted"}      # residue, however it got there
+        self.svc.ask_chat("説明して", "op", finding_id="planted")
+        self.assertEqual(ext.chats, [])
+        self.svc.ask_chat("IDORとは", "op")                              # ordinary lab chat still uses the model
+        self.assertEqual(len(ext.chats), 1)
+
+
+class TestRevocationThatCannotBeSavedIsNotUndoneByARestart(RealServiceBase):
+    def test_stale_authority_on_disk_is_made_unacceptable(self):
+        self.onboard()
+        self.set_secrets()
+        self.assertTrue((self.dir / "authority.epoch").exists())
+        with patch("aegis.assessment.os.replace", side_effect=OSError("disk full")):
+            # an approver's failed re-check revokes scope and proof in memory; the save fails
+            self.svc.verify_asset_ownership(url_or_host=self.url, dns_lookup=lambda n: [])
+        self.assertFalse(self.svc._is_external_service_asset(HOST))
+        self.assertIsNotNone(self.svc._persist_error)
+        self.assertFalse((self.dir / "authority.epoch").exists())     # the stale state.json can no longer be honoured
+        self.svc.workers.kill_all()
+        again = AssessmentService(self.dir, LAB_PORT, verify_seconds=0.1, l2_profile_dirs=PROFILE_DIRS)
+        self.assertFalse(again._is_external_service_asset(HOST))      # not restored
+        self.assertEqual(again._ownership_proofs, {})
+        self.assertIn("state.authority_rejected", [e["event"] for e in again.audit.entries()])
+        again.workers.kill_all()
+
+    def test_a_failed_save_without_an_authority_change_keeps_the_epoch(self):
+        self.onboard()
+        with patch("aegis.assessment.os.replace", side_effect=OSError("disk full")):
+            self.svc._save_state_locked()                              # nothing about authority changed
+        self.assertTrue((self.dir / "authority.epoch").exists())
+        self.svc.workers.kill_all()
+        again = AssessmentService(self.dir, LAB_PORT, verify_seconds=0.1, l2_profile_dirs=PROFILE_DIRS)
+        self.assertTrue(again._is_external_service_asset(HOST))        # a transient error does not cost the scope
+        again.workers.kill_all()
+
+
+class TestEpochCannotBeReplayedByCounting(RealServiceBase):
+    def restart(self):
+        self.svc.workers.kill_all()
+        self.svc = AssessmentService(self.dir, LAB_PORT, verify_seconds=0.1, l2_profile_dirs=PROFILE_DIRS)
+        self.svc._custom_resolver = lambda h: ["127.0.0.1"] if h == HOST else []
+        return self.svc
+
+    def test_deleting_state_json_does_not_restart_the_sequence(self):
+        self.onboard()
+        old_state = (self.dir / "state.json").read_bytes()               # signed, scope confirmed
+        old_epoch = self.svc._authority_epoch
+        self.svc.delete_asset(self.svc.a.asset["id"])                    # authority revoked
+        for variant in ("missing", "truncated"):
+            with self.subTest(variant=variant):
+                if variant == "missing":
+                    (self.dir / "state.json").unlink()
+                else:
+                    (self.dir / "state.json").write_text("{")
+                svc = self.restart()
+                counter = int(svc._authority_epoch.split(":")[0])
+                self.assertGreater(counter, int(old_epoch.split(":")[0]))  # the sequence continued
+                # make ordinary authority changes; no number of them can re-create the old epoch
+                for i in range(3):
+                    svc.issue_ownership_challenge(url=f"https://count-{variant}-{i}.example.org", approver="appr")
+                    self.assertNotEqual(svc._authority_epoch, old_epoch)
+                (self.dir / "state.json").write_bytes(old_state)
+                svc = self.restart()
+                self.assertFalse(svc._is_external_service_asset(HOST))
+                self.assertEqual(svc._verified_external_hosts, {})
+
+    def test_epoch_tokens_are_unpredictable(self):
+        a = self.svc.issue_ownership_challenge(url="https://one.example.org", approver="appr")
+        first = self.svc._authority_epoch
+        self.svc.issue_ownership_challenge(url="https://two.example.org", approver="appr")
+        self.assertRegex(first, r"^\d+:[0-9a-f]{32}$")
+        self.assertNotEqual(first.split(":")[1], self.svc._authority_epoch.split(":")[1])
+        self.assertTrue(a)
+
+
+class TestOverridePatternLanguage(unittest.TestCase):
+    def check(self, pattern):
+        from aegis.l2_rules import RuleError, validate_profile
+        base = json.loads((Path(__file__).parent / "fixtures" / "l2_profiles" / "example.json").read_text(encoding="utf-8"))
+        base["paths"]["note_b_path"]["override_pattern"] = pattern
+        try:
+            validate_profile(base)
+            return True
+        except RuleError:
+            return False
+
+    def test_only_the_deterministic_mini_language_is_accepted(self):
+        self.assertTrue(self.check("/api/notes/[A-Za-z0-9_-]{1,64}"))
+        started = time.time()
+        for bad in ("[0-z]{1,60}", "/api/notes/[A-z]{1,9}", "/\\.?\\./\\.?\\./[a-z]{1,20}", "/api/notes/?",
+                    "/api/notes/\\??", "a?" * 30 + "a" * 30, "/api/notes/" + "[a]{0,99}" * 20 + "b",
+                    "/api/notes/[a-z]{999}", "/api/notes/[a-z]{9,2}", "/api/notes/[a-z]{1,9}[0-9]{1,9}",
+                    "/api/notes/[a-z]{1,9}a", "/api/notes/[a-z]", "/api/notes/[a-z]{1,3};y", "/api/notes/[a-z]{1,3}@y",
+                    "/api/notes/\\.\\./[a-z]{1,3}", "/api/notes/[a-z ]{1,3}", "/api/notes/[a-z]{1,3}#x"):
+            with self.subTest(pattern=bad):
+                self.assertFalse(self.check(bad))
+        self.assertLess(time.time() - started, 5)                 # validation itself cannot be made slow
+
+    def test_values_an_accepted_pattern_admits_stay_inside_the_path(self):
+        import re
+        pattern = "/api/notes/[A-Za-z0-9_-]{1,64}"
+        for value in ("/api/notes/b1?admin=1", "/api/notes/b1;x=1", "/api/notes/x@y", "/api/notes/..",
+                      "/api/notes/a/b", "/api/notes/a%2fb", "/api/notes/a b", "/api/notes/a\nb", "/api/notes/"):
+            self.assertIsNone(re.fullmatch(pattern, value), value)
+        self.assertIsNotNone(re.fullmatch(pattern, "/api/notes/b1"))
+
+
+class TestAnalyzerAndTransportFollowUps2(unittest.TestCase):
+    def test_redirect_to_https_must_stay_on_the_same_host(self):
+        for location in ("https://other.example/", "https://", "//x.example/", "/login"):
+            found = analyze({"Location": location}, url="http://x.example/", status=301, tls=False)
+            self.assertIn("f_l1_no_tls", found, location)
+        self.assertIn("f_l1_no_tls", analyze({"Location": "https://x.example/"}, url="http://x.example/",
+                                             status=304, tls=False))
+        self.assertNotIn("f_l1_no_tls", analyze({"Location": "https://X.example/app"}, url="http://x.example/",
+                                                status=308, tls=False))
+
+    def test_invisible_characters_and_surrogates_are_removed(self):
+        self.assertEqual(clean_target_text("a\u200bb\u200dc\ufeffd\u061ce\u2060f\u00adg\ud800h"), "abcdefgh")
+
+    def test_worker_output_that_is_not_valid_utf8_does_not_raise(self):
+        import sys
+        from aegis.runtime import WorkerPool
+        pool = WorkerPool(max_concurrent=1)
+        try:
+            code = "import sys; sys.stdout.buffer.write(bytes([123,34,120,34,58,34,237,178,128,255,34,125]))"
+            result = pool.run([sys.executable, "-c", code], 10)
+            self.assertEqual(result.returncode, 0)
+            self.assertIn("x", result.stdout)
+        finally:
+            pool.kill_all()
+
+
+class TestScopeEndpointMismatch2(RealServiceBase):
+    def test_port_named_in_odd_forms_is_still_compared(self):
+        ch = self.svc.issue_ownership_challenge(url=self.url, approver="appr")["challenge"]
+        self.svc.verify_asset_ownership(url_or_host=self.url, dns_lookup=self._token_lookup(ch))
+        wrong = self.fake.server_port + 1
+        for form in (f"{HOST}:{wrong}?x=1", f"{HOST}:{wrong}#f", f"{HOST}:{wrong} ", f"{HOST}:{wrong}/a"):
+            with self.subTest(form=form):
+                with self.assertRaises(ValueError):
+                    self.svc.confirm_asset_scope(url_or_host=form, approver="appr", allow_loopback_test=True)
+        self.assertNotIn(HOST, self.svc._verified_external_hosts)
+
+
+if __name__ == "__main__":
+    unittest.main()

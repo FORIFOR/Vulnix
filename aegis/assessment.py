@@ -18,6 +18,7 @@ import secrets
 import sys
 import threading
 import time
+import urllib.parse
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -165,8 +166,11 @@ class AssessmentService:
         self._ownership_proofs: dict[str, dict] = {}      # host -> recorded challenge proof
         self._real_service_hosts: set[str] = set()        # hosts registered through the ownership flow
         self._accepted_profiles: dict[str, str] = {}      # site profile id -> sha256 an admin accepted
-        self._authority_epoch = 0
+        # "<counter>:<random>" - the random part makes an epoch impossible to reach
+        # again by counting, so an old signed state can never match a later epoch
+        self._authority_epoch = ""
         self._authority_digest = ""
+        self._persisted_authority_digest = ""             # digest of the tables as last written to disk
         self._custom_resolver = None
         # test seams for the proof re-check on address change (None = real lookups)
         self._proof_dns_lookup = None
@@ -337,6 +341,10 @@ class AssessmentService:
 
         The Gateway pins the worker to exactly the addresses returned by this
         resolution, so what is checked here is what is contacted."""
+        if self._persist_error:
+            # the outcome of a proof re-check (accepted addresses, or a revocation)
+            # has to be recorded; without a working store nothing is looked up or fetched
+            raise NetworkError("状態を保存できないため、所有の再確認と送信を中止しました")
         known = set(ext.get("verified_addresses") or [])
         new = [a for a in addrs if a not in known]
         first_use = not known
@@ -615,7 +623,23 @@ class AssessmentService:
                 fh.write(json.dumps(payload, ensure_ascii=False, indent=2))
             os.replace(tmp_path, self.state_path)
             self._persist_error = None
+            self._persisted_authority_digest = self._authority_digest
         except Exception as e:      # OSError, but also anything that makes the state unserialisable
+            # If the authority tables changed since the last successful save (e.g. a
+            # revocation), the copy on disk is now WRONG, and it would be honoured
+            # after a restart. Removing the small epoch record needs no free space and
+            # makes that stale copy unacceptable: after a restart every real service
+            # has to be verified and confirmed again.
+            try:
+                current = hashlib.sha256(self._canonical(self._authority_tables()).encode("utf-8")).hexdigest()
+                if current != self._persisted_authority_digest:
+                    try:
+                        os.unlink(self._epoch_path())
+                    except FileNotFoundError:
+                        pass
+                    self._authority_digest = ""          # a later successful save issues a new epoch
+            except Exception:
+                pass
             # Not persisted: what is on disk may still grant authority that was just
             # revoked in memory (it would come back after a restart). Say so, and
             # refuse real-service work until saving works again.
@@ -637,11 +661,11 @@ class AssessmentService:
                 "real_service_hosts": sorted(self._real_service_hosts),
                 "accepted_profiles": self._accepted_profiles}
 
-    def _authority_mac(self, tables: dict, epoch: int) -> str:
+    def _authority_mac(self, tables: dict, epoch: str) -> str:
         """MAC over everything in state.json that grants authority, bound to an
         epoch. Keyed from the 0600 master key, so an edited state file cannot grant
         ownership, a proof, scope, a window or addresses."""
-        msg = f"{int(epoch)}|{self._canonical(tables)}".encode("utf-8")
+        msg = f"{epoch}|{self._canonical(tables)}".encode("utf-8")
         return hmac.new(self._state_mac_key, msg, hashlib.sha256).hexdigest()
 
     def _epoch_path(self) -> Path:
@@ -657,14 +681,20 @@ class AssessmentService:
             fh.write(json.dumps(body))
         os.replace(tmp, self._epoch_path())
 
-    def _read_epoch(self) -> int | None:
+    def _read_epoch(self) -> str | None:
         try:
             body = json.loads(self._epoch_path().read_text(encoding="utf-8"))
-            epoch = int(body["epoch"])
+            epoch = body["epoch"]
         except (OSError, ValueError, KeyError, TypeError):
+            return None
+        if not isinstance(epoch, str) or not re.fullmatch(r"\d{1,12}:[0-9a-f]{32}", epoch):
             return None
         want = hmac.new(self._state_mac_key, f"epoch|{epoch}".encode(), hashlib.sha256).hexdigest()
         return epoch if hmac.compare_digest(str(body.get("mac") or ""), want) else None
+
+    def _next_epoch(self) -> str:
+        counter = int(self._authority_epoch.split(":", 1)[0]) if self._authority_epoch else 0
+        return f"{counter + 1}:{secrets.token_hex(16)}"
 
     def _signed_authority_locked(self) -> dict:
         """The authority tables plus epoch and MAC. Every change to the tables
@@ -675,7 +705,7 @@ class AssessmentService:
         tables = self._authority_tables()
         digest = hashlib.sha256(self._canonical(tables).encode("utf-8")).hexdigest()
         if digest != self._authority_digest:
-            self._authority_epoch += 1
+            self._authority_epoch = self._next_epoch()
             self._authority_digest = digest
             self._write_epoch_locked()          # epoch first: a crash in between fails closed
         return {**json.loads(self._canonical(tables)),
@@ -684,6 +714,9 @@ class AssessmentService:
 
     def _load_state_locked(self) -> None:
         """Restore persisted assessment state, findings, evidence, and approvals across restarts."""
+        # The epoch record is read first and unconditionally: a missing, empty or
+        # corrupt state.json must not restart the epoch sequence.
+        self._authority_epoch = self._read_epoch() or ""
         if not self.state_path.exists():
             return
         try:
@@ -703,14 +736,11 @@ class AssessmentService:
         rejected_reason = ""
         stored_epoch = self._read_epoch()
         if any(saved.values()):
-            try:
-                epoch = int(data.get("authority_epoch"))
-            except (TypeError, ValueError):
-                epoch = -1
+            epoch = str(data.get("authority_epoch") or "")
             mac = str(data.get("authority_mac") or "")
             if not hmac.compare_digest(mac, self._authority_mac(saved, epoch)):
                 rejected_reason = "integrity check failed (unsigned or modified)"
-            elif stored_epoch is None or epoch != stored_epoch:
+            elif stored_epoch is None or not hmac.compare_digest(epoch, stored_epoch):
                 rejected_reason = "not the latest authority state (older copy or missing epoch record)"
             if rejected_reason:
                 # Restore nothing that grants authority. The assets stay listed and
@@ -725,10 +755,11 @@ class AssessmentService:
                 self._real_service_hosts = {str(h).lower() for h in saved["real_service_hosts"]}
                 self._accepted_profiles = {str(k): str(v) for k, v in saved["accepted_profiles"].items()}
         # never go backwards, whatever was on disk
-        self._authority_epoch = max(stored_epoch or 0, self._authority_epoch)
+        self._authority_epoch = stored_epoch or self._authority_epoch
         if not authority_rejected:
             self._authority_digest = hashlib.sha256(
                 self._canonical(self._authority_tables()).encode("utf-8")).hexdigest()
+            self._persisted_authority_digest = self._authority_digest
             if any(saved.values()) and self._verified_external_hosts != saved["verified_external_hosts"]:
                 self._authority_digest = ""      # loopback switch was stripped: re-sign on next save
         if isinstance(data.get("allowed_hosts"), list):
@@ -1001,8 +1032,13 @@ class AssessmentService:
 
     def _activate_asset_locked(self, asset_record: dict, auth_ref: str) -> None:
         # the single place where the active asset changes: never during a verification
-        if asset_record.get("id") != self.a.asset.get("id"):
+        switching = asset_record.get("id") != self.a.asset.get("id")
+        if switching:
             self._refuse_while_verifying_locked()
+            if self.a.state in ("running", "paused"):
+                # a paused run still has a runner thread that will write its results
+                # into whatever workspace is active when it wakes up
+                raise ValueError("診断の実行中・一時停止中は対象を切り替えられません。先に停止してください")
         prev_primary = {
             **self.a.asset,
             "status": _asset_status(self.a.state),
@@ -1030,6 +1066,10 @@ class AssessmentService:
                 "sow_optional_ref") if k in asset_record},
         }
         self._sync_scope_for_host(asset_record["name"], auth_ref)
+        if switching:
+            # Nothing measured on one asset may remain in the workspace of another:
+            # findings and evidence are cleared on EVERY switch, whichever route made it.
+            self._reset_workspace_locked()
 
     def select_asset(self, asset_id: str, actor: str = "operator") -> dict:
         with self._lock:
@@ -1080,6 +1120,8 @@ class AssessmentService:
         with self._lock:
             if self.a.asset["id"] == asset_id:
                 self._refuse_while_verifying_locked()
+                if self.a.state == "paused":
+                    raise ValueError("診断を一時停止中の対象は削除できません。先に停止してください")
             if self.a.asset["id"] == asset_id:
                 if self.a.state == "running":
                     raise ValueError("診断実行中の対象は削除できません。先に停止してください")
@@ -1388,7 +1430,11 @@ class AssessmentService:
             # endpoint from the SIGNED proof, not from the (unsigned) display record
             scheme = str(proof.get("scheme") or target_asset.get("scheme") or parsed["scheme"])
             port = int(proof.get("port") or target_asset.get("port") or parsed["port"])
-            names_port = re.search(r":\d{1,5}(?:/|$)", (url_or_host or "").split("://", 1)[-1]) is not None
+            try:
+                names_port = urllib.parse.urlsplit(
+                    "//" + (url_or_host or "").strip().split("://", 1)[-1]).port is not None
+            except ValueError:
+                names_port = True          # an unparsable port is a mismatch, not "no port given"
             if (("://" in (url_or_host or "") and parsed["scheme"] != scheme)
                     or (names_port and int(parsed["port"]) != port)
                     or ("://" in (url_or_host or "") and int(parsed["port"]) != port)):
@@ -1595,7 +1641,7 @@ class AssessmentService:
                 "defense_comparison": self.a.defense_comparison,
                 "cve_status": self.cve_monitor.status(),
                 "artex_tasks": [
-                    {"id": tk.id, "phase": tk.phase, "title": tk.title,
+                    {"id": tk.id, "phase": tk.phase, "title": clean_target_text(tk.title, 200),
                      "risk_level": tk.risk_level, "status": tk.status,
                      "tool": tk.routed.proposal["tool"]}
                     for tk in self.artex.tasks
@@ -1849,6 +1895,10 @@ class AssessmentService:
             blocked = self._l2_block_reason()
             if blocked:
                 raise ValueError(blocked)
+            with self._lock:
+                self._save_state_locked()
+                if self._persist_error:
+                    raise ValueError("状態をディスクに保存できないため、実サービスへの送信を中止しました")
             # resolve now, so an address change is noticed BEFORE the decision to release tokens
             try:
                 self._resolve_host(self.a.asset.get("name", ""))
@@ -2278,7 +2328,9 @@ class AssessmentService:
             tool="http_probe",
             level="L1",
         )
-        if is_ext:
+        # by REGISTRATION (once a real service, always planned locally), not by whether
+        # its scope happens to be valid at this instant
+        if is_ext or self._in_ownership_flow(self.a.asset.get("name")):
             self.artex.router = self._local_router
         else:
             self.artex.router = self.router
@@ -2507,6 +2559,16 @@ class AssessmentService:
 
     def _exec(self, tool, action, args, approval_actor=None, approval_id=None):
         self._checkpoint()
+        with self._lock:
+            if self._in_ownership_flow(self.a.asset.get("name")):
+                # Fail closed, for EVERY request to a real service (also mid-run): prove
+                # that state can be written right now. If it cannot, what we are about
+                # to do could not be recorded and a later revocation could not be made
+                # durable - so nothing is sent.
+                self._save_state_locked()
+                if self._persist_error:
+                    self._fail("状態をディスクに保存できないため、実サービスへの送信を中止しました")
+                    return None, None
         if (tool == "reproduction_probe" and args.get("check", "idor") in LAB_REPRODUCTION_CHECKS
                 and self._in_ownership_flow(self.a.asset.get("name"))):
             # last line of defence, whatever path led here: the bundled lab's attack
@@ -2789,6 +2851,22 @@ class AssessmentService:
             self.bus.publish(self.a.id, "chat.message", messages=[user_msg, ai_msg])
             return {"message": ai_msg, "chat_messages": list(self.a.chat_messages), "planner": self.planner_status()}
 
+    def _finding_touches_real_service(self, finding: dict | None) -> bool:
+        """True if any evidence of the finding was taken from a host registered as
+        a real service - whatever asset happens to be active now."""
+        if not finding:
+            return False
+        if finding.get("l2_profile") or finding.get("requires_l2_approval"):
+            return True
+        for ev in finding.get("evidence") or []:
+            if not isinstance(ev, dict):
+                continue
+            host = (urllib.parse.urlsplit(str(ev.get("target_url") or "")).hostname or "").lower()
+            if host and host not in ("lab.test", "api.lab.test") and (
+                    self._in_ownership_flow(host) or host not in self._allowed_hosts):
+                return True
+        return False
+
     def _answer_question(self, q: str, term: str | None = None, finding_id: str | None = None) -> tuple[str, str]:
         with self._lock:
             real = self._real_findings()
@@ -2816,7 +2894,8 @@ class AssessmentService:
         # Findings and evidence of a real service (response bodies, cookies, the
         # ownership challenge, names) never leave this machine: the external model
         # is used for the local lab only.
-        if ext is not None and not self._in_ownership_flow(context["asset"].get("name")):
+        if (ext is not None and not self._in_ownership_flow(context["asset"].get("name"))
+                and not self._finding_touches_real_service(target_f)):
             ans = ext.chat(q, context)
             if ans:
                 with self._lock:

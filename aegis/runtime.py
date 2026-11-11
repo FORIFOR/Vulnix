@@ -48,6 +48,7 @@ class WorkerPool:
                     proc_env.update({str(k): str(v) for k, v in extra_env.items() if v is not None})
                 proc = subprocess.Popen(
                     argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                    encoding="utf-8", errors="replace",      # a target cannot make decoding raise
                     start_new_session=True, close_fds=True, env=proc_env,
                     preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu)),
                 )
