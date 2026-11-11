@@ -470,6 +470,8 @@ class AssessmentService:
         withdrawal: waiting requests are cancelled and running workers are killed
         and confirmed dead - not merely refused the next time."""
         with self._lock:
+            if self._closed:
+                return
             host = (self.a.asset.get("name") or "").rstrip(".").lower()
             entry = self.ledger.verified_external_hosts.get(host)
             if not entry or entry.get("held_since"):

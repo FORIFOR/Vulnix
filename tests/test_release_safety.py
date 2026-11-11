@@ -307,6 +307,9 @@ class TestOnLinuxWithTheRealKernelConfinement(ReleaseBase):
         applied = self.events("confinement.applied")
         self.assertEqual(len(applied), 1)
         self.assertTrue(applied[0]["fields"]["probe_in_cgroup"])
+        self.assertNotEqual(applied[0]["fields"]["worker_uid"], 0)
+        print(f"\n[linux-e2e] confined L2 worker ran as uid {applied[0]['fields']['worker_uid']} "
+              f"(control plane uid {os.getuid()}); dropped={applied[0]['fields']['kernel_dropped_packets']}")
         self.assertTrue([a for _, a in self.fake.seen if a])
         self.assertEqual(self.finding("f_ex_idor")["verdict"], "proven")
 
@@ -322,10 +325,16 @@ class TestOnLinuxWithTheRealKernelConfinement(ReleaseBase):
         self.revoke()                                   # returns only after the stop is confirmed
         self.assert_confined_worker_gone()
 
-    def test_deletion_kills_the_confined_worker(self):
+    def test_deletion_during_an_l2_run_is_refused_then_works_after_a_stop(self):
         self.start_hanging_l2()
-        self.svc.delete_asset(self.svc.a.asset["id"], actor="appr")
+        with self.assertRaises(ValueError):             # never "deleted" while its worker is running
+            self.svc.delete_asset(self.svc.a.asset["id"], actor="appr")
+        self.assertIn(HOST, [x["name"] for x in self.svc.assets()])
+        rep = self.svc.emergency_stop("appr")
+        self.assertTrue(rep["confirmed"], rep)
         self.assert_confined_worker_gone()
+        self.svc.delete_asset(self.svc.a.asset["id"], actor="appr")
+        self.assertNotIn(HOST, [x["name"] for x in self.svc.assets()])
 
     def test_expiry_kills_the_confined_worker(self):
         self.start_hanging_l2()

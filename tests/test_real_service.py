@@ -435,6 +435,8 @@ class RealServiceBase(unittest.TestCase):
         self.svc._custom_resolver = lambda h: ["127.0.0.1"] if h == HOST else []
 
     def tearDown(self):
+        with self.svc._lock:
+            self.svc._closed = True      # its scope-expiry watcher writes nothing into a removed directory
         self.svc.workers.kill_all()
         self.fake.shutdown()
         self.fake.server_close()
