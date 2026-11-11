@@ -86,7 +86,8 @@ def challenge_for_host(host: str, salt: str = "vulnix-ownership-v1") -> dict:
 def default_dns_txt_lookup(txt_domain: str) -> list[str]:
     try:
         proc = subprocess.run(
-            ["nslookup", "-q=txt", txt_domain],
+            # trailing dot: the name is absolute, resolver search domains must not apply
+            ["nslookup", "-q=txt", txt_domain.rstrip(".") + "."],
             capture_output=True, text=True, timeout=5,
         )
         return [proc.stdout] if proc.returncode == 0 else []

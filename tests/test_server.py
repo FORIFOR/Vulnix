@@ -505,6 +505,9 @@ class TestServer(unittest.TestCase):
 
     def test_artex_cli_and_abliteration_api_live_verification_endpoint(self):
         self.login("op", "op-pw")
+        self.assertEqual(self._req(f"{self.root}/router/verify", {})[0], 403)    # spawns a CLI + model call
+        self.assertEqual(self._req(f"{self.root}/cve/sync", {})[0], 403)         # replaces feed data
+        self.login("appr", "appr-pw")
         code, rep = self._req(f"{self.root}/router/verify", {})
         self.assertEqual(code, 200)
         self.assertTrue(rep["all_verified"])

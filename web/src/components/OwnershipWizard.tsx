@@ -74,6 +74,7 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset }
   const [url, setUrl] = useState(initialAsset?.target_url ?? (initialAsset?.name ? `https://${initialAsset.name}` : ""));
   const [sowId, setSowId] = useState("");
   const [challenge, setChallenge] = useState<OwnershipChallenge | null>(initialAsset?.challenge ?? null);
+  const [targetUrl, setTargetUrl] = useState<string>((initialAsset as { target_url?: string } | undefined)?.target_url ?? "");
   const [prohibited, setProhibited] = useState<string[]>(FALLBACK_PROHIBITED);
   const [method, setMethod] = useState<Method>("dns_txt");
   const [verifyDetail, setVerifyDetail] = useState<string | null>(null);
@@ -99,6 +100,7 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset }
     run(async () => {
       const res = await postJSON<ChallengeResponse>("/api/assets/challenge", { url: url.trim(), sow_id: sowId.trim() });
       setChallenge(res.challenge);
+      setTargetUrl((res.asset as { target_url?: string }).target_url ?? url.trim());
       setProhibited(res.prohibited_actions?.length ? res.prohibited_actions : FALLBACK_PROHIBITED);
       onAssetsChanged(res.assets);
       // An already-verified asset keeps its proof; skip straight to scope confirmation.
@@ -252,7 +254,8 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset }
         {step === 2 && (
           <div className="space-y-3 text-sm">
             <p className="rounded-lg bg-emerald-50 px-3 py-2 text-xs text-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-100">
-              ✓ 所有確認が完了しました。診断できるのはこのホスト・このポートだけです。
+              ✓ 所有確認が完了しました。診断できるのは次の宛先（このホスト・このスキーム・このポート）だけです：
+              <span className="mt-0.5 block break-all font-mono font-semibold">{targetUrl || "（登録したURL）"}</span>
             </p>
             <div className="rounded-xl border border-zinc-200 p-3 dark:border-zinc-800">
               <h3 className="mb-1.5 text-xs font-semibold">この診断で行わないこと</h3>

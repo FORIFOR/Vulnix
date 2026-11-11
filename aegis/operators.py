@@ -106,6 +106,19 @@ def verify_totp(secret_b32: str, code: str, t: float | None = None) -> bool:
                for c in range(c0 - TOTP_WINDOW, c0 + TOTP_WINDOW + 1))
 
 
+def matching_totp_counter(secret_b32: str, code: str, t: float | None = None) -> int | None:
+    """The time-step counter the code is valid for (within the skew window), or None."""
+    code = (code or "").strip()
+    if not code.isdigit():
+        return None
+    t = time.time() if t is None else t
+    c0 = int(t // TOTP_STEP)
+    for c in range(c0 - TOTP_WINDOW, c0 + TOTP_WINDOW + 1):
+        if hmac.compare_digest(_hotp(secret_b32, c), code.zfill(TOTP_DIGITS)):
+            return c
+    return None
+
+
 def provisioning_uri(secret_b32: str, name: str, issuer: str = "Aegis") -> str:
     label = quote(f"{issuer}:{name}")
     return (f"otpauth://totp/{label}?secret={secret_b32}&issuer={quote(issuer)}"
@@ -164,6 +177,11 @@ class OperatorStore:
         self._sessions: dict[str, Session] = {}     # keyed by session_key(token); never the token
         self._auth_failures: dict[str, list[float]] = {}
         self._locked_until: dict[str, float] = {}
+        self._throttle_names: dict[str, str] = {}    # throttle key -> name as typed (for the admin view)
+        self._totp_last_counter: dict[str, int] = {} # account -> last accepted TOTP step (no replay)
+        self.recovery_events: list[dict] = []        # drained into the audit log by the server
+        # one fixed dummy hash, so an unknown name costs the same single scrypt as a known one
+        self._dummy_hash = hash_password(secrets.token_urlsafe(12))
         self.legacy_sessions_revoked = 0             # plaintext-token sessions dropped at load
         self._pending_totp: dict[str, str] = {}   # name -> secret awaiting confirmation
         self.credentials_path: Path | None = None
@@ -257,14 +275,16 @@ class OperatorStore:
         # Rewrite so the file sheds expired/stale entries on load.
         self._persist_sessions()
 
-    def _atomic_write(self, path: Path, data: str) -> None:
+    def _atomic_write(self, path: Path, data: str) -> bool:
         """Write 0600 via a temp file + rename so a reader never sees a half file."""
         tmp = path.with_name(path.name + f".tmp.{os.getpid()}")
         try:
             self._write_private(tmp, data)
             os.replace(tmp, path)
+            return True
         except OSError:
             tmp.unlink(missing_ok=True)   # best-effort: a write failure must not break the request
+            return False
 
     @staticmethod
     def _write_private(path: Path, data: str) -> None:
@@ -287,8 +307,11 @@ class OperatorStore:
             ]}
             self._atomic_write(self.sessions_path, json.dumps(payload, ensure_ascii=False))
 
-    def _persist_operators(self) -> None:
-        """Atomically rewrite the operator seed (hashes only; never plaintext)."""
+    def _persist_operators(self, *, strict: bool = False) -> None:
+        """Atomically rewrite the operator seed (hashes only; never plaintext).
+        `strict`: a change that REMOVES power (role revoked, second factor reset)
+        must not look done when it was not written - after a restart it would be
+        undone - so the caller is told."""
         with self._lock:
             payload = {"operators": [
                 {"name": o.name, "display": o.display, "roles": list(o.roles),
@@ -297,7 +320,10 @@ class OperatorStore:
                  **({"created_by": o.created_by} if o.created_by else {})}
                 for o in self._ops.values()
             ]}
-            self._atomic_write(self.seed_path, json.dumps(payload, ensure_ascii=False, indent=2))
+            written = self._atomic_write(self.seed_path, json.dumps(payload, ensure_ascii=False, indent=2))
+        if strict and not written:
+            raise AuthError("変更は現在のプロセスには反映されましたが、ファイルへの保存に失敗しました。"
+                            "このままでは再起動後に元へ戻ります。データディレクトリの書き込み権限を確認してください")
 
     def change_password(self, name: str, current: str, new: str, *, keep_token: str | None = None) -> None:
         """Verify the current password, set a new one, and revoke this operator's
@@ -312,6 +338,7 @@ class OperatorStore:
             raise AuthError(f"新しいパスワードは{MIN_PASSWORD_LEN}文字以上にしてください")
         if new == current:
             raise AuthError("現在と異なるパスワードを設定してください")
+        self._clear_failures(name)
         new_hash = hash_password(new)
         with self._lock:
             op.password_hash = new_hash
@@ -324,50 +351,119 @@ class OperatorStore:
     # ---- sign-in throttling ----------------------------------------------
     @staticmethod
     def _throttle_key(name: str) -> str:
-        return (name or "").strip().lower()[:64]
+        # The EXACT name as presented (account names are case-sensitive). Variants
+        # such as "ROOT" or " root" are different keys, so they can neither lock
+        # the real account nor reset its counter. Hashed to bound the key size.
+        return hashlib.sha256((name or "").encode("utf-8", "replace")).hexdigest()
+
+    def _apply_file_unlock_locked(self) -> None:
+        """Recovery without a session: someone with access to the data directory
+        (the machine's operator) creates `unlock.request` next to the seed file,
+        one account name per line. It is honoured once and removed."""
+        path = self.seed_path.with_name("unlock.request")
+        try:
+            st = os.lstat(path)
+        except OSError:
+            return
+        import stat as _stat
+        ok = (_stat.S_ISREG(st.st_mode) and not (st.st_mode & 0o022)
+              and (not hasattr(os, "getuid") or st.st_uid == os.getuid()))
+        names: list[str] = []
+        if ok:
+            try:
+                names = [ln.strip() for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()][:50]
+            except OSError:
+                ok = False
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        if not ok:
+            self.recovery_events.append({"event": "auth.unlock_file_rejected",
+                                         "reason": "not a regular file owned by this user, or writable by others"})
+            return
+        for name in names:
+            key = self._throttle_key(name)
+            was = self._locked_until.pop(key, 0.0) > self._clock()
+            self._auth_failures.pop(key, None)
+            self.recovery_events.append({"event": "auth.unlocked_by_file", "name": name[:64], "was_locked": was})
 
     def _check_not_locked(self, name: str) -> None:
+        self._begin_attempt(name)
+
+    def _begin_attempt(self, name: str) -> None:
+        """Reserve one attempt BEFORE the (slow) password check. Attempts in flight
+        count, so firing many guesses in parallel gets no more evaluations than
+        doing them one after another."""
         key, now = self._throttle_key(name), self._clock()
         with self._lock:
+            self._apply_file_unlock_locked()
             until = self._locked_until.get(key, 0.0)
             if until > now:
                 raise LockedOut(until - now)
             if until:
                 self._locked_until.pop(key, None)
                 self._auth_failures.pop(key, None)
-
-    def _note_failure(self, name: str) -> None:
-        """Count one failed attempt; raises LockedOut when this one trips the lock."""
-        key, now = self._throttle_key(name), self._clock()
-        with self._lock:
-            if len(self._auth_failures) >= _MAX_TRACKED_NAMES:      # bounded memory
-                for k in [k for k, v in self._auth_failures.items()
-                          if not v or now - v[-1] > AUTH_FAILURE_WINDOW]:
-                    self._auth_failures.pop(k, None)
-                if len(self._auth_failures) >= _MAX_TRACKED_NAMES:
-                    self._auth_failures.pop(next(iter(self._auth_failures)), None)
             recent = [t for t in self._auth_failures.get(key, []) if now - t <= AUTH_FAILURE_WINDOW]
+            if len(recent) >= MAX_AUTH_FAILURES:
+                self._locked_until[key] = now + AUTH_LOCK_SECONDS
+                self._auth_failures[key] = recent
+                raise LockedOut(AUTH_LOCK_SECONDS, just_locked=True)
+            if key not in self._auth_failures and len(self._auth_failures) >= _MAX_TRACKED_NAMES:
+                self._make_room_locked(name, now)
             recent.append(now)
             self._auth_failures[key] = recent
+            self._throttle_names[key] = (name or "")[:64]
+
+    def _make_room_locked(self, name: str, now: float) -> None:
+        """Bounded memory without letting a flood of made-up names push out the
+        counter of a real account: only entries for names that are not accounts
+        (and are not locked) are ever evicted."""
+        account_keys = {self._throttle_key(n) for n in self._ops}
+        evictable = [k for k in self._auth_failures
+                     if k not in account_keys and self._locked_until.get(k, 0.0) <= now]
+        if not evictable:
+            raise LockedOut(60.0)
+        evictable.sort(key=lambda k: self._auth_failures[k][-1] if self._auth_failures[k] else 0.0)
+        for k in evictable[: max(1, len(evictable) // 10)]:
+            self._auth_failures.pop(k, None)
+            self._throttle_names.pop(k, None)
+
+    def _note_failure(self, name: str) -> None:
+        """The reserved attempt failed; raises LockedOut when it was the last one allowed."""
+        key, now = self._throttle_key(name), self._clock()
+        with self._lock:
+            recent = [t for t in self._auth_failures.get(key, []) if now - t <= AUTH_FAILURE_WINDOW]
             if len(recent) >= MAX_AUTH_FAILURES:
                 self._locked_until[key] = now + AUTH_LOCK_SECONDS
                 raise LockedOut(AUTH_LOCK_SECONDS, just_locked=True)
+
+    def _forget_attempt(self, name: str) -> None:
+        """The reserved attempt was not a guess after all (e.g. step 1 of a two-step login)."""
+        key = self._throttle_key(name)
+        with self._lock:
+            recent = self._auth_failures.get(key)
+            if recent:
+                recent.pop()
 
     def _clear_failures(self, name: str) -> None:
         key = self._throttle_key(name)
         with self._lock:
             self._auth_failures.pop(key, None)
             self._locked_until.pop(key, None)
+            self._throttle_names.pop(key, None)
 
     def locked_accounts(self) -> dict[str, float]:
-        """name -> seconds remaining, for names currently locked."""
+        """name (as typed) -> seconds remaining, for names currently locked."""
         now = self._clock()
         with self._lock:
-            return {k: until - now for k, until in self._locked_until.items() if until > now}
+            return {self._throttle_names.get(k, "?"): until - now
+                    for k, until in self._locked_until.items() if until > now}
 
     def unlock(self, target: str, *, actor: str) -> bool:
         """An admin lifts a lock early (recovery for a legitimate user). The lock
-        also ends by itself after AUTH_LOCK_SECONDS and is not kept across a restart."""
+        also ends by itself after AUTH_LOCK_SECONDS, is not kept across a restart,
+        and can be lifted from the machine itself with an `unlock.request` file."""
         with self._lock:
             acting = self._ops.get(actor)
             if acting is None or "admin" not in acting.roles:
@@ -377,21 +473,33 @@ class OperatorStore:
             self._auth_failures.pop(key, None)
             return was_locked
 
+    def _accept_totp(self, op: "Operator", code: str | None) -> bool:
+        """True if `code` is a current code that was not used before (no replay)."""
+        counter = matching_totp_counter(op.totp_secret or "", code or "", self._clock())
+        if counter is None:
+            return False
+        with self._lock:
+            if counter <= self._totp_last_counter.get(op.name, -1):
+                return False
+            self._totp_last_counter[op.name] = counter
+        return True
+
     def login(self, name: str, password: str, code: str | None = None) -> Session:
-        self._check_not_locked(name)        # while locked, even the right password is refused
+        self._begin_attempt(name)           # while locked, even the right password is refused
         with self._lock:
             op = self._ops.get(name)
-        # Always run a hash to blunt username enumeration via timing.
-        reference = op.password_hash if op else hash_password("x")
-        ok = verify_password(password, reference)
+        # Exactly one scrypt whether or not the name exists (no timing difference).
+        ok = verify_password(password, op.password_hash if op else self._dummy_hash)
         if not op or not ok:
             self._note_failure(name)
             raise AuthError("ユーザー名またはパスワードが違います")
         # Second factor: only enforced for accounts that enrolled one (opt-in,
         # so a local operator can never be locked out by a default).
-        if op.totp_secret and not verify_totp(op.totp_secret, code or "", self._clock()):
-            if code:                        # a wrong code is a failed attempt; a missing one is step 1
+        if op.totp_secret and not self._accept_totp(op, code):
+            if code:                        # a wrong (or replayed) code is a failed attempt
                 self._note_failure(name)
+            else:                           # a missing one is just step 1 of the login
+                self._forget_attempt(name)
             raise MFAChallenge("認証コード（2要素）が必要です" if not code else "認証コードが違います")
         self._clear_failures(name)
         now = self._clock()
@@ -503,7 +611,7 @@ class OperatorStore:
                     "admin" in o.roles for n, o in self._ops.items() if n != target):
                 raise AuthError("最後の管理者から管理者ロールを外すことはできません")
             op.roles = new_roles
-        self._persist_operators()
+        self._persist_operators(strict=True)
         return before, new_roles
 
     # ---- two-factor (TOTP) enrollment ------------------------------------
@@ -547,9 +655,10 @@ class OperatorStore:
         if not op or not verify_password(current_password, op.password_hash):
             self._note_failure(name)
             raise AuthError("現在のパスワードが違います")
-        if op.totp_secret and not verify_totp(op.totp_secret, code or "", self._clock()):
+        if op.totp_secret and not self._accept_totp(op, code):
             self._note_failure(name)
             raise AuthError("現在の認証コード（2要素）が必要です")
+        self._clear_failures(name)
         with self._lock:
             op.totp_secret = None
             self._pending_totp.pop(name, None)
@@ -572,6 +681,6 @@ class OperatorStore:
             self._pending_totp.pop(target, None)
             for key in [k for k, s in self._sessions.items() if s.operator == target]:
                 del self._sessions[key]
-        self._persist_operators()
+        self._persist_operators(strict=True)
         self._persist_sessions()
         return had

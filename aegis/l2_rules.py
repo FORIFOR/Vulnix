@@ -379,21 +379,23 @@ class L2RuleSet:
                 seen_here.add(profile["id"])
                 by_id.pop(profile["id"], None)
                 by_id[profile["id"]] = profile
-                sources[profile["id"]] = {"file": f.name, "site": is_site,
+                sources[profile["id"]] = {"file": f.name, "directory": str(Path(d)), "site": is_site,
                                           "sha256": hashlib.sha256(data).hexdigest()}
-        try:
-            rs = cls(list(by_id.values()))
-        except RuleError as e:
-            # a site profile that collides with another one (host, check id) is dropped
-            site_ids = [pid for pid, src in sources.items() if src["site"]]
-            if not site_ids:
-                raise
-            for pid in site_ids:
+        # Trusted profiles must be consistent among themselves. Site profiles are then
+        # added one at a time: one that collides with what is already there (same
+        # host, check id or finding id) is rejected on its own, without taking the
+        # other - possibly accepted - site profiles down with it.
+        kept = [p for pid, p in by_id.items() if not sources[pid]["site"]]
+        cls(kept)
+        for pid in [pid for pid in by_id if sources[pid]["site"]]:
+            try:
+                cls(kept + [by_id[pid]])
+            except RuleError as e:
                 rejected.append({"file": sources[pid]["file"], "reason": str(e)})
-                by_id.pop(pid, None)
-                sources.pop(pid, None)
-            return cls.load(dirs, [])._with(sources={k: v for k, v in sources.items()}, rejected=rejected)
-        return rs._with(sources=sources, rejected=rejected)
+                sources.pop(pid)
+                continue
+            kept.append(by_id[pid])
+        return cls(kept)._with(sources={p["id"]: sources[p["id"]] for p in kept}, rejected=rejected)
 
     def _with(self, *, sources: dict, rejected: list) -> "L2RuleSet":
         self.sources = {**getattr(self, "sources", {}), **sources}

@@ -122,8 +122,27 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     "expires": sess.expires,
                     "mfa_enabled": ops.totp_enabled(sess.operator)} if sess else None
 
+        def _host_ok(self) -> bool:
+            """The control plane answers only when addressed as loopback. A request
+            whose Host is some other name (a DNS-rebinding page, a LAN client going
+            through a forwarder) is refused before anything else is looked at."""
+            host = (self.headers.get("Host") or "").strip().lower()
+            port = self.server.server_port
+            return host in {f"127.0.0.1:{port}", f"localhost:{port}", f"[::1]:{port}"}
+
+        def _refuse(self, code: int, error: str, extra: list[tuple[str, str]] = ()):
+            # Nothing of the request body has been read: never reuse this socket, or
+            # the unread body would be parsed as the next request.
+            self.close_connection = True
+            return self._json(code, {"error": error}, extra)
+
         # ---- GET ------------------------------------------------------------
         def do_GET(self):
+            if not self._host_ok():
+                return self._refuse(421, "misdirected request")
+            if (self.headers.get("Content-Length") or "0").strip() not in ("", "0") \
+                    or self.headers.get("Transfer-Encoding"):
+                self.close_connection = True      # a GET with a body: answer, then drop the socket
             u = urlsplit(self.path)
             p = u.path.rstrip("/")
             sess = self._session()
@@ -142,7 +161,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 return self._json(200, {"operators": [
                     {"name": o.name, "display": o.display, "roles": list(o.roles),
                      "mfa_enabled": bool(o.totp_secret),
-                     "locked_for": int(locked.get(o.name.lower(), 0)),
+                     "locked_for": int(locked.get(o.name, 0)),
                      # approver without an admin's grant on record -> needs review
                      "needs_role_review": "approver" in o.roles and not approver_grant_recorded(o.name)}
                     for o in ops.operators()]})
@@ -210,16 +229,19 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
 
         # ---- POST -----------------------------------------------------------
         def do_POST(self):
+            if not self._host_ok():
+                return self._refuse(421, "misdirected request")
             origin = self.headers.get("Origin")
             if self.headers.get("X-Aegis-Request") != "1" or (origin and origin not in ALLOWED_ORIGINS):
-                return self._json(403, {"error": "csrf check failed"})
+                return self._refuse(403, "csrf check failed")
+            if self.headers.get("Transfer-Encoding"):
+                return self._refuse(400, "transfer-encoding is not supported")
             try:
                 n = int(self.headers.get("Content-Length") or 0)
             except ValueError:
-                return self._json(400, {"error": "invalid content-length"})
+                return self._refuse(400, "invalid content-length")
             if n < 0 or n > MAX_BODY_BYTES:
-                self.close_connection = True
-                return self._json(413, {"error": "request body too large"})
+                return self._refuse(413, "request body too large")
             try:
                 body = json.loads(self.rfile.read(n) or b"{}") if n else {}
             except (json.JSONDecodeError, UnicodeDecodeError):
@@ -274,6 +296,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 return self._json(400, {"error": str(e)})
             # The secret/URI are shown once to the operator to add to their
             # authenticator; they are not recorded in the audit log.
+            svc.audit.record("auth.mfa_enroll_started", actor=sess.operator)
             return self._json(200, {"secret": secret, "uri": uri})
 
         def _totp_confirm(self, body, sess):
@@ -302,11 +325,17 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             return self._json(429, {"error": str(e), "locked": True, "retry_after": int(e.retry_after)},
                               [("Retry-After", str(int(e.retry_after)))])
 
+        def _drain_recovery_events(self):
+            while ops.recovery_events:
+                ev = ops.recovery_events.pop(0)
+                svc.audit.record(ev.pop("event"), **ev)
+
         def _login(self, body):
             try:
                 sess = ops.login(str(body.get("name", "")), str(body.get("password", "")),
                                  str(body.get("code", "")) or None)
             except LockedOut as e:
+                self._drain_recovery_events()
                 return self._locked(e, str(body.get("name", "")))
             except MFAChallenge as e:
                 time.sleep(0.2)
@@ -315,6 +344,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 time.sleep(0.2)   # uniform-ish delay on failure
                 svc.audit.record("auth.login_failed", name=str(body.get("name", ""))[:32])
                 return self._json(401, {"error": str(e)})
+            self._drain_recovery_events()
             svc.audit.record("auth.login", actor=sess.operator, roles=list(sess.roles))
             cookie = (f"{COOKIE}={sess.token}; HttpOnly; SameSite=Strict; Path=/; "
                       f"Max-Age={int(sess.expires - time.time())}")
@@ -424,6 +454,14 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     )
                     return self._json(200, {**res, "assets": svc.assets()})
                 elif p == "/api/assets/verify-ownership":
+                    v_host = ""
+                    try:
+                        v_host = parse_service_target(str(body.get("url") or body.get("host") or ""))["host"]
+                    except ValueError:
+                        pass
+                    if v_host and svc.real_service_has_authority(v_host) and "approver" not in sess.roles:
+                        # a failed re-check revokes scope and stored test accounts
+                        return self._json(403, {"error": "所有確認済みの対象の再確認には承認責任者の権限が必要です"})
                     res = svc.verify_asset_ownership(
                         url_or_host=str(body.get("url") or body.get("host") or ""),
                         method=str(body.get("method", "dns_txt")),
@@ -472,6 +510,10 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         return self._json(403, {"error": "プロファイルの承認には管理者の権限が必要です"})
                     return self._json(200, svc.accept_l2_profile(
                         str(body.get("id", "")), str(body.get("sha256", "")), actor))
+                elif p in ("/api/router/verify", "/api/cve/sync") and not ({"approver", "admin"} & set(sess.roles)):
+                    # one spawns the planner CLI and an outbound model call, the other replaces feed data
+                    svc.audit.record("system.job_denied", actor=actor, job=p)
+                    return self._json(403, {"error": "この操作には承認責任者または管理者の権限が必要です"})
                 elif p == "/api/router/verify":
                     rep = svc.verify_planner_connections(actor)
                     return self._json(200, rep)
@@ -497,6 +539,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     return self._json(200, st)
                 elif p == base + "/start":
                     svc.start()
+                    svc.audit.record("assessment.start_requested", actor=actor)
                 elif p == base + "/restart":
                     return self._json(200, svc.restart(actor))
                 elif p == base + "/pause":

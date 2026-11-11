@@ -151,9 +151,15 @@ class TestPasswordGuessing(ApiBase):
         store.confirm_totp("appr", totp_code(secret, clock.t))
         with self.assertRaises(AuthError):                       # step 1 of a normal login is not a failure
             store.login("appr", "appr-password")
-        self.assertEqual(store.login("appr", "appr-password", totp_code(secret, clock.t)).operator, "appr")
+        used = totp_code(secret, clock.t)
+        self.assertEqual(store.login("appr", "appr-password", used).operator, "appr")
+        with self.assertRaises(AuthError):                       # a code seen once (shoulder-surfed, logged) is spent
+            store.login("appr", "appr-password", used)
+        store.unlock("appr", actor="root")
+        clock.t += 60
         with self.assertRaises(AuthError):                       # stolen password, no device
             store.disable_totp("appr", "appr-password")
+        store.unlock("appr", actor="root")
         locked = False
         for guess in range(ops_mod.MAX_AUTH_FAILURES + 1):
             try:
@@ -164,6 +170,7 @@ class TestPasswordGuessing(ApiBase):
             except AuthError:
                 pass
         self.assertTrue(locked)
+        clock.t += 60
         with self.assertRaises(LockedOut):
             store.login("appr", "appr-password", totp_code(secret, clock.t))
         # lost device: only another admin can reset it, and that signs the account out
@@ -175,6 +182,103 @@ class TestPasswordGuessing(ApiBase):
         self.assertTrue(store.reset_totp("appr", actor="root"))
         self.assertIsNone(store.resolve(sess.token))
         self.assertEqual(store.login("appr", "appr-password").operator, "appr")
+
+    def test_parallel_guesses_get_no_more_tries_than_sequential_ones(self):
+        import threading
+        store = OperatorStore(self.dir / "operators.json")
+        evaluated, results = [], []
+        real_verify = ops_mod.verify_password
+
+        def counting_verify(password, encoded):
+            evaluated.append(password)
+            return real_verify(password, encoded)
+
+        def attempt(pw):
+            try:
+                store.login("appr", pw)
+                results.append("ok")
+            except LockedOut:
+                results.append("locked")
+            except AuthError:
+                results.append("wrong")
+        with patch("aegis.operators.verify_password", side_effect=counting_verify):
+            threads = [threading.Thread(target=attempt, args=(f"guess-{i}",)) for i in range(24)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+        self.assertLessEqual(len(evaluated), ops_mod.MAX_AUTH_FAILURES)       # not 24
+        self.assertNotIn("ok", results)
+        with self.assertRaises(LockedOut):
+            store.login("appr", "appr-password")
+
+    def test_name_variants_neither_lock_the_real_account_nor_reset_its_counter(self):
+        store = OperatorStore(self.dir / "operators.json")
+        for variant in ("ROOT", " root", "root ", "Root", "root\t"):
+            for _ in range(ops_mod.MAX_AUTH_FAILURES + 1):
+                try:
+                    store.login(variant, "whatever")
+                except AuthError:
+                    pass
+        self.assertEqual(store.login("root", "root-password").operator, "root")   # the admin is not locked out
+        # an attacker's own account with a look-alike name cannot wipe the target's failures
+        store.create_account("Appr", "attacker-own-password", actor="root")
+        for i in range(ops_mod.MAX_AUTH_FAILURES - 1):
+            with self.assertRaises(AuthError):
+                store.login("appr", f"guess-{i}")
+            store.login("Appr", "attacker-own-password")
+        with self.assertRaises(LockedOut):
+            store.login("appr", "guess-final")
+
+    def test_flooding_made_up_names_does_not_evict_a_real_accounts_counter(self):
+        store = OperatorStore(self.dir / "operators.json")
+        with patch("aegis.operators.verify_password", return_value=False), \
+                patch("aegis.operators._MAX_TRACKED_NAMES", 50):
+            for i in range(ops_mod.MAX_AUTH_FAILURES - 1):
+                with self.assertRaises(AuthError):
+                    store.login("appr", f"guess-{i}")
+            for i in range(400):
+                try:
+                    store.login(f"made-up-{i}", "x")
+                except AuthError:
+                    pass
+            self.assertLessEqual(len(store._auth_failures), 50)
+            with self.assertRaises(LockedOut):
+                store.login("appr", "guess-final")
+
+    def test_unknown_and_known_names_cost_the_same_single_hash(self):
+        store = OperatorStore(self.dir / "operators.json")
+        calls = []
+        real = ops_mod.hashlib.scrypt
+        with patch("aegis.operators.hashlib.scrypt", side_effect=lambda *a, **k: calls.append(1) or real(*a, **k)):
+            for name in ("appr", "no-such-user"):
+                calls.clear()
+                with self.assertRaises(AuthError):
+                    store.login(name, "wrong")
+                self.assertEqual(len(calls), 1, name)
+
+    def test_the_machine_owner_can_unlock_with_a_file_but_a_writable_by_others_file_is_ignored(self):
+        store = OperatorStore(self.dir / "operators.json")
+
+        def lock(name):
+            for _ in range(ops_mod.MAX_AUTH_FAILURES + 1):
+                try:
+                    store.login(name, "wrong")
+                except AuthError:
+                    pass
+        lock("root")
+        request = self.dir / "unlock.request"
+        request.write_text("root\n")
+        request.chmod(0o666)                                     # anyone could have written it
+        with self.assertRaises(LockedOut):
+            store.login("root", "root-password")
+        self.assertFalse(request.exists())
+        self.assertEqual(store.recovery_events[-1]["event"], "auth.unlock_file_rejected")
+        request.write_text("root\n")
+        request.chmod(0o600)
+        self.assertEqual(store.login("root", "root-password").operator, "root")
+        self.assertFalse(request.exists())                        # honoured once
+        self.assertEqual(store.recovery_events[-1], {"event": "auth.unlocked_by_file", "name": "root", "was_locked": True})
 
     def test_recovery_endpoints_are_admin_only_and_audited(self):
         for path in ("/operators/unlock", "/operators/reset-mfa"):
@@ -548,3 +652,175 @@ class TestDnsGamesAfterVerification(RealServiceBase):
                     pass
             self.assertEqual(self.svc._resolve_host(HOST), [])
             run.assert_not_called()
+
+
+# --------------------------------------------------------------------------- third review
+class TestThirdReviewFindingsStayFixed(ApiBase):
+    def setUp(self):
+        super().setUp()
+        self.onboard()
+        self.run_l1()
+        self.set_secrets()
+        self.fake.seen.clear()
+        self.base = f"/assessments/{self.svc.a.id}"
+
+    def raw(self, method, path, headers=None, body=b""):
+        import http.client
+        conn = http.client.HTTPConnection("127.0.0.1", self.srv.server_port, timeout=5)
+        conn.request(method, "/api" + path, body=body or None, headers=headers or {})
+        resp = conn.getresponse()
+        data = resp.read()
+        return conn, resp, data
+
+    def test_an_operator_cannot_revoke_scope_and_tokens_by_re_running_verification(self):
+        with patch("aegis.ownership.default_well_known_fetcher", side_effect=OSError("no file")), \
+                patch("aegis.ownership.default_dns_txt_lookup", return_value=[]):
+            for method in ("well_known", "dns_txt"):
+                self.assertEqual(self.call("/assets/verify-ownership", {"url": self.url, "method": method}, "op")[0], 403)
+        self.assertTrue(self.svc._is_external_service_asset(HOST))
+        self.assertTrue(self.svc.secrets.has_any_token(HOST))
+
+    def test_requests_addressed_by_another_host_name_are_refused(self):
+        port = self.srv.server_port
+        for host in ("attacker.example.org", f"attacker.example.org:{port}", f"192.168.1.20:{port}",
+                     f"127.0.0.1:{port + 1}", ""):
+            with self.subTest(host=host):
+                conn, resp, _ = self.raw("GET", "/auth/me", {"Host": host})
+                self.assertEqual(resp.status, 421)
+                conn.close()
+                conn, resp, _ = self.raw("POST", "/auth/login", {"Host": host, "X-Aegis-Request": "1",
+                                                                 "Content-Type": "application/json"},
+                                         b'{"name": "appr", "password": "x"}')
+                self.assertEqual(resp.status, 421)
+                conn.close()
+        self.assertEqual(self.events("auth.login_failed"), [])
+        for host in (f"127.0.0.1:{port}", f"localhost:{port}"):
+            conn, resp, _ = self.raw("GET", "/health", {"Host": host})
+            self.assertEqual(resp.status, 200)
+            conn.close()
+
+    def test_a_rejected_post_does_not_leave_its_body_to_be_read_as_the_next_request(self):
+        import socket
+        smuggled = (b"POST /api/auth/login HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nX-Aegis-Request: 1\r\n"
+                    b"Content-Type: application/json\r\nContent-Length: 34\r\n\r\n"
+                    b'{"name": "appr", "password": "x"}\n' % self.srv.server_port)
+        outer = (b"POST /api/auth/login HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nOrigin: https://evil.example\r\n"
+                 b"Content-Type: text/plain\r\nContent-Length: %d\r\n\r\n" % (self.srv.server_port, len(smuggled)))
+        with socket.create_connection(("127.0.0.1", self.srv.server_port), timeout=5) as sock:
+            sock.sendall(outer + smuggled)
+            sock.settimeout(2)
+            data = b""
+            try:
+                while chunk := sock.recv(4096):
+                    data += chunk
+            except socket.timeout:
+                pass
+        self.assertEqual(data.count(b"HTTP/1.1 "), 1)              # one response, then the socket is closed
+        self.assertIn(b" 403 ", data.split(b"\r\n", 1)[0])
+        self.assertEqual(self.events("auth.login_failed"), [])     # the smuggled login never ran
+
+    def test_lab_attack_probes_never_reach_a_real_service_even_if_the_target_switches_mid_run(self):
+        apr = self.svc.approval_store.approve("appr", "eng_demo", "lab", "safe_reproduction")
+        for check in ("idor", "sqli", "cve_2021_41773"):
+            self.assertEqual(self.svc._exec("reproduction_probe", "safe_reproduction",
+                                            {"url": self.svc.a.target_url, "check": check}, approval_id=apr),
+                             (None, None))
+        self.assertEqual(self.fake.seen, [])
+        # and the active asset cannot be switched or deleted while a verification is in flight
+        self.svc._begin_operation()
+        try:
+            for call in (lambda: self.svc.select_asset("lab"), lambda: self.svc.delete_asset(self.svc.a.asset["id"]),
+                         lambda: self.svc.issue_ownership_challenge(url=f"http://{HOST}:1", approver="appr")):
+                with self.assertRaises(ValueError):
+                    call()
+        finally:
+            self.svc._end_operation()
+        self.svc.select_asset("lab")                               # fine once nothing is running
+
+    def test_scope_uses_the_endpoint_in_the_signed_proof_not_the_editable_record(self):
+        other = f"http://other-{HOST}:{self.fake.server_port}"
+        self.svc._custom_resolver = lambda h: ["127.0.0.1"]
+        ch = self.svc.issue_ownership_challenge(url=other, approver="appr")["challenge"]
+        self.svc.verify_asset_ownership(url_or_host=other, dns_lookup=lambda n: [ch["dns_txt_value"]])
+        rec = next(x for x in self.svc._extra_assets if x["name"] == f"other-{HOST}")
+        rec["port"], rec["scheme"] = 22, "https"                    # e.g. edited in state.json before a restart
+        self.svc.confirm_asset_scope(url_or_host=other, approver="appr")
+        entry = self.svc._verified_external_hosts[f"other-{HOST}"]
+        self.assertEqual((entry["scheme"], entry["port"]), ("http", self.fake.server_port))
+
+    def test_a_failed_save_stops_real_service_work_and_is_reported(self):
+        with patch("aegis.assessment.os.replace", side_effect=OSError("disk full")):
+            self.svc._save_state_locked()
+        self.assertEqual(self.svc._persist_error, "OSError")
+        self.assertTrue(self.events("state.persist_failed"))
+        self.assertEqual(self.svc.snapshot()["persistence_error"], "OSError")
+        with patch("aegis.assessment.os.replace", side_effect=OSError("disk full")):
+            with self.assertRaises(ValueError):
+                self.svc.verify_finding("f_ex_idor", actor="appr")
+        self.assertEqual(self.fake.seen, [])
+        self.svc.verify_finding("f_ex_idor", actor="appr")          # saving works again -> allowed again
+        self.assertTrue(self.fake.seen)
+
+    def test_role_revocation_that_could_not_be_saved_is_not_reported_as_done(self):
+        with patch.object(self.ops, "_atomic_write", return_value=False):
+            code, body = self.call("/operators/roles", {"name": "appr", "roles": ["operator"]}, "root")
+        self.assertEqual(code, 409)
+        self.assertIn("保存に失敗", body["error"])
+
+    def test_private_test_ca_is_not_handed_to_workers_for_a_real_service(self):
+        with patch.dict("os.environ", {"VULNIX_TEST_CA_FILE": "/tmp/test-ca.pem", "AEGIS_ENV": ""}):
+            self.assertIn("VULNIX_TEST_CA_FILE", self.svc._ephemeral_worker_env("http_probe", {}))   # loopback test target
+            self.svc._verified_external_hosts[HOST]["allow_loopback_test"] = False
+            self.assertNotIn("VULNIX_TEST_CA_FILE", self.svc._ephemeral_worker_env("http_probe", {}))
+
+    def test_remaining_operator_routes_that_start_work_need_more_than_operator(self):
+        for path in ("/router/verify", "/cve/sync"):
+            self.assertEqual(self.call(path, {}, "op")[0], 403)
+        self.assertEqual(len(self.events("system.job_denied")), 2)
+
+
+class TestOneProcessPerDataDir(RealServiceBase):
+    def test_a_second_process_cannot_open_the_same_data_directory(self):
+        import subprocess
+        import sys
+        code = ("import sys; sys.path.insert(0, %r)\n"
+                "from pathlib import Path\n"
+                "from aegis.assessment import AssessmentService\n"
+                "try:\n    AssessmentService(Path(%r), 18097)\n    print('OPENED')\n"
+                "except RuntimeError as e:\n    print('REFUSED')\n") % (str(Path(__file__).parent.parent), str(self.dir))
+        out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60)
+        self.assertIn("REFUSED", out.stdout, out.stderr[-400:])
+
+
+class TestAddressMoveNeedsANewProof(TestDnsGamesAfterVerification):
+    def test_reconfirming_after_a_move_requires_verification_made_after_the_move(self):
+        self.onboard_public()
+        self.svc._custom_resolver = lambda h: [PUBLIC_1]
+        self.svc._resolve_host(HOST)
+        self.svc._custom_resolver = lambda h: [PUBLIC_2]
+        self.svc._resolve_host(HOST)                               # TXT still there -> L1 may follow, L2 on hold
+        self.assertIsNotNone(self.svc._l2_block_reason())
+        with self.assertRaises(ValueError):                        # the proof from before the move is gone
+            self.svc.confirm_asset_scope(url_or_host=HOST, approver="appr", activate_workspace=True)
+        self.svc.verify_asset_ownership(url_or_host=HOST, method="dns_txt", dns_lookup=lambda n: list(self.txt))
+        self.svc.confirm_asset_scope(url_or_host=HOST, approver="appr", activate_workspace=True)
+        self.svc._resolve_host(HOST)
+        self.assertIsNone(self.svc._l2_block_reason())
+
+
+class TestCollidingSiteProfiles(TestPlantedOrEditedProfile):
+    def test_one_bad_site_profile_does_not_disable_an_accepted_one(self):
+        self.write(self.site_profile())
+        svc = self.start()
+        svc.accept_l2_profile("deepnote", svc.l2_profiles_status()["profiles"][0]["sha256"], "root")
+        clash = self.site_profile()
+        clash["id"] = "zz_clash"                                  # same host, same check ids -> collides
+        f = self.dir / "l2_profiles" / "zz_clash.json"
+        f.write_text(json.dumps(clash), encoding="utf-8")
+        f.chmod(0o600)
+        svc = self.start()
+        self.assertEqual(svc.l2.runnable_check_ids(), ("deepnote_idor_notes",))     # the accepted one still runs
+        self.assertEqual([r["file"] for r in svc.l2_profiles_status()["rejected"]], ["zz_clash.json"])
+        shown = svc.l2_profiles_status()["profiles"][0]
+        self.assertEqual(shown["rules"][0]["request"]["path"], NOTE_B)             # the admin is shown what would be sent
+        self.assertTrue(shown["directory"].endswith("l2_profiles"))

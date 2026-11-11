@@ -26,7 +26,8 @@ from .authz import ApprovalStore, Engagement, Target, TokenAuthority
 from .events import EventBus
 from .evidence import (EVIDENCE_LABELS, evidence_status,
                        evidence_summary, reproduction_note, reproduction_verdict)
-from .gateway import Gateway, State, http_probe_tool, reproduction_probe_tool
+from .gateway import (LAB_REPRODUCTION_CHECKS, Gateway, State, http_probe_tool,
+                      reproduction_probe_tool)
 from .lab import get_lab_mode, set_lab_mode
 from .network import EgressGuard, NetworkError, system_resolver
 from .ownership import (PROHIBITED_ACTIONS_SUMMARY, fetch_proof_file_pinned, public_address,
@@ -76,6 +77,33 @@ class Assessment:
     defense_comparison: dict | None = None
 
 
+_DATA_DIR_LOCKS: dict[str, object] = {}
+
+
+def _claim_data_dir(data_dir: Path) -> None:
+    """One control-plane PROCESS per data directory. Two processes would each keep
+    signing their own view of the authority tables, and a revocation made in one
+    could be written over by the other. (Several service objects inside one
+    process - as tests do when they 'restart' - share the claim.)"""
+    key = str(Path(data_dir).resolve())
+    if key in _DATA_DIR_LOCKS:
+        return
+    try:
+        import fcntl
+    except ImportError:          # no flock on this platform: nothing to enforce
+        _DATA_DIR_LOCKS[key] = None
+        return
+    fh = open(Path(data_dir) / ".lock", "a+")
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()
+        raise RuntimeError(
+            f"データディレクトリ {data_dir} は別のコントロールプレーンのプロセスが使用中です。"
+            "同じデータディレクトリで2つ起動することはできません") from None
+    _DATA_DIR_LOCKS[key] = fh      # held for the life of the process
+
+
 # Findings whose single-item verification is a bundled-lab check (fixed lab paths).
 LAB_ONLY_FINDING_IDS = frozenset({"f_banner", "f_idor", "f_sqli", "fx_idor", "fx_sqli", "fx_banner"})
 
@@ -98,6 +126,9 @@ class AssessmentService:
         # Explicitly passed directories are the caller's own (trusted like code); the
         # default is the bundled templates plus SITE profiles from the data directory,
         # which stay non-runnable until an admin accepts their exact content.
+        _claim_data_dir(self.data_dir)
+        self._inflight = 0                 # verification operations in progress
+        self._persist_error: str | None = None
         self._l2_dirs = list(l2_profile_dirs) if l2_profile_dirs else None
         self.l2 = self._read_l2_profiles()
         # Optional separation of duties for real-service L2: one operator requests
@@ -334,6 +365,8 @@ class AssessmentService:
                         # tokens are withheld until an approver re-confirms the scope.
                         live["address_change_pending"] = sorted(
                             set(live.get("address_change_pending") or []) | set(new))
+                        # re-confirming needs a NEW proof, made after the move
+                        self._ownership_proofs.pop(host, None)
                     self._save_state_locked()
             else:
                 self._revoke_real_service_locked(
@@ -354,7 +387,10 @@ class AssessmentService:
         and only the tokens that one rule needs."""
         env: dict[str, str] = {}
         cafile = os.environ.get("VULNIX_TEST_CA_FILE")
-        if cafile:
+        active_ext = self._external_entry(self.a.asset.get("name"))
+        if cafile and (os.environ.get("AEGIS_ENV", "").strip().lower() in ("development", "dev")
+                       or (active_ext or {}).get("allow_loopback_test")):
+            # a private test CA is never trusted for a real service outside development
             env["VULNIX_TEST_CA_FILE"] = cafile
         rule = self._active_l2_check(args.get("check")) if tool_name == "reproduction_probe" else None
         if rule is not None and self._l2_transport_ok():
@@ -401,10 +437,28 @@ class AssessmentService:
                      "changed_since_acceptance": bool(src["site"] and self._accepted_profiles.get(pid)
                                                       and self._accepted_profiles.get(pid) != src["sha256"]),
                      "confirmed_checks": [c["id"] for c in self.l2.profiles[pid]["checks"]
-                                          if c["spec_status"] in ("confirmed", "unaccepted")]}
+                                          if c["spec_status"] in ("confirmed", "unaccepted")],
+                     "directory": src.get("directory", ""),
+                     # what accepting this file would allow to be SENT: shown to the admin
+                     "rules": [self._describe_rule(self.l2.profiles[pid], c)
+                               for c in self.l2.profiles[pid]["checks"]
+                               if c["spec_status"] in ("confirmed", "unaccepted")]}
                     for pid, src in sorted(self.l2.sources.items()) if pid in self.l2.profiles],
                 "rejected": list(self.l2.rejected),
             }
+
+    @staticmethod
+    def _describe_rule(profile: dict, c: dict) -> dict:
+        def req(node: dict) -> dict:
+            return {"account": profile["tokens"][node["token"]]["label"], "token_key": node["token"],
+                    "path": profile["paths"][node["path"]]["default"], "headers": sorted(node["headers"])}
+        return {
+            "id": c["id"], "label": c["label"],
+            "request": req(c["subject"]),
+            "controls": [{**req(p), "label": p["label"], "expect": p["expect"]} for p in c["preconditions"]],
+            "denied": c["denied"], "exposed": c["exposed"],
+            "spec_evidence": c["spec_evidence"],
+        }
 
     def accept_l2_profile(self, profile_id: str, sha256: str, actor: str) -> dict:
         """An admin accepts the exact content of a site profile. The file is read
@@ -530,8 +584,18 @@ class AssessmentService:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 fh.write(json.dumps(payload, ensure_ascii=False, indent=2))
             os.replace(tmp_path, self.state_path)
-        except OSError:
-            pass
+            self._persist_error = None
+        except OSError as e:
+            # Not persisted: what is on disk may still grant authority that was just
+            # revoked in memory (it would come back after a restart). Say so, and
+            # refuse real-service work until saving works again.
+            first = self._persist_error is None
+            self._persist_error = type(e).__name__
+            if first:
+                try:
+                    self.audit.record("state.persist_failed", error=type(e).__name__)
+                except OSError:
+                    pass
 
     @staticmethod
     def _canonical(obj) -> str:
@@ -733,6 +797,11 @@ class AssessmentService:
         now = time.time()
         e = self.a.engagement
         name = self.a.asset.get("name")
+        if self._in_ownership_flow(name) and self._persist_error:
+            self._save_state_locked()          # try again; maybe the directory is writable now
+            if self._persist_error:
+                raise ValueError("状態をディスクに保存できないため、実サービスへの診断を停止しています。"
+                                 "データディレクトリの書き込み権限と空き容量を確認してください")
         if self._in_ownership_flow(name):
             # A real service's window is the confirmed scope window. It is never
             # extended here; expiry or revocation needs a new proof + confirmation.
@@ -926,6 +995,7 @@ class AssessmentService:
         with self._lock:
             if self.a.state == "running":
                 raise ValueError("診断実行中は対象を切り替えられません。一時停止または停止してください")
+            self._refuse_while_verifying_locked()
             if self.a.asset["id"] == asset_id:
                 return self.snapshot()
             target_asset = next((x for x in self._extra_assets if x["id"] == asset_id), None)
@@ -954,8 +1024,22 @@ class AssessmentService:
         with self._lock:
             return h in self._ownership_proofs or h in self._verified_external_hosts
 
+    def _refuse_while_verifying_locked(self) -> None:
+        if self._inflight:
+            raise ValueError("検証の実行中は対象を切り替え・変更できません。完了してからやり直してください")
+
+    def _begin_operation(self) -> None:
+        with self._lock:
+            self._inflight += 1
+
+    def _end_operation(self) -> None:
+        with self._lock:
+            self._inflight = max(0, self._inflight - 1)
+
     def delete_asset(self, asset_id: str, actor: str = "operator") -> list[dict]:
         with self._lock:
+            if self.a.asset["id"] == asset_id:
+                self._refuse_while_verifying_locked()
             if self.a.asset["id"] == asset_id:
                 if self.a.state == "running":
                     raise ValueError("診断実行中の対象は削除できません。先に停止してください")
@@ -1043,6 +1127,8 @@ class AssessmentService:
                 raise ValueError("この名前は模擬ラボの対象として登録されています。先に削除してから実サービスとして登録してください")
             if existing is self.a.asset and self.a.state == "running":
                 raise ValueError("診断実行中の対象は変更できません。先に停止してください")
+            if existing is self.a.asset:
+                self._refuse_while_verifying_locked()
             self._real_service_hosts.add(host)
             if existing is not None:
                 if (existing.get("scheme"), existing.get("port")) != (parsed["scheme"], parsed["port"]) and (
@@ -1153,8 +1239,13 @@ class AssessmentService:
                     "token_sha256": hashlib.sha256(ch["token"].encode("utf-8")).hexdigest(),
                 }
                 if verified:
-                    # the authoritative, signed record that scope confirmation checks
-                    self._ownership_proofs[host] = dict(target_asset["ownership_proof"])
+                    # the authoritative, signed record that scope confirmation checks;
+                    # it also fixes WHICH endpoint was registered when the proof was made
+                    self._ownership_proofs[host] = {
+                        **target_asset["ownership_proof"],
+                        "scheme": str(target_asset.get("scheme") or parsed["scheme"]),
+                        "port": int(target_asset.get("port") or parsed["port"]),
+                    }
                 if verified and not target_asset.get("scope_confirmed"):
                     target_asset["status"] = "範囲確認待ち"
                     target_asset["note"] = "Step 3: 診断対象スコープと禁止事項を確認してください（L2実証は自動承認されません）"
@@ -1245,8 +1336,10 @@ class AssessmentService:
                 or target_asset.get("sow_optional_ref")
                 or f"AUTH-AUTO-{int(now)}-{host.split('.')[0][:12].upper()}"
             )
-            scheme = str(target_asset.get("scheme") or parsed["scheme"])
-            port = int(target_asset.get("port") or parsed["port"])
+            # endpoint from the SIGNED proof, not from the (unsigned) display record
+            scheme = str(proof.get("scheme") or target_asset.get("scheme") or parsed["scheme"])
+            port = int(proof.get("port") or target_asset.get("port") or parsed["port"])
+            target_asset["scheme"], target_asset["port"] = scheme, port
             if proof["method"] == "well_known" and (scheme, port) != ("https", 443) and not allow_loopback_test:
                 # the proof file was served by the HTTPS service on 443; it says
                 # nothing about who operates another port of the same host
@@ -1435,6 +1528,7 @@ class AssessmentService:
                                                        and self.l2.has_check(f.get("reproduce_check")))}
                              for f in self.a.findings.values()],
                 "l2_separation_required": self.separate_l2_approver,
+                "persistence_error": self._persist_error,
                 "risk": risk,
                 "stop_report": self.a.stop_report,
                 "chat_messages": list(self.a.chat_messages),
@@ -1583,6 +1677,13 @@ class AssessmentService:
     def verify_finding(self, finding_id: str, actor: str) -> dict:
         """Execute a real Gateway + Worker probe for a specific finding on demand
         and attach the live HTTP response and SHA-256 audit hash."""
+        self._begin_operation()        # the active asset cannot be switched while this runs
+        try:
+            return self._verify_finding(finding_id, actor)
+        finally:
+            self._end_operation()
+
+    def _verify_finding(self, finding_id: str, actor: str) -> dict:
         if finding_id == "all":
             with self._lock:
                 if self.gateway.state is State.STOPPED:
@@ -1906,12 +2007,20 @@ class AssessmentService:
         """Apply patched defense configuration to the lab (or re-verify an
         external target after remediation) and re-run the exact same probe and
         reproduction checks through the Gateway to prove mitigation."""
+        self._begin_operation()        # the active asset cannot be switched while this runs
+        try:
+            return self._verify_fix(actor)
+        finally:
+            self._end_operation()
+
+    def _verify_fix(self, actor: str) -> dict:
         with self._lock:
             if self.a.state not in ("completed", "idle"):
                 raise ValueError("診断完了後に修正後の再検証を実行してください")
             self._ensure_active_window_locked()
             before_risk = self._risk()
             is_ext = self._is_external_service_asset()
+            url = self.a.target_url        # decided together with is_ext, under the same lock
             before_verdicts = {
                 f["id"]: {"title": f["title"], "severity": f["severity"], "verdict": f["verdict"]}
                 for f in self._real_findings()
@@ -1920,7 +2029,6 @@ class AssessmentService:
 
         if not is_ext:
             set_lab_mode("patched")
-        url = self.a.target_url
         self._think(
             "防御パッチ適用後の再検証を開始",
             "同一プローブの実HTTP応答で防御結果を確認します。",
@@ -2315,6 +2423,12 @@ class AssessmentService:
 
     def _exec(self, tool, action, args, approval_actor=None, approval_id=None):
         self._checkpoint()
+        if (tool == "reproduction_probe" and args.get("check", "idor") in LAB_REPRODUCTION_CHECKS
+                and self._in_ownership_flow(self.a.asset.get("name"))):
+            # last line of defence, whatever path led here: the bundled lab's attack
+            # probes are never sent while the active asset is a real service
+            self._fail("模擬ラボ専用の検証は、実サービスに対しては実行できません")
+            return None, None
         auto_approval = approval_id is None
         if auto_approval:
             approval_id = self.approval_store.approve(approval_actor, "eng_demo", "lab", action)
