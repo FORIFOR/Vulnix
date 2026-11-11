@@ -53,7 +53,7 @@ class PersistenceBase(RealServiceBase):
         self.svc = self.open(**kw)
         return self.svc
 
-    def lock(self, *, files=("state.json", "authority.epoch")):
+    def lock(self, *, files=("state.json", "authority.ledger", "authority.epoch")):
         """Make the data directory (and the named files in it) read-only."""
         for name in files:
             if (self.dir / name).exists():
@@ -103,7 +103,7 @@ class TestRevocationSurvivesAnUnwritableDataDirectory(PersistenceBase):
 
     def test_read_only_directory_with_a_writable_epoch_record_is_emptied_in_place(self):
         self.onboard()
-        self.lock(files=("state.json",))
+        self.lock(files=("state.json", "authority.ledger"))
         self.revoke()
         self.assertEqual((self.dir / "authority.epoch").stat().st_size, 0)
         self.assertEqual(self.marker_files(), [])        # not needed: the disk copy no longer verifies
@@ -151,7 +151,7 @@ class TestRevocationMarkers(PersistenceBase):
             return real_open(path, mode, *a, **kw)
         return (patch("aegis.assessment.os.replace", side_effect=self._replace_except_markers),
                 patch("aegis.assessment.os.unlink", side_effect=self._unlink_except_epoch),
-                patch("aegis.assessment.open", side_effect=no_truncate, create=True))
+                patch("aegis.authority_ledger.open", side_effect=no_truncate, create=True))
 
     def _replace_except_markers(self, src, dst):
         if str(dst).endswith(".revoked"):
@@ -175,13 +175,13 @@ class TestRevocationMarkers(PersistenceBase):
         self.revoke_without_being_able_to_save()
         body = json.loads(self.marker_files()[0].read_text())
         self.assertIn(epoch, body["epochs"])
-        self.assertEqual(body["mac"], self.svc._marker_mac(body["epochs"]))
+        self.assertEqual(body["mac"], self.svc.ledger.marker_mac(body["epochs"]))
         self.assertEqual(self.marker_files()[0].stat().st_mode & 0o077, 0)
         self.assertFalse(self.restart()._is_external_service_asset(HOST))
 
     def test_restoring_older_copies_of_both_files_does_not_get_past_the_marker(self):
         self.onboard()
-        keep = {n: (self.dir / n).read_bytes() for n in ("state.json", "authority.epoch")}
+        keep = {n: (self.dir / n).read_bytes() for n in ("state.json", "authority.ledger", "authority.epoch")}
         self.revoke_without_being_able_to_save()
         for n, raw in keep.items():                       # an attacker (or a backup) puts both back
             (self.dir / n).write_bytes(raw)
@@ -190,7 +190,7 @@ class TestRevocationMarkers(PersistenceBase):
     def test_a_marker_of_ours_that_does_not_verify_still_refuses(self):
         self.onboard()
         self.svc.workers.kill_all()
-        (self.markers / f"{self.svc._marker_key()}.revoked").write_text('{"epochs": ["1:00"], "mac": "nope"}')
+        (self.markers / f"{self.svc.ledger.marker_key()}.revoked").write_text('{"epochs": ["1:00"], "mac": "nope"}')
         again = self.open()
         self.assertFalse(again._is_external_service_asset(HOST))
         self.assertIn("does not verify", " ".join(e["fields"]["reason"] for e in self.events("state.authority_rejected", again)))
@@ -199,7 +199,7 @@ class TestRevocationMarkers(PersistenceBase):
     def test_an_unreadable_marker_refuses(self):
         self.onboard()
         self.svc.workers.kill_all()
-        (self.markers / f"{self.svc._marker_key()}.revoked").write_text("{not json")
+        (self.markers / f"{self.svc.ledger.marker_key()}.revoked").write_text("{not json")
         again = self.open()
         self.assertFalse(again._is_external_service_asset(HOST))
         again.workers.kill_all()
@@ -207,8 +207,8 @@ class TestRevocationMarkers(PersistenceBase):
     def test_a_marker_for_an_older_state_than_the_one_on_disk_is_ignored(self):
         self.onboard()
         old = "1:" + "0" * 32
-        (self.markers / f"{self.svc._marker_key()}.revoked").write_text(
-            json.dumps({"epochs": [old], "mac": self.svc._marker_mac([old])}))
+        (self.markers / f"{self.svc.ledger.marker_key()}.revoked").write_text(
+            json.dumps({"epochs": [old], "mac": self.svc.ledger.marker_mac([old])}))
         again = self.restart()                            # a later save had succeeded
         self.assertTrue(again._is_external_service_asset(HOST))
 
@@ -270,13 +270,13 @@ class TestUnknownOrInconsistentStateGrantsNothing(PersistenceBase):
         self.assertTrue(self.events("state.unreadable", again))
         again.workers.kill_all()
 
-    def test_rolling_back_state_json_after_a_saved_revocation(self):
+    def test_rolling_back_the_ledger_after_a_saved_revocation(self):
         self.onboard()
-        before = (self.dir / "state.json").read_bytes()
+        before = (self.dir / "authority.ledger").read_bytes()
         self.revoke()                                     # saved normally: the epoch moved on
         self.assertIsNone(self.svc._persist_error)
         self.svc.workers.kill_all()
-        (self.dir / "state.json").write_bytes(before)
+        (self.dir / "authority.ledger").write_bytes(before)
         again = self.open()
         self.assertFalse(again._is_external_service_asset(HOST))
         self.assertIn("not the latest", " ".join(e["fields"]["reason"] for e in self.events("state.authority_rejected", again)))

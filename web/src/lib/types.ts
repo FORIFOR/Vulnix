@@ -187,6 +187,10 @@ export interface Snapshot {
   persistence_error?: string | null;
   /** Set when saved ownership/scope was not restored at startup. */
   authority_notice?: string | null;
+  /** Generation token of the authority ledger; changes with every committed change of authority. */
+  authority_generation?: string;
+  /** Workers a revocation or deletion could not confirm dead (still alive now). */
+  unstopped_workers?: { host: string; pids: number[]; at?: number } | null;
   /** Why the assessment is "failed". */
   failure?: { reason: string; kind: "run" | "persistence"; at?: number; error?: string } | null;
   /** Kernel confinement of the L2 worker on this host; real-service L2 needs ok === true. */

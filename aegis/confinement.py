@@ -281,6 +281,15 @@ class ConfinementSession:
         except (OSError, subprocess.SubprocessError):
             return False
 
+    def empty(self) -> bool:
+        """True only when the cgroup is known to hold no process (or is gone)."""
+        try:
+            return (self.cgroup / "cgroup.procs").read_text().strip() == ""
+        except FileNotFoundError:
+            return True
+        except OSError:
+            return False
+
     def kill(self) -> bool:
         """Kill everything in the cgroup (the worker may have been started through
         sudo, so signalling our own child is not enough)."""

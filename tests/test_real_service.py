@@ -924,8 +924,8 @@ class TestReviewFindingsStayFixed(RealServiceBase):
     def test_state_file_cannot_grant_ownership_scope_or_loopback(self):
         self.onboard()
         self.svc.workers.kill_all()
-        state = json.loads((self.dir / "state.json").read_text())
         self.assertEqual(oct((self.dir / "state.json").stat().st_mode & 0o777), "0o600")
+        self.assertEqual(oct((self.dir / "authority.ledger").stat().st_mode & 0o777), "0o600")
         # (1) an honest restart keeps the scope but not the loopback test switch
         again = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT, l2_profile_dirs=PROFILE_DIRS)
         self.assertTrue(again._is_external_service_asset(HOST))
@@ -934,15 +934,18 @@ class TestReviewFindingsStayFixed(RealServiceBase):
         with self.assertRaises(NetworkError):
             again._resolve_host(HOST)
         again.workers.kill_all()
+        epoch_record = (self.dir / "authority.epoch").read_bytes()
         # (2) an edited table (longer window, another host, loopback) is not restored at all
-        forged = json.loads(json.dumps(state))
-        entry = dict(forged["verified_external_hosts"][HOST], allow_loopback_test=True,
+        forged = json.loads((self.dir / "authority.ledger").read_text())    # the authority ledger, edited
+        entry = dict(forged["tables"]["verified_external_hosts"][HOST], allow_loopback_test=True,
                      not_after=time.time() + 10 * 365 * 86400)
-        forged["verified_external_hosts"] = {HOST: entry, "victim.example.org": dict(entry, host="victim.example.org")}
-        for mac in (forged.get("authority_mac"), "", None):
+        forged["tables"]["verified_external_hosts"] = {
+            HOST: entry, "victim.example.org": dict(entry, host="victim.example.org")}
+        for mac in (forged.get("mac"), "", None):
             with self.subTest(mac=bool(mac)):
-                forged["authority_mac"] = mac
-                (self.dir / "state.json").write_text(json.dumps(forged))
+                forged["mac"] = mac
+                (self.dir / "authority.ledger").write_text(json.dumps(forged))
+                (self.dir / "authority.epoch").write_bytes(epoch_record)        # the test restarts repeatedly
                 svc = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT, l2_profile_dirs=PROFILE_DIRS)
                 self.assertEqual(svc._verified_external_hosts, {})
                 self.assertFalse(svc._is_external_service_asset(HOST))

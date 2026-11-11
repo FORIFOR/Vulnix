@@ -428,12 +428,12 @@ class TestTrafficStaysOnProvenAddresses(RealServiceBase):
         self.prepare()
         self.svc._resolve_host(HOST)
         self.svc.workers.kill_all()
-        state = json.loads((self.dir / "state.json").read_text())
         again = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT, l2_profile_dirs=PROFILE_DIRS)
         self.assertEqual(again._verified_external_hosts[HOST]["verified_addresses"], [PUBLIC_1])
         again.workers.kill_all()
-        state["verified_external_hosts"][HOST]["verified_addresses"] = [PUBLIC_1, "151.101.1.69"]
-        (self.dir / "state.json").write_text(json.dumps(state))
+        ledger = json.loads((self.dir / "authority.ledger").read_text())     # where authority lives
+        ledger["tables"]["verified_external_hosts"][HOST]["verified_addresses"] = [PUBLIC_1, "151.101.1.69"]
+        (self.dir / "authority.ledger").write_text(json.dumps(ledger))
         forged = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT, l2_profile_dirs=PROFILE_DIRS)
         self.assertEqual(forged._verified_external_hosts, {})
         forged.workers.kill_all()
@@ -489,9 +489,19 @@ class TestSecondReviewFindingsStayFixed(RealServiceBase):
         with self.assertRaises(ValueError):
             svc.confirm_asset_scope(url_or_host=self.url, approver="appr", activate_workspace=True)
         self.assertFalse(next(a for a in svc.assets() if a["name"] == HOST)["ownership_verified"])
-        # (b) the proof table itself is edited: the whole authority state is refused
+        # (b) a proof table written into state.json is not read at all: authority lives in the ledger
         state["ownership_proofs"] = {HOST: forged_proof}
         (self.dir / "state.json").write_text(json.dumps(state))
+        svc = self.restart()
+        self.assertEqual(svc._ownership_proofs, {})
+        self.assertIn("state.authority_fields_ignored", [e["event"] for e in svc.audit.entries()])
+        with self.assertRaises(ValueError):
+            svc.confirm_asset_scope(url_or_host=self.url, approver="appr", activate_workspace=True)
+        # (c) the ledger's proof table itself is edited: the whole authority state is refused
+        svc.workers.kill_all()
+        ledger = json.loads((self.dir / "authority.ledger").read_text())
+        ledger["tables"]["ownership_proofs"] = {HOST: forged_proof}
+        (self.dir / "authority.ledger").write_text(json.dumps(ledger))
         svc = self.restart()
         self.assertEqual(svc._ownership_proofs, {})
         self.assertIn("state.authority_rejected", [e["event"] for e in svc.audit.entries()])
@@ -499,21 +509,23 @@ class TestSecondReviewFindingsStayFixed(RealServiceBase):
             svc.confirm_asset_scope(url_or_host=self.url, approver="appr", activate_workspace=True)
         self.assertEqual(self.fake.seen, [])
 
-    def test_an_older_signed_state_file_does_not_bring_back_revoked_authority(self):
+    def test_an_older_signed_ledger_does_not_bring_back_revoked_authority(self):
         self.onboard()
         self.set_secrets()
-        before = (self.dir / "state.json").read_bytes()              # validly signed, scope confirmed
+        old = ("state.json", "authority.ledger")                     # validly signed, scope confirmed
+        before = {n: (self.dir / n).read_bytes() for n in old}
         for revoke in (lambda s: s.delete_asset(s.a.asset["id"]),
                        lambda s: s.verify_asset_ownership(url_or_host=self.url, dns_lookup=lambda n: [])):
             with self.subTest():
                 svc = self.restart()
                 if not svc._is_external_service_asset(HOST):         # re-onboard for the second variant
                     self.onboard()
-                    before = (self.dir / "state.json").read_bytes()
+                    before = {n: (self.dir / n).read_bytes() for n in old}
                     svc = self.svc
                 revoke(svc)
                 self.assertFalse(svc._is_external_service_asset(HOST))
-                (self.dir / "state.json").write_bytes(before)        # put the old copy back
+                for n in old:                                        # put the old copies back
+                    (self.dir / n).write_bytes(before[n])
                 svc = self.restart()
                 self.assertFalse(svc._is_external_service_asset(HOST))
                 self.assertEqual(svc._verified_external_hosts, {})

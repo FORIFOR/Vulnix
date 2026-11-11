@@ -4,7 +4,7 @@ import { useState, type Dispatch, type SetStateAction } from "react";
 import { applyChatReply } from "@/lib/assessmentEvents";
 import { command } from "@/lib/api";
 import { fmtTime } from "@/lib/labels";
-import { failureHeadline, statusNotices } from "@/lib/statusNotices";
+import { failureHeadline, statusNotices, stoppedHeadline } from "@/lib/statusNotices";
 import { canApprove, useSession } from "@/lib/useSession";
 import type { AegisEvent, Approval, AuditEntry, Snapshot } from "@/lib/types";
 import { HelpPopover } from "../learning/HelpPopover";
@@ -45,7 +45,7 @@ function headline(s: Snapshot): string {
   switch (s.state) {
     case "idle": return "診断はまだ開始していません。許可範囲を確認のうえ「診断を開始」を押してください。";
     case "paused": return "一時停止中です。新しい操作は実行されません（実行中の処理は完了まで続きます）。";
-    case "stopped": return "緊急停止しました。実行許可を失効させ、実行中の処理を強制終了しました。";
+    case "stopped": return stoppedHeadline(s);
     case "failed": return failureHeadline(s);
     case "completed": return `診断が完了しました。${s.findings.filter((f) => !f.demo_fixture).length} 件の問題を記録しています。`;
     default: return running ? `${running.label}：${running.detail}` : "処理を進めています。";

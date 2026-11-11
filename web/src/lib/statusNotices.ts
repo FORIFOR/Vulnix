@@ -10,6 +10,16 @@ interface NoticeSource {
   authority_notice?: string | null;
   failure?: { reason: string; kind: string; at?: number; error?: string } | null;
   l2_isolation?: { ok: boolean; reason: string; mechanism?: string } | null;
+  stop_report?: { confirmed: boolean; survivors: number[] } | null;
+  unstopped_workers?: { host: string; pids: number[]; at?: number } | null;
+}
+
+/** "Stopped" is only claimed when the server confirmed that every worker is gone. */
+export function stoppedHeadline(s: NoticeSource): string {
+  if (s.stop_report && !s.stop_report.confirmed) {
+    return `緊急停止を実行しましたが、停止を確認できていません（残存 Worker ${s.stop_report.survivors.length} 件）。新しい操作は拒否されます。プロセスを確認してください。`;
+  }
+  return "緊急停止しました。実行許可を失効させ、実行中の処理を強制終了しました。";
 }
 
 export function failureHeadline(s: NoticeSource): string {
@@ -31,6 +41,13 @@ export function statusNotices(s: NoticeSource): StatusNotice[] {
       tone: "error",
       title: s.failure.kind === "persistence" ? "結果を保存できなかったため、完了していません" : "診断は完了していません",
       detail: s.failure.reason,
+    });
+  }
+  if (s.unstopped_workers && s.unstopped_workers.pids.length > 0) {
+    out.push({
+      tone: "error",
+      title: "Workerの停止を確認できていません",
+      detail: `${s.unstopped_workers.host} の診断許可は取り消しましたが、実行中だった Worker（${s.unstopped_workers.pids.length} 件、PID ${s.unstopped_workers.pids.join(", ")}）の停止を確認できていません。取り消しは完了として扱いません。プロセスを確認し、必要ならコントロールプレーンを停止してください。`,
     });
   }
   if (s.authority_notice) {

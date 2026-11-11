@@ -36,6 +36,7 @@ from .network import EgressGuard, NetworkError, system_resolver
 from .ownership import (PROHIBITED_ACTIONS_SUMMARY, fetch_proof_file_pinned, public_address,
                         challenge_for_host, parse_service_target,
                         verify_ownership_challenge)
+from .authority_ledger import AuthorityLedger, LedgerError, canonical, default_revocation_marker_dirs
 from .confinement import ConfinementError, KernelConfinement
 from .policy import ArgSpec, Budget, PolicyError, Tool
 from .remotion_export import build_remotion_export
@@ -83,6 +84,11 @@ class Assessment:
     failure: dict | None = None
 
 
+class StopNotConfirmed(RuntimeError):
+    """Authority was withdrawn, but a worker that was running could not be
+    confirmed dead. The operation is NOT reported as completed."""
+
+
 class ApproverRequired(PermissionError):
     """The action needs the approver role (mapped to HTTP 403)."""
 
@@ -114,18 +120,6 @@ def _claim_data_dir(data_dir: Path) -> None:
     _DATA_DIR_LOCKS[key] = fh      # held for the life of the process
 
 
-def default_revocation_marker_dirs() -> list[Path]:
-    """Places OUTSIDE the data directory where "a revocation could not be saved"
-    is written down when the data directory itself cannot be changed. An operator
-    may point VULNIX_REVOCATION_MARKER_DIR at one directory of their choice."""
-    override = os.environ.get("VULNIX_REVOCATION_MARKER_DIR", "").strip()
-    if override:
-        return [Path(override)]
-    uid = os.getuid() if hasattr(os, "getuid") else 0
-    return [Path.home() / ".vulnix" / "revocations",
-            Path(tempfile.gettempdir()) / f"vulnix-revocations-{uid}"]
-
-
 # Findings whose single-item verification is a bundled-lab check (fixed lab paths).
 LAB_ONLY_FINDING_IDS = frozenset({"f_banner", "f_idor", "f_sqli", "fx_idor", "fx_sqli", "fx_banner"})
 
@@ -152,9 +146,6 @@ class AssessmentService:
         self._l2_confinement = l2_confinement if l2_confinement is not None else KernelConfinement()
         self._marker_dirs = (list(revocation_marker_dirs) if revocation_marker_dirs is not None
                              else default_revocation_marker_dirs())
-        self._marker_pending = False
-        self._persisted_epoch = ""         # epoch of the authority state last written to disk
-        self._authority_notice: str | None = None
         # Service profiles: per-API L2 rules. Loaded and validated once at start.
         # Explicitly passed directories are the caller's own (trusted like code); the
         # default is the bundled templates plus SITE profiles from the data directory,
@@ -192,18 +183,17 @@ class AssessmentService:
         self.lab_port = lab_port
         self.verify_seconds = verify_seconds
         self._allowed_hosts: set[str] = {"lab.test", "api.lab.test"}
-        self._verified_external_hosts: dict[str, dict] = {}
-        # Everything that grants authority over a real service lives in these three
-        # tables and nowhere else. They are persisted signed (HMAC + epoch); the
-        # asset records shown in the UI are display state only.
-        self._ownership_proofs: dict[str, dict] = {}      # host -> recorded challenge proof
-        self._real_service_hosts: set[str] = set()        # hosts registered through the ownership flow
-        self._accepted_profiles: dict[str, str] = {}      # site profile id -> sha256 an admin accepted
-        # "<counter>:<random>" - the random part makes an epoch impossible to reach
-        # again by counting, so an old signed state can never match a later epoch
-        self._authority_epoch = ""
-        self._authority_digest = ""
-        self._persisted_authority_digest = ""             # digest of the tables as last written to disk
+        # Everything that grants authority over a real service lives in the authority
+        # ledger and nowhere else (authority_ledger.py): assets, ownership proofs,
+        # confirmed scopes, real-service names and accepted profiles, committed as
+        # one transaction with a generation token. The asset records shown in the UI
+        # and everything in state.json are display state only.
+        def _ledger_event(event, **fields):
+            try:
+                self.audit.record(event, **fields)
+            except Exception:
+                pass
+        self.ledger = AuthorityLedger(self.data_dir, self._state_mac_key, self._marker_dirs, _ledger_event)
         self._custom_resolver = None
         # test seams for the proof re-check on address change (None = real lookups)
         self._proof_dns_lookup = None
@@ -277,8 +267,11 @@ class AssessmentService:
         ]
         # No service is registered on our behalf: real services enter only through
         # the ownership flow, and whatever was saved (including deletions) is kept.
+        self._unstopped: dict | None = None      # workers a revocation/deletion could not confirm dead
         self._load_state_locked()
-        if (self._authority_notice or self._marker_pending) and not self._persist_error:
+        with self._lock:
+            self._reconcile_assets_with_ledger_locked()
+        if (self._authority_notice or self._marker_pending or self.ledger.dirty()) and not self._persist_error:
             # Authority on disk was refused. Write that down now, so the disk no
             # longer holds it (and a marker that asked for this can be retired).
             with self._lock:
@@ -294,6 +287,149 @@ class AssessmentService:
                     self.audit.record("secrets.orphan_cleared", host=orphan)
                 except OSError:
                     pass        # unwritable store: nothing is sent while saving is broken
+
+    # The tables live in the ledger; these names are how the service reads and
+    # mutates them (always under self._lock, always followed by a commit).
+    @property
+    def _verified_external_hosts(self) -> dict:
+        return self.ledger.verified_external_hosts
+
+    @_verified_external_hosts.setter
+    def _verified_external_hosts(self, value: dict) -> None:
+        self.ledger.verified_external_hosts = value
+
+    @property
+    def _ownership_proofs(self) -> dict:
+        return self.ledger.ownership_proofs
+
+    @_ownership_proofs.setter
+    def _ownership_proofs(self, value: dict) -> None:
+        self.ledger.ownership_proofs = value
+
+    @property
+    def _real_service_hosts(self) -> set:
+        return self.ledger.real_service_hosts
+
+    @_real_service_hosts.setter
+    def _real_service_hosts(self, value: set) -> None:
+        self.ledger.real_service_hosts = value
+
+    @property
+    def _accepted_profiles(self) -> dict:
+        return self.ledger.accepted_profiles
+
+    @_accepted_profiles.setter
+    def _accepted_profiles(self, value: dict) -> None:
+        self.ledger.accepted_profiles = value
+
+    @property
+    def _authority_notice(self) -> str | None:
+        return self.ledger.notice
+
+    @_authority_notice.setter
+    def _authority_notice(self, value: str | None) -> None:
+        self.ledger.notice = value
+
+    @property
+    def _authority_epoch(self) -> str:
+        return self.ledger.generation
+
+    @property
+    def _marker_pending(self) -> bool:
+        return self.ledger.marker_pending
+
+    _canonical = staticmethod(canonical)
+
+    def _real_asset_records(self) -> dict[str, dict]:
+        out = {}
+        for rec in (self.a.asset, *self._extra_assets):
+            name = str(rec.get("name", "")).rstrip(".").lower()
+            if name and (rec.get("challenge") or name in self.ledger.real_service_hosts
+                         or name in self.ledger.verified_external_hosts or name in self.ledger.ownership_proofs):
+                out[name] = rec
+        return out
+
+    def _sync_ledger_assets_locked(self) -> None:
+        """The ledger's asset table is the set of real-service asset records, so a
+        registration or a deletion is committed together with whatever authority
+        changes with it - one transaction."""
+        self.ledger.assets = {name: {"id": str(rec.get("id") or "")}
+                              for name, rec in self._real_asset_records().items()}
+
+    def _reconcile_assets_with_ledger_locked(self) -> None:
+        """After a restart the ledger decides. A process can die between the ledger
+        commit and the display-state write, so:
+          * an asset card for a real service the ledger does not list was deleted
+            (its deletion committed): the card goes;
+          * a ledger entry without a card belongs to nothing that can be shown,
+            selected or revoked from the UI: its authority goes."""
+        if self.ledger.rejected_reason or not self.ledger.assets_known:
+            return                  # nothing was restored / an older layout: the cards are all there is
+        cards = self._real_asset_records()
+        for name in [n for n in cards if n not in self.ledger.assets]:
+            rec = cards[name]
+            self.audit.record("asset.dropped_not_in_ledger", host=name, asset_id=rec.get("id"))
+            if rec is self.a.asset:
+                self.a.asset = {"id": "lab", "name": "lab.test", "kind": "Webアプリケーション",
+                                "environment": "ローカル検証ラボ（127.0.0.1）"}
+                self._sync_scope_for_host("lab.test", "DEMO-AUTH-001（ローカル検証ラボ）")
+                self.a.chat_messages = []
+                self.gateway._state = State.RUNNING
+                self._reset_workspace_locked()
+            else:
+                self._extra_assets = [x for x in self._extra_assets if x is not rec]
+        for name in [n for n in (*self.ledger.assets, *self.ledger.verified_external_hosts,
+                                 *self.ledger.ownership_proofs) if n not in cards]:
+            if (name in self.ledger.verified_external_hosts or name in self.ledger.ownership_proofs
+                    or name in self.ledger.assets):
+                self.audit.record("ledger.entry_without_asset_dropped", host=name)
+            self.ledger.verified_external_hosts.pop(name, None)
+            self.ledger.ownership_proofs.pop(name, None)
+            self.ledger.assets.pop(name, None)
+
+    def _commit_grant_locked(self, before: dict, what: str) -> None:
+        """Commit a change that grants authority, now. If it cannot be written it
+        is rolled back: nothing was granted, in memory or on disk."""
+        try:
+            self._sync_ledger_assets_locked()
+            self.ledger.commit_or_rollback(before)
+        except LedgerError:
+            self._persist_error = self.ledger.error or "LedgerError"
+            raise ValueError(f"権限台帳に保存できないため、{what}は記録されませんでした。保存先を確認してください") from None
+
+    def _authority_reduced_locked(self, host: str) -> None:
+        """Every withdrawal of authority goes through here, BEFORE it is committed:
+        requests still waiting in the Gateway may no longer launch, and a worker
+        already talking to that service is killed and confirmed dead."""
+        h = (host or "").rstrip(".").lower()
+        self.gateway.invalidate_pending()
+        if (self.a.asset.get("name") or "").lower() != h:
+            return                  # workers only ever run against the active asset
+        survivors = self.workers.terminate_active(confirm_timeout_s=5.0)
+        if survivors:
+            self._unstopped = {"host": h, "pids": survivors, "at": time.time(), "pool": self.workers}
+            self.audit.record("workers.stop_unconfirmed", host=h, survivors=survivors)
+
+    def _raise_if_unstopped(self, done: str) -> None:
+        with self._lock:
+            pending = self._unstopped_now_locked()
+        if pending:
+            raise StopNotConfirmed(
+                f"{done}が、実行中だったWorker（{len(pending['pids'])}件）の停止を確認できていません。"
+                "プロセスを確認し、必要ならコントロールプレーンを停止してください")
+
+    def _unstopped_now_locked(self) -> dict | None:
+        """The workers a withdrawal could not confirm dead that are STILL alive."""
+        u = self._unstopped
+        if not u:
+            return None
+        alive = u["pool"].still_running(u["pids"])
+        if not alive:
+            self.audit.record("workers.stop_confirmed_late", host=u["host"], pids=u["pids"])
+            self._unstopped = None
+            return None
+        u["pids"] = alive
+        return {"host": u["host"], "pids": list(alive), "at": u["at"]}
 
     def _external_entry(self, host: str | None) -> dict | None:
         """The verified-external record for `host`, only while it is fully valid
@@ -327,6 +463,7 @@ class AssessmentService:
         self._verified_external_hosts.pop(h, None)
         if not keep_proof:
             self._ownership_proofs.pop(h, None)
+        self._authority_reduced_locked(h)
         self.secrets.clear_credentials(h)
         self._l2_requests = {k: v for k, v in self._l2_requests.items() if v.get("host") != h}
         for rec in (self.a.asset, *self._extra_assets):
@@ -706,7 +843,17 @@ class AssessmentService:
         return build_l2_candidates(self.a.target_url, self._l2_profile(), self._ready_l2_checks())
 
     def _save_state_locked(self) -> None:
-        """Persist assessment state, findings, evidence, approvals, and assets atomically."""
+        """Commit the authority ledger, then persist the display state (assessment,
+        findings, evidence, approvals, asset cards). The two are independent files:
+        a display state that cannot be written never keeps a revocation from being
+        committed. Either failing sets `_persist_error`, which stops all
+        real-service work until a save succeeds."""
+        try:
+            self._sync_ledger_assets_locked()
+            self.ledger.commit()
+        except Exception as e:          # never expected; unknown means not saved
+            self.ledger.error = type(e).__name__
+        state_error = None
         try:
             payload = {
                 "version": 1,
@@ -725,14 +872,12 @@ class AssessmentService:
                 "failure": self.a.failure,
                 "extra_assets": self._extra_assets,
                 "allowed_hosts": sorted(self._allowed_hosts),
-                "verified_external_hosts": self._verified_external_hosts,
                 "authorization_ref": self.a.engagement.authorization_ref,
                 "ownership_verified": self.a.engagement.ownership_verified,
                 "lab_mode": get_lab_mode(),
                 "artex_cli_verified": self._artex_cli_verified,
                 "last_planner_verification": self._last_planner_verification,
             }
-            payload.update(self._signed_authority_locked())
             tmp_path = self.state_path.with_suffix(".json.tmp")
             fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -740,349 +885,82 @@ class AssessmentService:
                 fh.flush()
                 os.fsync(fh.fileno())
             os.replace(tmp_path, self.state_path)
-            self._sync_dir(self.data_dir)      # durable before any marker is retired
-            self._persist_error = None
-            self._persisted_authority_digest = self._authority_digest
-            self._persisted_epoch = self._authority_epoch
-            if self._marker_pending:
-                # what is on disk is the current truth again
-                self._clear_revocation_markers()
+            self._sync_dir(self.data_dir)
         except Exception as e:      # OSError, but also anything that makes the state unserialisable
-            # If the authority tables changed since the last successful save (e.g. a
-            # revocation), the copy on disk is now WRONG, and it would be honoured
-            # after a restart. Removing the small epoch record needs no free space and
-            # makes that stale copy unacceptable: after a restart every real service
-            # has to be verified and confirmed again.
+            state_error = type(e).__name__
+        error = self.ledger.error or state_error
+        if error is None:
+            self._persist_error = None
+            return
+        # Not persisted. Say so, and refuse real-service work until saving works
+        # again. (A reduction of authority that could not be committed has already
+        # been made unacceptable on disk by the ledger.)
+        first = self._persist_error is None
+        self._persist_error = error
+        if self.a.state == "completed":
+            # "completed" promises that the results are on disk. Whatever was
+            # just changed is not, so the state no longer says so.
+            self.a.state = "failed"
+            self.a.failure = {
+                "reason": "結果をディスクに保存できなかったため、完了として扱いません。保存先を確認してから再実行してください",
+                "kind": "persistence", "error": self._persist_error, "at": time.time()}
             try:
-                current = hashlib.sha256(self._canonical(self._authority_tables()).encode("utf-8")).hexdigest()
-                if current != self._persisted_authority_digest:
-                    self._authority_digest = ""          # a later successful save issues a new epoch
-                    self._invalidate_persisted_authority_locked()
+                self.bus.publish(self.a.id, "assessment.state", state="failed", risk=self._risk(),
+                                 failure=self.a.failure)
             except Exception:
                 pass
-            # Not persisted: what is on disk may still grant authority that was just
-            # revoked in memory (it would come back after a restart). Say so, and
-            # refuse real-service work until saving works again.
-            first = self._persist_error is None
-            self._persist_error = type(e).__name__
-            if self.a.state == "completed":
-                # "completed" promises that the results are on disk. Whatever was
-                # just changed is not, so the state no longer says so.
-                self.a.state = "failed"
-                self.a.failure = {
-                    "reason": "結果をディスクに保存できなかったため、完了として扱いません。保存先を確認してから再実行してください",
-                    "kind": "persistence", "error": self._persist_error, "at": time.time()}
-                try:
-                    self.bus.publish(self.a.id, "assessment.state", state="failed", risk=self._risk(),
-                                     failure=self.a.failure)
-                except Exception:
-                    pass
-            if first:
-                try:
-                    self.audit.record("state.persist_failed", error=type(e).__name__)
-                except Exception:
-                    pass
-
-    # ---- a revocation that cannot be written where the state lives ----------
-    def _invalidate_persisted_authority_locked(self) -> None:
-        """The authority on disk is stale (e.g. it still grants what was just
-        revoked) and could not be replaced. Make it unacceptable after a restart,
-        by whichever means still works:
-          1. remove the epoch record (needs a writable directory, no free space);
-          2. empty it in place (needs only a writable file);
-          3. leave a signed marker OUTSIDE the data directory naming the stale epoch.
-        If none works, the stale state can only be refused while this process lives
-        (`_persist_error` blocks all real-service work) - that is recorded."""
-        gone = False
-        try:
-            os.unlink(self._epoch_path())
-            gone = True
-        except FileNotFoundError:
-            gone = True
-        except OSError:
+        if first:
             try:
-                with open(self._epoch_path(), "r+b") as fh:
-                    fh.truncate(0)
-                    os.fsync(fh.fileno())
-                gone = True
-            except OSError:
-                pass
-        if gone:
-            self._sync_dir(self.data_dir)
-            return                      # the copy on disk can no longer verify
-        written = self._write_revocation_markers()
-        self._marker_pending = self._marker_pending or written > 0
-        if not written:
-            try:
-                self.audit.record("state.revocation_not_durable",
-                                  reason="data directory and marker locations are all unwritable")
+                self.audit.record("state.persist_failed", error=error,
+                                  ledger=bool(self.ledger.error), display_state=bool(state_error))
             except Exception:
                 pass
 
     @staticmethod
     def _sync_dir(path: Path) -> None:
-        """Make a rename in `path` durable (best effort where directories cannot be synced)."""
-        try:
-            fd = os.open(path, os.O_RDONLY)
-        except OSError:
-            return
-        try:
-            os.fsync(fd)
-        except OSError:
-            pass
-        finally:
-            os.close(fd)
-
-    def _marker_key(self) -> str:
-        return hashlib.sha256(str(self.data_dir.resolve()).encode("utf-8")).hexdigest()[:32]
-
-    def _marker_paths(self) -> list[Path]:
-        return [Path(d) / f"{self._marker_key()}.revoked" for d in self._marker_dirs]
-
-    def _marker_mac(self, epochs: list[str]) -> str:
-        msg = f"revoked|{self._marker_key()}|{'|'.join(sorted(epochs))}"
-        return hmac.new(self._state_mac_key, msg.encode("utf-8"), hashlib.sha256).hexdigest()
-
-    def _read_marker(self, path: Path) -> list[str] | None:
-        """The epochs a marker of ours names; None if it cannot be read or verified."""
-        try:
-            body = json.loads(path.read_text(encoding="utf-8"))
-            epochs = body["epochs"]
-            if not isinstance(epochs, list) or not all(isinstance(e, str) for e in epochs):
-                return None
-            ok = hmac.compare_digest(str(body.get("mac") or ""), self._marker_mac(epochs))
-        except (OSError, ValueError, KeyError, TypeError):
-            return None
-        return epochs if ok else None
-
-    def _write_revocation_markers(self) -> int:
-        written = 0
-        for path in self._marker_paths():
-            # Name the state that is on disk NOW, and keep whatever an earlier
-            # marker already named: a marker is only ever widened, never narrowed.
-            stale = {self._read_epoch() or "", self._persisted_epoch}
-            try:
-                if os.lstat(path).st_uid == (os.getuid() if hasattr(os, "getuid") else 0):
-                    stale |= set(self._read_marker(path) or [])
-            except OSError:
-                pass
-            epochs = sorted(stale)[-64:]
-            body = json.dumps({"epochs": epochs, "at": time.time(), "mac": self._marker_mac(epochs)})
-            try:
-                path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-                st = os.lstat(path.parent)
-                if hasattr(os, "getuid") and st.st_uid != os.getuid():
-                    continue            # somebody else's directory (shared temp): not ours to trust
-                tmp = path.with_suffix(".tmp")
-                fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o600)
-                with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                    fh.write(body)
-                    fh.flush()
-                    os.fsync(fh.fileno())
-                os.replace(tmp, path)
-                self._sync_dir(path.parent)
-                written += 1
-            except OSError:
-                continue
-        return written
-
-    def _clear_revocation_markers(self) -> None:
-        left = False
-        for path in self._marker_paths():
-            try:
-                os.unlink(path)
-            except FileNotFoundError:
-                pass
-            except OSError:
-                left = True             # tried again after the next successful save
-        self._marker_pending = left
-
-    def _revocation_marker_hit(self, epochs: set[str]) -> str | None:
-        """A reason to refuse the authority on disk, or None. A marker that is ours
-        but cannot be read or verified counts as a hit: unknown means refuse."""
-        for path in self._marker_paths():
-            try:
-                st = os.lstat(path)
-            except FileNotFoundError:
-                continue
-            except OSError:
-                self._marker_pending = True
-                return "a revocation marker exists but cannot be read"
-            if hasattr(os, "getuid") and st.st_uid != os.getuid():
-                continue                # not written by this account: ignored
-            self._marker_pending = True
-            named = self._read_marker(path)
-            if named is None:
-                return "a revocation marker exists but cannot be read or does not verify"
-            if epochs & set(named):
-                return "a revocation could not be saved before the last shutdown"
-            # it names an older state than the one on disk: a later save succeeded
-        return None
-
-    def _data_dir_writable(self) -> str | None:
-        """None when a file can be created, written, synced and removed in the data
-        directory right now; otherwise the error. Checked at startup: authority is
-        only honoured by a process that could also record its revocation."""
-        probe = self.data_dir / f".write-probe-{secrets.token_hex(6)}"
-        try:
-            fd = os.open(probe, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            try:
-                os.write(fd, b"x")
-                os.fsync(fd)
-            finally:
-                os.close(fd)
-            os.unlink(probe)
-            return None
-        except OSError as e:
-            try:
-                os.unlink(probe)
-            except OSError:
-                pass
-            return type(e).__name__
-
-    @staticmethod
-    def _canonical(obj) -> str:
-        return json.dumps(json.loads(json.dumps(obj)), sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-
-    def _authority_tables(self) -> dict:
-        return {"verified_external_hosts": self._verified_external_hosts,
-                "ownership_proofs": self._ownership_proofs,
-                "real_service_hosts": sorted(self._real_service_hosts),
-                "accepted_profiles": self._accepted_profiles}
-
-    def _authority_mac(self, tables: dict, epoch: str) -> str:
-        """MAC over everything in state.json that grants authority, bound to an
-        epoch. Keyed from the 0600 master key, so an edited state file cannot grant
-        ownership, a proof, scope, a window or addresses."""
-        msg = f"{epoch}|{self._canonical(tables)}".encode("utf-8")
-        return hmac.new(self._state_mac_key, msg, hashlib.sha256).hexdigest()
-
-    def _epoch_path(self) -> Path:
-        return self.data_dir / "authority.epoch"
-
-    def _write_epoch_locked(self) -> None:
-        body = {"epoch": self._authority_epoch,
-                "mac": hmac.new(self._state_mac_key, f"epoch|{self._authority_epoch}".encode(),
-                                hashlib.sha256).hexdigest()}
-        tmp = self._epoch_path().with_suffix(".tmp")
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(json.dumps(body))
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(tmp, self._epoch_path())
-        self._sync_dir(self.data_dir)
-
-    def _read_epoch(self) -> str | None:
-        try:
-            body = json.loads(self._epoch_path().read_text(encoding="utf-8"))
-            epoch = body["epoch"]
-        except (OSError, ValueError, KeyError, TypeError):
-            return None
-        if not isinstance(epoch, str) or not re.fullmatch(r"\d{1,12}:[0-9a-f]{32}", epoch):
-            return None
-        want = hmac.new(self._state_mac_key, f"epoch|{epoch}".encode(), hashlib.sha256).hexdigest()
-        return epoch if hmac.compare_digest(str(body.get("mac") or ""), want) else None
-
-    def _next_epoch(self) -> str:
-        counter = int(self._authority_epoch.split(":", 1)[0]) if self._authority_epoch else 0
-        return f"{counter + 1}:{secrets.token_hex(16)}"
-
-    def _signed_authority_locked(self) -> dict:
-        """The authority tables plus epoch and MAC. Every change to the tables
-        advances the epoch (kept in a second 0600 file), so an older signed copy
-        of state.json - e.g. from before a revocation or deletion - is not accepted
-        again. (Rolling back BOTH files together needs write access to the whole
-        data directory, which is the same trust level as the master key.)"""
-        tables = self._authority_tables()
-        digest = hashlib.sha256(self._canonical(tables).encode("utf-8")).hexdigest()
-        if digest != self._authority_digest:
-            self._authority_epoch = self._next_epoch()
-            self._authority_digest = digest
-            self._write_epoch_locked()          # epoch first: a crash in between fails closed
-        return {**json.loads(self._canonical(tables)),
-                "authority_epoch": self._authority_epoch,
-                "authority_mac": self._authority_mac(tables, self._authority_epoch)}
+        from .authority_ledger import sync_dir
+        sync_dir(path)
 
     def _load_state_locked(self) -> None:
-        """Restore persisted assessment state, findings, evidence, and approvals across restarts."""
-        # The epoch record is read first and unconditionally: a missing, empty or
-        # corrupt state.json must not restart the epoch sequence.
-        self._authority_epoch = self._read_epoch() or ""
-        self._persisted_epoch = self._authority_epoch     # what the disk holds, accepted or not
-        unwritable = self._data_dir_writable()
-        if unwritable:
+        """Restore the authority ledger, then the display state (assessment, findings,
+        evidence, approvals, asset cards)."""
+        data = None
+        unreadable = None
+        if self.state_path.exists():
+            try:
+                data = json.loads(self.state_path.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    raise ValueError("not an object")
+            except (OSError, ValueError) as e:
+                data, unreadable = None, type(e).__name__
+        had_ledger = self.ledger.path.exists()
+        rejected_reason = self.ledger.load(legacy=data)
+        if had_ledger and data and any(data.get(k) for k in (
+                "ownership_proofs", "verified_external_hosts", "real_service_hosts", "accepted_profiles")):
+            # authority is read from the ledger only; whatever state.json says about it is not used
+            self.audit.record("state.authority_fields_ignored",
+                              reason="authority is only read from the ledger; fields in state.json are not used")
+        if self.ledger.error:
             # nothing can be recorded here: no authority is honoured, and every
             # real-service request is refused until a save succeeds
-            self._persist_error = f"data directory not writable ({unwritable})"
-        if not self.state_path.exists():
-            if self._revocation_marker_hit({self._authority_epoch}):
-                self._authority_notice = "保存できなかった取り消しの記録が見つかりました"
-            return
-        try:
-            data = json.loads(self.state_path.read_text(encoding="utf-8"))
-            if not isinstance(data, dict):
-                raise ValueError("not an object")
-        except (OSError, ValueError) as e:
-            # unknown persistent state: start with no authority, and say so
+            self._persist_error = self.ledger.error
+        if unreadable:
+            # Unknown persistent state: the asset records the ledger's entries
+            # belong to are gone, so nothing they granted is kept either.
+            for name in (*self.ledger.assets, *self.ledger.verified_external_hosts, *self.ledger.ownership_proofs):
+                self.ledger.real_service_hosts.add(name)
+            self.ledger.assets, self.ledger.verified_external_hosts, self.ledger.ownership_proofs = {}, {}, {}
             self._authority_notice = "保存された状態を読み取れないため、実サービスの所有確認・範囲確認は引き継いでいません"
-            self.audit.record("state.unreadable", error=type(e).__name__)
+            self.audit.record("state.unreadable", error=unreadable)
             try:        # keep what was there for whoever has to find out why
                 os.replace(self.state_path, self.data_dir / f"state.unreadable-{int(time.time())}.json")
             except OSError:
                 pass
+        if rejected_reason:
+            self.audit.record("state.authority_rejected",
+                              reason=rejected_reason + "; ownership proofs and scope not restored")
+        if data is None:
             return
-
-        saved = {
-            "verified_external_hosts": data.get("verified_external_hosts") if isinstance(data.get("verified_external_hosts"), dict) else {},
-            "ownership_proofs": data.get("ownership_proofs") if isinstance(data.get("ownership_proofs"), dict) else {},
-            "real_service_hosts": data.get("real_service_hosts") if isinstance(data.get("real_service_hosts"), list) else [],
-            "accepted_profiles": data.get("accepted_profiles") if isinstance(data.get("accepted_profiles"), dict) else {},
-        }
-        authority_rejected = False
-        rejected_reason = ""
-        stored_epoch = self._read_epoch()
-        if any(saved.values()):
-            epoch = str(data.get("authority_epoch") or "")
-            mac = str(data.get("authority_mac") or "")
-            if not hmac.compare_digest(mac, self._authority_mac(saved, epoch)):
-                rejected_reason = "integrity check failed (unsigned or modified)"
-            elif stored_epoch is None or not hmac.compare_digest(epoch, stored_epoch):
-                rejected_reason = "not the latest authority state (older copy or missing epoch record)"
-            elif unwritable:
-                rejected_reason = "data directory is not writable; a revocation could not have been recorded"
-        marker = self._revocation_marker_hit({stored_epoch or "", str(data.get("authority_epoch") or "")})
-        if marker and not rejected_reason:
-            rejected_reason = marker
-        if any(saved.values()) or marker:
-            if rejected_reason:
-                # Restore nothing that grants authority. The assets stay listed and
-                # have to be verified and confirmed again.
-                authority_rejected = True
-                # "This name is a real service" only ever RESTRICTS (never a lab
-                # alias, never an external model), so it is kept even from a state
-                # that is not trusted.
-                for name in (*saved["real_service_hosts"], *saved["verified_external_hosts"],
-                             *saved["ownership_proofs"]):
-                    if isinstance(name, str) and name:
-                        self._real_service_hosts.add(name.rstrip(".").lower())
-            else:
-                self._verified_external_hosts = {
-                    str(k).lower(): {**dict(v), "allow_loopback_test": False}   # never restored
-                    for k, v in saved["verified_external_hosts"].items() if isinstance(v, dict)}
-                self._ownership_proofs = {str(k).lower(): dict(v)
-                                          for k, v in saved["ownership_proofs"].items() if isinstance(v, dict)}
-                self._real_service_hosts = {str(h).lower() for h in saved["real_service_hosts"]}
-                self._accepted_profiles = {str(k): str(v) for k, v in saved["accepted_profiles"].items()}
-        # never go backwards, whatever was on disk
-        self._authority_epoch = stored_epoch or self._authority_epoch
-        self._persisted_epoch = stored_epoch or ""        # what the disk holds, accepted or not
-        if not authority_rejected:
-            self._authority_digest = hashlib.sha256(
-                self._canonical(self._authority_tables()).encode("utf-8")).hexdigest()
-            self._persisted_authority_digest = self._authority_digest
-            if any(saved.values()) and self._verified_external_hosts != saved["verified_external_hosts"]:
-                self._authority_digest = ""      # loopback switch was stripped: re-sign on next save
         if isinstance(data.get("allowed_hosts"), list):
             self._allowed_hosts = {str(h) for h in data["allowed_hosts"] if h} | {"lab.test", "api.lab.test"}
         if isinstance(data.get("asset"), dict) and data["asset"].get("name"):
@@ -1121,11 +999,6 @@ class AssessmentService:
             if not has_proof and (rec.get("ownership_verified") or rec.get("ownership_proof")):
                 rec["ownership_verified"] = False
                 rec.pop("ownership_proof", None)
-        if authority_rejected:
-            self._authority_notice = ("保存されていた所有確認・範囲確認は引き継いでいません"
-                                      "（保存状態を信頼できないため）。所有確認からやり直してください")
-            self.audit.record("state.authority_rejected",
-                              reason=rejected_reason + "; ownership proofs and scope not restored")
         if isinstance(data.get("failure"), dict):
             self.a.failure = dict(data["failure"])
         if isinstance(data.get("chat_messages"), list):
@@ -1452,6 +1325,7 @@ class AssessmentService:
                 if self.a.state == "running":
                     raise ValueError("診断実行中の対象は削除できません。先に停止してください")
                 deleted_name = self.a.asset["name"]
+                self._withdraw_deleted_locked(deleted_name)
                 # Promote next authorized extra asset, or recreate default lab.test
                 next_auth = next(
                     (x for x in self._extra_assets
@@ -1489,21 +1363,32 @@ class AssessmentService:
                 if target is None:
                     raise ValueError("削除対象の資産が見つかりません")
                 deleted_name = target["name"]
+                self._withdraw_deleted_locked(deleted_name)
                 self._extra_assets = [x for x in self._extra_assets if x["id"] != asset_id]
                 self._save_state_locked()
-            # Deleting a real-service asset revokes its scope and its stored test credentials.
             gone = str(deleted_name).lower()
-            was_real = self._in_ownership_flow(gone) or gone in self._ownership_proofs
-            self._verified_external_hosts.pop(gone, None)
-            self._ownership_proofs.pop(gone, None)
-            # the name stays marked as a real service: it can be registered again
-            # through the ownership flow, but never as a lab alias
-            self._l2_requests = {k: v for k, v in self._l2_requests.items() if v.get("host") != gone}
-            self.secrets.clear_credentials(gone)
-            if was_real:
-                self._save_state_locked()
+            try:
+                self.secrets.clear_credentials(gone)
+            except OSError:
+                pass        # cleared again at the next start (orphan cleanup)
         self.audit.record("asset.deleted", actor=actor, asset_id=asset_id, name=deleted_name)
+        self._raise_if_unstopped("対象を削除し、診断許可を取り消しました")
         return self.assets()
+
+    def _withdraw_deleted_locked(self, name: str) -> None:
+        """Deleting a real-service asset withdraws its scope and proof FIRST, in
+        memory; the asset record and the authority then leave the ledger in the
+        same commit (the first save after this)."""
+        gone = str(name).rstrip(".").lower()
+        if not (self._in_ownership_flow(gone) or gone in self._ownership_proofs):
+            return
+        self._verified_external_hosts.pop(gone, None)
+        self._ownership_proofs.pop(gone, None)
+        # the name stays marked as a real service: it can be registered again
+        # through the ownership flow, but never as a lab alias
+        self._real_service_hosts.add(gone)
+        self._authority_reduced_locked(gone)
+        self._l2_requests = {k: v for k, v in self._l2_requests.items() if v.get("host") != gone}
 
     def issue_ownership_challenge(
         self,
@@ -1661,11 +1546,18 @@ class AssessmentService:
                 if verified:
                     # the authoritative, signed record that scope confirmation checks;
                     # it also fixes WHICH endpoint was registered when the proof was made
+                    before = self.ledger.snapshot()
                     self._ownership_proofs[host] = {
                         **target_asset["ownership_proof"],
                         "scheme": str(target_asset.get("scheme") or parsed["scheme"]),
                         "port": int(target_asset.get("port") or parsed["port"]),
                     }
+                    try:
+                        self._commit_grant_locked(before, "所有確認")
+                    except ValueError:
+                        target_asset["ownership_verified"] = False
+                        target_asset.pop("ownership_proof", None)
+                        raise
                 if verified and not target_asset.get("scope_confirmed"):
                     target_asset["status"] = "範囲確認待ち"
                     target_asset["note"] = "Step 3: 診断対象スコープと禁止事項を確認してください（L2実証は自動承認されません）"
@@ -1674,6 +1566,7 @@ class AssessmentService:
                 # no further traffic is sent to this host until it is proven again.
                 self._verified_external_hosts.pop(host, None)
                 self._ownership_proofs.pop(host, None)
+                self._authority_reduced_locked(host)
                 # stored test accounts and pending L2 requests go with the authority
                 self.secrets.clear_credentials(host)
                 self._l2_requests = {k: v for k, v in self._l2_requests.items() if v.get("host") != host}
@@ -1685,6 +1578,8 @@ class AssessmentService:
                         target_asset["assessment_id"] = None
                         target_asset["note"] = "所有確認に失敗しました。DNS TXT または検証ファイルを確認してください"
             self._save_state_locked()
+        if not verified:
+            self._raise_if_unstopped("所有確認に失敗したため診断許可を取り消しました")
 
         self.audit.record(
             "asset.ownership_verified" if verified else "asset.ownership_failed",
@@ -1780,7 +1675,7 @@ class AssessmentService:
                 raise ValueError("検証ファイルによる所有確認で診断できるのは https の443番ポートだけです。"
                                  "他のポートを診断するには DNS TXT で所有確認してください")
 
-            self._authority_notice = None      # the operator has re-established authority since
+            before = self.ledger.snapshot()
             self._verified_external_hosts[host] = {
                 "host": host,
                 "scheme": scheme,
@@ -1798,6 +1693,8 @@ class AssessmentService:
                 "proof_method": proof["method"],
                 "proof_verified_at": proof["verified_at"],
             }
+            self._commit_grant_locked(before, "範囲確認")
+            self._authority_notice = None      # the operator has re-established authority since
             target_asset["authorization_ref"] = auth_ref
             target_asset["scope_confirmed"] = True
             target_asset["approver"] = approver
@@ -1967,6 +1864,8 @@ class AssessmentService:
                 "l2_separation_required": self.separate_l2_approver,
                 "persistence_error": self._persist_error,
                 "authority_notice": self._authority_notice,
+                "authority_generation": self.ledger.generation,
+                "unstopped_workers": self._unstopped_now_locked(),
                 "failure": self.a.failure,
                 "l2_isolation": self.l2_isolation_status(),
                 "risk": risk,

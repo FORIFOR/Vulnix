@@ -23,7 +23,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from .assessment import ApproverRequired, AssessmentService
+from .assessment import ApproverRequired, AssessmentService, StopNotConfirmed
 from .control_verification import run_live_control_verification
 from .lab import set_lab_mode, start_lab
 from .operators import AuthError, LockedOut, MFAChallenge, OperatorStore
@@ -609,6 +609,9 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     return self._json(404, {"error": "not found"})
             except ApproverRequired as e:
                 return self._json(403, {"error": str(e)})
+            except StopNotConfirmed as e:
+                # the withdrawal stands, but it is not reported as completed
+                return self._json(500, {"error": str(e), "stop_confirmed": False})
             except Exception as e:
                 return self._json(409, {"error": str(e)})
             return self._json(200, svc.snapshot())

@@ -444,6 +444,14 @@ class TestPlantedOrEditedProfile(RealServiceBase):
         state["accepted_profiles"] = {"deepnote": sha}
         (self.dir / "state.json").write_text(json.dumps(state))
         svc = self.start()
+        self.assertEqual(svc._accepted_profiles, {})                # state.json is not where authority is read from
+        self.assertEqual(svc.l2.runnable_check_ids(), ())
+        self.assertTrue(self.events("state.authority_fields_ignored"))
+        # and written into the ledger itself, it does not verify
+        ledger = json.loads((self.dir / "authority.ledger").read_text())
+        ledger["tables"]["accepted_profiles"] = {"deepnote": sha}
+        (self.dir / "authority.ledger").write_text(json.dumps(ledger))
+        svc = self.start()
         self.assertEqual(svc._accepted_profiles, {})
         self.assertEqual(svc.l2.runnable_check_ids(), ())
         self.assertTrue(self.events("state.authority_rejected"))

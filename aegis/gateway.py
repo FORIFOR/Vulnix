@@ -192,8 +192,8 @@ class Gateway:
                 self._still_current(epoch)
                 if self.launch_guard:
                     self.launch_guard(tool.name, args, dest)
-                result = (workers.run(argv, tool.timeout_s, extra_env=extra_env)
-                          if extra_env else workers.run(argv, tool.timeout_s))
+                result = workers.run(argv, tool.timeout_s, extra_env=extra_env or None,
+                                     permit=lambda: self._still_current(epoch))
             else:
                 # Applied and confirmed by the kernel BEFORE any secret is read for
                 # the worker; a failure here means nothing is launched.
@@ -209,7 +209,7 @@ class Gateway:
                         if self.launch_guard:
                             self.launch_guard(tool.name, args, dest)
                         result = workers.run(argv, tool.timeout_s, extra_env=extra_env,
-                                             session=session)
+                                             session=session, permit=lambda: self._still_current(epoch))
                         intact = session.still_enforced()
                 except ConfinementError as e:
                     raise PolicyError(f"kernel confinement not confirmed: {e}") from None
@@ -268,7 +268,7 @@ class Gateway:
         rep.killed_pids = self.workers.kill_all(); mark("4_kill_workers")
         deadline = time.monotonic() + confirm_timeout_s
         while True:
-            rep.survivors = [p for p in rep.killed_pids if WorkerPool.group_alive(p)]
+            rep.survivors = self.workers.still_running(rep.killed_pids)
             if not rep.survivors or time.monotonic() > deadline:
                 break
             time.sleep(0.02)
