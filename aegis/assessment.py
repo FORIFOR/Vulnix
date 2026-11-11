@@ -20,6 +20,7 @@ import tempfile
 import threading
 import time
 import urllib.parse
+import weakref
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -33,7 +34,7 @@ from .gateway import (LAB_REPRODUCTION_CHECKS, Gateway, State, http_probe_tool,
                       reproduction_probe_tool)
 from .lab import get_lab_mode, set_lab_mode
 from .network import EgressGuard, NetworkError, system_resolver
-from .ownership import (PROHIBITED_ACTIONS_SUMMARY, fetch_proof_file_pinned, public_address,
+from .ownership import (PROHIBITED_ACTIONS_SUMMARY, fetch_proof_file_pinned, proof_file_matches, public_address,
                         challenge_for_host, parse_service_target,
                         verify_ownership_challenge)
 from .authority_ledger import AuthorityLedger, LedgerError, canonical, default_revocation_marker_dirs
@@ -94,6 +95,15 @@ class ApproverRequired(PermissionError):
 
 
 _DATA_DIR_LOCKS: dict[str, object] = {}
+
+# The service object that last used each data directory IN THIS PROCESS (tests open
+# several in a row; production opens one). Lets a new instance ask the previous one
+# directly whether it ended with everything committed.
+_LAST_INSTANCE: dict[str, "AssessmentService"] = {}
+
+SESSION_FILE = "session.open"
+# How often the scope window is checked while a real service is the active asset.
+EXPIRY_CHECK_INTERVAL_S = 0.5
 
 
 def _claim_data_dir(data_dir: Path) -> None:
@@ -269,9 +279,14 @@ class AssessmentService:
         # the ownership flow, and whatever was saved (including deletions) is kept.
         self._unstopped: list[dict] = []         # workers a withdrawal or stop could not confirm dead
         self._state_had_ledger_flag = False
+        self._closed = False
+        self._expiry_handled: set = set()
         self._load_state_locked()
         with self._lock:
             self._reconcile_assets_with_ledger_locked()
+            self._begin_session_locked()
+        threading.Thread(target=AssessmentService._expiry_watch, args=(weakref.ref(self),),
+                         daemon=True, name="scope-expiry").start()
         if (self._authority_notice or self._marker_pending or self.ledger.dirty()
                 or not self._state_had_ledger_flag) and not self._persist_error:
             # Authority on disk was refused. Write that down now, so the disk no
@@ -341,6 +356,144 @@ class AssessmentService:
         return self.ledger.marker_pending
 
     _canonical = staticmethod(canonical)
+
+    # ---- sessions: a revocation that could not be written anywhere --------------
+    def _session_path(self) -> Path:
+        return self.data_dir / SESSION_FILE
+
+    def _previous_session_clean(self) -> tuple[bool, str]:
+        """Did whatever used this data directory last end with every change of
+        authority committed? If not, a revocation it made may exist nowhere on
+        disk (data directory and marker locations all unwritable at the time), and
+        the ledger would hand that authority back."""
+        path = self._session_path()
+        try:
+            body = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return True, ""                     # first start, or the last one ended cleanly
+        except (OSError, ValueError, RecursionError):
+            return False, "the previous session record cannot be read"
+        prev = _LAST_INSTANCE.get(str(self.data_dir.resolve()))
+        if isinstance(body, dict) and body.get("pid") == os.getpid() and prev is not None and prev is not self:
+            with prev._lock:            # the previous instance lives in this process: ask it
+                clean = (prev.ledger.error is None and not prev.ledger.dirty()
+                         and not prev._unstopped)
+            return clean, "" if clean else "the previous instance in this process ended with unsaved authority changes"
+        return False, "the control plane did not shut down cleanly"
+
+    def _begin_session_locked(self) -> None:
+        clean, why = self._previous_session_clean()
+        if not clean:
+            self._hold_all_authority_locked(why)
+        try:
+            body = json.dumps({"pid": os.getpid(), "started_at": time.time()})
+            tmp = self._session_path().with_name(SESSION_FILE + ".tmp")
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(body)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, self._session_path())
+            self._sync_dir(self.data_dir)
+        except OSError as e:
+            # Without this record, a revocation that later cannot be written would
+            # be undone by a restart. So nothing is honoured in this session either.
+            self._hold_all_authority_locked("the session record cannot be written")
+            self._persist_error = self._persist_error or type(e).__name__
+        _LAST_INSTANCE[str(self.data_dir.resolve())] = self
+
+    def _hold_all_authority_locked(self, why: str) -> None:
+        """Every confirmed scope and every ownership proof is held until an approver
+        re-establishes it (new ownership proof, new scope confirmation). Names,
+        asset cards and stored test accounts stay; nothing is sent meanwhile."""
+        now = time.time()
+        held = []
+        for host, entry in self.ledger.verified_external_hosts.items():
+            if not entry.get("held_since"):
+                entry["held_since"] = now
+                held.append(host)
+        for host, proof in self.ledger.ownership_proofs.items():
+            if not proof.get("held_since"):
+                proof["held_since"] = now
+                held.append(host)
+        for rec in (self.a.asset, *self._extra_assets):
+            if str(rec.get("name", "")).lower() in held:
+                rec["scope_confirmed"] = False
+                rec["ownership_verified"] = False
+                rec.pop("ownership_proof", None)
+                rec["status"] = "所有確認待ち"
+                rec["note"] = "前回正常に終了しなかったため診断許可を保留しています。所有確認と範囲確認をやり直してください"
+        if held:
+            self._authority_notice = ("前回のコントロールプレーンが正常に終了しなかったため、取り消しが保存されていない可能性があります。"
+                                      "実サービスの診断許可を保留しました。承認責任者が所有確認と範囲確認をやり直すまで診断しません")
+            self.audit.record("authority.held_after_unclean_shutdown", reason=why, hosts=sorted(set(held)))
+
+    def close(self) -> bool:
+        """Clean shutdown. Workers are stopped and confirmed, everything is
+        committed, and only then is the session record removed. Returns False (and
+        leaves the record, so the next start holds all authority) otherwise."""
+        with self._lock:
+            self._closed = True
+            pool = self.workers
+            self.gateway.invalidate_pending()
+            self._note_unstopped_locked((self.a.asset.get("name") or "").lower(),
+                                        pool.confirm_stopped(pool.kill_all(), 5.0), pool)
+            self._save_state_locked()
+            clean = (self._persist_error is None and self.ledger.error is None
+                     and not self.ledger.dirty() and not self._unstopped_now_locked())
+            if clean:
+                try:
+                    os.unlink(self._session_path())
+                    self._sync_dir(self.data_dir)
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    clean = False
+            self.audit.record("control_plane.closed", clean=clean)
+            return clean
+
+    @staticmethod
+    def _expiry_watch(ref) -> None:
+        while True:
+            svc = ref()
+            if svc is None or svc._closed:
+                return
+            try:
+                svc._enforce_scope_window()
+            except Exception:
+                pass
+            del svc
+            time.sleep(EXPIRY_CHECK_INTERVAL_S)
+
+    def _enforce_scope_window(self) -> None:
+        """When the scope window of the active real service closes, that is a
+        withdrawal: waiting requests are cancelled and running workers are killed
+        and confirmed dead - not merely refused the next time."""
+        with self._lock:
+            host = (self.a.asset.get("name") or "").rstrip(".").lower()
+            entry = self.ledger.verified_external_hosts.get(host)
+            if not entry or entry.get("held_since"):
+                return
+            now = time.time()
+            if float(entry.get("not_before", 0)) <= now <= float(entry.get("not_after", 0)):
+                return
+            key = (host, entry.get("not_after"), entry.get("confirmed_at"))
+            if key in self._expiry_handled:
+                return
+            self._expiry_handled.add(key)
+            had = list(self.workers.active_pids())
+            self._authority_reduced_locked(host)
+            self.audit.record("scope.expired", host=host, not_after=entry.get("not_after"),
+                              workers_stopped=had,
+                              unconfirmed=(self._unstopped_now_locked() or {}).get("pids", []))
+            self._authority_notice = (f"{host} の診断許可の期限が切れました。実行中の処理を停止しました。"
+                                      "続けるには承認責任者が範囲確認をやり直してください")
+            for rec in (self.a.asset, *self._extra_assets):
+                if str(rec.get("name", "")).lower() == host:
+                    rec["scope_confirmed"] = False
+                    rec["status"] = "範囲確認待ち"
+                    rec["note"] = "診断許可の期限が切れました。範囲確認をやり直してください"
+            self._save_state_locked()
 
     def _real_asset_records(self) -> dict[str, dict]:
         out = {}
@@ -469,6 +622,8 @@ class AssessmentService:
         ext = self._verified_external_hosts.get(h)
         if not ext or not ext.get("ownership_verified") or not ext.get("scope_confirmed"):
             return None
+        if ext.get("held_since"):
+            return None          # held after an unclean shutdown: needs re-approval
         try:
             ipaddress.ip_address(h)
             return None          # a real service is always a DNS name, never an address
@@ -597,7 +752,7 @@ class AssessmentService:
             if method == "well_known":
                 # binds the ADDRESS: the file is fetched from each address itself
                 fetch = self._proof_file_fetch or fetch_proof_file_pinned
-                ok = all(token in (fetch(host, a) or "") for a in (new or addrs))
+                ok = all(proof_file_matches(fetch(host, a), token) for a in (new or addrs))
                 address_bound = ok
                 detail = "検証ファイルを各アドレスから取得して確認"
             else:
@@ -1061,7 +1216,7 @@ class AssessmentService:
                 self._real_service_hosts.add(name)      # once a real service, never a lab alias
             if not (rec.get("challenge") or name in self._real_service_hosts):
                 continue
-            has_proof = name in self._ownership_proofs
+            has_proof = name in self._ownership_proofs and not self._ownership_proofs[name].get("held_since")
             if self._external_entry(name) is None and rec.get("scope_confirmed"):
                 rec["scope_confirmed"] = False
                 rec["status"] = "所有確認待ち" if not has_proof else "範囲確認待ち"
@@ -1754,6 +1909,7 @@ class AssessmentService:
                 challenge_for_host(host, self._ownership_secret)["token"].encode("utf-8")).hexdigest()
             proof_ok = (
                 isinstance(proof, dict) and proof.get("verified") is True
+                and not proof.get("held_since")          # held after an unclean shutdown: prove again
                 and proof.get("method") in ("dns_txt", "well_known")
                 and proof.get("host") == host
                 and hmac.compare_digest(str(proof.get("token_sha256") or ""), expected)
@@ -1937,7 +2093,7 @@ class AssessmentService:
                 pass
         self.gateway.budget = Budget(50)
         self.a.phases = self._default_phases()
-        if self._is_external_service_asset():
+        if self._in_ownership_flow(self.a.asset.get("name")):
             self.a.findings = {f["id"]: f for f in self._l2_candidates()}
         else:
             self.a.findings = {f["id"]: f for f in _fixture_findings()}
@@ -1971,11 +2127,15 @@ class AssessmentService:
             e = self.a.engagement
             t = e.targets["lab"]
             risk = self._risk()
-            is_ext = self._is_external_service_asset()
+            # A real service stays a real service when its scope has expired, been
+            # revoked or is held: it is never shown as the demo lab.
+            is_ext = self._in_ownership_flow(self.a.asset.get("name"))
+            scope_active = self._is_external_service_asset()
             return {
                 "id": self.a.id, "asset": self.a.asset, "demo": not is_ext,
                 "target_url": self.a.target_url,
                 "is_external_service": is_ext,
+                "scope_active": scope_active,
                 "lab_mode": get_lab_mode(),
                 "lab_endpoint": self.a.target_url if is_ext else f"127.0.0.1:{self.lab_port}",
                 "planner": self.planner_status(),
@@ -1983,7 +2143,8 @@ class AssessmentService:
                 "prohibited_actions": PROHIBITED_ACTIONS_SUMMARY,
                 "evidence_summary": evidence_summary(list(self.a.findings.values())),
                 "authorization": {
-                    "status": "authorized" if e.ownership_verified and e.authorization_ref else "missing",
+                    "status": ("authorized" if e.ownership_verified and e.authorization_ref
+                               and (scope_active or not is_ext) else "missing"),
                     "ref": e.authorization_ref, "ownership_verified": e.ownership_verified,
                     "not_before": e.not_before, "not_after": e.not_after,
                     "scope": {"hosts": list(t.hosts), "cidrs": list(t.cidrs), "ports": list(t.ports)},
@@ -2053,7 +2214,12 @@ class AssessmentService:
                                      "データディレクトリの書き込み権限と空き容量を確認してください")
             if self._unstopped_now_locked():
                 raise ValueError("停止を確認できていないWorkerが残っているため、新しい診断は開始できません")
+            # a run that may not start (scope expired, revoked, held) is refused
+            # BEFORE the previous results are cleared
+            self._ensure_active_window_locked()
             self._reset_workspace_locked(end_stop=True)      # the one explicit way out of an emergency stop
+            if self._unstopped_now_locked():
+                raise ValueError("前の診断のWorkerの停止を確認できなかったため、新しい診断は開始できません")
             self._ensure_active_window_locked()
             set_lab_mode("vulnerable")
             self._set_state("running")

@@ -426,7 +426,7 @@ class TestCrashAtEveryDurableStep(unittest.TestCase):
         if scope:
             svc.confirm_asset_scope(url_or_host=self.URL, approver="appr", activate_workspace=True,
                                     allow_loopback_test=True)
-        svc.workers.kill_all()
+        self.assertTrue(svc.close())                    # a clean shutdown: no session record is left
         return data
 
     def sweep(self, op, *, scope):
@@ -443,9 +443,11 @@ class TestCrashAtEveryDurableStep(unittest.TestCase):
                                    env={**os.environ, "VULNIX_REVOCATION_MARKER_DIR": str(markers)})
                 self.assertIn(p.returncode, (0, 9), p.stderr[-2000:])
                 svc = self.service(data, markers)
-                has = svc._external_entry(HOST) is not None or HOST in svc._verified_external_hosts
-                card = next((x for x in (svc.a.asset, *svc._extra_assets) if x["name"] == HOST), None)
                 label = f"{op} crash {when} step {n} (child rc={p.returncode})"
+                # the child was killed: its session never ended cleanly, so authority is held
+                self.assertIsNone(svc._external_entry(HOST), label)
+                has = HOST in svc._verified_external_hosts
+                card = next((x for x in (svc.a.asset, *svc._extra_assets) if x["name"] == HOST), None)
                 # atomic: the ledger a restart finds is always a complete, acceptable one
                 self.assertEqual(svc.ledger.rejected_reason, "", label)
                 # never authority without its asset, never a card that claims a scope it does not have

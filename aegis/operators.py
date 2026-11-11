@@ -299,7 +299,7 @@ class OperatorStore:
             fh.write(data)
         os.chmod(path, 0o600)
 
-    def _persist_sessions(self) -> None:
+    def _persist_sessions(self, *, strict: bool = False) -> None:
         """Atomically write current sessions. The snapshot and the write are
         serialized under the lock so concurrent logins cannot clobber each
         other's entry (last writer would otherwise win with a stale set)."""
@@ -310,7 +310,11 @@ class OperatorStore:
                  "created": s.created, "expires": s.expires}
                 for key, s in self._sessions.items()
             ]}
-            self._atomic_write(self.sessions_path, json.dumps(payload, ensure_ascii=False))
+            written = self._atomic_write(self.sessions_path, json.dumps(payload, ensure_ascii=False))
+        if strict and not written:
+            # a logout or a sign-out-everywhere that is not on disk comes back after a restart
+            raise AuthError("サインアウトは現在のプロセスには反映されましたが、ファイルへの保存に失敗しました。"
+                            "このままでは再起動後にセッションが復活します。データディレクトリの書き込み権限を確認してください")
 
     def _persist_operators(self, *, strict: bool = False) -> None:
         """Atomically rewrite the operator seed (hashes only; never plaintext).
@@ -351,8 +355,8 @@ class OperatorStore:
             keep = session_key(keep_token) if keep_token else None
             for key in [k for k, s in self._sessions.items() if s.operator == name and k != keep]:
                 del self._sessions[key]
-        self._persist_operators()
-        self._persist_sessions()
+        self._persist_operators(strict=True)       # else the OLD password works again after a restart
+        self._persist_sessions(strict=True)
 
     # ---- sign-in throttling ----------------------------------------------
     @staticmethod
@@ -572,7 +576,7 @@ class OperatorStore:
         with self._lock:
             removed = self._sessions.pop(session_key(token), None) is not None
         if removed:
-            self._persist_sessions()
+            self._persist_sessions(strict=True)
 
     def create_account(self, name: str, password: str, *, display: str = "", actor: str) -> Operator:
         """An admin creates an `operator` account for someone else. No session is
@@ -719,5 +723,5 @@ class OperatorStore:
             for key in [k for k, s in self._sessions.items() if s.operator == target]:
                 del self._sessions[key]
         self._persist_operators(strict=True)
-        self._persist_sessions()
+        self._persist_sessions(strict=True)
         return had

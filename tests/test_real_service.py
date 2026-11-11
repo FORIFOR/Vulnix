@@ -68,6 +68,7 @@ class FakeService(http.server.ThreadingHTTPServer):
         super().__init__(("127.0.0.1", 0), _FakeHandler)
         self.mode = "vulnerable"
         self.seen: list[tuple[str, str | None]] = []
+        self.hanging = threading.Event()
 
 
 class _FakeHandler(http.server.BaseHTTPRequestHandler):
@@ -90,6 +91,12 @@ class _FakeHandler(http.server.BaseHTTPRequestHandler):
         srv.seen.append((self.path, auth))
         token = (auth or "").removeprefix("Bearer ")
         mode = srv.mode
+        if mode == "hang" and token:
+            # holds an authenticated (L2) request open, so the worker is still running
+            # when a stop, revocation or expiry happens
+            srv.hanging.set()
+            time.sleep(60)
+            return self._send(200, {"late": True})
         if self.path == "/":
             return self._send(200, {"ok": True}, [
                 ("Server", "nginx"), ("Set-Cookie", "sid=abc; Path=/"),

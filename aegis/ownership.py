@@ -30,6 +30,14 @@ PROHIBITED_ACTIONS_SUMMARY = (
     "所有確認のみでのL2侵入実証（再現試験）の自動承認禁止",
 )
 
+
+def proof_file_matches(body: str | None, token: str) -> bool:
+    """The verification file proves ownership only if one of its lines IS the
+    token (not merely contains it, e.g. echoed back inside an error page)."""
+    if not token:
+        return False
+    return any(line.strip() == token for line in str(body or "").splitlines())
+
 def parse_service_target(raw_input: str, *, default_lab_port: int = 18081) -> dict:
     """Accept either a full URL (`https://stg.example.com/path`) or a
     hostname (`stg.example.com`) and return normalized target metadata."""
@@ -219,7 +227,7 @@ def verify_ownership_challenge(
                 "verified_at": None,
                 "detail": f"検証ファイル ({chal['well_known_url']}) の取得に失敗しました: {e}",
             }
-        matched = token in (body or "")
+        matched = proof_file_matches(body, token)
         return {
             "verified": matched,
             "method": "well_known",

@@ -268,9 +268,16 @@ class Gateway:
         rep.killed_pids = self.workers.kill_all(); mark("4_kill_workers")
         # keeps killing until every worker is confirmed dead or the time is up
         rep.survivors = self.workers.confirm_stopped(rep.killed_pids, confirm_timeout_s)
-        self.audit.record("emergency_stop", actor=actor, killed=rep.killed_pids,
-                          survivors=rep.survivors);  mark("5_persist_audit")
-        rep.confirmed = not rep.survivors and self.audit.verify()
+        try:
+            self.audit.record("emergency_stop", actor=actor, killed=rep.killed_pids,
+                              survivors=rep.survivors)
+            audited = True
+        except Exception:
+            # the stop itself has happened; an audit log that cannot be written must
+            # not undo it, but the stop is then not reported as confirmed
+            audited = False
+        mark("5_persist_audit")
+        rep.confirmed = not rep.survivors and audited and self.audit.verify()
         mark("6_confirmed" if rep.confirmed else "6_NOT_CONFIRMED")
         return rep
 

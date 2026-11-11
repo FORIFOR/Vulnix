@@ -296,6 +296,12 @@ class AuthorityLedger:
             # a ledger: the ledger was removed
             reason = "the authority ledger is missing"
 
+        hwm = self.high_water_mark()
+        if candidate is not None and self._count(cand_generation) < hwm:
+            # e.g. the data directory was restored from a backup taken before a
+            # revocation: this installation already committed a newer state
+            candidate, reason = None, "older than a state this installation already committed (restored from a backup?)"
+        self._counter = max(self._counter, hwm)          # new generations are always above it
         names_authentic = candidate is not None      # verified AND current: its name list is complete
         marker = self._marker_hit({cand_generation} if candidate is not None else {epoch or ""})
         if marker and (candidate is not None or untrusted):
@@ -354,6 +360,7 @@ class AuthorityLedger:
                 return "ledger_failed"
             replaced = self.generation
             self.generation, self._committed, self.assets_known = generation, digest, True     # committed
+            self._write_hwm(self._count(generation))
             if replaced and self._epoch_on_disk != replaced:
                 pass                                         # that copy never matched the epoch record
             if replaced:
@@ -454,7 +461,10 @@ class AuthorityLedger:
                          reason="data directory and marker locations are all unwritable")
 
     def marker_key(self) -> str:
-        return hashlib.sha256(str(self.data_dir.resolve()).encode("utf-8")).hexdigest()[:32]
+        """Names this installation's records outside the data directory. Derived
+        from the installation's key, not from its path, so a moved or remounted
+        data directory still finds them."""
+        return hmac.new(self._key, b"vulnix-installation-id", hashlib.sha256).hexdigest()[:32]
 
     def marker_paths(self) -> list[Path]:
         return [Path(d) / f"{self.marker_key()}.revoked" for d in self._marker_dirs]
@@ -508,6 +518,44 @@ class AuthorityLedger:
             except OSError:
                 continue
         return written
+
+    # ---- high-water mark: the newest generation this installation committed ----
+    def _hwm_paths(self) -> list[Path]:
+        return [Path(d) / f"{self.marker_key()}.hwm" for d in self._marker_dirs]
+
+    def _hwm_mac(self, counter: int) -> str:
+        return hmac.new(self._key, f"hwm|{self.marker_key()}|{counter}".encode(), hashlib.sha256).hexdigest()
+
+    def _write_hwm(self, counter: int) -> None:
+        """Best effort, after every commit: the newest generation counter, kept
+        OUTSIDE the data directory. A ledger restored from an older backup is
+        older than this and is refused."""
+        uid = os.getuid() if hasattr(os, "getuid") else 0
+        body = json.dumps({"counter": counter, "mac": self._hwm_mac(counter)})
+        for path in self._hwm_paths():
+            try:
+                if self._read_hwm(path) >= counter:
+                    continue
+                path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                if hasattr(os, "getuid") and os.lstat(path.parent).st_uid != uid:
+                    continue
+                _write_durable(path, body)
+            except OSError:
+                continue
+
+    def _read_hwm(self, path: Path) -> int:
+        try:
+            st = os.lstat(path)
+            if hasattr(os, "getuid") and st.st_uid != os.getuid():
+                return 0
+            body = json.loads(path.read_text(encoding="utf-8"))
+            counter = int(body["counter"])
+        except (OSError, ValueError, KeyError, TypeError, RecursionError):
+            return 0
+        return counter if hmac.compare_digest(str(body.get("mac") or ""), self._hwm_mac(counter)) else 0
+
+    def high_water_mark(self) -> int:
+        return max([self._read_hwm(p) for p in self._hwm_paths()] or [0])
 
     def _clear_markers(self) -> None:
         left = False

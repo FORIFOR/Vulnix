@@ -17,6 +17,8 @@ import hashlib
 import json
 import os
 import re
+import signal
+import threading
 import tempfile
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -666,7 +668,20 @@ def main() -> None:
         print("警告: 開発モードのため、読み取りAPIの認証を無効にしています（本番運用では使用不可）。")
     if ops.admin_credentials_path:
         print(f"管理者アカウントを作成しました（ロール付与用・平文・600権限）: {ops.admin_credentials_path}")
-    srv.serve_forever()
+    def _stop(signum, frame):
+        # serve_forever() must be stopped from another thread
+        threading.Thread(target=srv.shutdown, daemon=True).start()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, _stop)
+    try:
+        srv.serve_forever()
+    finally:
+        srv.server_close()
+        # Only a clean close removes the session record; otherwise the next start
+        # holds every real-service authorisation until an approver re-confirms it.
+        clean = svc.close()
+        print("コントロールプレーンを停止しました" + ("" if clean else
+              "（保存または Worker の停止を確認できなかったため、次回起動時に実サービスの診断許可を保留します）"))
 
 
 if __name__ == "__main__":

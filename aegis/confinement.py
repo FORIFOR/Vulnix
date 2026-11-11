@@ -119,6 +119,7 @@ class KernelConfinement:
         self._euid = (os.geteuid() if hasattr(os, "geteuid") else -1) if euid is None else euid
         self._which = which
         self._status: tuple[float, dict] | None = None
+        self._separate_uid: bool | None = None
 
     # ---- preflight -----------------------------------------------------------
     def status(self) -> dict:
@@ -151,16 +152,54 @@ class KernelConfinement:
                 return no(f"sudo を実行できません（{type(e).__name__}）")
         return {"ok": True, "reason": "", "mechanism": self.mechanism}
 
+    NOBODY = (65534, 65534)
+
     def worker_identity(self) -> tuple[int, int]:
-        """uid/gid the confined worker runs as. Never root: when the control plane
-        itself is root, the account that invoked sudo, else `nobody`."""
+        """uid/gid the confined worker runs as. Never root. Preferably `nobody`, so
+        that a subverted worker cannot read the control plane's own 0600 files
+        (master key, secret store, accounts) or ptrace it; that needs the worker's
+        code and the interpreter to be readable by others. Otherwise the control
+        plane's own account (or, under root, the account that invoked sudo)."""
+        if self._worker_code_world_readable():
+            return self.NOBODY
         if self._euid != 0:
             return os.getuid(), os.getgid()
         try:
             uid, gid = int(os.environ.get("SUDO_UID", "0")), int(os.environ.get("SUDO_GID", "0"))
         except ValueError:
             uid = gid = 0
-        return (uid, gid) if uid > 0 and gid > 0 else (65534, 65534)
+        return (uid, gid) if uid > 0 and gid > 0 else self.NOBODY
+
+    def _worker_code_world_readable(self) -> bool:
+        if self._separate_uid is not None:
+            return self._separate_uid
+        import sysconfig
+        targets = [Path(__file__).resolve().parent / "workers",
+                   Path(sys.executable).resolve(),
+                   Path(sysconfig.get_paths()["stdlib"]).resolve()]
+        ok = True
+        for target in targets:
+            try:
+                st = target.stat()
+                need = 0o005 if target.is_dir() else 0o005
+                if st.st_mode & need != need:
+                    ok = False
+                    break
+                for parent in target.parents:
+                    if parent.stat().st_mode & 0o001 == 0:       # others cannot traverse
+                        ok = False
+                        break
+            except OSError:
+                ok = False
+            if not ok:
+                break
+        if ok:
+            for f in (Path(__file__).resolve().parent / "workers").glob("*.py"):
+                if f.stat().st_mode & 0o004 == 0:
+                    ok = False
+                    break
+        self._separate_uid = ok
+        return ok
 
     def _priv(self) -> list[str]:
         return [] if self._euid == 0 else [self._which("sudo") or "sudo", "-n"]
@@ -203,8 +242,9 @@ class ConfinementSession:
         uid, gid = self._o.worker_identity()
         # root only for the one write that joins the cgroup; the worker itself never
         # runs as root (a root worker could leave the cgroup or delete the rules)
+        own = (uid, gid) == (os.getuid(), os.getgid()) and self._o._euid != 0
         drop = [self._o._which("setpriv") or "setpriv", f"--reuid={uid}", f"--regid={gid}",
-                "--init-groups" if self._o._euid != 0 else "--clear-groups", "--no-new-privs"]
+                "--init-groups" if own else "--clear-groups", "--no-new-privs"]
         if self._o._euid == 0:
             return [*enter, *drop, *argv]
         keep = [f"--preserve-env={','.join(keys)}"] if keys else []
@@ -258,6 +298,7 @@ class ConfinementSession:
             in_cgroup = any(line.split("::", 1)[-1] == f"/{self.name}"
                             for line in str(seen.get("cgroup", "")).splitlines())
             self.evidence = {"mechanism": self._o.mechanism, "cgroup": self.name,
+                             "worker_uid": self._o.worker_identity()[0],
                              "pinned": f"{self.ip}:{self.port}",
                              "probe_connect": seen.get("connect"), "probe_in_cgroup": in_cgroup,
                              "kernel_dropped_packets": counted}

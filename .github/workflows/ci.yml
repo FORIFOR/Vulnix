@@ -29,6 +29,15 @@ jobs:
         run: |
           python3 -m unittest discover -s tests -p "test_*.py" -v
 
+      - name: Linux kernel confinement end to end (confined L2 worker; stop, revocation, deletion, expiry)
+        run: |
+          # The same tests also run in the suite above; here a skip is a failure, so
+          # a runner without cgroup v2 / nft / sudo cannot pass this step silently.
+          python3 -m unittest -v tests.test_release_safety.TestOnLinuxWithTheRealKernelConfinement \
+            tests.test_fail_closed.TestKernelConfinementOnLinux 2>&1 | tee linux-e2e.log
+          if grep -q "skipped" linux-e2e.log; then echo "Linux confinement tests were skipped"; exit 1; fi
+          grep -q "^OK" linux-e2e.log
+
       - name: Verify Linux Kernel nftables NetNS Isolation & Emergency Stop (P0)
         run: |
           sudo python3 -m aegis.control_verification
