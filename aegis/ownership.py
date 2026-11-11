@@ -36,7 +36,7 @@ def proof_file_matches(body: str | None, token: str) -> bool:
     token (not merely contains it, e.g. echoed back inside an error page)."""
     if not token:
         return False
-    return any(line.strip() == token for line in str(body or "").splitlines())
+    return any(line.strip().lstrip("\ufeff").strip() == token for line in str(body or "").splitlines())
 
 def parse_service_target(raw_input: str, *, default_lab_port: int = 18081) -> dict:
     """Accept either a full URL (`https://stg.example.com/path`) or a

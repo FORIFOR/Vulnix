@@ -273,7 +273,13 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 sess = self._session()
                 if sess:
                     svc.audit.record("auth.logout", actor=sess.operator)
-                ops.logout(sess.token if sess else None)
+                try:
+                    ops.logout(sess.token if sess else None)
+                except AuthError as e:
+                    # signed out in this process, but not on disk: say so (a restart
+                    # would bring the session back); the cookie is cleared all the same
+                    return self._json(500, {"session": None, "error": str(e), "logout_saved": False},
+                                      self._clear_cookie())
                 return self._json(200, {"session": None}, self._clear_cookie())
 
             sess = self._session()
@@ -623,6 +629,27 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
     return H
 
 
+
+def _build_server(svc, a, data, first, seed, env_opt_out):
+    ops = OperatorStore(seed)
+    read_auth = False if a.no_read_auth else (True if a.require_read_auth else None)
+    srv = ThreadingHTTPServer(
+        ("127.0.0.1", a.port),
+        make_handler(svc, ops, require_read_auth=read_auth),
+    )
+    srv.daemon_threads = True
+    print(f"Vulnix control plane: http://127.0.0.1:{a.port}  (audit: {data / 'audit.jsonl'})")
+    if first and ops.credentials_path:
+        print(f"初回起動: 操作者アカウントを生成しました（ハッシュのみ {seed} に保存）。")
+        print(f"初期ログイン情報（平文・600権限）: {ops.credentials_path}")
+        print("内容は手元で確認してください。再生成するにはこの2ファイルを削除して再起動します。")
+    if a.no_read_auth or env_opt_out:
+        print("警告: 開発モードのため、読み取りAPIの認証を無効にしています（本番運用では使用不可）。")
+    if ops.admin_credentials_path:
+        print(f"管理者アカウントを作成しました（ロール付与用・平文・600権限）: {ops.admin_credentials_path}")
+    return srv
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8787)
@@ -652,22 +679,14 @@ def main() -> None:
     start_lab(a.lab_port)
     svc = AssessmentService(data, a.lab_port, a.verify_seconds,
                             separate_l2_approver=a.separate_l2_approver or None)
-    ops = OperatorStore(seed)
-    read_auth = False if a.no_read_auth else (True if a.require_read_auth else None)
-    srv = ThreadingHTTPServer(
-        ("127.0.0.1", a.port),
-        make_handler(svc, ops, require_read_auth=read_auth),
-    )
-    srv.daemon_threads = True
-    print(f"Vulnix control plane: http://127.0.0.1:{a.port}  (audit: {data / 'audit.jsonl'})")
-    if first and ops.credentials_path:
-        print(f"初回起動: 操作者アカウントを生成しました（ハッシュのみ {seed} に保存）。")
-        print(f"初期ログイン情報（平文・600権限）: {ops.credentials_path}")
-        print("内容は手元で確認してください。再生成するにはこの2ファイルを削除して再起動します。")
-    if a.no_read_auth or env_opt_out:
-        print("警告: 開発モードのため、読み取りAPIの認証を無効にしています（本番運用では使用不可）。")
-    if ops.admin_credentials_path:
-        print(f"管理者アカウントを作成しました（ロール付与用・平文・600権限）: {ops.admin_credentials_path}")
+    try:
+        srv = _build_server(svc, a, data, first, seed, env_opt_out)
+    except BaseException:
+        # e.g. the port is in use: nothing ran, so the service is closed cleanly
+        # (otherwise the next start would hold every real-service authorisation)
+        svc.close()
+        raise
+
     def _stop(signum, frame):
         # serve_forever() must be stopped from another thread
         threading.Thread(target=srv.shutdown, daemon=True).start()

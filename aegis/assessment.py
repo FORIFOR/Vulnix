@@ -280,6 +280,7 @@ class AssessmentService:
         self._unstopped: list[dict] = []         # workers a withdrawal or stop could not confirm dead
         self._state_had_ledger_flag = False
         self._closed = False
+        self._session_written = False
         self._expiry_handled: set = set()
         self._load_state_locked()
         with self._lock:
@@ -385,6 +386,15 @@ class AssessmentService:
         clean, why = self._previous_session_clean()
         if not clean:
             self._hold_all_authority_locked(why)
+        if not self._write_session_record():
+            # Without this record, a revocation that later cannot be written would
+            # be undone by a restart. So nothing is honoured in this session either,
+            # and nothing new is granted until the record has been written.
+            self._hold_all_authority_locked("the session record cannot be written")
+            self._persist_error = self._persist_error or "session record not written"
+        _LAST_INSTANCE[str(self.data_dir.resolve())] = self
+
+    def _write_session_record(self) -> bool:
         try:
             body = json.dumps({"pid": os.getpid(), "started_at": time.time()})
             tmp = self._session_path().with_name(SESSION_FILE + ".tmp")
@@ -395,12 +405,11 @@ class AssessmentService:
                 os.fsync(fh.fileno())
             os.replace(tmp, self._session_path())
             self._sync_dir(self.data_dir)
-        except OSError as e:
-            # Without this record, a revocation that later cannot be written would
-            # be undone by a restart. So nothing is honoured in this session either.
-            self._hold_all_authority_locked("the session record cannot be written")
-            self._persist_error = self._persist_error or type(e).__name__
-        _LAST_INSTANCE[str(self.data_dir.resolve())] = self
+            self._session_written = True
+            return True
+        except OSError:
+            self._session_written = False
+            return False
 
     def _hold_all_authority_locked(self, why: str) -> None:
         """Every confirmed scope and every ownership proof is held until an approver
@@ -1115,6 +1124,10 @@ class AssessmentService:
         except Exception as e:      # OSError, but also anything that makes the state unserialisable
             state_error = type(e).__name__
         error = self.ledger.error or state_error
+        if error is None and not self._session_written and not self._closed and hasattr(self, "_expiry_handled"):
+            # saving works again: so must the session record, before anything is granted
+            if not self._write_session_record():
+                error = "session record not written"
         if error is None:
             self._persist_error = None
             return
@@ -2082,8 +2095,10 @@ class AssessmentService:
         old = self.workers
         # the previous workspace's workers are killed AND confirmed dead; any that
         # are not stay on record (and keep everything new from launching)
-        self._note_unstopped_locked((self.a.asset.get("name") or "").lower(),
-                                    old.confirm_stopped(old.kill_all(), 5.0), old)
+        survivors = old.confirm_stopped(old.kill_all(), 5.0)
+        self._note_unstopped_locked((self.a.asset.get("name") or "").lower(), survivors, old)
+        if survivors and end_stop:
+            stays_stopped = self.gateway.state is State.STOPPED or self.a.state == "stopped"
         self.workers = WorkerPool(max_concurrent=2)
         self.gateway.workers = self.workers
         if not stays_stopped:
@@ -2221,6 +2236,7 @@ class AssessmentService:
             self._ensure_active_window_locked()
             self._reset_workspace_locked(end_stop=True)      # the one explicit way out of an emergency stop
             if self._unstopped_now_locked():
+                # (an emergency stop, if there was one, is still in force)
                 raise ValueError("前の診断のWorkerの停止を確認できなかったため、新しい診断は開始できません")
             self._ensure_active_window_locked()
             set_lab_mode("vulnerable")

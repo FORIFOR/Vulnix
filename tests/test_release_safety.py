@@ -486,3 +486,132 @@ class TestWorkerIdentity(unittest.TestCase):
             argv = ConfinementSession(self.conf(euid=0, separate=False), "203.0.113.7", 443).wrap(["w"])
         self.assertIn("--reuid=65534", argv)
         self.assertNotIn("--reuid=0", argv)
+
+
+# ---- findings of the review of the release fixes ------------------------------
+class TestSessionRecordIsAPrecondition(ReleaseBase):
+    def test_no_grant_and_no_traffic_until_the_session_record_is_written(self):
+        self.onboard()
+        self.assertTrue(self.svc.close())
+        real = os.open
+
+        def no_session(path, flags, *a, **kw):
+            if str(path).endswith("session.open.tmp"):
+                raise PermissionError("no space")
+            return real(path, flags, *a, **kw)
+        with patch("aegis.assessment.os.open", side_effect=no_session):
+            svc = self.reopen_in_this_process()
+            self.svc = svc
+            svc._custom_resolver = lambda h: ["127.0.0.1"] if h == HOST else []
+            self.assertIsNone(svc._external_entry(HOST))
+            # saving the state works, but the session record still cannot be written:
+            # nothing may be re-approved in this session
+            with self.assertRaises(ValueError):
+                ch = svc.issue_ownership_challenge(url=self.url, approver="appr")["challenge"]
+            self.assertIsNotNone(svc._persist_error)
+        # once the record can be written, re-approval works - and the record exists
+        ch = svc.issue_ownership_challenge(url=self.url, approver="appr")["challenge"]
+        self.assertTrue((self.dir / "session.open").exists())
+        self.assertTrue(svc.verify_asset_ownership(url_or_host=self.url, method="dns_txt", actor="appr",
+                                                   dns_lookup=self._token_lookup(ch))["verified"])
+        svc.confirm_asset_scope(url_or_host=self.url, approver="appr", activate_workspace=True,
+                                allow_loopback_test=True)
+        self.assertIsNotNone(svc._external_entry(HOST))
+
+
+class TestEarlierVersionsMarkers(ReleaseBase):
+    def test_a_marker_written_by_the_previous_version_is_still_honoured(self):
+        import hashlib
+        import hmac as hmac_mod
+        self.onboard()
+        led = self.svc.ledger
+        gen = led.generation
+        key = led.legacy_marker_key()
+        mac = hmac_mod.new(led._key, f"revoked|{key}|{gen}".encode(), hashlib.sha256).hexdigest()
+        (self.markers / f"{key}.revoked").write_text(json.dumps({"epochs": [gen], "mac": mac}))
+        self.assertTrue(self.svc.close())
+        again = self.reopen_in_this_process()
+        self.assertIn("revocation", again.ledger.rejected_reason)
+        self.assertIsNone(again._external_entry(HOST))
+        again.workers.kill_all()
+
+    def test_an_unverifiable_marker_of_the_previous_version_refuses(self):
+        self.onboard()
+        (self.markers / f"{self.svc.ledger.legacy_marker_key()}.revoked").write_text('{"epochs": ["1:x"], "mac": "no"}')
+        self.assertTrue(self.svc.close())
+        again = self.reopen_in_this_process()
+        self.assertIsNone(again._external_entry(HOST))
+        again.workers.kill_all()
+
+
+class TestRestartKeepsTheStopWhileWorkersSurvive(ReleaseBase):
+    def test_restart_with_a_survivor_does_not_lift_the_stop(self):
+        self.svc.select_asset("lab")
+        t = threading.Thread(target=lambda: self.svc.workers.run(SLEEPER, 120))
+        t.start()
+        while not self.svc.workers.active_pids():
+            time.sleep(0.01)
+        pid = self.svc.workers.active_pids()[0]
+        with patch("aegis.runtime._killpg"):
+            self.svc.emergency_stop("appr")
+            with self.assertRaises(ValueError):
+                self.svc.restart("appr")
+            self.assertEqual(self.svc.snapshot()["state"], "stopped")
+            self.assertEqual(self.svc.gateway.state.value, "stopped")
+        os.killpg(pid, 9)
+        t.join(10)
+
+
+class TestFailedStartDoesNotHold(unittest.TestCase):
+    def test_a_busy_port_closes_the_service_cleanly(self):
+        import socket
+        busy = socket.socket()
+        busy.bind(("127.0.0.1", 0))
+        busy.listen(1)
+        self.addCleanup(busy.close)
+        data = Path(tempfile.mkdtemp())
+        markers = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, data, True)
+        self.addCleanup(shutil.rmtree, markers, True)
+        p = subprocess.run([sys.executable, "-m", "aegis.server", "--port", str(busy.getsockname()[1]),
+                            "--lab-port", "19431", "--data-dir", str(data)],
+                           cwd=str(REPO), capture_output=True, text=True, timeout=120,
+                           env={**os.environ, "VULNIX_REVOCATION_MARKER_DIR": str(markers)})
+        self.assertNotEqual(p.returncode, 0)
+        self.assertFalse((data / "session.open").exists(), p.stderr[-1500:])
+
+
+class TestUnsavedLogoutOverHttp(unittest.TestCase):
+    def test_the_response_says_so_and_clears_the_cookie(self):
+        import urllib.error
+        import urllib.request
+        from http.server import ThreadingHTTPServer
+        from aegis.operators import OperatorStore
+        from aegis.server import make_handler
+        from tests.test_access_control import seed
+        data = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, data, True)
+        svc = AssessmentService(data, LAB_PORT, verify_seconds=0.1, l2_confinement=TEST_CONFINEMENT,
+                                revocation_marker_dirs=[Path(tempfile.mkdtemp())])
+        self.addCleanup(svc.workers.kill_all)
+        ops = OperatorStore(seed(data))
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(svc, ops))
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.shutdown)
+        api = f"http://127.0.0.1:{srv.server_port}/api"
+        hdr = {"Content-Type": "application/json", "X-Aegis-Request": "1"}
+        with urllib.request.urlopen(urllib.request.Request(
+                api + "/auth/login", json.dumps({"name": "op", "password": "op-password"}).encode(), hdr)) as r:
+            cookie = r.headers["Set-Cookie"].split(";")[0]
+        with patch.object(ops, "_atomic_write", return_value=False):
+            with self.assertRaises(urllib.error.HTTPError) as cm:
+                urllib.request.urlopen(urllib.request.Request(api + "/auth/logout", b"{}", {**hdr, "Cookie": cookie}))
+        self.assertEqual(cm.exception.code, 500)
+        self.assertIn("Max-Age=0", cm.exception.headers.get("Set-Cookie", ""))
+        self.assertFalse(json.loads(cm.exception.read())["logout_saved"])
+
+
+class TestProofFileWithBom(unittest.TestCase):
+    def test_a_bom_does_not_hide_the_token(self):
+        from aegis.ownership import proof_file_matches
+        self.assertTrue(proof_file_matches("﻿vulnix-verify=abc\n", "vulnix-verify=abc"))

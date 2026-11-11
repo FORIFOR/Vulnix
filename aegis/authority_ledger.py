@@ -466,8 +466,34 @@ class AuthorityLedger:
         data directory still finds them."""
         return hmac.new(self._key, b"vulnix-installation-id", hashlib.sha256).hexdigest()[:32]
 
+    def legacy_marker_key(self) -> str:
+        """The name earlier versions used (derived from the data directory's path)."""
+        return hashlib.sha256(str(self.data_dir.resolve()).encode("utf-8")).hexdigest()[:32]
+
     def marker_paths(self) -> list[Path]:
         return [Path(d) / f"{self.marker_key()}.revoked" for d in self._marker_dirs]
+
+    def _legacy_marker_paths(self) -> list[Path]:
+        return [Path(d) / f"{self.legacy_marker_key()}.revoked" for d in self._marker_dirs]
+
+    def _legacy_marker_epochs(self, path: Path) -> list[str] | None:
+        """Markers of earlier versions: their MAC covered the path-derived name and
+        either one generation ("epoch") or a list ("epochs")."""
+        try:
+            body = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, RecursionError):
+            return None
+        key = self.legacy_marker_key()
+        if isinstance(body, dict) and isinstance(body.get("epochs"), list):
+            epochs = [str(e) for e in body["epochs"]]
+            msg = f"revoked|{key}|{'|'.join(sorted(epochs))}"
+        elif isinstance(body, dict) and isinstance(body.get("epoch"), str):
+            epochs = [body["epoch"]]
+            msg = f"revoked|{key}|{body['epoch']}"
+        else:
+            return None
+        want = hmac.new(self._key, msg.encode("utf-8"), hashlib.sha256).hexdigest()
+        return epochs if hmac.compare_digest(str(body.get("mac") or ""), want) else None
 
     def marker_mac(self, epochs: list[str]) -> str:
         msg = f"revoked|{self.marker_key()}|{'|'.join(sorted(epochs))}"
@@ -559,7 +585,7 @@ class AuthorityLedger:
 
     def _clear_markers(self) -> None:
         left = False
-        for path in self.marker_paths():
+        for path in (*self.marker_paths(), *self._legacy_marker_paths()):
             try:
                 os.unlink(path)
             except FileNotFoundError:
@@ -571,6 +597,19 @@ class AuthorityLedger:
     def _marker_hit(self, generations: set[str]) -> str | None:
         """A reason to refuse the authority on disk, or None. A marker that is ours
         but cannot be read or verified counts as a hit: unknown means refuse."""
+        for path in self._legacy_marker_paths():
+            try:
+                st = os.lstat(path)
+            except OSError:
+                continue
+            if hasattr(os, "getuid") and st.st_uid != os.getuid():
+                continue
+            self.marker_pending = True
+            named = self._legacy_marker_epochs(path)
+            if named is None:
+                return "a revocation marker of an earlier version exists but cannot be read or does not verify"
+            if generations & set(named):
+                return "a revocation could not be saved before the last shutdown"
         for path in self.marker_paths():
             try:
                 st = os.lstat(path)
