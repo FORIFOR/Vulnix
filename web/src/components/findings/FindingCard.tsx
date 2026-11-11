@@ -24,6 +24,9 @@ export function FindingCard({
   const [showLog, setShowLog] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const latestEv = f.evidence.at(-1);
+  // L2 on a real service: an explicit, per-item approval by an approver.
+  const needsApproval = Boolean(f.reproduce_check?.startsWith("deepnote_"));
+  const blocked = needsApproval && f.l2_ready === false && f.evidence.length === 0;
 
   const runLiveVerify = async () => {
     setBusy(true);
@@ -116,11 +119,18 @@ export function FindingCard({
         <div className="flex items-center gap-2">
           <button
             type="button"
-            disabled={busy}
+            disabled={busy || blocked}
+            title={blocked ? "先に、診断画面上部の「L2検証用アカウント」でこの項目に必要なアカウントを設定してください" : undefined}
             onClick={runLiveVerify}
             className="rounded-lg bg-zinc-900 px-2.5 py-1 text-xs font-semibold text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-white dark:text-zinc-900"
           >
-            {busy ? "Worker実行中…" : "▶ 実機Workerで今すぐ検証"}
+            {busy
+              ? "Worker実行中…"
+              : blocked
+                ? "検証用アカウント未設定"
+                : needsApproval
+                  ? "✓ 承認してL2検証を実行"
+                  : "▶ 実機Workerで今すぐ検証"}
           </button>
           <Link href={`/findings/${f.id}?a=${assessmentId}`} className="font-semibold text-zinc-900 underline-offset-2 hover:underline dark:text-zinc-100">
             詳しく見る →

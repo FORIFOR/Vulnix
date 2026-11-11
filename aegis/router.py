@@ -456,6 +456,7 @@ class ArtexEngine:
         routed_list = self.router.collect({**context, "phase": phase})
         created: list[ArtexTask] = []
         seen_keys: set[tuple[str, str, str, str]] = set()
+        gateway_tools = getattr(self.router.gateway, "tools", None)
         for r in routed_list:
             p = r.proposal
             dedup_key = (
@@ -468,13 +469,42 @@ class ArtexEngine:
             idx = len(created) + 1
             act = p["action"]
             level = "L1" if act == "read_only_probe" else "L2"
-            t = ArtexTask(
-                id=f"artex_{phase}_{idx}",
-                phase=phase,
-                title=r.rationale or f"{p['tool']} ({act})",
-                risk_level=level,
-                routed=r,
-            )
+
+            unsupported_reason = None
+            if isinstance(gateway_tools, dict):
+                tool_spec = gateway_tools.get(p["tool"])
+                if tool_spec is None:
+                    unsupported_reason = f"未対応ツール: {p['tool']}"
+                else:
+                    chk = p.get("args", {}).get("check")
+                    chk_spec = tool_spec.args.get("check") if hasattr(tool_spec, "args") else None
+                    if chk and chk_spec and chk_spec.choices and chk not in chk_spec.choices:
+                        unsupported_reason = f"未対応の検証項目: {chk}"
+
+            if unsupported_reason:
+                self.router.audit.record(
+                    "proposal.unsupported",
+                    backend=r.backend,
+                    tool=p["tool"],
+                    action=act,
+                    reason=unsupported_reason,
+                )
+                t = ArtexTask(
+                    id=f"artex_{phase}_{idx}",
+                    phase=phase,
+                    title=f"【未対応】{r.rationale or p['tool']}（{unsupported_reason}）",
+                    risk_level=level,
+                    routed=r,
+                    status="unsupported",
+                )
+            else:
+                t = ArtexTask(
+                    id=f"artex_{phase}_{idx}",
+                    phase=phase,
+                    title=r.rationale or f"{p['tool']} ({act})",
+                    risk_level=level,
+                    routed=r,
+                )
             self.tasks.append(t)
             created.append(t)
         return created

@@ -77,7 +77,12 @@ def reproduction_probe_tool() -> Tool:
     return Tool(
         name="reproduction_probe", action="safe_reproduction",
         args={"url": ArgSpec(str, pattern=r"https?://[^\s]+"),
-              "check": ArgSpec(str, required=False, choices=("idor", "cve_2021_41773", "sqli"))},
+              "check": ArgSpec(str, required=False, choices=(
+                  "idor", "cve_2021_41773", "sqli",
+                  "deepnote_idor_notes", "deepnote_share_link",
+                  "deepnote_gcs_acl", "deepnote_ai_chat_isolation",
+                  "deepnote_billing_plan",
+              ))},
         build_argv=build, timeout_s=20,
     )
 
@@ -85,7 +90,8 @@ def reproduction_probe_tool() -> Tool:
 class Gateway:
     def __init__(self, *, engagement: Engagement, tokens: TokenAuthority,
                  approvals: ApprovalStore, egress: EgressGuard, workers: WorkerPool,
-                 audit: AuditLog, tools: dict[str, Tool], budget: Budget, clock=time.time):
+                 audit: AuditLog, tools: dict[str, Tool], budget: Budget, clock=time.time,
+                 ephemeral_env_provider=None, secret_redactor=None):
         self.engagement = engagement
         self.tokens = tokens
         self.approvals = approvals
@@ -95,6 +101,11 @@ class Gateway:
         self.tools = tools
         self.budget = budget
         self.clock = clock
+        # Optional callable(tool_name, validated_args) -> dict. Evaluated per call,
+        # after every authorization check, so a secret reaches only the one worker
+        # process it was approved for (never argv, never the audit log).
+        self.ephemeral_env_provider = ephemeral_env_provider
+        self.secret_redactor = secret_redactor
         self._state = State.RUNNING
         self._state_lock = threading.Lock()
         self._inflight: set[str] = set()
@@ -139,7 +150,19 @@ class Gateway:
                 raise AuthzError(f"gateway {self._state.value}")
             self.audit.record("allow", jti=claims["jti"], tool=tool.name, target=claims["tgt"],
                               approval=claims["apr"], dest=dest.__dict__)
-            result = self.workers.run(tool.build_argv(args, dest), tool.timeout_s)
+            extra_env = (self.ephemeral_env_provider(tool.name, args)
+                         if self.ephemeral_env_provider else None)
+            argv = tool.build_argv(args, dest)
+            result = (self.workers.run(argv, tool.timeout_s, extra_env=extra_env)
+                      if extra_env else self.workers.run(argv, tool.timeout_s))
+            if self.secret_redactor:
+                result = WorkerResult(
+                    result.returncode,
+                    self.secret_redactor(result.stdout or ""),
+                    self.secret_redactor(result.stderr or ""),
+                    result.killed,
+                    result.elapsed_s,
+                )
             self.audit.record("result", jti=claims["jti"], tool=tool.name, rc=result.returncode,
                               killed=result.killed, elapsed=result.elapsed_s,
                               stdout_preview=result.stdout.strip()[:280])

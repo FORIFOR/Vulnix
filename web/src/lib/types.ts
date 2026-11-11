@@ -26,6 +26,11 @@ export interface Finding {
   cve: string[];
   risk_level: RiskLevel;
   help_term?: string;
+  reproduce_check?: string;
+  l2_ready?: boolean;
+  risk_score?: number;
+  risk_rationale?: string;
+  impact?: string;
   summary: string;
   what_was_established?: string;
   why_detected?: string;
@@ -142,11 +147,28 @@ export interface CveStatus {
   }[];
 }
 
+export interface SecretsStatus {
+  host: string;
+  has_l2_credentials: boolean;
+  l2_ready?: boolean;
+  encryption: string;
+  user_a_fingerprint?: string | null;
+  user_b_fingerprint?: string | null;
+  free_plan_fingerprint?: string | null;
+  mock_paths?: Record<string, string>;
+  /** Per-check readiness: which test-account tokens are still missing. */
+  checks?: Record<string, { ready: boolean; missing: string[] }>;
+}
+
 export interface Snapshot {
   id: string;
   demo: boolean;
+  target_url?: string;
+  is_external_service?: boolean;
   lab_mode?: string;
   lab_endpoint: string;
+  secrets_status?: SecretsStatus;
+  prohibited_actions?: string[];
   evidence_summary: Record<EvidenceStatus, number>;
   planner: {
     mode: "builtin" | "external_configured";
@@ -174,7 +196,8 @@ export interface Snapshot {
   risk: Risk;
   stop_report: StopReport | null;
   chat_messages?: ChatMessage[];
-  history?: AssessmentHistory;
+  /** null for a real service: the demo history is fictional and never attached to it. */
+  history?: AssessmentHistory | null;
   defense_comparison?: DefenseComparison | null;
   cve_status?: CveStatus;
   artex_tasks?: {
@@ -188,9 +211,21 @@ export interface Snapshot {
   last_seq: number;
 }
 
+export interface OwnershipChallenge {
+  token: string;
+  dns_txt_name: string;
+  dns_txt_value: string;
+  well_known_url: string;
+  well_known_content: string;
+}
+
 export interface Asset {
   id: string;
   name: string;
+  display_name?: string;
+  target_url?: string;
+  scheme?: string;
+  port?: number;
   kind: string;
   environment: string;
   status: string;
@@ -200,6 +235,8 @@ export interface Asset {
   last_assessed_at?: number | null;
   authorization_ref?: string;
   ownership_verified?: boolean;
+  scope_confirmed?: boolean;
+  challenge?: OwnershipChallenge;
   note?: string;
 }
 

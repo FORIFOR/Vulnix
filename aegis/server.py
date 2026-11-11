@@ -89,6 +89,10 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 return self._json(401, {"error": "ログインが必要です"})
             if p == "/api/assets":
                 return self._json(200, svc.assets())
+            if p == "/api/assets/secrets-status":
+                q = parse_qs(u.query)
+                host = (q.get("host") or [None])[0]
+                return self._json(200, svc.secrets_status(host))
             if p == "/api/router/status":
                 return self._json(200, svc.planner_status())
             if p == "/api/system/verify-controls":
@@ -106,6 +110,10 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     "markdown": svc.report_markdown(),
                     "filename": f"vulnix-report-{svc.a.id}.md",
                 })
+            if p == f"/api/assessments/{svc.a.id}/remotion":
+                q = parse_qs(u.query)
+                anon = (q.get("anonymize") or ["1"])[0] != "0"
+                return self._json(200, svc.remotion_export(anonymize=anon))
             if p == f"/api/assessments/{svc.a.id}/events":
                 q = parse_qs(u.query)
                 after = self.headers.get("Last-Event-ID") or (q.get("after") or ["0"])[0]
@@ -260,6 +268,42 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         actor=actor,
                     )
                     return self._json(200, {"asset": asset, "assets": svc.assets()})
+                elif p == "/api/assets/challenge":
+                    res = svc.issue_ownership_challenge(
+                        url=str(body.get("url", "")),
+                        sow_id=str(body.get("sow_id", "")),
+                        approver=actor,
+                        kind=str(body.get("kind", "Webアプリケーション")),
+                        environment=str(body.get("environment", "ステージング環境")),
+                    )
+                    return self._json(200, {**res, "assets": svc.assets()})
+                elif p == "/api/assets/verify-ownership":
+                    res = svc.verify_asset_ownership(
+                        url_or_host=str(body.get("url") or body.get("host") or ""),
+                        method=str(body.get("method", "dns_txt")),
+                        actor=actor,
+                    )
+                    return self._json(200, {**res, "assets": svc.assets()})
+                elif p == "/api/assets/confirm-scope":
+                    res = svc.confirm_asset_scope(
+                        url_or_host=str(body.get("url") or body.get("host") or ""),
+                        confirmed_prohibited=bool(body.get("confirmed_prohibited", True)),
+                        approver=actor,
+                        sow_id=str(body.get("sow_id", "")),
+                        activate_workspace=bool(body.get("activate_workspace", False)),
+                    )
+                    return self._json(200, {**res, "assets": svc.assets(), "snapshot": svc.snapshot()})
+                elif p == "/api/assets/secrets":
+                    raw_paths = body.get("mock_paths")
+                    res = svc.configure_asset_secrets(
+                        host=str(body.get("host", "")),
+                        user_a_token=str(body.get("user_a_token", "")),
+                        user_b_token=str(body.get("user_b_token", "")),
+                        free_plan_token=str(body.get("free_plan_token", "")),
+                        mock_paths=raw_paths if isinstance(raw_paths, dict) else None,
+                        actor=actor,
+                    )
+                    return self._json(200, {"secrets_status": res, "snapshot": svc.snapshot()})
                 elif p == "/api/assets/delete":
                     assets = svc.delete_asset(str(body.get("id", "")), actor=actor)
                     return self._json(200, {"assets": assets, "snapshot": svc.snapshot()})
@@ -299,6 +343,9 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     fid = str(body.get("finding_id", "")).strip()
                     if not fid:
                         return self._json(400, {"error": "finding_id is required"})
+                    if (svc.finding_requires_human_l2_approval(fid)
+                            and "approver" not in sess.roles):
+                        return self._json(403, {"error": "実サービスのL2再現試験には承認責任者の権限が必要です"})
                     return self._json(200, svc.verify_finding(fid, actor))
                 elif p == base + "/lab-mode":
                     mode = str(body.get("mode", "vulnerable")).strip()

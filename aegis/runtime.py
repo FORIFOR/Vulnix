@@ -35,7 +35,7 @@ class WorkerPool:
         self._lock = threading.Lock()
         self._closed = False
 
-    def run(self, argv: list[str], timeout_s: float) -> WorkerResult:
+    def run(self, argv: list[str], timeout_s: float, *, extra_env: dict[str, str] | None = None) -> WorkerResult:
         if not self._sem.acquire(blocking=False):
             raise RuntimeLimitError("concurrency limit reached")
         try:
@@ -43,9 +43,12 @@ class WorkerPool:
                 if self._closed:
                     raise RuntimeLimitError("worker pool closed")
                 cpu = self._cpu
+                proc_env = {"PATH": "/usr/bin:/bin"}
+                if extra_env:
+                    proc_env.update({str(k): str(v) for k, v in extra_env.items() if v is not None})
                 proc = subprocess.Popen(
                     argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                    start_new_session=True, close_fds=True, env={"PATH": "/usr/bin:/bin"},
+                    start_new_session=True, close_fds=True, env=proc_env,
                     preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu)),
                 )
                 self._procs[proc.pid] = proc

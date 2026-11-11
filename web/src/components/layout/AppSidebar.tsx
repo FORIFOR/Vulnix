@@ -46,7 +46,7 @@ export function AppSidebar() {
       <div className="mt-auto flex items-center gap-2 md:block">
         <OperatorBadge />
         <p className="mt-2 hidden px-2 text-[11px] leading-relaxed text-zinc-500 md:block">
-          ローカル模擬ラボのデモです。提案エンジンの設定状態は診断画面で確認できます。
+          既定の対象はローカル模擬ラボです。対象の種別と提案エンジンの設定状態は診断画面で確認できます。
         </p>
       </div>
     </nav>

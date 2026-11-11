@@ -14,6 +14,7 @@ import { RawLogViewer } from "../logs/RawLogViewer";
 import { Card } from "../ui";
 import { AgentActivity } from "./AgentActivity";
 import { PhaseTimeline } from "./PhaseTimeline";
+import { RealServicePanel } from "./RealServicePanel";
 import { ReasoningTrace } from "./ReasoningTrace";
 import { EvidenceOverview, EVIDENCE_STATES } from "./EvidenceOverview";
 
@@ -161,6 +162,8 @@ export function AssessmentTabs({ id }: { id: string }) {
             </div>
           </div>
         )}
+
+        {snap.is_external_service && <RealServicePanel snap={snap} onUpdate={setSnap} />}
 
         <EvidenceOverview snap={snap} selected={tab === "findings" ? evidenceFilter : "all"} />
 

@@ -1,0 +1,537 @@
+"""Real-service (DeepNote / external HTTPS) L1 & L2 diagnostic analyzers.
+
+Implements:
+- L1 read-only HTTP/TLS inspection (TLS certificate & HTTPS, HSTS/CSP/XCTO,
+  Cookie flags, CORS configuration, exposed technology headers, unauthenticated
+  API access control, and NVD/CISA KEV correlation).
+- L2 DeepNote candidate generation (IDOR/BOLA on notes/audio/transcripts,
+  share-link expiration, Cloud Storage ACL, AI chat cross-tenant isolation,
+  and server-side billing plan enforcement), gated on human approval +
+  encrypted test credentials.
+"""
+from __future__ import annotations
+
+from typing import Optional
+import urllib.parse
+
+from . import cve
+
+
+EXECUTOR_DEFAULT = {
+    "agent": "ARTEX 実行エンジン（ProposalRouter 制御）",
+    "model": "提案元は診断コンテキストを参照（実行権限なし）",
+}
+
+SEVERITY_BASE_SCORE = {"critical": 90, "high": 75, "medium": 50, "low": 25}
+
+
+def compute_finding_risk_score(
+    severity: str,
+    verdict: str,
+    *,
+    kev: bool = False,
+    internet_facing: bool = True,
+) -> tuple[int, str]:
+    sev = severity.lower()
+    base = SEVERITY_BASE_SCORE.get(sev, 40)
+    factor = (
+        1.0
+        if verdict == "proven"
+        else 0.75
+        if verdict == "detected"
+        else 0.0
+        if verdict == "not_reproduced"
+        else 0.5
+    )
+    bonus = (10 if kev else 0) + (5 if internet_facing else 0)
+    score = min(100, max(0, round(base * factor + (bonus if factor > 0 else 0))))
+    rationale = (
+        f"基本重大度({sev.upper()}={base}) × 検証状態係数({verdict}={factor})"
+        + (f" + KEV加算(10)" if kev and factor > 0 else "")
+        + (f" + 外部公開加算(5)" if internet_facing and factor > 0 else "")
+        + f" = {score}/100"
+    )
+    return score, rationale
+
+
+DEEPNOTE_L2_SPECS: list[dict] = [
+    {
+        "id": "f_dn_idor",
+        "check": "deepnote_idor_notes",
+        "title": "他ユーザーの議事録・音声・文字起こし・要約へのアクセス制御（IDOR/BOLA）",
+        "severity": "high",
+        "category": "アクセス制御（IDOR/BOLA）",
+        "help_term": "idor",
+        "path": "/api/v1/notes/mock_note_user_b",
+        "summary": "検証用アカウントAのトークンで別テナント模擬データ（議事録・音声・文字起こし・要約）のオブジェクトIDへアクセスし、認可境界が強制されているか検証します。",
+        "impact": "認可不備がある場合、推測または列挙したIDを通じて他ユーザーの非公開議事録・音声・要約データが閲覧される恐れがあります。",
+        "steps": [
+            "すべての議事録・音声・文字起こし・要約取得APIで、認証ユーザーの user_id / tenant_id とリソース所有者のサーバー側照合を必須化する",
+            "不一致時は HTTP 403 Forbidden または 404 Not Found を返却する",
+        ],
+        "how_to_verify": "検証用アカウント2つ（または別テナント模擬ID）を用いたL2再現試験を実行し、HTTP 403/404 で拒否されることを確認します。",
+    },
+    {
+        "id": "f_dn_share",
+        "check": "deepnote_share_link",
+        "title": "共有リンクの失効・有効期限切れ後のアクセス制御",
+        "severity": "medium",
+        "category": "セッション・共有管理",
+        "help_term": "idor",
+        "path": "/api/v1/shares/expired_mock_token",
+        "summary": "失効済みまたは有効期限切れの模擬共有トークンへアクセスし、サーバー側で確実に拒否されるか検証します。",
+        "impact": "失効後もトークンやキャッシュが有効な場合、共有解除したはずの議事録へ第三者が継続アクセスできるリスクがあります。",
+        "steps": [
+            "共有リンク参照時にDB上の revoked_at および expires_at を毎回サーバー側で検証する",
+            "失効時はキャッシュを無効化し即座に HTTP 403/404/410 を返却する",
+        ],
+        "how_to_verify": "失効済み模擬共有トークンに対するL2再現試験を実行し、HTTP 403/404/410 が返ることを確認します。",
+    },
+    {
+        "id": "f_dn_gcs",
+        "check": "deepnote_gcs_acl",
+        "title": "Cloud Storage（音声・文字起こしデータ）のアクセス制御",
+        "severity": "high",
+        "category": "クラウドストレージ設定",
+        "help_term": "idor",
+        "path": "/storage/v1/b/deepnote-stg-mock/o/mock_voice_b.wav",
+        "summary": "音声・文字起こし保存用ストレージパスに対して未認可または別テナントから直接取得できないか検証します。",
+        "impact": "バケットまたはオブジェクトACLが公開状態、あるいは署名なしURLで取得可能な場合、録音データや文字起こしファイルが直接漏えいします。",
+        "steps": [
+            "Cloud Storage バケットの公開アクセス防止（Public Access Prevention）を有効化する",
+            "Uniform bucket-level access を適用し、短寿命のV4署名付きURL（Signed URL）のみを経由して配信する",
+        ],
+        "how_to_verify": "模擬オブジェクトパスに対するL2再現試験を実行し、未認可アクセスが HTTP 403/404 で拒否されることを確認します。",
+    },
+    {
+        "id": "f_dn_aichat",
+        "check": "deepnote_ai_chat_isolation",
+        "title": "AIチャットにおける権限外データ参照・プロンプト境界分離",
+        "severity": "high",
+        "category": "AI / LLM セキュリティ",
+        "help_term": "idor",
+        "path": "/api/v1/ai/chat/context?note_id=mock_note_user_b",
+        "summary": "AIチャット/要約エンドポイントへ別テナントの模擬ノートIDを指定し、RAG検索やコンテキスト注入で権限外データが参照されないか検証します。",
+        "impact": "AI検索インデックスやコンテキスト取得時にテナント分離が欠落している場合、プロンプト経由で他ユーザーの議事録内容がAI応答に混入・漏えいします。",
+        "steps": [
+            "ベクトル検索・RAGコンテキスト取得クエリにおいて、LLM呼び出し前に必ず認証ユーザーの tenant_id / user_id でフィルタリングする",
+            "指定された context_note_id の所有権をサーバー側で検証してからプロンプトへ組み込む",
+        ],
+        "how_to_verify": "別テナント模擬ノートIDを指定したL2再現試験を実行し、HTTP 403/404 で拒否されAI応答に他テナント情報が混入しないことを確認します。",
+    },
+    {
+        "id": "f_dn_billing",
+        "check": "deepnote_billing_plan",
+        "title": "課金・契約プラン上限のサーバー側権限制御",
+        "severity": "medium",
+        "category": "ビジネスロジック・認可",
+        "help_term": "idor",
+        "path": "/api/v1/billing/premium-summary-check",
+        "summary": "Freeプラン相当の検証用アカウントから上位プラン専用APIへリクエストし、クライアント側表示だけでなくサーバー側で権限制御されているか検証します。",
+        "impact": "フロントエンドのUI非表示のみで制限している場合、APIの直接呼び出しにより無制限の文字起こしや上位AI機能が不正利用される恐れがあります。",
+        "steps": [
+            "すべての有料機能・利用上限対象APIにおいて、サーバー側の認可ミドルウェアで契約プラン（Entitlement）と月間クォータ残量を検証する",
+            "権限不足時は HTTP 402 Payment Required または 403 Forbidden を返却する",
+        ],
+        "how_to_verify": "Freeプラン検証用トークンでのL2再現試験を実行し、HTTP 402/403 で拒否されることを確認します。",
+    },
+]
+
+
+def _enrich_ev(
+    base_ev: dict,
+    *,
+    target_url: str,
+    verification_conditions: str,
+    tool: str = "http_probe",
+) -> dict:
+    return {
+        **base_ev,
+        "target_url": target_url,
+        "verification_conditions": verification_conditions,
+        "tool": tool,
+    }
+
+
+def analyze_l1_service_response(
+    res: dict,
+    ev: dict,
+    target_url: str,
+    cve_monitor: Optional[cve.FeedMonitor] = None,
+) -> list[dict]:
+    """Analyze a read-only L1 ``http_probe`` response for DeepNote / external HTTPS."""
+    findings: list[dict] = []
+    headers_raw = res.get("headers") or {}
+    headers_lower = {str(k).lower(): str(v) for k, v in headers_raw.items()}
+    status_code = res.get("status")
+    parsed_url = urllib.parse.urlparse(target_url)
+    is_https = parsed_url.scheme.lower() == "https"
+    tls_info = res.get("tls") or {}
+    set_cookies: list[str] = res.get("set_cookies") or []
+    if not set_cookies and "set-cookie" in headers_lower:
+        set_cookies = [headers_lower["set-cookie"]]
+
+    base_conditions = (
+        f"L1読み取り専用・低負荷・リダイレクト自動追従なし (GET {target_url}, "
+        f"Origin: {res.get('cors_probe_origin', 'https://untrusted-origin.example')})"
+    )
+
+    # 1. TLS certificate & HTTPS configuration
+    if is_https:
+        tls_version = str(tls_info.get("version") or "")
+        if tls_version in ("TLSv1", "TLSv1.1", "SSLv3"):
+            r_score, r_rat = compute_finding_risk_score(
+                "high", "proven", internet_facing=True
+            )
+            findings.append(
+                {
+                    "id": "f_l1_tls",
+                    "title": f"旧世代のTLSプロトコル（{tls_version}）が有効",
+                    "severity": "high",
+                    "verdict": "proven",
+                    "category": "暗号・TLS設定",
+                    "cve": [],
+                    "risk_level": "L1",
+                    "help_term": "security_headers",
+                    "risk_score": r_score,
+                    "risk_rationale": r_rat,
+                    "summary": f"HTTPS接続時に旧世代の {tls_version} がネゴシエートされました。TLS 1.2以上（推奨TLS 1.3）のみを許可する必要があります。",
+                    "why_detected": f"TLSハンドシェイク実測時に protocol={tls_version}, cipher={tls_info.get('cipher')} が観測されたためです。",
+                    "what_was_established": f"実際のTLS接続で旧バージョン {tls_version} が使用されることを確認しました。",
+                    "impact": "ダウングレード攻撃や既知の暗号解読手法により通信内容が解読されるリスクがあります。",
+                    "evidence": [
+                        _enrich_ev(
+                            ev,
+                            target_url=target_url,
+                            verification_conditions=f"{base_conditions} / TLSハンドシェイク検査",
+                        )
+                    ],
+                    "remediation": {
+                        "steps": [
+                            "Cloud Run / ロードバランサのSSLポリシーで最小TLSバージョンを TLS 1.2 以上に設定する"
+                        ],
+                        "how_to_verify": "再診断を実行し、TLSv1.2 または TLSv1.3 で接続されることを確認します。",
+                    },
+                    "executor": {**EXECUTOR_DEFAULT, "tool": "http_probe"},
+                    "demo_fixture": False,
+                }
+            )
+
+    # 2. HSTS, CSP, X-Content-Type-Options
+    missing_sec_headers: list[str] = []
+    if is_https and "strict-transport-security" not in headers_lower:
+        missing_sec_headers.append("Strict-Transport-Security (HSTS)")
+    if "content-security-policy" not in headers_lower:
+        missing_sec_headers.append("Content-Security-Policy (CSP)")
+    if headers_lower.get("x-content-type-options", "").lower() != "nosniff":
+        missing_sec_headers.append("X-Content-Type-Options: nosniff")
+
+    if missing_sec_headers:
+        r_score, r_rat = compute_finding_risk_score(
+            "low", "proven", internet_facing=is_https
+        )
+        findings.append(
+            {
+                "id": "f_headers",
+                "title": f"セキュリティヘッダーの未設定（{', '.join(missing_sec_headers)}）",
+                "severity": "low",
+                "verdict": "proven",
+                "category": "設定不備",
+                "cve": [],
+                "risk_level": "L1",
+                "help_term": "security_headers",
+                "risk_score": r_score,
+                "risk_rationale": r_rat,
+                "summary": f"HTTP応答ヘッダーにおいて {', '.join(missing_sec_headers)} が確認できませんでした（実測HTTPステータス: {status_code}）。",
+                "why_detected": "取得したHTTP応答ヘッダーを直接検査した結果です。",
+                "what_was_established": f"実際のHTTP応答に {', '.join(missing_sec_headers)} が含まれないことを確認しました。",
+                "impact": "ブラウザ側でのXSS被害緩和（CSP）、MIMEスニッフィング防止（nosniff）、HTTPS強制（HSTS）が効かず、他の脆弱性成立時の被害が拡大しやすくなります。",
+                "evidence": [
+                    _enrich_ev(
+                        ev,
+                        target_url=target_url,
+                        verification_conditions=f"{base_conditions} / HSTS・CSP・X-Content-Type-Options 検査",
+                    )
+                ],
+                "remediation": {
+                    "steps": [
+                        "Strict-Transport-Security: max-age=31536000; includeSubDomains を付与する",
+                        "Content-Security-Policy および X-Content-Type-Options: nosniff を付与する",
+                    ],
+                    "how_to_verify": "修正後に同じGET検査を実行し、各ヘッダーが応答に含まれることを確認します。",
+                },
+                "executor": {**EXECUTOR_DEFAULT, "tool": "http_probe"},
+                "demo_fixture": False,
+            }
+        )
+
+    # 3. Cookie Secure, HttpOnly, SameSite
+    insecure_cookies: list[str] = []
+    for raw_cookie in set_cookies:
+        c_lower = raw_cookie.lower()
+        cookie_name = raw_cookie.split("=", 1)[0].strip() or "cookie"
+        missing_flags: list[str] = []
+        if is_https and "secure" not in c_lower:
+            missing_flags.append("Secure")
+        if "httponly" not in c_lower:
+            missing_flags.append("HttpOnly")
+        if "samesite" not in c_lower:
+            missing_flags.append("SameSite")
+        if missing_flags:
+            insecure_cookies.append(f"{cookie_name} (未設定: {'/'.join(missing_flags)})")
+
+    if insecure_cookies:
+        r_score, r_rat = compute_finding_risk_score(
+            "medium", "proven", internet_facing=is_https
+        )
+        findings.append(
+            {
+                "id": "f_l1_cookies",
+                "title": "Cookieのセキュリティ属性（Secure / HttpOnly / SameSite）不足",
+                "severity": "medium",
+                "verdict": "proven",
+                "category": "セッション・Cookie設定",
+                "cve": [],
+                "risk_level": "L1",
+                "help_term": "security_headers",
+                "risk_score": r_score,
+                "risk_rationale": r_rat,
+                "summary": f"Set-Cookie ヘッダーにおいてセキュリティ属性の不足を検出しました: {'; '.join(insecure_cookies)}",
+                "why_detected": "応答の Set-Cookie ヘッダー属性を解析した結果です。",
+                "what_was_established": f"実際の応答Cookieに保護属性不足（{'; '.join(insecure_cookies)}）を確認しました。",
+                "impact": "XSSによるセッショントークン窃取（HttpOnly欠落）、平文通信への漏えい（Secure欠落）、CSRF攻撃（SameSite欠落）のリスクが高まります。",
+                "evidence": [
+                    _enrich_ev(
+                        ev,
+                        target_url=target_url,
+                        verification_conditions=f"{base_conditions} / Set-Cookie 属性検査",
+                    )
+                ],
+                "remediation": {
+                    "steps": [
+                        "セッション・認証に関わるすべてのCookieに Secure; HttpOnly; SameSite=Lax（または Strict）を付与する"
+                    ],
+                    "how_to_verify": "修正後に同じGET検査を実行し、Set-Cookie ヘッダーに Secure, HttpOnly, SameSite が含まれることを確認します。",
+                },
+                "executor": {**EXECUTOR_DEFAULT, "tool": "http_probe"},
+                "demo_fixture": False,
+            }
+        )
+
+    # 4. CORS settings
+    acao = headers_lower.get("access-control-allow-origin", "")
+    acac = headers_lower.get("access-control-allow-credentials", "").lower()
+    probe_origin = str(res.get("cors_probe_origin", "https://untrusted-origin.example"))
+    if acao == "*" or (acao and probe_origin and acao == probe_origin):
+        sev = "high" if (acao == probe_origin and acac == "true") else "medium"
+        r_score, r_rat = compute_finding_risk_score(
+            sev, "proven", internet_facing=is_https
+        )
+        findings.append(
+            {
+                "id": "f_l1_cors",
+                "title": f"CORS設定の過剰な許可（Access-Control-Allow-Origin: {acao}）",
+                "severity": sev,
+                "verdict": "proven",
+                "category": "CORS・オリジン境界",
+                "cve": [],
+                "risk_level": "L1",
+                "help_term": "security_headers",
+                "risk_score": r_score,
+                "risk_rationale": r_rat,
+                "summary": (
+                    f"外部Origin（{probe_origin}）からのリクエストに対し、"
+                    f"Access-Control-Allow-Origin: {acao} "
+                    f"(Allow-Credentials: {acac or '未設定'}) が返却されました。"
+                ),
+                "why_detected": f"Origin: {probe_origin} を付与した非破壊GETリクエストの応答ヘッダーで確認されました。",
+                "what_was_established": f"未承認の外部オリジンに対して Access-Control-Allow-Origin: {acao} が返却されることを確認しました。",
+                "impact": "悪意ある外部サイトからブラウザ経由でAPI応答を読み取られる（クロスオリジン情報漏えい）恐れがあります。",
+                "evidence": [
+                    _enrich_ev(
+                        ev,
+                        target_url=target_url,
+                        verification_conditions=f"{base_conditions} / CORS Originプローブ検査",
+                    )
+                ],
+                "remediation": {
+                    "steps": [
+                        "信頼されたフロントエンドのオリジン（例: https://stgdeepnote.mopita.com）のみを厳密なホワイトリストで許可する",
+                        "任意のOrigin反射や認証付きAPIでのワイルドカード（*）指定を廃止する",
+                    ],
+                    "how_to_verify": "修正後に同じOriginプローブを実行し、未許可オリジンに対して Access-Control-Allow-Origin が返らないことを確認します。",
+                },
+                "executor": {**EXECUTOR_DEFAULT, "tool": "http_probe"},
+                "demo_fixture": False,
+            }
+        )
+
+    # 5. Exposed technology info & 7. NVD / CISA KEV correlation
+    server_hdr = headers_lower.get("server", "")
+    powered_by = headers_lower.get("x-powered-by", "")
+    exposed_tech = [
+        f"{k}: {v}"
+        for k, v in [("Server", server_hdr), ("X-Powered-By", powered_by)]
+        if v
+    ]
+    if exposed_tech:
+        candidates = (
+            cve.detect_from_banner(
+                " ".join([server_hdr, powered_by]),
+                source="server-header",
+                catalog=cve_monitor.catalog,
+                kev=cve_monitor.kev,
+            )
+            if cve_monitor
+            else []
+        )
+        cve_ids = sorted({c.cve.id for c in candidates})
+        kev_flag = any(c.in_kev for c in candidates)
+        sev = "high" if cve_ids else "low"
+        verdict = "detected" if cve_ids else "proven"
+        r_score, r_rat = compute_finding_risk_score(
+            sev, verdict, kev=kev_flag, internet_facing=is_https
+        )
+        cve_note = (
+            f" 関連CVE候補: {', '.join(cve_ids)}（バナー照合による検出・未実証）。"
+            if cve_ids
+            else "（NVD/CISA KEV上の既知悪用バナー一致なし）"
+        )
+        findings.append(
+            {
+                "id": "f_powered",
+                "title": f"公開技術情報の露出（{', '.join(exposed_tech)}）",
+                "severity": sev,
+                "verdict": verdict,
+                "category": "既知の脆弱性（CVE）" if cve_ids else "情報露出",
+                "cve": cve_ids,
+                "risk_level": "L1",
+                "help_term": "cve" if cve_ids else "info_disclosure",
+                "risk_score": r_score,
+                "risk_rationale": r_rat,
+                "summary": f"レスポンスヘッダーからサーバー技術情報（{', '.join(exposed_tech)}）が公開されています。{cve_note}",
+                "why_detected": "応答ヘッダーのバージョン文字列と NVD / CISA KEV カタログを照合した結果です。",
+                "what_was_established": (
+                    None
+                    if cve_ids
+                    else f"実際のHTTP応答で {', '.join(exposed_tech)} ヘッダーが返されることを確認しました。"
+                ),
+                "caveat": "バナー段階では「検出（未実証）」であり、脆弱性の成立を断定するものではありません。" if cve_ids else None,
+                "impact": "攻撃者に使用フレームワークやバージョンを特定され、既知CVEを狙った攻撃の足がかりにされるリスクがあります。",
+                "evidence": [
+                    _enrich_ev(
+                        ev,
+                        target_url=target_url,
+                        verification_conditions=f"{base_conditions} / 公開技術情報・NVD/CISA KEV照合",
+                    )
+                ],
+                "remediation": {
+                    "steps": [
+                        "Server ヘッダーの詳細バージョンおよび X-Powered-By ヘッダーの送出を抑制する",
+                        "該当ミドルウェアを最新安定版へ更新する",
+                    ],
+                    "how_to_verify": "修正後に同じGET検査を実行し、詳細バージョンが露出しないことを確認します。",
+                },
+                "executor": {**EXECUTOR_DEFAULT, "tool": "http_probe"},
+                "demo_fixture": False,
+            }
+        )
+
+    # 6. Unauthenticated API access control boundary check
+    content_type = headers_lower.get("content-type", "")
+    if status_code == 200 and "application/json" in content_type.lower():
+        r_score, r_rat = compute_finding_risk_score(
+            "medium", "detected", internet_facing=is_https
+        )
+        findings.append(
+            {
+                "id": "f_l1_unauth_api",
+                "title": "未認証リクエストに対するJSON API応答の返却（認証境界の確認が必要）",
+                "severity": "medium",
+                "verdict": "detected",
+                "category": "APIアクセス制御",
+                "cve": [],
+                "risk_level": "L1",
+                "help_term": "idor",
+                "risk_score": r_score,
+                "risk_rationale": r_rat,
+                "summary": f"認証ヘッダーなしのGETリクエスト（{target_url}）に対して HTTP 200 ({content_type}) が返却されました。公開エンドポイントとして意図されたものか確認が必要です。",
+                "why_detected": "未認証の読み取り専用プローブに対して JSON ペイロードが返却されたためです。",
+                "caveat": "公開ヘルスチェック等の場合は正常ですが、保護対象APIの場合は認可ミドルウェアの適用漏れがないか確認が必要です。",
+                "impact": "認証が必須であるべきAPIが未認証で応答している場合、内部ステータスやメタデータが外部へ露出する恐れがあります。",
+                "evidence": [
+                    _enrich_ev(
+                        ev,
+                        target_url=target_url,
+                        verification_conditions=f"{base_conditions} / 未認証APIアクセス制御境界の観測",
+                    )
+                ],
+                "remediation": {
+                    "steps": [
+                        "公開が不要なAPIエンドポイントでは認証ミドルウェアを必須化し、未認証時は HTTP 401 Unauthorized を返却する"
+                    ],
+                    "how_to_verify": "未認証GETリクエストに対して HTTP 401/403 が返却されることを確認します。",
+                },
+                "executor": {**EXECUTOR_DEFAULT, "tool": "http_probe"},
+                "demo_fixture": False,
+            }
+        )
+
+    return findings
+
+
+def build_deepnote_l2_candidates(
+    target_url: str,
+    *,
+    has_l2_credentials: bool = False,
+    ready_checks: Optional[set[str]] = None,
+) -> list[dict]:
+    """Generate the 5 DeepNote L2 candidate findings.
+
+    Crucial safety rule: uninspected L2 items have empty ``evidence=[]`` so
+    ``evidence_status(finding)`` classifies them as ``candidate`` ("未計測の候補")
+    and NEVER marks them safe.
+    """
+    parsed = urllib.parse.urlparse(target_url)
+    is_https = parsed.scheme.lower() == "https"
+    candidates: list[dict] = []
+
+    for spec in DEEPNOTE_L2_SPECS:
+        ready = (spec["check"] in ready_checks) if ready_checks is not None else has_l2_credentials
+        cred_note = (
+            "暗号化シークレット（検証用アカウント）設定済み・人間の個別承認待ち"
+            if ready
+            else "未検査（この項目に必要なL2検証用アカウントが未設定・人間の個別承認待ち）"
+        )
+        r_score, r_rat = compute_finding_risk_score(
+            spec["severity"], "detected", internet_facing=is_https
+        )
+        candidates.append(
+            {
+                "id": spec["id"],
+                "title": spec["title"],
+                "severity": spec["severity"],
+                "verdict": "detected",
+                "category": spec["category"],
+                "cve": [],
+                "risk_level": "L2",
+                "help_term": spec["help_term"],
+                "reproduce_check": spec["check"],
+                "target_path": spec["path"],
+                "l2_ready": ready,
+                "risk_score": r_score,
+                "risk_rationale": r_rat,
+                "summary": f"{spec['summary']} （現在の状態: {cred_note} ※未検査項目を安全とは判定しません）",
+                "why_detected": "DeepNote優先診断項目（L2認可・テナント分離・共有期限・GCS・課金境界）として登録されました。所有確認のみで自動実行されることはなく、個別の人間承認と検証用アカウント設定が必要です。",
+                "caveat": f"未検証候補（{cred_note}）。承認されるまで実行されません。",
+                "impact": spec["impact"],
+                "evidence": [],
+                "remediation": {
+                    "steps": spec["steps"],
+                    "how_to_verify": spec["how_to_verify"],
+                },
+                "executor": {**EXECUTOR_DEFAULT, "tool": "reproduction_probe"},
+                "demo_fixture": False,
+            }
+        )
+    return candidates

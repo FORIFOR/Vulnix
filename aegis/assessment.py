@@ -8,6 +8,8 @@ launches is a real confined process that the emergency stop can kill.
 from __future__ import annotations
 
 import copy
+import hashlib
+import ipaddress
 import json
 import os
 import secrets
@@ -21,16 +23,23 @@ from . import cve
 from .audit import AuditLog
 from .authz import ApprovalStore, Engagement, Target, TokenAuthority
 from .events import EventBus
-from .evidence import (EVIDENCE_LABELS, evidence_status, evidence_summary,
-                       reproduction_verdict, reproduction_note)
+from .evidence import (DEEPNOTE_L2_CHECKS, EVIDENCE_LABELS, evidence_status,
+                       evidence_summary, reproduction_note, reproduction_verdict)
 from .gateway import Gateway, State, http_probe_tool, reproduction_probe_tool
 from .lab import get_lab_mode, set_lab_mode
-from .network import EgressGuard
+from .network import EgressGuard, NetworkError, system_resolver
+from .ownership import (DEEPNOTE_STG_PRESETS, PROHIBITED_ACTIONS_SUMMARY,
+                        challenge_for_host, parse_service_target,
+                        verify_ownership_challenge)
 from .policy import ArgSpec, Budget, Tool
+from .remotion_export import build_remotion_export
 from .router import (AbliterationBackend, ArtexEngine, ArtexplannerBackend,
                      ArtexSubprocessBackend, HttpModelBackend, ProposalRouter,
                      verify_planner_connections)
 from .runtime import WorkerPool
+from .secrets_store import EncryptedSecretStore
+from .service_diag import (DEEPNOTE_L2_SPECS, analyze_l1_service_response,
+                           build_deepnote_l2_candidates)
 
 SEVERITY_WEIGHT = {"critical": 40, "high": 25, "medium": 10, "low": 3, "info": 0}
 VERDICT_FACTOR = {"proven": 1.0, "detected": 0.6, "unverified": 0.6, "aborted": 0.6,
@@ -71,6 +80,10 @@ class AssessmentService:
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.state_path = self.data_dir / "state.json"
+        self.secrets = EncryptedSecretStore(self.data_dir)
+        self._ownership_secret = hashlib.sha256(
+            self.secrets._master_key + b":vulnix-ownership-v1"
+        ).hexdigest()
         self.bus = EventBus()
         self.audit = AuditLog(self.data_dir / "audit.jsonl")
         self.audit.listeners.append(self._on_audit)
@@ -78,6 +91,8 @@ class AssessmentService:
         self.lab_port = lab_port
         self.verify_seconds = verify_seconds
         self._allowed_hosts: set[str] = {"lab.test", "api.lab.test"}
+        self._verified_external_hosts: dict[str, dict] = {}
+        self._custom_resolver = None
         now = time.time()
         target = Target("lab", hosts=tuple(sorted(self._allowed_hosts)),
                         cidrs=("127.0.0.1/32",), ports=(lab_port,))
@@ -89,14 +104,16 @@ class AssessmentService:
         self.workers = WorkerPool(max_concurrent=2)
         self.gateway = Gateway(
             engagement=eng, tokens=self.tokens, approvals=self.approval_store,
-            egress=EgressGuard(lambda h: ["127.0.0.1"] if h in self._allowed_hosts else []),
+            egress=EgressGuard(self._resolve_host),
             workers=self.workers, audit=self.audit,
             tools={
                 "http_probe": http_probe_tool(),
                 "reproduction_probe": reproduction_probe_tool(),
                 "demo_verify": demo_verify_tool(verify_seconds),
             },
-            budget=Budget(50))
+            budget=Budget(50),
+            ephemeral_env_provider=self._ephemeral_worker_env,
+            secret_redactor=self.secrets.redact)
 
         # Wire ARTEX (in-process + optional external CLI subprocess) + Abliteration ProposalRouter
         self._artex_cli_backend = ArtexSubprocessBackend()
@@ -129,14 +146,124 @@ class AssessmentService:
             {"id": "api", "name": "api.lab.test", "kind": "API", "environment": "検証環境",
              "status": "未診断", "assessment_id": self.a.id, "risk": None,
              "previous_risk_score": None, "last_assessed_at": None,
-             "authorization_ref": "DEMO-AUTH-002", "ownership_verified": True},
+             "authorization_ref": "DEMO-AUTH-002", "ownership_verified": True,
+             "scope_confirmed": True},
             {"id": "staging", "name": "internal-staging", "kind": "検証環境",
              "environment": "社内", "status": "承認待ち", "assessment_id": None, "risk": None,
              "previous_risk_score": None, "last_assessed_at": None,
              "authorization_ref": "", "ownership_verified": False,
+             "scope_confirmed": False,
              "note": "書面許可が未登録のため診断できません"},
+            *self._build_deepnote_preset_assets(),
         ]
         self._load_state_locked()
+        self._ensure_deepnote_presets_locked()
+
+    def _build_deepnote_preset_assets(self) -> list[dict]:
+        presets: list[dict] = []
+        for p in DEEPNOTE_STG_PRESETS:
+            host = p["name"]
+            ch = challenge_for_host(host, self._ownership_secret)
+            presets.append({
+                "id": p["id"],
+                "name": host,
+                "display_name": p["display_name"],
+                "target_url": p["service_url"] + "/",
+                "scheme": p["scheme"],
+                "port": p["port"],
+                "kind": p["kind"],
+                "environment": p["environment"],
+                "gcp_project": p["gcp_project"],
+                "status": "所有確認待ち",
+                "assessment_id": None,
+                "risk": None,
+                "previous_risk_score": None,
+                "last_assessed_at": None,
+                "authorization_ref": "",
+                "ownership_verified": False,
+                "scope_confirmed": False,
+                "challenge": ch,
+                "note": "所有確認（DNS TXT または検証ファイル）と診断範囲確認が必要です（未送信・通信なし）",
+            })
+        return presets
+
+    def _ensure_deepnote_presets_locked(self) -> None:
+        existing_names = {x.get("name", "").lower() for x in self._extra_assets}
+        if self.a.asset.get("name"):
+            existing_names.add(self.a.asset["name"].lower())
+        for preset in self._build_deepnote_preset_assets():
+            if preset["name"].lower() not in existing_names:
+                self._extra_assets.append(preset)
+
+    def _external_entry(self, host: str | None) -> dict | None:
+        """The verified-external record for `host`, only while it is fully valid
+        (ownership verified + scope confirmed + inside its time window)."""
+        ext = self._verified_external_hosts.get((host or "").rstrip(".").lower())
+        if not ext or not ext.get("ownership_verified") or not ext.get("scope_confirmed"):
+            return None
+        now = time.time()
+        if not (float(ext.get("not_before", 0)) <= now <= float(ext.get("not_after", 0))):
+            return None
+        return ext
+
+    def _resolve_host(self, host: str) -> list[str]:
+        """Resolve host strictly according to verified scope."""
+        h = (host or "").rstrip(".").lower()
+        if h in {"lab.test", "api.lab.test"}:
+            return ["127.0.0.1"]
+        if h in self._verified_external_hosts:
+            # A host that went through the ownership flow is NEVER silently
+            # redirected to the local lab: it resolves for real or not at all.
+            ext = self._external_entry(h)
+            if ext is None:
+                return []
+            resolver_fn = self._custom_resolver or system_resolver
+            allow_loopback = bool(ext.get("allow_loopback_test"))
+            safe_addrs: list[str] = []
+            for raw in resolver_fn(h):
+                try:
+                    ip = ipaddress.ip_address(str(raw).split("%")[0])
+                except ValueError:
+                    raise NetworkError(f"external service host {h} resolved to an invalid address")
+                if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
+                    ip = ip.ipv4_mapped
+                if not allow_loopback and not ip.is_global:
+                    raise NetworkError(
+                        f"external service host {h} resolved to non-public IP {ip} (blocked)"
+                    )
+                safe_addrs.append(str(ip))
+            return safe_addrs
+        if h in self._allowed_hosts:
+            return ["127.0.0.1"]
+        return []
+
+    def _ephemeral_worker_env(self, tool_name: str, args: dict) -> dict[str, str]:
+        """Per-call worker environment (never argv, never audit). L2 test
+        credentials are released only to a `reproduction_probe` run of a DeepNote
+        check against the currently active, verified external asset."""
+        env: dict[str, str] = {}
+        cafile = os.environ.get("VULNIX_TEST_CA_FILE")
+        if cafile:
+            env["VULNIX_TEST_CA_FILE"] = cafile
+        check = args.get("check")
+        if (tool_name == "reproduction_probe" and check in DEEPNOTE_L2_CHECKS
+                and self._is_external_service_asset()):
+            env.update(self.secrets.worker_env_for_check(
+                self.a.asset.get("name", "").lower(), check))
+        return env
+
+    def _is_external_service_asset(self, host: str | None = None) -> bool:
+        """True only for a real service that completed ownership + scope
+        confirmation. Everything else is the local simulated lab."""
+        return self._external_entry(host or self.a.asset.get("name")) is not None
+
+    def _ready_l2_checks(self, host: str | None = None) -> set[str]:
+        h = (host or self.a.asset.get("name") or "").lower()
+        return {c for c in DEEPNOTE_L2_CHECKS if not self.secrets.missing_for_check(h, c)}
+
+    def _l2_candidates(self) -> list[dict]:
+        return build_deepnote_l2_candidates(
+            self.a.target_url, ready_checks=self._ready_l2_checks())
 
     def _save_state_locked(self) -> None:
         """Persist assessment state, findings, evidence, approvals, and assets atomically."""
@@ -157,6 +284,7 @@ class AssessmentService:
                 "defense_comparison": self.a.defense_comparison,
                 "extra_assets": self._extra_assets,
                 "allowed_hosts": sorted(self._allowed_hosts),
+                "verified_external_hosts": self._verified_external_hosts,
                 "authorization_ref": self.a.engagement.authorization_ref,
                 "ownership_verified": self.a.engagement.ownership_verified,
                 "lab_mode": get_lab_mode(),
@@ -180,6 +308,12 @@ class AssessmentService:
         except (OSError, ValueError):
             return
 
+        if isinstance(data.get("verified_external_hosts"), dict):
+            self._verified_external_hosts = {
+                str(k).lower(): dict(v)
+                for k, v in data["verified_external_hosts"].items()
+                if isinstance(v, dict)
+            }
         if isinstance(data.get("allowed_hosts"), list):
             self._allowed_hosts = {str(h) for h in data["allowed_hosts"] if h} | {"lab.test", "api.lab.test"}
         if isinstance(data.get("asset"), dict) and data["asset"].get("name"):
@@ -263,17 +397,33 @@ class AssessmentService:
         self.gateway.budget = Budget(50)
 
     def _sync_scope_for_host(self, host: str, auth_ref: str) -> None:
-        self._allowed_hosts.add(host)
+        h = (host or "").rstrip(".").lower()
         now = time.time()
         e = self.a.engagement
-        target = Target("lab", hosts=tuple(sorted(self._allowed_hosts)),
-                        cidrs=("127.0.0.1/32",), ports=(self.lab_port,))
+        ext = self._external_entry(h)
+        if ext is None and h not in self._verified_external_hosts:
+            self._allowed_hosts.add(h)     # local simulated-lab alias only
+        if ext is not None:
+            scheme = str(ext.get("scheme", "https"))
+            port = int(ext.get("port", 443))
+            cidrs = tuple(ext.get("cidrs", ("0.0.0.0/0", "::/0")))
+            target = Target("lab", hosts=(h,), cidrs=cidrs, ports=(port,))
+            default_port = 443 if scheme == "https" else 80
+            port_suffix = "" if port == default_port else f":{port}"
+            self.a.target_url = f"{scheme}://{h}{port_suffix}/"
+        else:
+            target = Target("lab", hosts=tuple(sorted(self._allowed_hosts)),
+                            cidrs=("127.0.0.1/32",), ports=(self.lab_port,))
+            self.a.target_url = f"http://{h}:{self.lab_port}/"
+        not_after = now + 30 * 86400
+        if ext is not None:   # never outlive the ownership/scope confirmation window
+            not_after = min(not_after, float(ext["not_after"]))
         self.a.engagement = Engagement(
             e.id, True, auth_ref or e.authorization_ref,
-            now - 60, now + 30 * 86400, {"lab": target}, e.allowed_actions
+            now - 60, not_after, {"lab": target}, e.allowed_actions
         )
         self.gateway.engagement = self.a.engagement
-        self.a.target_url = f"http://{host}:{self.lab_port}/"
+        self.gateway.egress = EgressGuard(self._resolve_host)
 
 
     # ---- snapshot -----------------------------------------------------------
@@ -285,8 +435,8 @@ class AssessmentService:
                 "status": _asset_status(self.a.state),
                 "assessment_id": self.a.id,
                 "risk": risk if self.a.state != "idle" else None,
-                "previous_risk_score": 55,
-                "last_assessed_at": int(time.time() - 86400 * 7),
+                "previous_risk_score": None if self._is_external_service_asset() else 55,
+                "last_assessed_at": None if self._is_external_service_asset() else int(time.time() - 86400 * 7),
                 "authorization_ref": self.a.engagement.authorization_ref,
                 "ownership_verified": self.a.engagement.ownership_verified,
             }
@@ -308,6 +458,12 @@ class AssessmentService:
         authorized = bool(ownership_verified and clean_ref)
 
         with self._lock:
+            in_ownership_flow = (
+                clean_name in self._verified_external_hosts
+                or (self.a.asset["name"].lower() == clean_name and self.a.asset.get("challenge"))
+                or any(x["name"].lower() == clean_name and x.get("challenge") for x in self._extra_assets))
+            if in_ownership_flow:   # checked BEFORE anything is added to the lab allow-list
+                raise ValueError("この資産は実サービスとして登録されています。所有確認（DNS TXT / 検証ファイル）の手順で登録してください")
             if authorized:
                 self._allowed_hosts.add(clean_name)
             # Check if updating the current primary asset
@@ -383,8 +539,8 @@ class AssessmentService:
             "status": _asset_status(self.a.state),
             "assessment_id": self.a.id,
             "risk": self._risk() if self.a.state != "idle" else None,
-            "previous_risk_score": 55,
-            "last_assessed_at": int(time.time() - 86400 * 7),
+            "previous_risk_score": None if self._is_external_service_asset() else 55,
+            "last_assessed_at": None if self._is_external_service_asset() else int(time.time() - 86400 * 7),
             "authorization_ref": self.a.engagement.authorization_ref,
             "ownership_verified": self.a.engagement.ownership_verified,
         }
@@ -398,6 +554,11 @@ class AssessmentService:
             "name": asset_record["name"],
             "kind": asset_record["kind"],
             "environment": asset_record["environment"],
+            # keep registration metadata of real services (ownership proof, URL)
+            **{k: asset_record[k] for k in (
+                "display_name", "target_url", "scheme", "port", "gcp_project",
+                "scope_confirmed", "challenge", "ownership_proof", "approver",
+                "sow_optional_ref") if k in asset_record},
         }
         self._sync_scope_for_host(asset_record["name"], auth_ref)
 
@@ -412,6 +573,8 @@ class AssessmentService:
                 raise ValueError("指定された診断対象が見つかりません")
             if not target_asset.get("ownership_verified") or not target_asset.get("authorization_ref"):
                 raise ValueError("この資産は書面許可（SOW）が未登録のため診断できません")
+            if target_asset.get("challenge") and self._external_entry(target_asset["name"]) is None:
+                raise ValueError("所有確認・診断範囲確認が未完了か有効期限切れです。資産管理から所有確認をやり直してください")
             self._activate_asset_locked(target_asset, str(target_asset["authorization_ref"]))
             self._reset_workspace_locked()
         self.audit.record("asset.selected", actor=actor, asset_id=asset_id, name=self.a.asset["name"])
@@ -453,18 +616,330 @@ class AssessmentService:
                 deleted_name = target["name"]
                 self._extra_assets = [x for x in self._extra_assets if x["id"] != asset_id]
                 self._save_state_locked()
+            # Deleting a real-service asset revokes its scope and its stored test credentials.
+            gone = str(deleted_name).lower()
+            if self._verified_external_hosts.pop(gone, None) is not None:
+                self._save_state_locked()
+            self.secrets.clear_credentials(gone)
         self.audit.record("asset.deleted", actor=actor, asset_id=asset_id, name=deleted_name)
         return self.assets()
+
+    def issue_ownership_challenge(
+        self,
+        *,
+        url: str,
+        sow_id: str = "",
+        approver: str = "operator",
+        kind: str = "Webアプリケーション",
+        environment: str = "ステージング環境",
+    ) -> dict:
+        """Step 1 & 2 of the 5-step registration flow: parse target URL, generate
+        DNS TXT / .well-known challenge, and create an unverified asset record.
+        SOW number is optional; an internal authorization record is generated if omitted."""
+        parsed = parse_service_target(url)
+        host = parsed["host"]
+        ch = challenge_for_host(host, self._ownership_secret)
+        clean_sow = (sow_id or "").strip()[:80]
+        internal_auth_ref = (
+            clean_sow
+            if clean_sow
+            else f"AUTH-AUTO-{int(time.time())}-{host.split('.')[0][:12].upper()}"
+        )
+        now = time.time()
+
+        with self._lock:
+            existing = next(
+                (x for x in self._extra_assets if x.get("name", "").lower() == host),
+                None,
+            )
+            if existing is not None:
+                existing["target_url"] = parsed["target_url"]
+                existing["scheme"] = parsed["scheme"]
+                existing["port"] = parsed["port"]
+                existing["kind"] = (kind or existing.get("kind") or "Webアプリケーション")[:40]
+                existing["environment"] = (environment or existing.get("environment") or "ステージング環境")[:60]
+                existing["challenge"] = ch
+                existing["sow_optional_ref"] = internal_auth_ref
+                existing["approver"] = approver
+                if not existing.get("ownership_verified"):
+                    existing["status"] = "所有確認待ち"
+                asset_rec = dict(existing)
+            else:
+                aid = "asset_" + secrets.token_hex(3)
+                asset_rec = {
+                    "id": aid,
+                    "name": host,
+                    "target_url": parsed["target_url"],
+                    "scheme": parsed["scheme"],
+                    "port": parsed["port"],
+                    "kind": (kind or "Webアプリケーション")[:40],
+                    "environment": (environment or "ステージング環境")[:60],
+                    "status": "所有確認待ち",
+                    "assessment_id": None,
+                    "risk": None,
+                    "previous_risk_score": None,
+                    "last_assessed_at": None,
+                    "authorization_ref": "",
+                    "sow_optional_ref": internal_auth_ref,
+                    "approver": approver,
+                    "not_before": now,
+                    "not_after": now + 30 * 86400,
+                    "ownership_verified": False,
+                    "scope_confirmed": False,
+                    "challenge": ch,
+                    "note": "Step 2: DNS TXT または検証ファイルで管理権限を確認してください",
+                }
+                self._extra_assets.insert(0, asset_rec)
+            self._save_state_locked()
+
+        self.audit.record(
+            "asset.challenge_issued",
+            actor=approver,
+            host=host,
+            target_url=parsed["target_url"],
+            dns_txt_name=ch["dns_txt_name"],
+            well_known_url=ch["well_known_url"],
+            authorization_ref=internal_auth_ref,
+        )
+        return {
+            "asset": asset_rec,
+            "challenge": ch,
+            "prohibited_actions": PROHIBITED_ACTIONS_SUMMARY,
+            "sow_optional": True,
+            "internal_authorization_ref": internal_auth_ref,
+        }
+
+    def verify_asset_ownership(
+        self,
+        *,
+        url_or_host: str,
+        method: str = "dns_txt",
+        actor: str = "operator",
+        dns_lookup=None,
+        http_fetch=None,
+    ) -> dict:
+        """Step 2 of the 5-step registration flow: verify ownership via DNS TXT or
+        /.well-known/vulnix-verify.txt. Ownership verification NEVER auto-approves L2."""
+        parsed = parse_service_target(url_or_host)
+        host = parsed["host"]
+        ch = challenge_for_host(host, self._ownership_secret)
+
+        res = verify_ownership_challenge(
+            host,
+            method,
+            expected_token=ch["token"],
+            txt_lookup=dns_lookup,
+            http_fetcher=http_fetch,
+        )
+        verified = bool(res.get("verified"))
+
+        with self._lock:
+            target_asset = next(
+                (x for x in self._extra_assets if x.get("name", "").lower() == host),
+                None,
+            )
+            if target_asset is None and self.a.asset.get("name", "").lower() == host:
+                target_asset = self.a.asset
+            if target_asset is not None:
+                target_asset["ownership_verified"] = verified
+                target_asset["ownership_proof"] = res
+                if verified and not target_asset.get("scope_confirmed"):
+                    target_asset["status"] = "範囲確認待ち"
+                    target_asset["note"] = "Step 3: 診断対象スコープと禁止事項を確認してください（L2実証は自動承認されません）"
+            if not verified:
+                # A failed (re-)verification revokes any previously confirmed scope:
+                # no further traffic is sent to this host until it is proven again.
+                self._verified_external_hosts.pop(host, None)
+                if target_asset is not None:
+                    target_asset["scope_confirmed"] = False
+                    target_asset["authorization_ref"] = ""
+                    if target_asset is not self.a.asset:
+                        target_asset["status"] = "所有確認待ち"
+                        target_asset["assessment_id"] = None
+                        target_asset["note"] = "所有確認に失敗しました。DNS TXT または検証ファイルを確認してください"
+            self._save_state_locked()
+
+        self.audit.record(
+            "asset.ownership_verified" if verified else "asset.ownership_failed",
+            actor=actor,
+            host=host,
+            method=method,
+            verified=verified,
+            detail=res.get("detail", ""),
+        )
+        return {
+            "host": host,
+            "verified": verified,
+            "verification": res,
+            "l2_auto_approved": False,
+            "asset": dict(target_asset) if target_asset else None,
+        }
+
+    def confirm_asset_scope(
+        self,
+        *,
+        url_or_host: str,
+        confirmed_prohibited: bool = True,
+        approver: str = "operator",
+        sow_id: str = "",
+        activate_workspace: bool = False,
+        allow_loopback_test: bool = False,
+    ) -> dict:
+        """Step 3 of the 5-step flow: confirm target scope & prohibited actions
+        after ownership verification, enabling safe L1 diagnosis (while keeping
+        L2 reproduction gated on separate human approval + credentials)."""
+        if not confirmed_prohibited:
+            raise ValueError("診断対象と禁止事項の確認チェックが必要です")
+        parsed = parse_service_target(url_or_host)
+        host = parsed["host"]
+
+        with self._lock:
+            target_asset = next(
+                (x for x in self._extra_assets if x.get("name", "").lower() == host),
+                None,
+            )
+            if target_asset is None and self.a.asset.get("name", "").lower() == host:
+                target_asset = self.a.asset
+            if target_asset is None:
+                raise ValueError("先に Step 1-2 で対象URL登録と所有確認を行ってください")
+            if not target_asset.get("ownership_verified"):
+                raise ValueError("所有確認（DNS TXT または検証ファイル）が完了していません")
+
+            now = time.time()
+            auth_ref = (
+                (sow_id or "").strip()[:80]
+                or target_asset.get("authorization_ref")
+                or target_asset.get("sow_optional_ref")
+                or f"AUTH-AUTO-{int(now)}-{host.split('.')[0][:12].upper()}"
+            )
+            scheme = str(target_asset.get("scheme") or parsed["scheme"])
+            port = int(target_asset.get("port") or parsed["port"])
+
+            self._verified_external_hosts[host] = {
+                "host": host,
+                "scheme": scheme,
+                "port": port,
+                "cidrs": ("0.0.0.0/0", "::/0"),
+                "ownership_verified": True,
+                "scope_confirmed": True,
+                "l2_auto_approved": False,
+                "approver": approver,
+                "authorization_ref": auth_ref,
+                "not_before": now - 60,
+                "not_after": now + 30 * 86400,
+                "allow_loopback_test": bool(allow_loopback_test),
+                "confirmed_at": now,
+            }
+            target_asset["authorization_ref"] = auth_ref
+            target_asset["scope_confirmed"] = True
+            target_asset["approver"] = approver
+            target_asset["status"] = "未診断"
+            target_asset["assessment_id"] = self.a.id
+            target_asset.pop("note", None)
+
+            if activate_workspace and self.a.state != "running":
+                self._activate_asset_locked(target_asset, auth_ref)
+                self._reset_workspace_locked()
+            else:
+                self._save_state_locked()
+
+        self.audit.record(
+            "asset.scope_confirmed",
+            actor=approver,
+            host=host,
+            authorization_ref=auth_ref,
+            l2_auto_approved=False,
+        )
+        return {
+            "host": host,
+            "scope_confirmed": True,
+            "authorization_ref": auth_ref,
+            "l2_auto_approved": False,
+            "asset": dict(target_asset),
+        }
+
+    def configure_asset_secrets(
+        self,
+        *,
+        host: str = "",
+        user_a_token: str = "",
+        user_b_token: str = "",
+        free_plan_token: str = "",
+        mock_paths: dict | None = None,
+        actor: str = "operator",
+    ) -> dict:
+        """Store L2 verification account credentials in the encrypted secret store.
+        Never logs or returns raw secret values. Only accepted for a service whose
+        ownership and scope are confirmed, because that is the only place the
+        tokens can ever be sent."""
+        with self._lock:
+            target_host = ((host or self.a.asset.get("name") or "").strip().lower())
+            if not target_host:
+                raise ValueError("対象のホスト名を指定してください")
+            if self._external_entry(target_host) is None:
+                raise ValueError("検証用アカウントは、所有確認と診断範囲確認が完了した実サービスにのみ設定できます")
+            payload: dict[str, str] = {
+                "user_a_token": user_a_token, "user_b_token": user_b_token,
+                "free_plan_token": free_plan_token,
+            }
+            for k, v in (mock_paths or {}).items():
+                if isinstance(v, str):
+                    payload[str(k)] = v
+            status = self.secrets.set_credentials(target_host, payload, actor=actor)
+            # Refresh L2 candidate notes if active workspace matches
+            if self.a.asset.get("name", "").lower() == target_host:
+                for cand in self._l2_candidates():
+                    existing_f = self.a.findings.get(cand["id"])
+                    if existing_f is None or not existing_f.get("evidence"):
+                        self.a.findings[cand["id"]] = cand
+                self._save_state_locked()
+
+        self.audit.record(
+            "secrets.configured",
+            actor=actor,
+            host=target_host,
+            user_a_fingerprint=status.get("user_a_fingerprint"),
+            user_b_fingerprint=status.get("user_b_fingerprint"),
+            free_plan_fingerprint=status.get("free_plan_fingerprint"),
+            l2_ready=status.get("l2_ready"),
+        )
+        return self.secrets_status(target_host)
+
+    def secrets_status(self, host: str | None = None) -> dict:
+        with self._lock:
+            target_host = (host or self.a.asset.get("name") or "").strip().lower()
+            pub = self.secrets.public_status(target_host)
+            return {
+                **pub,
+                "host": target_host,
+                "has_l2_credentials": bool(pub.get("l2_ready")),
+            }
+
+    def remotion_export(self, *, anonymize: bool = True, display_name: str | None = None) -> dict:
+        """Build an anonymized, strictly evidence-backed Remotion JSON payload."""
+        with self._lock:
+            snap = self.snapshot()
+            entries = self.audit.entries()
+        return build_remotion_export(
+            snap,
+            entries,
+            anonymize=anonymize,
+            display_name=display_name,
+            secret_redactor=self.secrets.redact,
+        )
 
     def _reset_workspace_locked(self) -> None:
         self.workers.kill_all()
         self.workers = WorkerPool(max_concurrent=2)
         self.gateway.workers = self.workers
         self.gateway._state = State.RUNNING
-        self.gateway.egress = EgressGuard(lambda h: ["127.0.0.1"] if h in self._allowed_hosts else [])
+        self.gateway.egress = EgressGuard(self._resolve_host)
         self.gateway.budget = Budget(50)
         self.a.phases = self._default_phases()
-        self.a.findings = {f["id"]: f for f in _fixture_findings()}
+        if self._is_external_service_asset():
+            self.a.findings = {f["id"]: f for f in self._l2_candidates()}
+        else:
+            self.a.findings = {f["id"]: f for f in _fixture_findings()}
         self.a.approvals = {}
         self.a.activity = None
         self.a.stop_report = None
@@ -494,11 +969,16 @@ class AssessmentService:
             e = self.a.engagement
             t = e.targets["lab"]
             risk = self._risk()
+            is_ext = self._is_external_service_asset()
             return {
-                "id": self.a.id, "asset": self.a.asset, "demo": True,
+                "id": self.a.id, "asset": self.a.asset, "demo": not is_ext,
+                "target_url": self.a.target_url,
+                "is_external_service": is_ext,
                 "lab_mode": get_lab_mode(),
-                "lab_endpoint": f"127.0.0.1:{self.lab_port}",
+                "lab_endpoint": self.a.target_url if is_ext else f"127.0.0.1:{self.lab_port}",
                 "planner": self.planner_status(),
+                "secrets_status": self.secrets_status(),
+                "prohibited_actions": PROHIBITED_ACTIONS_SUMMARY,
                 "evidence_summary": evidence_summary(list(self.a.findings.values())),
                 "authorization": {
                     "status": "authorized" if e.ownership_verified and e.authorization_ref else "missing",
@@ -514,7 +994,8 @@ class AssessmentService:
                 "risk": risk,
                 "stop_report": self.a.stop_report,
                 "chat_messages": list(self.a.chat_messages),
-                "history": self._history(risk),
+                # the demo history is fictional; never attach it to a real service
+                "history": None if is_ext else self._history(risk),
                 "defense_comparison": self.a.defense_comparison,
                 "cve_status": self.cve_monitor.status(),
                 "artex_tasks": [
@@ -616,6 +1097,11 @@ class AssessmentService:
         )
 
     # ---- P2: On-demand single finding verification via real Gateway+Worker ---
+    def finding_requires_human_l2_approval(self, finding_id: str) -> bool:
+        with self._lock:
+            f = self.a.findings.get(finding_id) or {}
+            return f.get("reproduce_check") in DEEPNOTE_L2_CHECKS
+
     def verify_finding(self, finding_id: str, actor: str) -> dict:
         """Execute a real Gateway + Worker probe for a specific finding on demand
         and attach the live HTTP response and SHA-256 audit hash."""
@@ -625,9 +1111,10 @@ class AssessmentService:
                     self._reset_workspace_locked()
                 self._ensure_active_window_locked()
                 url = self.a.target_url
+                is_ext = self._is_external_service_asset()
             self._think(
                 "全問題の一括実機検証を開始",
-                f"対象 {url}（ラボ状態: {get_lab_mode()}）に対し、Gateway 経由で http_probe と reproduction_probe を順次実行します。",
+                f"対象 {url} に対し、Gateway 経由で http_probe と承認済み検証プローブを順次実行します。",
                 phase="verification",
                 tool="http_probe / reproduction_probe",
                 level="L2",
@@ -638,14 +1125,25 @@ class AssessmentService:
             if res and ev:
                 with self._lock:
                     self._analyze(res, ev)
-            for fid in ("f_banner", "f_idor", "f_sqli"):
-                if fid in self.a.findings:
-                    self.verify_finding(fid, actor=actor)
+            if is_ext:
+                # A bulk action is never an approval for L2 on a real service:
+                # each L2 item needs its own explicit human approval.
+                self._think(
+                    "L2項目は一括実行しません",
+                    "実サービスのL2検証（IDOR/共有リンク/GCS/AIチャット/課金プラン）は、項目ごとの人間承認でのみ実行します。今回はL1の読み取り専用検査のみ再実行しました。",
+                    phase="verification", tool="Gateway", level="L1",
+                )
+            else:
+                for fid in ("f_banner", "f_idor", "f_sqli"):
+                    if fid in self.a.findings:
+                        self.verify_finding(fid, actor=actor)
             with self._lock:
-                self._phase("scope", "done", f"{url} は許可範囲内（127.0.0.1/32）")
+                self._phase("scope", "done", f"{url} は許可範囲内")
                 self._phase("config", "done", "公開設定・HTTPヘッダーを検査済み")
                 self._phase("analysis", "done", f"{len(self._real_findings())} 件を分析済み")
-                self._phase("verification", "done", "全問題の隔離Worker検証を完了")
+                self._phase("verification", "done",
+                            "L1読み取り専用検査を再実行（L2は項目ごとの承認が必要）" if is_ext
+                            else "全問題の隔離Worker検証を完了")
                 self._phase("report", "done", "実機検証結果を反映しました")
                 self.a.activity = None
                 self._set_state("completed")
@@ -667,8 +1165,75 @@ class AssessmentService:
             if self.a.state == "failed":
                 self._set_state("idle")
             url = self.a.target_url
+            target_f = dict(self.a.findings[finding_id])
 
-        if finding_id in ("f_idor", "fx_idor"):
+        dn_check = target_f.get("reproduce_check")
+        if dn_check in DEEPNOTE_L2_CHECKS:
+            if not self._is_external_service_asset():
+                raise ValueError("L2再現試験は、所有確認と診断範囲確認が完了した実サービスでのみ実行できます")
+            missing = self.secrets.missing_for_check(self.a.asset.get("name", "").lower(), dn_check)
+            if missing:
+                raise ValueError(
+                    "L2再現試験を実行するには、先に検証用アカウント（暗号化シークレット）を設定してください"
+                    f"（未設定: {', '.join(missing)}）"
+                )
+            if not actor or str(actor).startswith("policy:auto"):
+                raise ValueError("L2再現試験には人間の個別承認が必要です（自動承認不可）")
+            self._think(
+                f"DeepNote L2検証（{dn_check}）の個別承認実行",
+                f"人間承認者（{actor}）の承認に基づき、暗号化シークレットの検証用アカウントを用いて {target_f['title']} を非破壊検証します。",
+                phase="verification",
+                tool="reproduction_probe",
+                level="L2",
+            )
+            apr = self.approval_store.approve(actor, "eng_demo", "lab", "safe_reproduction")
+            self.audit.record(
+                "approval.approved",
+                request=f"req_{finding_id}",
+                actor=actor,
+                action="safe_reproduction",
+                check=dn_check,
+                risk_level="L2",
+            )
+            res, ev = self._exec(
+                "reproduction_probe",
+                "safe_reproduction",
+                {"url": url, "check": dn_check},
+                approval_id=apr,
+            )
+            if res and ev:
+                outcome = reproduction_verdict(res, dn_check)
+                est = outcome == "proven"
+                ev_enriched = {
+                    **ev,
+                    "target_url": url,
+                    "tool": "reproduction_probe",
+                    "verification_conditions": f"L2人間承認済み ({actor}) / check={dn_check} / 検証用アカウント＆模擬データ限定",
+                }
+                self._think(
+                    f"DeepNote L2検証（{dn_check}）の判定完了",
+                    reproduction_note(res, dn_check) + f" [証拠 {ev['evidence_id']}]",
+                    phase="verification",
+                    tool="reproduction_probe",
+                    level="L2",
+                )
+                with self._lock:
+                    f = self.a.findings[finding_id]
+                    prev_ev = [e for e in f.get("evidence", []) if e.get("audit_hash")]
+                    self._upsert_finding({
+                        **f,
+                        "demo_fixture": False,
+                        "verdict": outcome,
+                        "_in_verification": False,
+                        "what_was_established": (
+                            f"検証用アカウントを用いた非破壊プローブ（{dn_check}）により、権限境界の突破マーカーが実機応答で確認されました。"
+                            if est else None
+                        ),
+                        "verdict_note": reproduction_note(res, dn_check),
+                        "executor": {**EXECUTOR, "tool": "reproduction_probe"},
+                        "evidence": prev_ev + [ev_enriched],
+                    })
+        elif finding_id in ("f_idor", "fx_idor"):
             self._think(
                 "IDOR（認可境界バイパス）の仮説検証",
                 "テストアカウント acct_A のトークンで acct_B の保護リソース (/api/accounts/B/secret) をリクエストし、所有者照合の有無を検証します。",
@@ -811,24 +1376,27 @@ class AssessmentService:
 
     # ---- P2: Post-patch defense verification & before/after comparison ------
     def verify_fix(self, actor: str) -> dict:
-        """Apply patched defense configuration to the lab and re-run the exact
-        same probe and reproduction checks through the Gateway to prove that
-        previously proven/detected vulnerabilities are now mitigated."""
+        """Apply patched defense configuration to the lab (or re-verify an
+        external target after remediation) and re-run the exact same probe and
+        reproduction checks through the Gateway to prove mitigation."""
         with self._lock:
             if self.a.state not in ("completed", "idle"):
                 raise ValueError("診断完了後に修正後の再検証を実行してください")
             self._ensure_active_window_locked()
             before_risk = self._risk()
+            is_ext = self._is_external_service_asset()
             before_verdicts = {
                 f["id"]: {"title": f["title"], "severity": f["severity"], "verdict": f["verdict"]}
                 for f in self._real_findings()
+                if evidence_status(f) != "candidate"
             }
 
-        set_lab_mode("patched")
+        if not is_ext:
+            set_lab_mode("patched")
         url = self.a.target_url
         self._think(
             "防御パッチ適用後の再検証を開始",
-            "ローカル模擬ラボの防御挙動モードへ切り替え、同一プローブの実HTTP応答で防御結果を確認します。本番ソフトウェアへのパッチ適用は行いません。",
+            "同一プローブの実HTTP応答で防御結果を確認します。",
             phase="verification",
             tool="http_probe / reproduction_probe",
             level="L2",
@@ -837,49 +1405,83 @@ class AssessmentService:
         res, ev_http = self._exec("http_probe", "read_only_probe",
                                   {"url": url, "method": "GET"},
                                   approval_actor=f"reverify:{actor}")
-        # 2. Re-run L2 reproduction probes with human approver authorization
-        apr_ref = self.approval_store.approve(actor, "eng_demo", "lab", "safe_reproduction")
-        self.audit.record("approval.approved", request="req_reverify", actor=actor,
-                          action="safe_reproduction", risk_level="L2")
-        res_cve, ev_cve = self._exec("reproduction_probe", "safe_reproduction",
-                                     {"url": url, "check": "cve_2021_41773"},
-                                     approval_id=apr_ref)
-        apr_ref2 = self.approval_store.approve(actor, "eng_demo", "lab", "safe_reproduction")
-        res_idor, ev_idor = self._exec("reproduction_probe", "safe_reproduction",
-                                       {"url": url, "check": "idor"},
-                                       approval_id=apr_ref2)
-        apr_ref3 = self.approval_store.approve(actor, "eng_demo", "lab", "safe_reproduction")
-        res_sqli, ev_sqli = self._exec("reproduction_probe", "safe_reproduction",
-                                       {"url": url, "check": "sqli"},
-                                       approval_id=apr_ref3)
+        latest_ids: dict[str, str | None] = {}
+
+        if is_ext:
+            ready = self._ready_l2_checks()
+            for spec in DEEPNOTE_L2_SPECS:
+                fid = spec["id"]
+                chk = spec["check"]
+                # only items a human already approved and ran once are re-run
+                if fid in before_verdicts and chk in ready:
+                    apr_dn = self.approval_store.approve(actor, "eng_demo", "lab", "safe_reproduction")
+                    self.audit.record("approval.approved", request=f"req_reverify_{fid}", actor=actor,
+                                      action="safe_reproduction", check=chk, risk_level="L2")
+                    r_dn, e_dn = self._exec("reproduction_probe", "safe_reproduction",
+                                            {"url": url, "check": chk}, approval_id=apr_dn)
+                    with self._lock:
+                        finding = self.a.findings[fid]
+                        verdict = reproduction_verdict(r_dn, chk)
+                        latest_ids[fid] = e_dn["evidence_id"] if e_dn else None
+                        self._upsert_finding({
+                            **finding, "verdict": verdict, "_in_verification": False,
+                            "what_was_established": reproduction_note(r_dn, chk) if verdict == "proven" else None,
+                            "verdict_note": reproduction_note(r_dn, chk),
+                            "evidence": finding["evidence"] + ([e_dn] if e_dn else []),
+                        })
+        else:
+            # 2. Re-run L2 reproduction probes with human approver authorization
+            apr_ref = self.approval_store.approve(actor, "eng_demo", "lab", "safe_reproduction")
+            self.audit.record("approval.approved", request="req_reverify", actor=actor,
+                              action="safe_reproduction", risk_level="L2")
+            res_cve, ev_cve = self._exec("reproduction_probe", "safe_reproduction",
+                                         {"url": url, "check": "cve_2021_41773"},
+                                         approval_id=apr_ref)
+            apr_ref2 = self.approval_store.approve(actor, "eng_demo", "lab", "safe_reproduction")
+            res_idor, ev_idor = self._exec("reproduction_probe", "safe_reproduction",
+                                           {"url": url, "check": "idor"},
+                                           approval_id=apr_ref2)
+            apr_ref3 = self.approval_store.approve(actor, "eng_demo", "lab", "safe_reproduction")
+            res_sqli, ev_sqli = self._exec("reproduction_probe", "safe_reproduction",
+                                           {"url": url, "check": "sqli"},
+                                           approval_id=apr_ref3)
+
+            with self._lock:
+                for fid, check, result, evidence in (
+                    ("f_banner", "cve_2021_41773", res_cve, ev_cve),
+                    ("f_idor", "idor", res_idor, ev_idor),
+                    ("f_sqli", "sqli", res_sqli, ev_sqli),
+                ):
+                    if fid not in self.a.findings:
+                        continue
+                    finding = self.a.findings[fid]
+                    verdict = reproduction_verdict(result, check)
+                    latest_ids[fid] = evidence["evidence_id"] if evidence else None
+                    self._upsert_finding({
+                        **finding, "verdict": verdict, "_in_verification": False,
+                        "what_was_established": reproduction_note(result, check) if verdict == "proven" else None,
+                        "verdict_note": reproduction_note(result, check),
+                        "evidence": finding["evidence"] + ([evidence] if evidence else []),
+                    })
 
         with self._lock:
-            latest_ids = {}
-            for fid, check, result, evidence in (
-                ("f_banner", "cve_2021_41773", res_cve, ev_cve),
-                ("f_idor", "idor", res_idor, ev_idor),
-                ("f_sqli", "sqli", res_sqli, ev_sqli),
-            ):
-                if fid not in self.a.findings:
-                    continue
-                finding = self.a.findings[fid]
-                verdict = reproduction_verdict(result, check)
-                latest_ids[fid] = evidence["evidence_id"] if evidence else None
-                self._upsert_finding({
-                    **finding, "verdict": verdict, "_in_verification": False,
-                    "what_was_established": reproduction_note(result, check) if verdict == "proven" else None,
-                    "verdict_note": reproduction_note(result, check),
-                    "evidence": finding["evidence"] + ([evidence] if evidence else []),
-                })
             headers = (res or {}).get("headers")
-            valid_headers = isinstance(headers, dict) and (res or {}).get("status") == 200
+            valid_headers = isinstance(headers, dict) and (res or {}).get("status") is not None
             h = {k.lower(): v for k, v in headers.items()} if valid_headers else {}
-            for fid in ("f_headers", "f_powered"):
+            for fid in ("f_headers", "f_powered", "f_l1_cors", "f_l1_cookies"):
                 if fid not in self.a.findings:
                     continue
                 finding = self.a.findings[fid]
-                remains = (any(not h.get(k) for k in ("content-security-policy", "x-content-type-options", "strict-transport-security"))
-                           if fid == "f_headers" else bool(h.get("x-powered-by")))
+                if fid == "f_headers":
+                    remains = any(not h.get(k) for k in ("content-security-policy", "x-content-type-options", "strict-transport-security"))
+                elif fid == "f_powered":
+                    remains = bool(h.get("x-powered-by"))
+                elif fid == "f_l1_cors":
+                    acao = h.get("access-control-allow-origin", "")
+                    remains = acao in ("*", "https://untrusted-origin.example")
+                else:
+                    sc = " ".join((res or {}).get("set_cookies") or [h.get("set-cookie", "")]).lower()
+                    remains = bool(sc.strip()) and any(flag not in sc for flag in ("secure", "httponly", "samesite"))
                 verdict = ("proven" if remains else "not_reproduced") if valid_headers else "unverified"
                 note = ("最新のHTTP応答ヘッダーに設定不備が残っています。" if remains else "最新のHTTP応答ヘッダーで、この設定項目の対策を確認しました。") if valid_headers else "修正確認できず。HTTP応答ヘッダーを取得できませんでした。"
                 latest_ids[fid] = ev_http["evidence_id"] if ev_http else None
@@ -930,18 +1532,22 @@ class AssessmentService:
 
     def _run_inner(self) -> None:
         url = self.a.target_url
-        self._phase("scope", "running", "許可範囲・期間・書面許可を照合しています")
+        is_ext = self._is_external_service_asset()
+        scope_desc = (f"所有確認済みホスト {self.a.asset['name']} / ポート "
+                      f"{', '.join(map(str, self.a.engagement.targets['lab'].ports))}"
+                      if is_ext else "127.0.0.1/32")
+        self._phase("scope", "running", "許可範囲・期間・所有確認記録を照合しています")
         self._activity("診断範囲を確認", "Gateway（範囲検査）", "L1")
         self._think(
-            "診断範囲と書面許可（SOW）の照合",
-            f"対象 {url} が書面許可（{self.a.engagement.authorization_ref}）および許可CIDR 127.0.0.1/32 の範囲内にあることを検証しています。",
+            "診断範囲と許可記録の照合",
+            f"対象 {url} が許可記録（{self.a.engagement.authorization_ref}）および許可スコープ（{scope_desc}）の範囲内にあることを検証しています。",
             phase="scope",
             tool="Gateway",
             level="L1",
         )
         self.gateway.engagement.check_active(time.time())
         self.gateway.egress.check(url, self.a.engagement.targets["lab"])
-        self._phase("scope", "done", f"{url} は許可範囲内（127.0.0.1/32）")
+        self._phase("scope", "done", f"{url} は許可範囲内（{scope_desc}）")
 
         self._checkpoint()
         self._phase("config", "running", "ARTEX が公開設定の非破壊プローブを提案・実行しています")
@@ -955,13 +1561,15 @@ class AssessmentService:
         )
         tasks_l1 = self.artex.plan_phase("config", {"target_id": "lab", "target_url": url})
         for tk in tasks_l1:
-            tk.status = "running"
+            if tk.status != "unsupported":
+                tk.status = "running"
         res, ev = self._exec("http_probe", "read_only_probe", {"url": url, "method": "GET"},
                              approval_actor="policy:auto-L1")
         if res is None:
             return
         for tk in tasks_l1:
-            tk.status = "completed"
+            if tk.status != "unsupported":
+                tk.status = "completed"
         self._phase("config", "done", f"HTTP {res['status']} を取得")
 
         self._checkpoint()
@@ -970,7 +1578,7 @@ class AssessmentService:
         banner_id = self._analyze(res, ev)
         self._think(
             "CVE/CISA KEV 照合と検証仮説の構築",
-            f"応答バナー（{res.get('headers', {}).get('Server', 'unknown')}）およびAPI境界から {len(self._real_findings())} 件の検証対象（CVE-2021-41773 / IDOR / SQLi 等）を特定しました。",
+            f"応答バナー（{res.get('headers', {}).get('Server', 'unknown')}）およびAPI境界から {len(self._real_findings())} 件の項目を特定しました。",
             phase="analysis",
             tool="cve_engine",
             level="L1",
@@ -981,154 +1589,175 @@ class AssessmentService:
         self._phase("analysis", "done", f"{len(self._real_findings())} 件を検出")
 
         self._checkpoint()
-        self._phase("verification", "running", "隔離環境での侵入成立実証（再現試験）の承認を待っています")
-        self._activity("脆弱性の検証（侵入成立の実証）", "reproduction_probe", "L2")
-        self._think(
-            "L2 侵入成立実証の人間承認リクエスト",
-            "CVE-2021-41773・IDOR・SQLi の再現試験は L2 操作のため、承認責任者による実行許可（単一使用トークン発行）を待機しています。",
-            phase="verification",
-            tool="reproduction_probe",
-            level="L2",
-        )
-        tasks_l2 = self.artex.plan_phase("verification", {
-            "target_id": "lab", "target_url": url, "has_cve_2021_41773": banner_id in self.a.findings,
-        })
-        for tk in tasks_l2:
-            tk.status = "awaiting_approval"
-        ap_id = self._request_approval(
-            "safe_reproduction", "L2", "検出された脆弱性の侵入成立実証（CVE-2021-41773 / IDOR / SQLi）",
-            "検出したバージョン表示（CVE-2021-41773）、テストアカウント間の認可境界（IDOR）、および検索APIのSQLインジェクション境界が"
-            "実際に成立するかを、egress_sentinel 隔離Worker（reproduction_probe）で非破壊実証します。")
-        if self.a.approvals[ap_id]["status"] != "approved":
-            for tk in tasks_l2:
-                tk.status = "skipped"
+        if is_ext:
+            # Real-service L1 diagnosis completes safely without auto-running L2.
+            # L2 items remain in `candidate` state until encrypted credentials +
+            # per-item human approval are provided.
             self._think(
-                "L2 再現試験をスキップ",
-                "承認責任者により却下されたため、L2 再現試験は実施せず検出段階の結果でレポートを作成します。",
+                "実サービス L1 読み取り専用診断の完了（L2は個別人間承認待ち）",
+                "所有確認のみでL2侵入実証を自動承認しない安全原則に従い、L1検査結果を確定しました。L2項目（IDOR/共有リンク/GCS/AIチャット/課金プラン）は検証用アカウント設定と個別の人間承認後に実行できます。",
                 phase="verification",
                 tool="Gateway",
-                level="L2",
+                level="L1",
             )
-            self._phase("verification", "skipped", "承認されなかったため実施していません")
+            self._phase(
+                "verification",
+                "skipped",
+                "L1診断完了（L2再現試験は検証用アカウント設定と個別の人間承認が必要です）",
+            )
         else:
-            for tk in tasks_l2:
-                tk.status = "running"
-            self._phase("verification", "running", "隔離Workerで侵入成立を実証中（reproduction_probe）")
+            self._phase("verification", "running", "隔離環境での侵入成立実証（再現試験）の承認を待っています")
+            self._activity("脆弱性の検証（侵入成立の実証）", "reproduction_probe", "L2")
             self._think(
-                "L2 承認完了・隔離Workerでの侵入成立実証を開始",
-                "単一使用 HMAC トークンを発行し、egress_sentinel 隔離下で reproduction_probe Worker を起動しています。",
+                "L2 侵入成立実証の人間承認リクエスト",
+                "CVE-2021-41773・IDOR・SQLi の再現試験は L2 操作のため、承認責任者による実行許可（単一使用トークン発行）を待機しています。",
                 phase="verification",
                 tool="reproduction_probe",
                 level="L2",
             )
-            self._mark_verifying(banner_id, True)
-            self._mark_verifying("f_idor", True)
-            self._mark_verifying("f_sqli", True)
-
-            # 1. Run demo_verify window first so emergency-stop tests during active verification
-            #    can deterministically observe and SIGKILL the worker.
-            vres, vev = self._exec("demo_verify", "safe_reproduction", {"url": url},
-                                   approval_id=self.a.approvals[ap_id]["approval_ref"])
-            if vres is None:
-                return
-
-            # 2. Execute real non-destructive reproduction probes through the Gateway
-            actor = self.a.approvals[ap_id]["decided_by"] or "approver"
-            apr_cve = self.approval_store.approve(actor, "eng_demo", "lab", "safe_reproduction")
-            cve_res, cve_ev = self._exec("reproduction_probe", "safe_reproduction",
-                                         {"url": url, "check": "cve_2021_41773"},
-                                         approval_id=apr_cve)
-            if cve_res is None:
-                return
-            if banner_id in self.a.findings:
-                f = self.a.findings[banner_id]
-                established = reproduction_verdict(cve_res, "cve_2021_41773") == "proven"
-                self._think(
-                    "CVE-2021-41773 実証結果の確認",
-                    reproduction_note(cve_res, "cve_2021_41773") + f" [証拠 {cve_ev['evidence_id']}]",
-                    phase="verification",
-                    tool="reproduction_probe",
-                    level="L2",
-                )
-                self._upsert_finding({
-                    **f,
-                    "demo_fixture": False,
-                    "verdict": reproduction_verdict(cve_res, "cve_2021_41773"),
-                    "_in_verification": False,
-                    "what_was_established": (
-                        "隔離ラボ環境において、正規化前のパスシーケンス（CVE-2021-41773）により"
-                        "検証用マーカー（VULNIX_LAB_PATH_TRAVERSAL_PROVEN）への到達が成立しました。"
-                        if established else None
-                    ),
-                    "verdict_note": reproduction_note(cve_res, "cve_2021_41773"),
-                    "executor": {**EXECUTOR, "tool": "reproduction_probe"},
-                    "evidence": [e for e in f["evidence"] if e.get("audit_hash")] + [vev, cve_ev],
-                })
-
-            apr_idor = self.approval_store.approve(actor, "eng_demo", "lab", "safe_reproduction")
-            idor_res, idor_ev = self._exec("reproduction_probe", "safe_reproduction",
-                                           {"url": url, "check": "idor"},
-                                           approval_id=apr_idor)
-            if idor_res is None:
-                return
-            if "f_idor" in self.a.findings:
-                fi = self.a.findings["f_idor"]
-                idor_est = reproduction_verdict(idor_res, "idor") == "proven"
-                self._think(
-                    "IDOR（認可境界）実証結果の確認",
-                    reproduction_note(idor_res, "idor") + f" [証拠 {idor_ev['evidence_id']}]",
-                    phase="verification",
-                    tool="reproduction_probe",
-                    level="L2",
-                )
-                self._upsert_finding({
-                    **fi,
-                    "demo_fixture": False,
-                    "verdict": reproduction_verdict(idor_res, "idor"),
-                    "_in_verification": False,
-                    "what_was_established": (
-                        "権限のないテストアカウント acct_A から、別の検証用リソース（acct_B の res_b_001）"
-                        "へのアクセスが成立しました。"
-                        if idor_est else None
-                    ),
-                    "verdict_note": reproduction_note(idor_res, "idor"),
-                    "executor": {**EXECUTOR, "tool": "reproduction_probe"},
-                    "evidence": [e for e in fi["evidence"] if e.get("audit_hash")] + [idor_ev],
-                })
-
-            apr_sqli = self.approval_store.approve(actor, "eng_demo", "lab", "safe_reproduction")
-            sqli_res, sqli_ev = self._exec("reproduction_probe", "safe_reproduction",
-                                           {"url": url, "check": "sqli"},
-                                           approval_id=apr_sqli)
-            if sqli_res is None:
-                return
-            if "f_sqli" in self.a.findings:
-                fs = self.a.findings["f_sqli"]
-                sqli_est = reproduction_verdict(sqli_res, "sqli") == "proven"
-                self._think(
-                    "SQLインジェクション境界 実証結果の確認",
-                    reproduction_note(sqli_res, "sqli") + f" [証拠 {sqli_ev['evidence_id']}]",
-                    phase="verification",
-                    tool="reproduction_probe",
-                    level="L2",
-                )
-                self._upsert_finding({
-                    **fs,
-                    "demo_fixture": False,
-                    "verdict": reproduction_verdict(sqli_res, "sqli"),
-                    "_in_verification": False,
-                    "what_was_established": (
-                        "模擬検索エンドポイント /api/search?q=test' に対し、検証用のSQLエラーマーカー（VULNIX_LAB_SQLI_PROVEN）を含む応答差分を確認しました。"
-                        if sqli_est else None
-                    ),
-                    "verdict_note": reproduction_note(sqli_res, "sqli"),
-                    "executor": {**EXECUTOR, "tool": "reproduction_probe"},
-                    "evidence": [e for e in fs["evidence"] if e.get("audit_hash")] + [sqli_ev],
-                })
-
+            tasks_l2 = self.artex.plan_phase("verification", {
+                "target_id": "lab", "target_url": url, "has_cve_2021_41773": banner_id in self.a.findings,
+            })
             for tk in tasks_l2:
-                tk.status = "completed"
-            self._phase("verification", "done", "結果: 侵入成立を実証（証拠・監査ハッシュ保存済み）")
+                if tk.status != "unsupported":
+                    tk.status = "awaiting_approval"
+            ap_id = self._request_approval(
+                "safe_reproduction", "L2", "検出された脆弱性の侵入成立実証（CVE-2021-41773 / IDOR / SQLi）",
+                "検出したバージョン表示（CVE-2021-41773）、テストアカウント間の認可境界（IDOR）、および検索APIのSQLインジェクション境界が"
+                "実際に成立するかを、egress_sentinel 隔離Worker（reproduction_probe）で非破壊実証します。")
+            if self.a.approvals[ap_id]["status"] != "approved":
+                for tk in tasks_l2:
+                    if tk.status != "unsupported":
+                        tk.status = "skipped"
+                self._think(
+                    "L2 再現試験をスキップ",
+                    "承認責任者により却下されたため、L2 再現試験は実施せず検出段階の結果でレポートを作成します。",
+                    phase="verification",
+                    tool="Gateway",
+                    level="L2",
+                )
+                self._phase("verification", "skipped", "承認されなかったため実施していません")
+            else:
+                for tk in tasks_l2:
+                    if tk.status != "unsupported":
+                        tk.status = "running"
+                self._phase("verification", "running", "隔離Workerで侵入成立を実証中（reproduction_probe）")
+                self._think(
+                    "L2 承認完了・隔離Workerでの侵入成立実証を開始",
+                    "単一使用 HMAC トークンを発行し、egress_sentinel 隔離下で reproduction_probe Worker を起動しています。",
+                    phase="verification",
+                    tool="reproduction_probe",
+                    level="L2",
+                )
+                self._mark_verifying(banner_id, True)
+                self._mark_verifying("f_idor", True)
+                self._mark_verifying("f_sqli", True)
+
+                # 1. Run demo_verify window first so emergency-stop tests during active verification
+                #    can deterministically observe and SIGKILL the worker.
+                vres, vev = self._exec("demo_verify", "safe_reproduction", {"url": url},
+                                       approval_id=self.a.approvals[ap_id]["approval_ref"])
+                if vres is None:
+                    return
+
+                # 2. Execute real non-destructive reproduction probes through the Gateway
+                actor = self.a.approvals[ap_id]["decided_by"] or "approver"
+                apr_cve = self.approval_store.approve(actor, "eng_demo", "lab", "safe_reproduction")
+                cve_res, cve_ev = self._exec("reproduction_probe", "safe_reproduction",
+                                             {"url": url, "check": "cve_2021_41773"},
+                                             approval_id=apr_cve)
+                if cve_res is None:
+                    return
+                if banner_id in self.a.findings:
+                    f = self.a.findings[banner_id]
+                    established = reproduction_verdict(cve_res, "cve_2021_41773") == "proven"
+                    self._think(
+                        "CVE-2021-41773 実証結果の確認",
+                        reproduction_note(cve_res, "cve_2021_41773") + f" [証拠 {cve_ev['evidence_id']}]",
+                        phase="verification",
+                        tool="reproduction_probe",
+                        level="L2",
+                    )
+                    self._upsert_finding({
+                        **f,
+                        "demo_fixture": False,
+                        "verdict": reproduction_verdict(cve_res, "cve_2021_41773"),
+                        "_in_verification": False,
+                        "what_was_established": (
+                            "隔離ラボ環境において、正規化前のパスシーケンス（CVE-2021-41773）により"
+                            "検証用マーカー（VULNIX_LAB_PATH_TRAVERSAL_PROVEN）への到達が成立しました。"
+                            if established else None
+                        ),
+                        "verdict_note": reproduction_note(cve_res, "cve_2021_41773"),
+                        "executor": {**EXECUTOR, "tool": "reproduction_probe"},
+                        "evidence": [e for e in f["evidence"] if e.get("audit_hash")] + [vev, cve_ev],
+                    })
+
+                apr_idor = self.approval_store.approve(actor, "eng_demo", "lab", "safe_reproduction")
+                idor_res, idor_ev = self._exec("reproduction_probe", "safe_reproduction",
+                                               {"url": url, "check": "idor"},
+                                               approval_id=apr_idor)
+                if idor_res is None:
+                    return
+                if "f_idor" in self.a.findings:
+                    fi = self.a.findings["f_idor"]
+                    idor_est = reproduction_verdict(idor_res, "idor") == "proven"
+                    self._think(
+                        "IDOR（認可境界）実証結果の確認",
+                        reproduction_note(idor_res, "idor") + f" [証拠 {idor_ev['evidence_id']}]",
+                        phase="verification",
+                        tool="reproduction_probe",
+                        level="L2",
+                    )
+                    self._upsert_finding({
+                        **fi,
+                        "demo_fixture": False,
+                        "verdict": reproduction_verdict(idor_res, "idor"),
+                        "_in_verification": False,
+                        "what_was_established": (
+                            "権限のないテストアカウント acct_A から、別の検証用リソース（acct_B の res_b_001）"
+                            "へのアクセスが成立しました。"
+                            if idor_est else None
+                        ),
+                        "verdict_note": reproduction_note(idor_res, "idor"),
+                        "executor": {**EXECUTOR, "tool": "reproduction_probe"},
+                        "evidence": [e for e in fi["evidence"] if e.get("audit_hash")] + [idor_ev],
+                    })
+
+                apr_sqli = self.approval_store.approve(actor, "eng_demo", "lab", "safe_reproduction")
+                sqli_res, sqli_ev = self._exec("reproduction_probe", "safe_reproduction",
+                                               {"url": url, "check": "sqli"},
+                                               approval_id=apr_sqli)
+                if sqli_res is None:
+                    return
+                if "f_sqli" in self.a.findings:
+                    fs = self.a.findings["f_sqli"]
+                    sqli_est = reproduction_verdict(sqli_res, "sqli") == "proven"
+                    self._think(
+                        "SQLインジェクション境界 実証結果の確認",
+                        reproduction_note(sqli_res, "sqli") + f" [証拠 {sqli_ev['evidence_id']}]",
+                        phase="verification",
+                        tool="reproduction_probe",
+                        level="L2",
+                    )
+                    self._upsert_finding({
+                        **fs,
+                        "demo_fixture": False,
+                        "verdict": reproduction_verdict(sqli_res, "sqli"),
+                        "_in_verification": False,
+                        "what_was_established": (
+                            "模擬検索エンドポイント /api/search?q=test' に対し、検証用のSQLエラーマーカー（VULNIX_LAB_SQLI_PROVEN）を含む応答差分を確認しました。"
+                            if sqli_est else None
+                        ),
+                        "verdict_note": reproduction_note(sqli_res, "sqli"),
+                        "executor": {**EXECUTOR, "tool": "reproduction_probe"},
+                        "evidence": [e for e in fs["evidence"] if e.get("audit_hash")] + [sqli_ev],
+                    })
+
+                for tk in tasks_l2:
+                    if tk.status != "unsupported":
+                        tk.status = "completed"
+                self._phase("verification", "done", "結果: 侵入成立を実証（証拠・監査ハッシュ保存済み）")
 
         self._checkpoint()
         self._phase("report", "running", "結果をまとめています")
@@ -1167,12 +1796,31 @@ class AssessmentService:
             self._fail(f"Worker が異常終了しました (rc={d.result.returncode})")
             return None, None
         entry = next(e for e in reversed(self.audit.entries()) if e["event"] == "result")
-        evidence = {"evidence_id": "ev_" + entry["hash"][:12], "kind": f"{tool} 出力",
-                    "saved_at": entry["ts"], "audit_hash": entry["hash"],
-                    "content": d.result.stdout.strip()}
-        return json.loads(d.result.stdout), evidence
+        clean_stdout = self.secrets.redact(d.result.stdout.strip())
+        evidence = {
+            "evidence_id": "ev_" + entry["hash"][:12],
+            "kind": f"{tool} 出力",
+            "tool": tool,
+            "target_url": args.get("url", self.a.target_url),
+            "saved_at": entry["ts"],
+            "audit_hash": entry["hash"],
+            "content": clean_stdout,
+        }
+        return json.loads(clean_stdout), evidence
 
     def _analyze(self, res: dict, ev: dict) -> str:
+        if self._is_external_service_asset():
+            l1_findings = analyze_l1_service_response(
+                res, ev, self.a.target_url, self.cve_monitor
+            )
+            for f in l1_findings:
+                self._upsert_finding(f)
+            for cand in self._l2_candidates():
+                existing = self.a.findings.get(cand["id"])
+                if existing is None or not existing.get("evidence"):
+                    self._upsert_finding(cand)
+            return "f_powered" if "f_powered" in self.a.findings else ""
+
         h = {k.lower(): v for k, v in res["headers"].items()}
         banner = h.get("server", "")
         bid = "f_banner"
@@ -1338,13 +1986,15 @@ class AssessmentService:
         return [f for f in self.a.findings.values() if not f["demo_fixture"]]
 
     def _risk(self) -> dict:
-        fs = self._real_findings()
+        # Unmeasured candidates (no recorded evidence) are not counted either way:
+        # they are neither a confirmed risk nor a confirmed absence of one.
+        fs = [f for f in self._real_findings() if evidence_status(f) != "candidate"]
         score = min(100, round(sum(SEVERITY_WEIGHT[f["severity"]] * VERDICT_FACTOR[f["verdict"]]
                                    for f in fs)))
         label = "高リスク" if score >= 70 else "中リスク" if score >= 40 else "低リスク"
         return {"score": score, "label": label,
                 "provisional": self.a.state != "completed",
-                "basis": "架空データを除く検出結果の深刻度 × 判定（実証=1.0, 検出・未検証=0.6, 再現せず=0）の合計（上限100）"}
+                "basis": "架空データと未計測の候補を除く検出結果の深刻度 × 判定（実証=1.0, 検出・未検証=0.6, 再現せず=0）の合計（上限100）"}
 
     def _on_audit(self, entry: dict) -> None:
         self.bus.publish(self.a.id if hasattr(self, "a") else "scan_001", "audit.recorded",
@@ -1504,15 +2154,18 @@ class AssessmentService:
             "- **プラットフォーム**: Vulnix (Find. Prove. Secure. — AI Security Testing Platform)",
             f"- **診断ID**: `{s['id']}`",
             f"- **対象資産**: {s['asset']['name']} ({s['asset']['kind']} / {s['asset']['environment']})",
-            f"- **診断状態**: {_asset_status(s['state'])}（ラボ防御状態: `{s.get('lab_mode', 'vulnerable')}`）",
+            f"- **診断状態**: {_asset_status(s['state'])}" + ("" if s.get("is_external_service") else f"（ラボ防御状態: `{s.get('lab_mode', 'vulnerable')}`）"),
             f"- **書面許可**: `{auth['ref']}` (所有確認: {'確認済み' if auth['ownership_verified'] else '未確認'})",
             f"- **許可範囲**: Hosts={', '.join(auth['scope']['hosts'])} / CIDRs={', '.join(auth['scope']['cidrs'])} / Ports={', '.join(map(str, auth['scope']['ports']))}",
             "- **総合リスク**: 未診断（安全性は未評価）" if s["state"] == "idle" else f"- **総合リスク**: **{risk['score']}/100 ({risk['label']})** {'※暫定' if risk['provisional'] else ''}",
-            f"- **前回診断との比較（架空のデモ履歴）**: 前回 `{hist['previous_assessment_id']}` ({hist['previous_score']}/100) → 差分 {hist['delta_score'] if hist['delta_score'] is not None else '未算出'}",
+            (f"- **前回診断との比較（架空のデモ履歴）**: 前回 `{hist['previous_assessment_id']}` ({hist['previous_score']}/100) → 差分 {hist['delta_score'] if hist['delta_score'] is not None else '未算出'}"
+             if hist else "- **前回診断との比較**: 履歴なし（この対象の初回診断）"),
             "",
             "## 証拠の概要と検証範囲",
             f"- **提案エンジン**: {s['planner']['note']}",
-            f"- **検証環境**: ローカル模擬ラボ ({s['lab_endpoint']})。実在する Apache や本番環境の診断結果ではありません。",
+            (f"- **検証環境**: 所有確認済みの実サービス ({s['target_url']})。L1は読み取り専用の実測、L2は検証用アカウントと模擬データに限定した個別承認分のみです。"
+             if s.get("is_external_service") else
+             f"- **検証環境**: ローカル模擬ラボ ({s['lab_endpoint']})。実在する Apache や本番環境の診断結果ではありません。"),
             "- **判定の限界**: 検出は実証を意味しません。「再現せず」は今回の条件での結果であり、安全性の保証ではありません。",
             "- **証拠状態**: " + " / ".join(f"{EVIDENCE_LABELS[k]} {v} 件" for k, v in s["evidence_summary"].items() if k != "fixture"),
             "",
