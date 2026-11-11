@@ -28,6 +28,9 @@ export interface Finding {
   help_term?: string;
   reproduce_check?: string;
   l2_ready?: boolean;
+  /** True for profile-defined L2 checks: needs an approver, per item. */
+  requires_l2_approval?: boolean;
+  l2_preconditions?: string[];
   risk_score?: number;
   risk_rationale?: string;
   impact?: string;
@@ -147,17 +150,19 @@ export interface CveStatus {
   }[];
 }
 
+/** L2 test-account status for one asset. Fields, labels and checks come from the
+ *  asset's service profile on the server; raw token values are never included. */
 export interface SecretsStatus {
   host: string;
   has_l2_credentials: boolean;
   l2_ready?: boolean;
   encryption: string;
-  user_a_fingerprint?: string | null;
-  user_b_fingerprint?: string | null;
-  free_plan_fingerprint?: string | null;
-  mock_paths?: Record<string, string>;
+  /** null when no L2 rule profile applies to this asset (L1 only). */
+  profile: { id: string; label: string; spec_status: "confirmed" | "placeholder"; spec_note: string } | null;
+  tokens: { key: string; label: string; set: boolean; fingerprint: string | null }[];
+  paths: { key: string; label: string; default: string; value?: string | null }[];
   /** Per-check readiness: which test-account tokens are still missing. */
-  checks?: Record<string, { ready: boolean; missing: string[] }>;
+  checks: Record<string, { label: string; category: string; ready: boolean; missing: string[]; preconditions: string[] }>;
 }
 
 export interface Snapshot {

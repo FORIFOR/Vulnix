@@ -4,33 +4,11 @@ import { useState } from "react";
 import { getJSON, postJSON } from "@/lib/api";
 import type { SecretsStatus, Snapshot } from "@/lib/types";
 
-const CHECK_LABELS: Record<string, string> = {
-  deepnote_idor_notes: "他ユーザーのノート（IDOR）",
-  deepnote_share_link: "失効済み共有リンク",
-  deepnote_gcs_acl: "Cloud Storage のアクセス制御",
-  deepnote_ai_chat_isolation: "AIチャットのテナント分離",
-  deepnote_billing_plan: "課金プランのサーバー側制御",
-};
-
-const MISSING_LABELS: Record<string, string> = {
-  user_a_token: "アカウントA",
-  user_b_token: "アカウントB",
-  free_plan_token: "Freeプラン",
-};
-
-const PATH_FIELDS = [
-  ["mock_note_path", "模擬ノート（B所有）"],
-  ["mock_share_path", "失効済み共有リンク"],
-  ["mock_gcs_path", "模擬ストレージオブジェクト（B所有）"],
-  ["mock_chat_path", "AIチャット（Bのノート指定）"],
-  ["mock_billing_path", "上位プラン専用API"],
-] as const;
-
 /** Banner + L2 test-account settings shown only for an ownership-verified real service. */
 export function RealServicePanel({ snap, onUpdate }: { snap: Snapshot; onUpdate: (s: Snapshot) => void }) {
   const status = snap.secrets_status;
   const [open, setOpen] = useState(false);
-  const [tokens, setTokens] = useState({ user_a_token: "", user_b_token: "", free_plan_token: "" });
+  const [tokens, setTokens] = useState<Record<string, string>>({});
   const [paths, setPaths] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -44,11 +22,11 @@ export function RealServicePanel({ snap, onUpdate }: { snap: Snapshot; onUpdate:
     try {
       const res = await postJSON<{ secrets_status: SecretsStatus; snapshot: Snapshot }>("/api/assets/secrets", {
         host: snap.asset.name,
-        ...tokens,
+        tokens,
         mock_paths: paths,
       });
       // Drop the raw values from the page as soon as the server has stored them.
-      setTokens({ user_a_token: "", user_b_token: "", free_plan_token: "" });
+      setTokens({});
       setPaths({});
       onUpdate(res.snapshot);
       setMsg("暗号化して保存しました。入力値は画面から消去しました。");
@@ -77,6 +55,10 @@ export function RealServicePanel({ snap, onUpdate }: { snap: Snapshot; onUpdate:
     }
   };
 
+  const profile = status?.profile ?? null;
+  const tokenFields = status?.tokens ?? [];
+  const pathFields = status?.paths ?? [];
+  const tokenLabel = (key: string) => tokenFields.find((t) => t.key === key)?.label ?? key;
   const checks = Object.entries(status?.checks ?? {});
   const readyCount = checks.filter(([, c]) => c.ready).length;
 
@@ -99,7 +81,10 @@ export function RealServicePanel({ snap, onUpdate }: { snap: Snapshot; onUpdate:
             aria-expanded={open}
             className="rounded-lg border border-sky-300 bg-white px-2.5 py-1.5 font-semibold text-sky-900 hover:bg-sky-100 dark:border-sky-700 dark:bg-zinc-900 dark:text-sky-100"
           >
-            L2検証用アカウント（{readyCount}/{checks.length} 項目が実行可能）{open ? " ▴" : " ▾"}
+            {profile
+              ? `L2検証用アカウント（${readyCount}/${checks.length} 項目が実行可能）`
+              : "L2検証（判定ルール未設定）"}
+            {open ? " ▴" : " ▾"}
           </button>
           <button
             type="button"
@@ -111,51 +96,64 @@ export function RealServicePanel({ snap, onUpdate }: { snap: Snapshot; onUpdate:
         </div>
       </div>
 
-      {open && (
+      {open && !profile && (
+        <p className="mt-3 border-t border-sky-200 pt-3 dark:border-sky-900/60">
+          この対象に適用できるL2判定ルール（サービスプロファイル）がありません。実行できるのはL1の読み取り専用診断だけです。
+          L2検証を行うには、対象APIの仕様に基づく判定ルールをサーバー側の設定（<span className="font-mono">aegis/l2_profiles/</span>）に追加してください。
+        </p>
+      )}
+
+      {open && profile && (
         <div className="mt-3 grid gap-4 border-t border-sky-200 pt-3 md:grid-cols-2 dark:border-sky-900/60">
           <div className="space-y-2">
-            <h3 className="font-semibold">項目ごとの準備状況</h3>
-            <ul className="space-y-1">
+            <h3 className="font-semibold">項目ごとの準備状況（判定ルール：{profile.label}）</h3>
+            {profile.spec_status !== "confirmed" && (
+              <p role="note" className="rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+                この判定ルールは対象APIの仕様と未照合の仮設定です。{profile.spec_note}
+              </p>
+            )}
+            <ul className="space-y-1.5">
               {checks.map(([key, c]) => (
-                <li key={key} className="flex items-center justify-between gap-2">
-                  <span>{CHECK_LABELS[key] ?? key}</span>
-                  <span className={c.ready ? "font-semibold text-emerald-700 dark:text-emerald-300" : "text-amber-800 dark:text-amber-300"}>
-                    {c.ready ? "実行可能（承認待ち）" : `未設定: ${c.missing.map((m) => MISSING_LABELS[m] ?? m).join("・")}`}
-                  </span>
+                <li key={key}>
+                  <div className="flex items-center justify-between gap-2">
+                    <span>{c.label}</span>
+                    <span className={c.ready ? "font-semibold text-emerald-700 dark:text-emerald-300" : "text-amber-800 dark:text-amber-300"}>
+                      {c.ready ? "実行可能（承認待ち）" : `未設定: ${c.missing.map(tokenLabel).join("・")}`}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-sky-900 dark:text-sky-200">同時に確認する前提：{c.preconditions.join("／")}</p>
                 </li>
               ))}
             </ul>
             <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 pt-1 text-[11px] text-sky-900 dark:text-sky-200">
               <dt>保存方式</dt><dd>{status?.encryption ?? "—"}</dd>
-              <dt>A 指紋</dt><dd className="font-mono">{status?.user_a_fingerprint ?? "未設定"}</dd>
-              <dt>B 指紋</dt><dd className="font-mono">{status?.user_b_fingerprint ?? "未設定"}</dd>
-              <dt>Free 指紋</dt><dd className="font-mono">{status?.free_plan_fingerprint ?? "未設定"}</dd>
+              {tokenFields.map((t) => (
+                <div key={t.key} className="contents">
+                  <dt>{t.label} 指紋</dt><dd className="font-mono">{t.fingerprint ?? "未設定"}</dd>
+                </div>
+              ))}
             </dl>
             <p className="text-[11px] text-sky-900 dark:text-sky-200">
               指紋はトークンのSHA-256の先頭8桁です。トークン自体は画面・ログ・レポートに表示されません。
+              前提を確認できなかった場合や、応答内容が条件と一致しない場合は「未完了・要確認」となり、「再現せず」とは表示しません。
             </p>
           </div>
 
           <form onSubmit={save} className="space-y-2">
             <h3 className="font-semibold">検証専用アカウントを設定</h3>
             <p className="text-[11px] text-sky-900 dark:text-sky-200">
-              本番利用者のものではない、検証専用アカウントのトークンだけを入力してください。AとBは別アカウントである必要があります
-              （Bが模擬データの所有者、Aが権限のない側です）。空欄の項目は変更しません。
+              本番利用者のものではない、検証専用アカウントのトークンだけを入力してください。役割の異なるアカウントには別々のアカウントを使う必要があります。
+              空欄の項目は変更しません。
             </p>
-            {(
-              [
-                ["user_a_token", "アカウントA（権限のない側）"],
-                ["user_b_token", "アカウントB（模擬データの所有者）"],
-                ["free_plan_token", "Freeプランのアカウント（課金項目用）"],
-              ] as const
-            ).map(([key, label]) => (
-              <label key={key} className="block">
-                <span className="mb-0.5 block font-semibold">{label}</span>
+            {tokenFields.map((t) => (
+              <label key={t.key} className="block">
+                <span className="mb-0.5 block font-semibold">{t.label}{t.set ? "（設定済み）" : ""}</span>
                 <input
                   type="password"
                   autoComplete="off"
-                  value={tokens[key]}
-                  onChange={(e) => setTokens((t) => ({ ...t, [key]: e.target.value }))}
+                  name={t.key}
+                  value={tokens[t.key] ?? ""}
+                  onChange={(e) => setTokens((cur) => ({ ...cur, [t.key]: e.target.value }))}
                   className="w-full rounded-lg border border-sky-300 bg-white px-2.5 py-1.5 font-mono text-xs text-zinc-900 dark:border-sky-800 dark:bg-zinc-950 dark:text-zinc-100"
                 />
               </label>
@@ -163,13 +161,14 @@ export function RealServicePanel({ snap, onUpdate }: { snap: Snapshot; onUpdate:
             <details>
               <summary className="cursor-pointer font-semibold">模擬データのパスを変更（任意）</summary>
               <div className="mt-1.5 space-y-1.5">
-                {PATH_FIELDS.map(([key, label]) => (
-                  <label key={key} className="block">
-                    <span className="mb-0.5 block">{label}</span>
+                {pathFields.map((f) => (
+                  <label key={f.key} className="block">
+                    <span className="mb-0.5 block">{f.label}</span>
                     <input
-                      value={paths[key] ?? ""}
-                      onChange={(e) => setPaths((p) => ({ ...p, [key]: e.target.value }))}
-                      placeholder={status?.mock_paths?.[key] ?? "既定の模擬パスを使用"}
+                      name={f.key}
+                      value={paths[f.key] ?? ""}
+                      onChange={(e) => setPaths((p) => ({ ...p, [f.key]: e.target.value }))}
+                      placeholder={f.value ?? f.default}
                       className="w-full rounded-lg border border-sky-300 bg-white px-2.5 py-1.5 font-mono text-xs text-zinc-900 dark:border-sky-800 dark:bg-zinc-950 dark:text-zinc-100"
                     />
                   </label>

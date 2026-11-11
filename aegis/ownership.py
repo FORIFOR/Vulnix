@@ -1,7 +1,7 @@
 """Asset ownership verification (DNS TXT / .well-known file) & scope confirmation.
 
 Implements the beginner-friendly 5-step registration model:
-  Step 1: Enter service URL (`https://stgdeepnote.mopita.com` or hostname).
+  Step 1: Enter service URL (`https://stg.example.com` or hostname).
   Step 2: Verify ownership via DNS TXT (`_vulnix-verify.<host>`) or verification
           file (`https://<host>/.well-known/vulnix-verify.txt`).
   Step 3: Confirm target scope and prohibited actions (no production data exfil,
@@ -29,46 +29,9 @@ PROHIBITED_ACTIONS_SUMMARY = (
     "所有確認のみでのL2侵入実証（再現試験）の自動承認禁止",
 )
 
-DEEPNOTE_STG_PRESETS: tuple[dict, ...] = (
-    {
-        "id": "deepnote_stg_api",
-        "name": "deepnote-api-stg-mur5rvqgga-an.a.run.app",
-        "display_name": "DeepNote STG API",
-        "service_url": "https://deepnote-api-stg-mur5rvqgga-an.a.run.app",
-        "scheme": "https",
-        "port": 443,
-        "kind": "API",
-        "environment": "ステージング（GCP: classnote-x-dev）",
-        "gcp_project": "classnote-x-dev",
-    },
-    {
-        "id": "deepnote_stg_mopita",
-        "name": "deepnote-mopita-stg-mur5rvqgga-an.a.run.app",
-        "display_name": "DeepNote STG mopita連携",
-        "service_url": "https://deepnote-mopita-stg-mur5rvqgga-an.a.run.app",
-        "scheme": "https",
-        "port": 443,
-        "kind": "Webアプリケーション / 課金連携",
-        "environment": "ステージング（GCP: classnote-x-dev）",
-        "gcp_project": "classnote-x-dev",
-    },
-    {
-        "id": "deepnote_stg_web",
-        "name": "stgdeepnote.mopita.com",
-        "display_name": "DeepNote STG サイト",
-        "service_url": "https://stgdeepnote.mopita.com",
-        "scheme": "https",
-        "port": 443,
-        "kind": "Webアプリケーション",
-        "environment": "ステージング（GCP: classnote-x-dev）",
-        "gcp_project": "classnote-x-dev",
-    },
-)
-
-
 def parse_service_target(raw_input: str, *, default_lab_port: int = 18081) -> dict:
-    """Accept either a full URL (`https://stgdeepnote.mopita.com/path`) or a
-    hostname (`stgdeepnote.mopita.com`) and return normalized target metadata."""
+    """Accept either a full URL (`https://stg.example.com/path`) or a
+    hostname (`stg.example.com`) and return normalized target metadata."""
     cleaned = (raw_input or "").strip()
     if not cleaned:
         raise ValueError("有効なサービスURLまたはホスト名を入力してください")

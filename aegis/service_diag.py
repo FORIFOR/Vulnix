@@ -1,13 +1,12 @@
-"""Real-service (DeepNote / external HTTPS) L1 & L2 diagnostic analyzers.
+"""Real-service (external HTTPS) L1 & L2 diagnostic analyzers.
 
 Implements:
 - L1 read-only HTTP/TLS inspection (TLS certificate & HTTPS, HSTS/CSP/XCTO,
   Cookie flags, CORS configuration, exposed technology headers, unauthenticated
   API access control, and NVD/CISA KEV correlation).
-- L2 DeepNote candidate generation (IDOR/BOLA on notes/audio/transcripts,
-  share-link expiration, Cloud Storage ACL, AI chat cross-tenant isolation,
-  and server-side billing plan enforcement), gated on human approval +
-  encrypted test credentials.
+- L2 candidate generation from the asset's service profile
+  (`aegis/l2_profiles/*.json`, see `aegis/l2_rules.py`), gated on human
+  approval + encrypted test credentials. Nothing service-specific lives here.
 """
 from __future__ import annotations
 
@@ -54,90 +53,6 @@ def compute_finding_risk_score(
     return score, rationale
 
 
-DEEPNOTE_L2_SPECS: list[dict] = [
-    {
-        "id": "f_dn_idor",
-        "check": "deepnote_idor_notes",
-        "title": "他ユーザーの議事録・音声・文字起こし・要約へのアクセス制御（IDOR/BOLA）",
-        "severity": "high",
-        "category": "アクセス制御（IDOR/BOLA）",
-        "help_term": "idor",
-        "path": "/api/v1/notes/mock_note_user_b",
-        "summary": "検証用アカウントAのトークンで別テナント模擬データ（議事録・音声・文字起こし・要約）のオブジェクトIDへアクセスし、認可境界が強制されているか検証します。",
-        "impact": "認可不備がある場合、推測または列挙したIDを通じて他ユーザーの非公開議事録・音声・要約データが閲覧される恐れがあります。",
-        "steps": [
-            "すべての議事録・音声・文字起こし・要約取得APIで、認証ユーザーの user_id / tenant_id とリソース所有者のサーバー側照合を必須化する",
-            "不一致時は HTTP 403 Forbidden または 404 Not Found を返却する",
-        ],
-        "how_to_verify": "検証用アカウント2つ（または別テナント模擬ID）を用いたL2再現試験を実行し、HTTP 403/404 で拒否されることを確認します。",
-    },
-    {
-        "id": "f_dn_share",
-        "check": "deepnote_share_link",
-        "title": "共有リンクの失効・有効期限切れ後のアクセス制御",
-        "severity": "medium",
-        "category": "セッション・共有管理",
-        "help_term": "idor",
-        "path": "/api/v1/shares/expired_mock_token",
-        "summary": "失効済みまたは有効期限切れの模擬共有トークンへアクセスし、サーバー側で確実に拒否されるか検証します。",
-        "impact": "失効後もトークンやキャッシュが有効な場合、共有解除したはずの議事録へ第三者が継続アクセスできるリスクがあります。",
-        "steps": [
-            "共有リンク参照時にDB上の revoked_at および expires_at を毎回サーバー側で検証する",
-            "失効時はキャッシュを無効化し即座に HTTP 403/404/410 を返却する",
-        ],
-        "how_to_verify": "失効済み模擬共有トークンに対するL2再現試験を実行し、HTTP 403/404/410 が返ることを確認します。",
-    },
-    {
-        "id": "f_dn_gcs",
-        "check": "deepnote_gcs_acl",
-        "title": "Cloud Storage（音声・文字起こしデータ）のアクセス制御",
-        "severity": "high",
-        "category": "クラウドストレージ設定",
-        "help_term": "idor",
-        "path": "/storage/v1/b/deepnote-stg-mock/o/mock_voice_b.wav",
-        "summary": "音声・文字起こし保存用ストレージパスに対して未認可または別テナントから直接取得できないか検証します。",
-        "impact": "バケットまたはオブジェクトACLが公開状態、あるいは署名なしURLで取得可能な場合、録音データや文字起こしファイルが直接漏えいします。",
-        "steps": [
-            "Cloud Storage バケットの公開アクセス防止（Public Access Prevention）を有効化する",
-            "Uniform bucket-level access を適用し、短寿命のV4署名付きURL（Signed URL）のみを経由して配信する",
-        ],
-        "how_to_verify": "模擬オブジェクトパスに対するL2再現試験を実行し、未認可アクセスが HTTP 403/404 で拒否されることを確認します。",
-    },
-    {
-        "id": "f_dn_aichat",
-        "check": "deepnote_ai_chat_isolation",
-        "title": "AIチャットにおける権限外データ参照・プロンプト境界分離",
-        "severity": "high",
-        "category": "AI / LLM セキュリティ",
-        "help_term": "idor",
-        "path": "/api/v1/ai/chat/context?note_id=mock_note_user_b",
-        "summary": "AIチャット/要約エンドポイントへ別テナントの模擬ノートIDを指定し、RAG検索やコンテキスト注入で権限外データが参照されないか検証します。",
-        "impact": "AI検索インデックスやコンテキスト取得時にテナント分離が欠落している場合、プロンプト経由で他ユーザーの議事録内容がAI応答に混入・漏えいします。",
-        "steps": [
-            "ベクトル検索・RAGコンテキスト取得クエリにおいて、LLM呼び出し前に必ず認証ユーザーの tenant_id / user_id でフィルタリングする",
-            "指定された context_note_id の所有権をサーバー側で検証してからプロンプトへ組み込む",
-        ],
-        "how_to_verify": "別テナント模擬ノートIDを指定したL2再現試験を実行し、HTTP 403/404 で拒否されAI応答に他テナント情報が混入しないことを確認します。",
-    },
-    {
-        "id": "f_dn_billing",
-        "check": "deepnote_billing_plan",
-        "title": "課金・契約プラン上限のサーバー側権限制御",
-        "severity": "medium",
-        "category": "ビジネスロジック・認可",
-        "help_term": "idor",
-        "path": "/api/v1/billing/premium-summary-check",
-        "summary": "Freeプラン相当の検証用アカウントから上位プラン専用APIへリクエストし、クライアント側表示だけでなくサーバー側で権限制御されているか検証します。",
-        "impact": "フロントエンドのUI非表示のみで制限している場合、APIの直接呼び出しにより無制限の文字起こしや上位AI機能が不正利用される恐れがあります。",
-        "steps": [
-            "すべての有料機能・利用上限対象APIにおいて、サーバー側の認可ミドルウェアで契約プラン（Entitlement）と月間クォータ残量を検証する",
-            "権限不足時は HTTP 402 Payment Required または 403 Forbidden を返却する",
-        ],
-        "how_to_verify": "Freeプラン検証用トークンでのL2再現試験を実行し、HTTP 402/403 で拒否されることを確認します。",
-    },
-]
-
-
 def _enrich_ev(
     base_ev: dict,
     *,
@@ -159,7 +74,7 @@ def analyze_l1_service_response(
     target_url: str,
     cve_monitor: Optional[cve.FeedMonitor] = None,
 ) -> list[dict]:
-    """Analyze a read-only L1 ``http_probe`` response for DeepNote / external HTTPS."""
+    """Analyze a read-only L1 ``http_probe`` response for an external HTTPS service."""
     findings: list[dict] = []
     headers_raw = res.get("headers") or {}
     headers_lower = {str(k).lower(): str(v) for k, v in headers_raw.items()}
@@ -356,7 +271,7 @@ def analyze_l1_service_response(
                 ],
                 "remediation": {
                     "steps": [
-                        "信頼されたフロントエンドのオリジン（例: https://stgdeepnote.mopita.com）のみを厳密なホワイトリストで許可する",
+                        "信頼されたフロントエンドのオリジン（例: https://app.example.com）のみを厳密なホワイトリストで許可する",
                         "任意のOrigin反射や認証付きAPIでのワイルドカード（*）指定を廃止する",
                     ],
                     "how_to_verify": "修正後に同じOriginプローブを実行し、未許可オリジンに対して Access-Control-Allow-Origin が返らないことを確認します。",
@@ -480,24 +395,28 @@ def analyze_l1_service_response(
     return findings
 
 
-def build_deepnote_l2_candidates(
+def build_l2_candidates(
     target_url: str,
-    *,
-    has_l2_credentials: bool = False,
-    ready_checks: Optional[set[str]] = None,
+    profile: Optional[dict],
+    ready_checks: set[str],
 ) -> list[dict]:
-    """Generate the 5 DeepNote L2 candidate findings.
+    """Generate one candidate finding per check of the asset's L2 profile.
+
+    No profile bound to the asset -> no L2 candidates (L1 only).
 
     Crucial safety rule: uninspected L2 items have empty ``evidence=[]`` so
     ``evidence_status(finding)`` classifies them as ``candidate`` ("未計測の候補")
     and NEVER marks them safe.
     """
+    if profile is None:
+        return []
     parsed = urllib.parse.urlparse(target_url)
     is_https = parsed.scheme.lower() == "https"
     candidates: list[dict] = []
 
-    for spec in DEEPNOTE_L2_SPECS:
-        ready = (spec["check"] in ready_checks) if ready_checks is not None else has_l2_credentials
+    for check in profile["checks"]:
+        spec = check["finding"]
+        ready = check["id"] in ready_checks
         cred_note = (
             "暗号化シークレット（検証用アカウント）設定済み・人間の個別承認待ち"
             if ready
@@ -516,13 +435,16 @@ def build_deepnote_l2_candidates(
                 "cve": [],
                 "risk_level": "L2",
                 "help_term": spec["help_term"],
-                "reproduce_check": spec["check"],
-                "target_path": spec["path"],
+                "reproduce_check": check["id"],
+                "requires_l2_approval": True,
+                "l2_profile": profile["id"],
+                "target_path": profile["paths"][check["subject"]["path"]]["default"],
+                "l2_preconditions": [p["label"] for p in check["preconditions"]],
                 "l2_ready": ready,
                 "risk_score": r_score,
                 "risk_rationale": r_rat,
                 "summary": f"{spec['summary']} （現在の状態: {cred_note} ※未検査項目を安全とは判定しません）",
-                "why_detected": "DeepNote優先診断項目（L2認可・テナント分離・共有期限・GCS・課金境界）として登録されました。所有確認のみで自動実行されることはなく、個別の人間承認と検証用アカウント設定が必要です。",
+                "why_detected": f"{profile['label']} 向け判定ルールの診断項目として登録されました。所有確認のみで自動実行されることはなく、個別の人間承認と検証用アカウント設定が必要です。",
                 "caveat": f"未検証候補（{cred_note}）。承認されるまで実行されません。",
                 "impact": spec["impact"],
                 "evidence": [],

@@ -1,10 +1,11 @@
 """Encrypted secret store for L2 verification test accounts (`aegis/secrets_store.py`).
 
-Stores test account credentials (`user_a_token`, `user_b_token`, `free_plan_token`)
-and mock resource identifiers (`mock_note_path`, `mock_audio_path`, `mock_share_path`,
-`mock_gcs_path`, `mock_chat_path`, `mock_billing_path`; unset paths fall back to the
-worker's built-in mock path for that check) encrypted at rest using
+Stores test-account tokens (keys ending in `_token`) and operator overrides of
+mock resource paths (keys ending in `_path`) per asset, encrypted at rest using
 PBKDF2-HMAC-SHA256 + authenticated stream cipher + HMAC-SHA256 tag.
+
+Which keys exist, which accounts must differ, and which check needs which key is
+defined by the service profile (`aegis/l2_rules.py`), not by this module.
 
 Security guarantees:
   * Master key (`0600` permissions) and ciphertext live in `data_dir` (never in git).
@@ -24,26 +25,13 @@ import secrets
 import time
 from pathlib import Path
 
-SECRET_TOKEN_KEYS = ("user_a_token", "user_b_token", "free_plan_token")
-MOCK_PATH_KEYS = (
-    "mock_note_path",
-    "mock_audio_path",
-    "mock_share_path",
-    "mock_gcs_path",
-    "mock_chat_path",
-    "mock_billing_path",
-)
-
-# check -> (mock path key, subject token key, owner-control token key or None)
-CHECK_SECRET_MAP = {
-    "deepnote_idor_notes": ("mock_note_path", "user_a_token", "user_b_token"),
-    "deepnote_share_link": ("mock_share_path", "user_a_token", None),
-    "deepnote_gcs_acl": ("mock_gcs_path", "user_a_token", "user_b_token"),
-    "deepnote_ai_chat_isolation": ("mock_chat_path", "user_a_token", "user_b_token"),
-    "deepnote_billing_plan": ("mock_billing_path", "free_plan_token", None),
-}
+from .l2_rules import paths_used, tokens_needed
 
 _PATH_RE = re.compile(r"/[!-~]{0,299}")   # printable ASCII, no spaces / CR / LF
+
+
+def _is_token_key(key: str) -> bool:
+    return key.endswith("_token")
 
 
 def _keystream(enc_key: bytes, nonce: bytes, length: int) -> bytes:
@@ -131,19 +119,30 @@ class EncryptedSecretStore:
             json.dump(env, f, indent=2)
         os.replace(tmp, self._enc_path)
 
-    def set_credentials(self, asset_id: str, payload: dict, *, actor: str = "operator") -> dict:
+    def set_credentials(self, asset_id: str, payload: dict, *, profile: dict,
+                        actor: str = "operator") -> dict:
+        """Merge tokens/paths declared by `profile` into the asset's record.
+        Empty values leave the stored value unchanged; undeclared keys are rejected."""
+        unknown = [k for k, v in payload.items()
+                   if isinstance(v, str) and v.strip()
+                   and k not in profile["tokens"] and k not in profile["paths"]]
+        if unknown:
+            raise ValueError(f"この対象の判定ルールで定義されていない項目です: {', '.join(sorted(unknown))}")
         rec = dict(self._cache.get(asset_id) or {})
-        for k in SECRET_TOKEN_KEYS:
+        for k in profile["tokens"]:
             if isinstance(payload.get(k), str) and payload[k].strip():
                 val = payload[k].strip()
                 if len(val) < 8 or len(val) > 4096 or any(c.isspace() for c in val):
                     raise ValueError("検証用トークンは空白を含まない8〜4096文字で指定してください")
                 rec[k] = val
-        if rec.get("user_a_token") and rec.get("user_a_token") == rec.get("user_b_token"):
-            # Same account on both sides would make a cross-account check meaningless
-            # (the "owner control" and the "attacker" would be the same identity).
-            raise ValueError("アカウントAとアカウントBには異なる検証用アカウントのトークンを設定してください")
-        for k in MOCK_PATH_KEYS:
+        for a, b in profile["distinct_tokens"]:
+            # The same account in two roles would make the comparison meaningless
+            # (the "owner control" and the "unauthorized side" would be one identity).
+            if rec.get(a) and rec.get(a) == rec.get(b):
+                raise ValueError(
+                    f"「{profile['tokens'][a]['label']}」と「{profile['tokens'][b]['label']}」には"
+                    "異なる検証用アカウントのトークンを設定してください")
+        for k in profile["paths"]:
             if isinstance(payload.get(k), str) and payload[k].strip():
                 val = payload[k].strip()
                 if not val.startswith("/"):
@@ -155,77 +154,67 @@ class EncryptedSecretStore:
         rec["updated_by"] = actor
         self._cache[asset_id] = rec
         self._save_all()
-        return self.public_status(asset_id)
+        return self.public_status(asset_id, profile)
 
-    def clear_credentials(self, asset_id: str) -> dict:
+    def clear_credentials(self, asset_id: str) -> None:
         self._cache.pop(asset_id, None)
         self._save_all()
-        return self.public_status(asset_id)
 
-    def get_decrypted_for_worker(self, asset_id: str) -> dict | None:
-        """Internal use ONLY when spawning an approved L2 worker. Never log the return value."""
-        rec = self._cache.get(asset_id)
-        if not rec or not rec.get("user_a_token") or not rec.get("user_b_token"):
-            return None
-        return dict(rec)
-
-    def is_ready_for_l2(self, asset_id: str) -> bool:
-        rec = self._cache.get(asset_id)
-        return bool(rec and rec.get("user_a_token") and rec.get("user_b_token"))
-
-    def missing_for_check(self, asset_id: str, check: str) -> list[str]:
-        """Token keys still required before `check` can run (empty list = ready)."""
-        if check not in CHECK_SECRET_MAP:
-            return ["unsupported_check"]
-        _, subject_key, control_key = CHECK_SECRET_MAP[check]
+    def has_any_token(self, asset_id: str) -> bool:
         rec = self._cache.get(asset_id) or {}
-        return [k for k in (subject_key, control_key) if k and not rec.get(k)]
+        return any(_is_token_key(k) and v for k, v in rec.items())
 
-    def worker_env_for_check(self, asset_id: str, check: str) -> dict[str, str]:
-        """Minimal environment for ONE approved worker run of `check`.
-        Never log the return value."""
+    def missing_for_check(self, asset_id: str, check: dict) -> list[str]:
+        """Token keys still required before `check` can run (empty list = ready)."""
+        rec = self._cache.get(asset_id) or {}
+        return [k for k in tokens_needed(check) if not rec.get(k)]
+
+    def worker_env_for_check(self, asset_id: str, check: dict) -> dict[str, str]:
+        """Minimal environment for ONE approved worker run of `check`: only the
+        tokens and path overrides that rule uses. Never log the return value."""
         if self.missing_for_check(asset_id, check):
             return {}
-        path_key, subject_key, control_key = CHECK_SECRET_MAP[check]
         rec = self._cache[asset_id]
-        env = {"VULNIX_L2_TOKEN": rec[subject_key]}
-        if control_key:
-            env["VULNIX_L2_CONTROL_TOKEN"] = rec[control_key]
-        if rec.get(path_key):
-            env["VULNIX_L2_PATH"] = rec[path_key]
+        env = {"VULNIX_L2_TOKENS": json.dumps({k: rec[k] for k in tokens_needed(check)})}
+        overrides = {k: rec[k] for k in paths_used(check) if rec.get(k)}
+        if overrides:
+            env["VULNIX_L2_PATHS"] = json.dumps(overrides)
         return env
 
-    def public_status(self, asset_id: str) -> dict:
-        """Safe status object for UI/API/logs — never includes raw token strings."""
+    def public_status(self, asset_id: str, profile: dict | None) -> dict:
+        """Safe status object for UI/API/logs - never includes raw token strings."""
         rec = self._cache.get(asset_id) or {}
-        has_a = bool(rec.get("user_a_token"))
-        has_b = bool(rec.get("user_b_token"))
-        has_free = bool(rec.get("free_plan_token"))
-        return {
+        status = {
             "asset_id": asset_id,
-            "l2_ready": bool(has_a and has_b),
             "encryption": "PBKDF2-HMAC-SHA256-CTR-MAC (0600 file permissions)",
-            "has_user_a_token": has_a,
-            "has_user_b_token": has_b,
-            "has_free_plan_token": has_free,
-            "user_a_fingerprint": (
-                hashlib.sha256(rec["user_a_token"].encode()).hexdigest()[:8] if has_a else None
-            ),
-            "user_b_fingerprint": (
-                hashlib.sha256(rec["user_b_token"].encode()).hexdigest()[:8] if has_b else None
-            ),
-            "free_plan_fingerprint": (
-                hashlib.sha256(rec["free_plan_token"].encode()).hexdigest()[:8] if has_free else None
-            ),
-            "mock_paths": {k: rec.get(k) for k in MOCK_PATH_KEYS if rec.get(k)},
-            "checks": {
-                c: {"ready": not self.missing_for_check(asset_id, c),
-                    "missing": self.missing_for_check(asset_id, c)}
-                for c in CHECK_SECRET_MAP
-            },
+            "profile": None,
+            "tokens": [],
+            "paths": [],
+            "checks": {},
+            "l2_ready": False,
             "updated_at": rec.get("updated_at"),
             "updated_by": rec.get("updated_by"),
         }
+        if profile is None:
+            return status
+        status["profile"] = {"id": profile["id"], "label": profile["label"],
+                             "spec_status": profile["spec_status"], "spec_note": profile["spec_note"]}
+        status["tokens"] = [
+            {"key": k, "label": meta["label"], "set": bool(rec.get(k)),
+             "fingerprint": hashlib.sha256(rec[k].encode()).hexdigest()[:8] if rec.get(k) else None}
+            for k, meta in profile["tokens"].items()]
+        status["paths"] = [
+            {"key": k, "label": meta["label"], "default": meta["default"], "value": rec.get(k)}
+            for k, meta in profile["paths"].items()]
+        for c in profile["checks"]:
+            missing = self.missing_for_check(asset_id, c)
+            status["checks"][c["id"]] = {
+                "label": c["label"], "category": c["category"],
+                "ready": not missing, "missing": missing,
+                "preconditions": [p["label"] for p in c["preconditions"]],
+            }
+        status["l2_ready"] = any(c["ready"] for c in status["checks"].values())
+        return status
 
     def redact(self, text: str) -> str:
         """Replace any registered secret token in `text` with `[REDACTED_SECRET]`."""
@@ -233,8 +222,8 @@ class EncryptedSecretStore:
             return text
         out = text
         for rec in self._cache.values():
-            for k in SECRET_TOKEN_KEYS:
-                secret_val = rec.get(k)
-                if isinstance(secret_val, str) and len(secret_val) >= 4 and secret_val in out:
+            for k, secret_val in rec.items():
+                if (_is_token_key(k) and isinstance(secret_val, str)
+                        and len(secret_val) >= 4 and secret_val in out):
                     out = out.replace(secret_val, "[REDACTED_SECRET]")
         return out

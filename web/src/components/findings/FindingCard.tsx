@@ -25,7 +25,7 @@ export function FindingCard({
   const [err, setErr] = useState<string | null>(null);
   const latestEv = f.evidence.at(-1);
   // L2 on a real service: an explicit, per-item approval by an approver.
-  const needsApproval = Boolean(f.reproduce_check?.startsWith("deepnote_"));
+  const needsApproval = Boolean(f.requires_l2_approval);
   const blocked = needsApproval && f.l2_ready === false && f.evidence.length === 0;
 
   const runLiveVerify = async () => {

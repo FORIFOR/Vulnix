@@ -295,11 +295,14 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     return self._json(200, {**res, "assets": svc.assets(), "snapshot": svc.snapshot()})
                 elif p == "/api/assets/secrets":
                     raw_paths = body.get("mock_paths")
+                    raw_tokens = body.get("tokens")
+                    tokens = dict(raw_tokens) if isinstance(raw_tokens, dict) else {}
+                    # also accept `<name>_token` at the top level of the body
+                    tokens.update({k: v for k, v in body.items()
+                                   if isinstance(k, str) and k.endswith("_token") and isinstance(v, str)})
                     res = svc.configure_asset_secrets(
                         host=str(body.get("host", "")),
-                        user_a_token=str(body.get("user_a_token", "")),
-                        user_b_token=str(body.get("user_b_token", "")),
-                        free_plan_token=str(body.get("free_plan_token", "")),
+                        tokens=tokens,
                         mock_paths=raw_paths if isinstance(raw_paths, dict) else None,
                         actor=actor,
                     )

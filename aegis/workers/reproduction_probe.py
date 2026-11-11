@@ -1,27 +1,34 @@
 """Authorized, non-destructive reproduction probe worker.
 
 Runs inside the `egress_sentinel` sandbox and connects ONLY to the Gateway-pinned
-(ip, port). Verifies whether a candidate vulnerability (e.g., cross-account IDOR
-with dedicated test accounts, CVE-2021-41773 path normalization check, or DeepNote
-L2 authorization boundary checks) actually reproduces ("proven") or is blocked by
-defenses ("not_reproduced").
+(ip, port). Two modes:
 
-DeepNote L2 checks (per-call environment, set by the Gateway for this tool only):
-  * `VULNIX_L2_TOKEN`          subject test account (account A / free plan).
-  * `VULNIX_L2_CONTROL_TOKEN`  owner test account (account B) for the control request.
-  * `VULNIX_L2_PATH`           operator-configured mock resource path for THIS check.
+1. Local lab checks (`CHECKS` below): fixed paths and markers of the bundled
+   simulated lab. They never read credentials or overrides from the environment.
 
-A denial only counts as "not_reproduced" when the status is one of the check's
-`deny` codes AND, for owner-controlled checks, the owner control request returned
-200 with the mock-data marker. Otherwise a 404 on a mistyped path or a 401 on an
-expired token would look like a working defense. Anything else is "unverified".
+2. Rule-driven L2 authorization checks (`--rule-json`): the rule comes from a
+   service profile (`aegis/l2_profiles/*.json`) chosen by the control plane.
+   This file knows nothing about any particular target API.
 
-Tokens are sent over the socket to the pinned target only and are ALWAYS redacted
-(`Bearer [REDACTED_SECRET]`) in stdout/evidence.
+   Per-call environment, set by the Gateway for one approved run only:
+     * `VULNIX_L2_TOKENS`  JSON {token_key: value} - only the keys this rule needs.
+     * `VULNIX_L2_PATHS`   JSON {path_key: path}   - operator overrides of rule paths.
+
+   A rule lists positive-control `preconditions` (e.g. the owner can read the mock
+   resource, the subject account is authenticated). They run first. If any of them
+   fails, the cross-account request is NOT sent and the verdict is "unverified":
+   a denial observed without a passing control would not distinguish an enforced
+   boundary from a wrong path, missing mock data or a rejected token.
+   "not_reproduced" additionally requires the subject response to match every
+   `denied` condition (status AND content) and to differ from the owner response.
+
+Only GET requests are sent, redirects are never followed, and tokens are ALWAYS
+redacted (`[REDACTED_SECRET]`) in stdout/evidence.
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import http.client
 import json
 import os
@@ -45,49 +52,29 @@ CHECKS = {
         "headers": {},
         "marker": "VULNIX_LAB_SQLI_PROVEN",
     },
-    "deepnote_idor_notes": {
-        "path": "/api/v1/notes/mock_note_user_b",
-        "headers": {"X-Test-Account": "user_a"},
-        "marker": "DEEPNOTE_MOCK_NOTE_USER_B",
-        "deny": (403, 404),
-        "control": True,
-    },
-    "deepnote_share_link": {
-        "path": "/api/v1/shares/expired_mock_token",
-        "headers": {},
-        "marker": "DEEPNOTE_EXPIRED_SHARE_ACCESSIBLE",
-        "deny": (403, 404, 410),
-        "control": False,
-    },
-    "deepnote_gcs_acl": {
-        "path": "/storage/v1/b/deepnote-stg-mock/o/mock_voice_b.wav",
-        "headers": {"X-Test-Account": "user_a"},
-        "marker": "DEEPNOTE_GCS_UNAUTHORIZED_READ",
-        "deny": (403, 404),
-        "control": True,
-    },
-    "deepnote_ai_chat_isolation": {
-        "path": "/api/v1/ai/chat/context?note_id=mock_note_user_b",
-        "headers": {"X-Test-Account": "user_a"},
-        "marker": "DEEPNOTE_AI_CROSS_TENANT_CONTEXT",
-        "deny": (403, 404),
-        "control": True,
-    },
-    "deepnote_billing_plan": {
-        "path": "/api/v1/billing/premium-summary-check",
-        "headers": {"X-Test-Plan": "free"},
-        "marker": "DEEPNOTE_BILLING_BYPASS_PROVEN",
-        "deny": (402, 403),
-        "control": False,
-    },
 }
-
 
 LAB_DENY = (403,)
 REDACTED = "[REDACTED_SECRET]"
+MAX_BODY = 262144      # bytes read per response when evaluating content conditions
+EXCERPT = 4096         # characters of the subject response kept as evidence
 
 
-def _get(a, path: str, headers: dict, secrets_to_redact: list[str]) -> tuple[int, str]:
+def _scrub(obj, secrets_to_redact: list[str]):
+    """Replace every occurrence of a test token anywhere in the result."""
+    if isinstance(obj, str):
+        for secret in secrets_to_redact:
+            if secret:
+                obj = obj.replace(secret, REDACTED)
+        return obj
+    if isinstance(obj, dict):
+        return {k: _scrub(v, secrets_to_redact) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_scrub(v, secrets_to_redact) for v in obj]
+    return obj
+
+
+def _fetch(a, path: str, headers: dict) -> dict:
     """One GET to the pinned (ip, port); never follows redirects."""
     sock = socket.create_connection((a.ip, a.port), timeout=10)
     if a.scheme == "https":
@@ -99,13 +86,193 @@ def _get(a, path: str, headers: dict, secrets_to_redact: list[str]) -> tuple[int
         conn.request("GET", path, headers={
             "Host": a.host, "User-Agent": "vulnix-reproduction-probe/1.0", **headers})
         r = conn.getresponse()
-        body = r.read(4096).decode("utf-8", "replace")
+        raw = r.read(MAX_BODY + 1)
+        ctype = r.getheader("Content-Type") or ""
     finally:
         conn.close()
-    for secret in secrets_to_redact:
-        if secret:
-            body = body.replace(secret, REDACTED)
-    return r.status, body
+    return {
+        "status": r.status,
+        "content_type": ctype,
+        "body": raw[:MAX_BODY].decode("utf-8", "replace"),
+        "sha256": hashlib.sha256(raw[:MAX_BODY]).hexdigest(),
+        "bytes": min(len(raw), MAX_BODY),
+        "truncated": len(raw) > MAX_BODY,
+    }
+
+
+def _json_field(doc, dotted: str):
+    cur = doc
+    for part in dotted.split("."):
+        if isinstance(cur, dict) and part in cur:
+            cur = cur[part]
+        else:
+            return _MISSING
+    return cur
+
+
+_MISSING = object()
+
+
+def _match(expect: dict, obs: dict) -> dict:
+    """Evaluate every condition the rule declares; one boolean per condition."""
+    checks = {"status": obs["status"] in expect["status"]}
+    if "content_type" in expect:
+        checks["content_type"] = obs["content_type"].lower().startswith(expect["content_type"].lower())
+    if "body_contains" in expect:
+        checks["body_contains"] = all(m in obs["body"] for m in expect["body_contains"])
+    if "body_not_contains" in expect:
+        # absence can only be asserted over a response that was read completely
+        checks["body_not_contains"] = (not obs["truncated"]
+                                       and not any(m in obs["body"] for m in expect["body_not_contains"]))
+    if "json_fields" in expect:
+        try:
+            doc = json.loads(obs["body"])
+        except ValueError:
+            doc = None
+        checks["json_fields"] = all(_json_field(doc, k) == v for k, v in expect["json_fields"].items())
+    return checks
+
+
+def _env_json(name: str) -> dict:
+    try:
+        val = json.loads(os.environ.get(name) or "{}")
+    except ValueError:
+        return {}
+    return {k: v for k, v in val.items() if isinstance(v, str) and v} if isinstance(val, dict) else {}
+
+
+def run_lab_check(a) -> dict:
+    spec = CHECKS[a.check]
+    obs = _fetch(a, spec["path"], spec["headers"])
+    raw_body = obs["body"][:EXCERPT]
+    try:
+        parsed_body = json.loads(raw_body)
+    except ValueError:
+        parsed_body = None
+    established = obs["status"] == 200 and spec["marker"] in raw_body
+    reason = None
+    if established:
+        verdict = "proven"
+    elif obs["status"] not in LAB_DENY:
+        verdict = "unverified"
+        reason = f"HTTP {obs['status']} is not an accepted denial for this check {list(LAB_DENY)}"
+    else:
+        verdict = "not_reproduced"
+    return {
+        "check": a.check,
+        "request_path": spec["path"],
+        "request_headers": dict(spec["headers"]),
+        "status": obs["status"],
+        "established": established,
+        "verdict": verdict,
+        "unverified_reason": reason,
+        "deny_statuses": list(LAB_DENY),
+        "response": parsed_body if parsed_body is not None else raw_body,
+        "connected_ip": a.ip,
+        "connected_port": a.port,
+    }
+
+
+def run_rule_check(a, rule_json: str) -> dict:
+    rule = json.loads(rule_json)
+    if rule.get("id") != a.check:
+        raise SystemExit("rule id does not match --check")
+    tokens = _env_json("VULNIX_L2_TOKENS")
+    overrides = _env_json("VULNIX_L2_PATHS")
+    secrets_to_redact = list(tokens.values())
+
+    def path_of(node: dict) -> str:
+        return overrides.get(node["path_key"]) or node["path"]
+
+    def send(node: dict) -> tuple[dict | None, str | None]:
+        token = tokens.get(node["token"])
+        if not token:
+            return None, "token not provided"
+        try:
+            return _fetch(a, path_of(node), {**node["headers"], "Authorization": f"Bearer {token}"}), None
+        except (OSError, http.client.HTTPException) as e:
+            return None, f"request failed: {type(e).__name__}"
+
+    pre_out: list[dict] = []
+    owner_hashes: set[str] = set()
+    for pre in rule["preconditions"]:
+        entry = {"name": pre["name"], "token": pre["token"], "request_path": path_of(pre),
+                 "performed": False, "ok": False}
+        obs, err = send(pre)
+        if obs is None:
+            entry["reason"] = err
+        else:
+            checks = _match(pre["expect"], obs)
+            entry.update(performed=True, status=obs["status"], content_type=obs["content_type"],
+                         body_sha256=obs["sha256"], body_bytes=obs["bytes"],
+                         truncated=obs["truncated"], checks=checks, ok=all(checks.values()))
+            if entry["ok"] and pre["token"] != rule["subject"]["token"]:
+                owner_hashes.add(obs["sha256"])
+        pre_out.append(entry)
+
+    subj = rule["subject"]
+    logged_headers = {**subj["headers"], "Authorization": f"Bearer {REDACTED}"}
+    out = {
+        "check": a.check,
+        "rule_id": rule["id"],
+        "rule_digest": hashlib.sha256(rule_json.encode("utf-8")).hexdigest(),
+        "request_path": path_of(subj),
+        "request_headers": logged_headers,
+        "preconditions": pre_out,
+        "deny_statuses": list(rule["denied"]["status"]),
+        "connected_ip": a.ip,
+        "connected_port": a.port,
+    }
+    reasons: list[str] = [f"precondition_failed:{p['name']}" for p in pre_out if not p["ok"]]
+    obs = err = None
+    if not reasons:
+        obs, err = send(subj)
+        if obs is None:
+            reasons.append(f"subject_request_not_performed:{err}")
+    else:
+        reasons.append("subject_request_not_performed:preconditions")
+
+    if obs is None:
+        out.update(status=None, established=False, verdict="unverified", unverified_reasons=reasons,
+                   subject={"performed": False, "token": subj["token"]},
+                   response=None, response_text="")
+        return _scrub(out, secrets_to_redact)
+
+    exposed_checks = _match(rule["exposed"], obs)
+    denied_checks = _match(rule["denied"], obs)
+    identical = obs["sha256"] in owner_hashes
+    established = all(exposed_checks.values())
+    if established:
+        verdict = "proven"
+    elif all(denied_checks.values()) and not identical and not obs["truncated"]:
+        verdict = "not_reproduced"
+    else:
+        verdict = "unverified"
+        if not denied_checks["status"]:
+            reasons.append(f"status_not_a_denial:{obs['status']}")
+        elif not all(denied_checks.values()):
+            reasons.append("denial_content_mismatch")
+        if identical:
+            reasons.append("response_identical_to_owner")
+        if obs["truncated"]:
+            reasons.append("response_truncated")
+
+    excerpt = obs["body"][:EXCERPT]
+    try:
+        parsed = json.loads(excerpt)
+    except ValueError:
+        parsed = None
+    out.update(
+        status=obs["status"], established=established, verdict=verdict,
+        unverified_reasons=reasons,
+        subject={"performed": True, "token": subj["token"], "content_type": obs["content_type"],
+                 "body_sha256": obs["sha256"], "body_bytes": obs["bytes"], "truncated": obs["truncated"],
+                 "identical_to_control": identical,
+                 "denied_checks": denied_checks, "exposed_checks": exposed_checks},
+        response=parsed if parsed is not None else excerpt,
+        response_text=excerpt,
+    )
+    return _scrub(out, secrets_to_redact)
 
 
 def main() -> None:
@@ -114,74 +281,17 @@ def main() -> None:
     p.add_argument("--host", required=True)
     p.add_argument("--ip", required=True)
     p.add_argument("--port", type=int, required=True)
-    p.add_argument("--check", required=True, choices=sorted(CHECKS))
+    p.add_argument("--check", required=True)
+    p.add_argument("--rule-json", default="")
     a = p.parse_args()
 
-    spec = CHECKS[a.check]
-    is_l2_account_check = "deny" in spec
-    deny = tuple(spec.get("deny", LAB_DENY))
-    needs_control = bool(spec.get("control"))
-
-    # Lab checks never read credential/path overrides from the environment.
-    req_path = spec["path"]
-    token = control_token = ""
-    if is_l2_account_check:
-        req_path = os.environ.get("VULNIX_L2_PATH") or spec["path"]
-        token = os.environ.get("VULNIX_L2_TOKEN", "").strip()
-        control_token = os.environ.get("VULNIX_L2_CONTROL_TOKEN", "").strip()
-    secrets_to_redact = [token, control_token]
-
-    logged_headers = dict(spec["headers"])
-    wire_headers = dict(spec["headers"])
-    if token:
-        wire_headers["Authorization"] = f"Bearer {token}"
-        logged_headers["Authorization"] = f"Bearer {REDACTED}"
-
-    # Owner control first: the mock resource must exist and be readable by its
-    # owner, otherwise a later denial proves nothing about the access boundary.
-    control = None
-    if needs_control:
-        if not control_token:
-            control = {"performed": False, "ok": False, "reason": "control token not provided"}
-        else:
-            c_status, c_body = _get(a, req_path, {"Authorization": f"Bearer {control_token}"},
-                                    secrets_to_redact)
-            control = {"performed": True, "status": c_status,
-                       "marker_seen": spec["marker"] in c_body,
-                       "ok": c_status == 200 and spec["marker"] in c_body}
-
-    status, raw_body = _get(a, req_path, wire_headers, secrets_to_redact)
-    try:
-        parsed_body = json.loads(raw_body)
-    except ValueError:
-        parsed_body = None
-
-    established = status == 200 and spec["marker"] in raw_body
-    reason = None
-    if established:
-        verdict = "proven"
-    elif status not in deny:
-        verdict = "unverified"
-        reason = f"HTTP {status} is not an accepted denial for this check {list(deny)}"
-    elif needs_control and not (control and control["ok"]):
-        verdict = "unverified"
-        reason = "owner control request did not return 200 with the mock-data marker"
+    if a.rule_json:
+        result = run_rule_check(a, a.rule_json)
+    elif a.check in CHECKS:
+        result = run_lab_check(a)
     else:
-        verdict = "not_reproduced"
-    print(json.dumps({
-        "check": a.check,
-        "request_path": req_path,
-        "request_headers": logged_headers,
-        "status": status,
-        "established": established,
-        "verdict": verdict,
-        "unverified_reason": reason,
-        "deny_statuses": list(deny),
-        "control": control,
-        "response": parsed_body if parsed_body is not None else raw_body,
-        "connected_ip": a.ip,
-        "connected_port": a.port,
-    }, ensure_ascii=False))
+        raise SystemExit(f"unknown check {a.check!r} (no built-in lab check and no rule supplied)")
+    print(json.dumps(result, ensure_ascii=False))
 
 
 if __name__ == "__main__":

@@ -64,26 +64,31 @@ def http_probe_tool() -> Tool:
     )
 
 
-def reproduction_probe_tool() -> Tool:
+LAB_REPRODUCTION_CHECKS = ("idor", "cve_2021_41773", "sqli")
+
+
+def reproduction_probe_tool(l2_rules=None) -> Tool:
+    """`l2_rules` (an `aegis.l2_rules.L2RuleSet`) adds profile-defined checks. Their
+    rule is passed to the worker on argv (no secrets in it); the gateway itself
+    carries no service-specific check names."""
     workers = Path(__file__).parent / "workers"
     worker = str(workers / "reproduction_probe.py")
     sentinel = str(workers / "egress_sentinel.py")
+    rule_checks = tuple(l2_rules.check_ids()) if l2_rules is not None else ()
 
     def build(args: dict, d: PinnedDestination) -> list[str]:
+        check = args.get("check", "idor")
         inner = [worker, "--scheme", d.scheme, "--host", d.host, "--ip", d.ip,
-                 "--port", str(d.port), "--check", args.get("check", "idor")]
+                 "--port", str(d.port), "--check", check]
+        if check in rule_checks:
+            inner += ["--rule-json", l2_rules.worker_rule_json(check)]
         return [sys.executable, "-I", sentinel, "--allow", f"{d.ip}/{d.port}", "--", *inner]
 
     return Tool(
         name="reproduction_probe", action="safe_reproduction",
         args={"url": ArgSpec(str, pattern=r"https?://[^\s]+"),
-              "check": ArgSpec(str, required=False, choices=(
-                  "idor", "cve_2021_41773", "sqli",
-                  "deepnote_idor_notes", "deepnote_share_link",
-                  "deepnote_gcs_acl", "deepnote_ai_chat_isolation",
-                  "deepnote_billing_plan",
-              ))},
-        build_argv=build, timeout_s=20,
+              "check": ArgSpec(str, required=False, choices=LAB_REPRODUCTION_CHECKS + rule_checks)},
+        build_argv=build, timeout_s=30,
     )
 
 

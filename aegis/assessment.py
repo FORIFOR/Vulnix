@@ -23,12 +23,12 @@ from . import cve
 from .audit import AuditLog
 from .authz import ApprovalStore, Engagement, Target, TokenAuthority
 from .events import EventBus
-from .evidence import (DEEPNOTE_L2_CHECKS, EVIDENCE_LABELS, evidence_status,
+from .evidence import (EVIDENCE_LABELS, evidence_status,
                        evidence_summary, reproduction_note, reproduction_verdict)
 from .gateway import Gateway, State, http_probe_tool, reproduction_probe_tool
 from .lab import get_lab_mode, set_lab_mode
 from .network import EgressGuard, NetworkError, system_resolver
-from .ownership import (DEEPNOTE_STG_PRESETS, PROHIBITED_ACTIONS_SUMMARY,
+from .ownership import (PROHIBITED_ACTIONS_SUMMARY,
                         challenge_for_host, parse_service_target,
                         verify_ownership_challenge)
 from .policy import ArgSpec, Budget, Tool
@@ -38,8 +38,8 @@ from .router import (AbliterationBackend, ArtexEngine, ArtexplannerBackend,
                      verify_planner_connections)
 from .runtime import WorkerPool
 from .secrets_store import EncryptedSecretStore
-from .service_diag import (DEEPNOTE_L2_SPECS, analyze_l1_service_response,
-                           build_deepnote_l2_candidates)
+from .l2_rules import L2RuleSet
+from .service_diag import analyze_l1_service_response, build_l2_candidates
 
 SEVERITY_WEIGHT = {"critical": 40, "high": 25, "medium": 10, "low": 3, "info": 0}
 VERDICT_FACTOR = {"proven": 1.0, "detected": 0.6, "unverified": 0.6, "aborted": 0.6,
@@ -76,8 +76,11 @@ class Assessment:
 
 
 class AssessmentService:
-    def __init__(self, data_dir: Path, lab_port: int, verify_seconds: float = 1.5):
+    def __init__(self, data_dir: Path, lab_port: int, verify_seconds: float = 1.5,
+                 l2_profile_dirs: list[Path] | None = None):
         self.data_dir = Path(data_dir)
+        # Service profiles: per-API L2 rules. Loaded and validated once at start.
+        self.l2 = L2RuleSet.load(l2_profile_dirs)
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.state_path = self.data_dir / "state.json"
         self.secrets = EncryptedSecretStore(self.data_dir)
@@ -108,7 +111,7 @@ class AssessmentService:
             workers=self.workers, audit=self.audit,
             tools={
                 "http_probe": http_probe_tool(),
-                "reproduction_probe": reproduction_probe_tool(),
+                "reproduction_probe": reproduction_probe_tool(self.l2),
                 "demo_verify": demo_verify_tool(verify_seconds),
             },
             budget=Budget(50),
@@ -154,46 +157,10 @@ class AssessmentService:
              "authorization_ref": "", "ownership_verified": False,
              "scope_confirmed": False,
              "note": "書面許可が未登録のため診断できません"},
-            *self._build_deepnote_preset_assets(),
         ]
+        # No service is registered on our behalf: real services enter only through
+        # the ownership flow, and whatever was saved (including deletions) is kept.
         self._load_state_locked()
-        self._ensure_deepnote_presets_locked()
-
-    def _build_deepnote_preset_assets(self) -> list[dict]:
-        presets: list[dict] = []
-        for p in DEEPNOTE_STG_PRESETS:
-            host = p["name"]
-            ch = challenge_for_host(host, self._ownership_secret)
-            presets.append({
-                "id": p["id"],
-                "name": host,
-                "display_name": p["display_name"],
-                "target_url": p["service_url"] + "/",
-                "scheme": p["scheme"],
-                "port": p["port"],
-                "kind": p["kind"],
-                "environment": p["environment"],
-                "gcp_project": p["gcp_project"],
-                "status": "所有確認待ち",
-                "assessment_id": None,
-                "risk": None,
-                "previous_risk_score": None,
-                "last_assessed_at": None,
-                "authorization_ref": "",
-                "ownership_verified": False,
-                "scope_confirmed": False,
-                "challenge": ch,
-                "note": "所有確認（DNS TXT または検証ファイル）と診断範囲確認が必要です（未送信・通信なし）",
-            })
-        return presets
-
-    def _ensure_deepnote_presets_locked(self) -> None:
-        existing_names = {x.get("name", "").lower() for x in self._extra_assets}
-        if self.a.asset.get("name"):
-            existing_names.add(self.a.asset["name"].lower())
-        for preset in self._build_deepnote_preset_assets():
-            if preset["name"].lower() not in existing_names:
-                self._extra_assets.append(preset)
 
     def _external_entry(self, host: str | None) -> dict | None:
         """The verified-external record for `host`, only while it is fully valid
@@ -239,17 +206,17 @@ class AssessmentService:
 
     def _ephemeral_worker_env(self, tool_name: str, args: dict) -> dict[str, str]:
         """Per-call worker environment (never argv, never audit). L2 test
-        credentials are released only to a `reproduction_probe` run of a DeepNote
-        check against the currently active, verified external asset."""
+        credentials are released only to a `reproduction_probe` run of a check that
+        belongs to the profile of the currently active, verified external asset,
+        and only the tokens that one rule needs."""
         env: dict[str, str] = {}
         cafile = os.environ.get("VULNIX_TEST_CA_FILE")
         if cafile:
             env["VULNIX_TEST_CA_FILE"] = cafile
-        check = args.get("check")
-        if (tool_name == "reproduction_probe" and check in DEEPNOTE_L2_CHECKS
-                and self._is_external_service_asset()):
+        rule = self._active_l2_check(args.get("check")) if tool_name == "reproduction_probe" else None
+        if rule is not None:
             env.update(self.secrets.worker_env_for_check(
-                self.a.asset.get("name", "").lower(), check))
+                self.a.asset.get("name", "").lower(), rule))
         return env
 
     def _is_external_service_asset(self, host: str | None = None) -> bool:
@@ -257,13 +224,27 @@ class AssessmentService:
         confirmation. Everything else is the local simulated lab."""
         return self._external_entry(host or self.a.asset.get("name")) is not None
 
+    def _l2_profile(self, host: str | None = None) -> dict | None:
+        """The L2 rule profile bound to a verified external asset, if any."""
+        h = (host or self.a.asset.get("name") or "").lower()
+        return self.l2.profile_for_host(h) if self._external_entry(h) is not None else None
+
+    def _active_l2_check(self, check_id) -> dict | None:
+        """Rule for `check_id` only if it belongs to the active asset's profile."""
+        profile = self._l2_profile()
+        if profile is None or not isinstance(check_id, str):
+            return None
+        return next((c for c in profile["checks"] if c["id"] == check_id), None)
+
     def _ready_l2_checks(self, host: str | None = None) -> set[str]:
         h = (host or self.a.asset.get("name") or "").lower()
-        return {c for c in DEEPNOTE_L2_CHECKS if not self.secrets.missing_for_check(h, c)}
+        profile = self._l2_profile(h)
+        if profile is None:
+            return set()
+        return {c["id"] for c in profile["checks"] if not self.secrets.missing_for_check(h, c)}
 
     def _l2_candidates(self) -> list[dict]:
-        return build_deepnote_l2_candidates(
-            self.a.target_url, ready_checks=self._ready_l2_checks())
+        return build_l2_candidates(self.a.target_url, self._l2_profile(), self._ready_l2_checks())
 
     def _save_state_locked(self) -> None:
         """Persist assessment state, findings, evidence, approvals, and assets atomically."""
@@ -862,30 +843,29 @@ class AssessmentService:
         self,
         *,
         host: str = "",
-        user_a_token: str = "",
-        user_b_token: str = "",
-        free_plan_token: str = "",
+        tokens: dict | None = None,
         mock_paths: dict | None = None,
         actor: str = "operator",
     ) -> dict:
         """Store L2 verification account credentials in the encrypted secret store.
         Never logs or returns raw secret values. Only accepted for a service whose
         ownership and scope are confirmed, because that is the only place the
-        tokens can ever be sent."""
+        tokens can ever be sent. Accepted keys come from the asset's L2 profile."""
         with self._lock:
             target_host = ((host or self.a.asset.get("name") or "").strip().lower())
             if not target_host:
                 raise ValueError("対象のホスト名を指定してください")
             if self._external_entry(target_host) is None:
                 raise ValueError("検証用アカウントは、所有確認と診断範囲確認が完了した実サービスにのみ設定できます")
-            payload: dict[str, str] = {
-                "user_a_token": user_a_token, "user_b_token": user_b_token,
-                "free_plan_token": free_plan_token,
-            }
-            for k, v in (mock_paths or {}).items():
-                if isinstance(v, str):
-                    payload[str(k)] = v
-            status = self.secrets.set_credentials(target_host, payload, actor=actor)
+            profile = self._l2_profile(target_host)
+            if profile is None:
+                raise ValueError("この対象に適用できるL2判定ルール（サービスプロファイル）がないため、検証用アカウントは設定できません")
+            payload: dict[str, str] = {}
+            for src in (tokens or {}, mock_paths or {}):
+                for k, v in src.items():
+                    if isinstance(v, str):
+                        payload[str(k)] = v
+            status = self.secrets.set_credentials(target_host, payload, profile=profile, actor=actor)
             # Refresh L2 candidate notes if active workspace matches
             if self.a.asset.get("name", "").lower() == target_host:
                 for cand in self._l2_candidates():
@@ -898,9 +878,8 @@ class AssessmentService:
             "secrets.configured",
             actor=actor,
             host=target_host,
-            user_a_fingerprint=status.get("user_a_fingerprint"),
-            user_b_fingerprint=status.get("user_b_fingerprint"),
-            free_plan_fingerprint=status.get("free_plan_fingerprint"),
+            profile=profile["id"],
+            token_fingerprints={t["key"]: t["fingerprint"] for t in status["tokens"] if t["set"]},
             l2_ready=status.get("l2_ready"),
         )
         return self.secrets_status(target_host)
@@ -908,7 +887,7 @@ class AssessmentService:
     def secrets_status(self, host: str | None = None) -> dict:
         with self._lock:
             target_host = (host or self.a.asset.get("name") or "").strip().lower()
-            pub = self.secrets.public_status(target_host)
+            pub = self.secrets.public_status(target_host, self._l2_profile(target_host))
             return {
                 **pub,
                 "host": target_host,
@@ -990,7 +969,9 @@ class AssessmentService:
                 "phases": [dict(p) for p in self.a.phases],
                 "activity": self.a.activity,
                 "approvals": list(self.a.approvals.values()),
-                "findings": [{**f, "evidence_status": evidence_status(f)} for f in self.a.findings.values()],
+                "findings": [{**f, "evidence_status": evidence_status(f),
+                              "requires_l2_approval": self.l2.has_check(f.get("reproduce_check"))}
+                             for f in self.a.findings.values()],
                 "risk": risk,
                 "stop_report": self.a.stop_report,
                 "chat_messages": list(self.a.chat_messages),
@@ -1100,7 +1081,7 @@ class AssessmentService:
     def finding_requires_human_l2_approval(self, finding_id: str) -> bool:
         with self._lock:
             f = self.a.findings.get(finding_id) or {}
-            return f.get("reproduce_check") in DEEPNOTE_L2_CHECKS
+            return self.l2.has_check(f.get("reproduce_check"))
 
     def verify_finding(self, finding_id: str, actor: str) -> dict:
         """Execute a real Gateway + Worker probe for a specific finding on demand
@@ -1130,7 +1111,7 @@ class AssessmentService:
                 # each L2 item needs its own explicit human approval.
                 self._think(
                     "L2項目は一括実行しません",
-                    "実サービスのL2検証（IDOR/共有リンク/GCS/AIチャット/課金プラン）は、項目ごとの人間承認でのみ実行します。今回はL1の読み取り専用検査のみ再実行しました。",
+                    "実サービスのL2検証（認可・テナント分離などの項目）は、項目ごとの人間承認でのみ実行します。今回はL1の読み取り専用検査のみ再実行しました。",
                     phase="verification", tool="Gateway", level="L1",
                 )
             else:
@@ -1168,19 +1149,24 @@ class AssessmentService:
             target_f = dict(self.a.findings[finding_id])
 
         dn_check = target_f.get("reproduce_check")
-        if dn_check in DEEPNOTE_L2_CHECKS:
+        if self.l2.has_check(dn_check):
             if not self._is_external_service_asset():
                 raise ValueError("L2再現試験は、所有確認と診断範囲確認が完了した実サービスでのみ実行できます")
-            missing = self.secrets.missing_for_check(self.a.asset.get("name", "").lower(), dn_check)
+            l2_check = self._active_l2_check(dn_check)
+            if l2_check is None:
+                raise ValueError("この検証項目は、現在の対象に適用された判定ルール（サービスプロファイル）に含まれていません")
+            l2_wrule = self.l2.worker_rule(dn_check)
+            missing = self.secrets.missing_for_check(self.a.asset.get("name", "").lower(), l2_check)
             if missing:
+                labels = self._l2_profile()["tokens"]
                 raise ValueError(
                     "L2再現試験を実行するには、先に検証用アカウント（暗号化シークレット）を設定してください"
-                    f"（未設定: {', '.join(missing)}）"
+                    f"（未設定: {', '.join(labels[m]['label'] for m in missing)}）"
                 )
             if not actor or str(actor).startswith("policy:auto"):
                 raise ValueError("L2再現試験には人間の個別承認が必要です（自動承認不可）")
             self._think(
-                f"DeepNote L2検証（{dn_check}）の個別承認実行",
+                f"L2検証（{dn_check}）の個別承認実行",
                 f"人間承認者（{actor}）の承認に基づき、暗号化シークレットの検証用アカウントを用いて {target_f['title']} を非破壊検証します。",
                 phase="verification",
                 tool="reproduction_probe",
@@ -1202,7 +1188,8 @@ class AssessmentService:
                 approval_id=apr,
             )
             if res and ev:
-                outcome = reproduction_verdict(res, dn_check)
+                outcome = reproduction_verdict(res, dn_check, worker_rule=l2_wrule)
+                l2_note = reproduction_note(res, dn_check, rule=l2_check, worker_rule=l2_wrule)
                 est = outcome == "proven"
                 ev_enriched = {
                     **ev,
@@ -1211,8 +1198,8 @@ class AssessmentService:
                     "verification_conditions": f"L2人間承認済み ({actor}) / check={dn_check} / 検証用アカウント＆模擬データ限定",
                 }
                 self._think(
-                    f"DeepNote L2検証（{dn_check}）の判定完了",
-                    reproduction_note(res, dn_check) + f" [証拠 {ev['evidence_id']}]",
+                    f"L2検証（{dn_check}）の判定完了",
+                    l2_note + f" [証拠 {ev['evidence_id']}]",
                     phase="verification",
                     tool="reproduction_probe",
                     level="L2",
@@ -1226,10 +1213,10 @@ class AssessmentService:
                         "verdict": outcome,
                         "_in_verification": False,
                         "what_was_established": (
-                            f"検証用アカウントを用いた非破壊プローブ（{dn_check}）により、権限境界の突破マーカーが実機応答で確認されました。"
+                            f"検証用アカウントを用いた非破壊プローブ（{dn_check}）で、権限のないアカウントへの応答に所有者側の模擬データが含まれることを確認しました。"
                             if est else None
                         ),
-                        "verdict_note": reproduction_note(res, dn_check),
+                        "verdict_note": l2_note,
                         "executor": {**EXECUTOR, "tool": "reproduction_probe"},
                         "evidence": prev_ev + [ev_enriched],
                     })
@@ -1409,9 +1396,10 @@ class AssessmentService:
 
         if is_ext:
             ready = self._ready_l2_checks()
-            for spec in DEEPNOTE_L2_SPECS:
-                fid = spec["id"]
-                chk = spec["check"]
+            for l2_check in (self._l2_profile() or {"checks": []})["checks"]:
+                fid = l2_check["finding"]["id"]
+                chk = l2_check["id"]
+                l2_wrule = self.l2.worker_rule(chk)
                 # only items a human already approved and ran once are re-run
                 if fid in before_verdicts and chk in ready:
                     apr_dn = self.approval_store.approve(actor, "eng_demo", "lab", "safe_reproduction")
@@ -1421,12 +1409,13 @@ class AssessmentService:
                                             {"url": url, "check": chk}, approval_id=apr_dn)
                     with self._lock:
                         finding = self.a.findings[fid]
-                        verdict = reproduction_verdict(r_dn, chk)
+                        verdict = reproduction_verdict(r_dn, chk, worker_rule=l2_wrule)
+                        l2_note = reproduction_note(r_dn, chk, rule=l2_check, worker_rule=l2_wrule)
                         latest_ids[fid] = e_dn["evidence_id"] if e_dn else None
                         self._upsert_finding({
                             **finding, "verdict": verdict, "_in_verification": False,
-                            "what_was_established": reproduction_note(r_dn, chk) if verdict == "proven" else None,
-                            "verdict_note": reproduction_note(r_dn, chk),
+                            "what_was_established": l2_note if verdict == "proven" else None,
+                            "verdict_note": l2_note,
                             "evidence": finding["evidence"] + ([e_dn] if e_dn else []),
                         })
         else:
@@ -1595,7 +1584,7 @@ class AssessmentService:
             # per-item human approval are provided.
             self._think(
                 "実サービス L1 読み取り専用診断の完了（L2は個別人間承認待ち）",
-                "所有確認のみでL2侵入実証を自動承認しない安全原則に従い、L1検査結果を確定しました。L2項目（IDOR/共有リンク/GCS/AIチャット/課金プラン）は検証用アカウント設定と個別の人間承認後に実行できます。",
+                "所有確認のみでL2侵入実証を自動承認しない安全原則に従い、L1検査結果を確定しました。L2項目（対象に判定ルールが設定されている場合）は検証用アカウント設定と個別の人間承認後に実行できます。",
                 phase="verification",
                 tool="Gateway",
                 level="L1",
