@@ -185,6 +185,9 @@ class EncryptedSecretStore:
         except OSError:
             return False
 
+    def asset_ids(self) -> list[str]:
+        return sorted(self._cache)
+
     def has_any_token(self, asset_id: str) -> bool:
         rec = self._cache.get(asset_id) or {}
         return any(_is_token_key(k) and v for k, v in rec.items())

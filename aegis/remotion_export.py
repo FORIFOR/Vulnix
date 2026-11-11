@@ -354,12 +354,24 @@ def _enum(value, allowed, default):
 
 
 def _score(value):
-    return max(0, min(100, int(value))) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value != value or value in (
+            float("inf"), float("-inf")):
+        return None
+    return max(0, min(100, int(value)))
 
 
 def _hash16(value) -> str:
-    v = str(value or "").lower()[:16]
-    return v if _HEX.fullmatch(v) else ""
+    """The first 16 hex digits of a full SHA-256 digest - and nothing shorter or
+    other-shaped (a port number or a timestamp is also 'hex')."""
+    v = value.lower() if isinstance(value, str) else ""
+    return v[:16] if re.fullmatch(r"[0-9a-f]{64}", v) else ""
+
+
+MAX_PUBLIC_ITEMS = 200
+
+
+def _dicts(value) -> list[dict]:
+    return [x for x in value if isinstance(x, dict)][:MAX_PUBLIC_ITEMS] if isinstance(value, list) else []
 
 
 def to_public_export(full: dict) -> dict:
@@ -390,23 +402,23 @@ def to_public_export(full: dict) -> dict:
             "fix": fix,
         }
 
-    confirmed = [finding(f) for f in full.get("confirmed_findings", [])]
-    candidates = [finding(f) for f in full.get("unverified_candidates", [])]
+    confirmed = [finding(f) for f in _dicts(full.get("confirmed_findings"))]
+    candidates = [finding(f) for f in _dicts(full.get("unverified_candidates"))]
     checks = [{
         "id": f"check-{i + 1}",
         "phase": _enum(c.get("phase"), _PHASES, "L1"),
         "title": _TOOLS.get(str(c.get("tool")), "検査"),
         "tool": _enum(c.get("tool"), tuple(_TOOLS), "other"),
         "status": "completed",
-    } for i, c in enumerate(full.get("executed_checks", []))]
+    } for i, c in enumerate(_dicts(full.get("executed_checks")))]
     comparisons = [{
         "check_key": neutral(c.get("check_key")),
         "before_status": _enum(c.get("before_status"), _STATUSES, "unverified"),
         "after_status": _enum(c.get("after_status"), _STATUSES, "unverified"),
         "defense_verified": c.get("defense_verified") is True,
-    } for c in full.get("before_after_comparisons", [])]
+    } for c in _dicts(full.get("before_after_comparisons"))]
 
-    svc = full.get("service") or {}
+    svc = full.get("service") if isinstance(full.get("service"), dict) else {}
     ownership = svc.get("ownership_and_scope_confirmed") is True
     name = PUBLIC_SERVICE_NAME if ownership else PUBLIC_LAB_NAME
     risk = svc.get("risk") if isinstance(svc.get("risk"), dict) else {}
@@ -430,7 +442,7 @@ def to_public_export(full: dict) -> dict:
         events.append({"frame": frame, "duration_frames": 75, "scene": "before_after_comparison", **c})
         frame += 75
 
-    summary = full.get("summary") or {}
+    summary = full.get("summary") if isinstance(full.get("summary"), dict) else {}
     return {
         "schema_version": "vulnix-remotion-v1",
         "anonymized": True,

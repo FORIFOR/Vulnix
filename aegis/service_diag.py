@@ -11,6 +11,7 @@ Implements:
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Optional
 import urllib.parse
 
@@ -61,11 +62,24 @@ _UNSAFE_TEXT = re.compile(
     r"\U000e0000-\U000e007f<>`\[\]]")
 
 
+_BLANK_LOOKALIKES = frozenset("\u3164\u2800\u115f\u1160\uffa0")     # render as nothing but are "letters"
+
+
 def clean_target_text(value, limit: int = 512) -> str:
     """Text taken from a target's response, made safe to embed in titles, summaries
     and the Markdown report: bounded length, no control characters, no HTML tags
     and no Markdown link/code syntax."""
-    return _UNSAFE_TEXT.sub("", str(value))[:limit]
+    kept = []
+    for ch in _UNSAFE_TEXT.sub("", str(value)):
+        cat = unicodedata.category(ch)
+        # control, format, surrogate, private-use, unassigned, line/paragraph
+        # separators and combining marks (variation selectors, joiners, fillers)
+        if cat[0] == "C" or cat in ("Zl", "Zp", "Mn", "Me") or ch in _BLANK_LOOKALIKES:
+            continue
+        kept.append(ch)
+        if len(kept) >= limit:
+            break
+    return "".join(kept)
 
 
 def _hsts_effective(value: str) -> bool:
@@ -158,10 +172,18 @@ def analyze_l1_service_response(
             )
 
     # 1b. No TLS at all (an http endpoint that only redirects to https is the recommended setup)
-    location = urllib.parse.urlsplit(headers_lower.get("location", "").strip())
+    raw_location = headers_lower.get("location", "").strip()
+    try:
+        location = urllib.parse.urlsplit(raw_location)
+        location_host = (location.hostname or "").rstrip(".").lower()
+    except ValueError:
+        location, location_host = urllib.parse.urlsplit(""), ""
     redirects_to_https = (isinstance(status_code, int) and status_code in (301, 302, 303, 307, 308)
+                          # browsers and URL parsers disagree about "\\" and "@": do not guess
+                          and "\\" not in raw_location and "@" not in raw_location
                           and location.scheme.lower() == "https"
-                          and (location.hostname or "").lower() == (parsed_url.hostname or "").lower())
+                          and location_host != ""
+                          and location_host == (parsed_url.hostname or "").rstrip(".").lower())
     if not is_https and not redirects_to_https:
         r_score, r_rat = compute_finding_risk_score("high", "proven", internet_facing=False)
         findings.append(

@@ -60,7 +60,10 @@ _PATH_RE = re.compile(r"/[!-~]{0,299}")
 # spelled that character out literally.
 _OV_LIT = r"(?:[A-Za-z0-9/_=&~:,-]|\\[.?])"
 _OV_SEP = r"(?:[/=&~:,]|\\[.?])"
-_OV_CLASS = r"\[(?:A-Z|a-z|0-9|_|-)+\]\{\d{1,3}(?:,\d{1,3})?\}"
+# the class is spelled in ONE fixed order with "-" only as the last character, so
+# it can never form a range other than A-Z, a-z, 0-9 (e.g. no "[--0-9]", which
+# Python would read as the range "-" .. "0" and which contains "." and "/")
+_OV_CLASS = r"\[(?=[^\]])(?:A-Z)?(?:a-z)?(?:0-9)?_?-?\]\{\d{1,3}(?:,\d{1,3})?\}"
 _SAFE_OVERRIDE_PATTERN = re.compile(
     rf"{_OV_LIT}+(?:{_OV_CLASS}{_OV_SEP}{_OV_LIT}*)*(?:{_OV_CLASS})?")
 _HOST_RE = re.compile(r"[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?")
@@ -264,8 +267,10 @@ def validate_profile(raw, source: str = "<profile>") -> dict:
                   f"`paths.{k}.override_pattern` must be literal text with variable parts written as "
                   "[A-Za-z0-9_-]{m,n}, each followed by a separator (/ = & : ~ , \\. \\?) or the end")
             for lo, hi in re.findall(r"\{(\d+)(?:,(\d+))?\}", pattern):
-                _need(int(lo) <= int(hi or lo) <= 300, where,
-                      f"`paths.{k}.override_pattern` repeat counts must satisfy m <= n <= 300")
+                # m >= 1: a variable part can never be empty, so two separators (or two
+                # dots) written around it can never end up next to each other
+                _need(1 <= int(lo) <= int(hi or lo) <= 300, where,
+                      f"`paths.{k}.override_pattern` repeat counts must satisfy 1 <= m <= n <= 300")
             _need("\\.\\." not in pattern and "/\\./" not in pattern, where,
                   f"`paths.{k}.override_pattern` must not contain '..' or '/./'")
             try:

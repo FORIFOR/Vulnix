@@ -481,7 +481,7 @@ class TestPublicExportIsAnAllowList(unittest.TestCase):
 
     def snapshot(self):
         m = self.MARK
-        ev = {"evidence_id": f"ev_{m}", "audit_hash": "ab12cd34ef56ab12cd34", "saved_at": 1.0, "tool": "http_probe",
+        ev = {"evidence_id": f"ev_{m}", "audit_hash": "ab12cd34ef56ab12" + "0" * 48, "saved_at": 1.0, "tool": "http_probe",
               "target_url": f"https://{m}.internal.example:8443/{m}", "content": f"Set-Cookie: sid={m}"}
         def finding(fid, status, level="L1", **extra):
             return {"id": fid, "title": f"{m} title", "severity": "high", "risk_score": 71, "risk_level": level,
@@ -822,6 +822,133 @@ class TestScopeEndpointMismatch2(RealServiceBase):
                 with self.assertRaises(ValueError):
                     self.svc.confirm_asset_scope(url_or_host=form, approver="appr", allow_loopback_test=True)
         self.assertNotIn(HOST, self.svc._verified_external_hosts)
+
+
+# ------------------------------------------------------------------ seventh review
+class TestStaleRunnerAndRelabelling(Ready):
+    def external(self):
+        ext = RecordingBackend()
+        self.svc._chat_backend = ext
+        return ext
+
+    def test_a_runner_from_an_earlier_workspace_writes_nothing_and_sends_nothing(self):
+        old_gen = self.svc._run_generation
+        real_res = {"status": 200, "headers": {"Server": "nginx", "Set-Cookie": "sid=abc"}, "set_cookies": ["sid=abc"]}
+        real_ev = {"evidence_id": "ev_x", "audit_hash": "a" * 64, "saved_at": 1.0, "tool": "http_probe",
+                   "target_url": self.svc.a.target_url, "content": "sid=abc", "origin": "real_service"}
+        self.svc.emergency_stop("appr")
+        self.svc.select_asset("lab")                                 # new workspace, new generation
+        self.assertGreater(self.svc._run_generation, old_gen)
+        before = json.dumps(self.svc.snapshot()["findings"], sort_keys=True, ensure_ascii=False)
+        self.fake.seen.clear()
+        outcome = {}
+
+        def stale():
+            self.svc._tls.gen = old_gen                               # a runner that was parked across the switch
+            from aegis.assessment import _Stopped
+            for name, call in (("analyze", lambda: self.svc._analyze(real_res, real_ev)),
+                               ("upsert", lambda: self.svc._upsert_finding({"id": "f_headers", "evidence": [real_ev]})),
+                               ("phase", lambda: self.svc._phase("config", "done", "x")),
+                               ("state", lambda: self.svc._set_state("completed")),
+                               ("checkpoint", lambda: self.svc._checkpoint()),
+                               ("exec", lambda: self.svc._exec("http_probe", "read_only_probe",
+                                                               {"url": self.svc.a.target_url, "method": "GET"},
+                                                               approval_actor="policy:auto-L1"))):
+                try:
+                    call()
+                    outcome[name] = "ran"
+                except _Stopped:
+                    outcome[name] = "stopped"
+            self.svc._fail("stale failure")
+            self.svc._run(old_gen)                                    # a whole stale run
+        t = threading.Thread(target=stale)
+        t.start()
+        t.join(30)
+        self.assertEqual(set(outcome.values()), {"stopped"}, outcome)
+        self.assertEqual(json.dumps(self.svc.snapshot()["findings"], sort_keys=True, ensure_ascii=False), before)
+        self.assertNotEqual(self.svc.snapshot()["state"], "failed")
+        self.assertEqual(self.fake.seen, [])
+
+    def test_evidence_keeps_its_origin_when_the_asset_is_deleted_and_the_name_reused(self):
+        ext = self.external()
+        real = next(f for f in self.svc.snapshot()["findings"] if f.get("evidence"))
+        self.assertEqual({e["origin"] for e in real["evidence"]}, {"real_service"})
+        real_id = self.svc.a.asset["id"]
+        self.svc.select_asset("lab")
+        self.svc.delete_asset(real_id)                                 # the approver deletes the real asset
+        with self.assertRaises(ValueError):                            # the name cannot come back as a lab alias
+            self.svc.register_asset(name=HOST, kind="API", environment="x", authorization_ref="S",
+                                    ownership_verified=True, activate_workspace=True)
+        # even with the residue planted and the name forgotten, the recorded origin decides
+        self.svc._real_service_hosts.discard(HOST)
+        self.svc._allowed_hosts.add(HOST)
+        self.svc.a.findings["planted"] = {**real, "id": "planted"}
+        for variant in (real["evidence"], [{**real["evidence"][0], "target_url": "/relative"}],
+                        [{k: v for k, v in real["evidence"][0].items() if k != "origin"}],
+                        [{**real["evidence"][0], "origin": "lab", "target_url": ""}]):
+            self.svc.a.findings["planted"]["evidence"] = variant
+            self.svc.ask_chat("説明して", "op", finding_id="planted")
+        self.assertEqual(ext.chats, [])
+        # the name can still be registered again as a real service
+        self.svc._real_service_hosts.add(HOST)
+        self.assertTrue(self.svc.issue_ownership_challenge(url=self.url, approver="appr")["challenge"]["token"])
+
+    def test_lab_evidence_is_labelled_lab_and_may_be_explained_by_the_model(self):
+        ext = self.external()
+        self.svc.select_asset("lab")
+        self.svc.verify_finding("f_idor", "appr")
+        lab = self.svc.a.findings["f_idor"]
+        self.assertEqual({e["origin"] for e in lab["evidence"] if e.get("audit_hash")}, {"lab"})
+        self.svc.ask_chat("説明して", "op", finding_id="f_idor")
+        self.assertEqual(len(ext.chats), 1)
+
+    def test_tokens_left_on_disk_by_a_failed_rewrite_are_dropped_at_startup(self):
+        with patch("aegis.secrets_store.EncryptedSecretStore._save_all", side_effect=OSError("disk full")):
+            self.svc.verify_asset_ownership(url_or_host=self.url, dns_lookup=lambda n: [])   # revoke; rewrite fails
+        self.svc.workers.kill_all()
+        again = AssessmentService(self.dir, LAB_PORT, verify_seconds=0.1, l2_profile_dirs=PROFILE_DIRS)
+        self.assertFalse(again.secrets.has_any_token(HOST))
+        self.assertTrue([e for e in again.audit.entries() if e["event"] == "secrets.orphan_cleared"])
+        again.workers.kill_all()
+
+
+class TestSeventhReviewDetails(unittest.TestCase):
+    def test_class_ranges_and_empty_repeats_cannot_be_smuggled_into_a_pattern(self):
+        t = TestOverridePatternLanguage()
+        for bad in ("/api/notes/[--0-9]{1,64}", "/api/notes/[A-Z--a-z]{1,64}",
+                    "/api/notes/\\.[a-z]{0,3}\\./[a-z]{1,9}", "/api/[a-z]{0,9}/x", "/api/notes/[a-zA-Z]{1,9}",
+                    "/api/notes/[-_]{1,9}", "/api/notes/[]{1,9}", "/" + "[--a-z]{0,300}/" * 12 + "x"):
+            with self.subTest(pattern=bad):
+                self.assertFalse(t.check(bad))
+        self.assertTrue(t.check("/api/notes/[A-Za-z0-9_-]{1,64}"))
+
+    def test_public_export_never_raises_and_publishes_only_real_digest_prefixes(self):
+        from aegis.remotion_export import to_public_export
+        nan = float("nan")
+        weird = [None, 1, "x", [], [1, "a", None], {"service": "x", "summary": [], "confirmed_findings": "nope"},
+                 {"confirmed_findings": [1, None, {"risk_score": nan, "audit_hash": 8443, "id": ["x"]},
+                                         {"risk_score": float("inf"), "audit_hash": "1731369600", "severity": {}}],
+                  "executed_checks": [None, {"phase": 3, "tool": []}], "before_after_comparisons": [{"check_key": {}}],
+                  "service": {"risk": {"score": nan, "label": 5}}}]
+        for full in weird:
+            out = to_public_export(full if isinstance(full, dict) else {})
+            text = json.dumps(out, ensure_ascii=False)
+            self.assertNotIn("8443", text)
+            self.assertNotIn("1731369600", text)
+        big = {"confirmed_findings": [{"id": f"f{i}"} for i in range(20000)]}
+        self.assertLessEqual(len(to_public_export(big)["confirmed_findings"]), 200)
+
+    def test_redirect_with_ambiguous_authority_is_not_trusted(self):
+        for location in ("https://evil.example\\@x.example/", "https://evil.example@x.example/",
+                         "https://x.example.evil.example/"):
+            self.assertIn("f_l1_no_tls", analyze({"Location": location}, url="http://x.example/", status=301,
+                                                 tls=False), location)
+        self.assertNotIn("f_l1_no_tls", analyze({"Location": "https://x.example./"}, url="http://x.example./",
+                                                status=301, tls=False))
+
+    def test_invisible_format_characters_do_not_survive(self):
+        self.assertEqual(clean_target_text("a\ufe0fb\U000e0100c\u180ed\u3164e\u2800f\ufff9g\u034fh"), "abcdefgh")
+        self.assertEqual(clean_target_text("nginx/1.25.3 (Ubuntu) é 日本語"), "nginx/1.25.3 (Ubuntu) é 日本語")
 
 
 if __name__ == "__main__":

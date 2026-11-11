@@ -133,6 +133,11 @@ class AssessmentService:
         # default is the bundled templates plus SITE profiles from the data directory,
         # which stay non-runnable until an admin accepts their exact content.
         _claim_data_dir(self.data_dir)
+        # Every workspace reset starts a new generation. A runner thread belongs to
+        # the generation it was started in; once that is over it may not write a
+        # single result, however it comes to be scheduled again.
+        self._run_generation = 0
+        self._tls = threading.local()
         self._inflight = 0                 # verification operations in progress
         self._persist_error: str | None = None
         self._l2_dirs = list(l2_profile_dirs) if l2_profile_dirs else None
@@ -244,6 +249,13 @@ class AssessmentService:
         # the ownership flow, and whatever was saved (including deletions) is kept.
         self._load_state_locked()
         self._apply_profile_acceptance_locked(startup=True)
+        # Stored test accounts exist only for a service that currently has a proof
+        # or a confirmed scope. Anything else (e.g. left behind when a revocation
+        # could not rewrite the token file) is dropped at startup.
+        for orphan in self.secrets.asset_ids():
+            if orphan not in self._ownership_proofs and orphan not in self._verified_external_hosts:
+                self.secrets.clear_credentials(orphan)
+                self.audit.record("secrets.orphan_cleared", host=orphan)
 
     def _external_entry(self, host: str | None) -> dict | None:
         """The verified-external record for `host`, only while it is fully valid
@@ -311,6 +323,8 @@ class AssessmentService:
             ext = self._external_entry(h)
             if ext is None:
                 return []
+            if self._persist_error:
+                raise NetworkError("状態を保存できないため、名前解決と送信を中止しました")
             resolver_fn = self._custom_resolver or system_resolver
             allow_loopback = bool(ext.get("allow_loopback_test"))
             safe_addrs: list[str] = []
@@ -633,11 +647,11 @@ class AssessmentService:
             try:
                 current = hashlib.sha256(self._canonical(self._authority_tables()).encode("utf-8")).hexdigest()
                 if current != self._persisted_authority_digest:
+                    self._authority_digest = ""          # a later successful save issues a new epoch
                     try:
                         os.unlink(self._epoch_path())
                     except FileNotFoundError:
                         pass
-                    self._authority_digest = ""          # a later successful save issues a new epoch
             except Exception:
                 pass
             # Not persisted: what is on disk may still grant authority that was just
@@ -1169,7 +1183,8 @@ class AssessmentService:
             was_real = self._in_ownership_flow(gone) or gone in self._ownership_proofs
             self._verified_external_hosts.pop(gone, None)
             self._ownership_proofs.pop(gone, None)
-            self._real_service_hosts.discard(gone)
+            # the name stays marked as a real service: it can be registered again
+            # through the ownership flow, but never as a lab alias
             self._l2_requests = {k: v for k, v in self._l2_requests.items() if v.get("host") != gone}
             self.secrets.clear_credentials(gone)
             if was_real:
@@ -1564,6 +1579,7 @@ class AssessmentService:
         )
 
     def _reset_workspace_locked(self) -> None:
+        self._run_generation += 1          # any runner of the previous workspace is now stale
         self.workers.kill_all()
         self.workers = WorkerPool(max_concurrent=2)
         self.gateway.workers = self.workers
@@ -1663,7 +1679,8 @@ class AssessmentService:
             self._ensure_active_window_locked()
             set_lab_mode("vulnerable")
             self._set_state("running")
-            self._thread = threading.Thread(target=self._run, daemon=True, name="runner")
+            self._thread = threading.Thread(target=self._run, args=(self._run_generation,),
+                                            daemon=True, name="runner")
             self._thread.start()
 
     def restart(self, actor: str = "operator") -> dict:
@@ -1675,7 +1692,8 @@ class AssessmentService:
             self._ensure_active_window_locked()
             set_lab_mode("vulnerable")
             self._set_state("running")
-            self._thread = threading.Thread(target=self._run, daemon=True, name="runner")
+            self._thread = threading.Thread(target=self._run, args=(self._run_generation,),
+                                            daemon=True, name="runner")
             self._thread.start()
         self.audit.record("assessment.restarted", actor=actor, target=self.a.asset["name"])
         return self.snapshot()
@@ -2291,7 +2309,13 @@ class AssessmentService:
             return self.snapshot()
 
     # ---- runner -------------------------------------------------------------
-    def _run(self) -> None:
+    def _stale_runner(self) -> bool:
+        """True in a runner thread whose workspace generation is over."""
+        gen = getattr(self._tls, "gen", None)
+        return gen is not None and gen != self._run_generation
+
+    def _run(self, generation: int | None = None) -> None:
+        self._tls.gen = self._run_generation if generation is None else generation
         try:
             self._run_inner()
         except _Stopped:
@@ -2569,6 +2593,8 @@ class AssessmentService:
                 if self._persist_error:
                     self._fail("状態をディスクに保存できないため、実サービスへの送信を中止しました")
                     return None, None
+        with self._lock:
+            origin = "real_service" if self._in_ownership_flow(self.a.asset.get("name")) else "lab"
         if (tool == "reproduction_probe" and args.get("check", "idor") in LAB_REPRODUCTION_CHECKS
                 and self._in_ownership_flow(self.a.asset.get("name"))):
             # last line of defence, whatever path led here: the bundled lab's attack
@@ -2592,7 +2618,8 @@ class AssessmentService:
         finally:
             if auto_approval:       # an automatic L1 approval is for this one call only
                 self.approval_store.revoke(approval_id)
-        if self.gateway.state is State.STOPPED:
+        if self.gateway.state is State.STOPPED or self._stale_runner():
+            # the result belongs to a workspace that no longer exists: it is dropped
             raise _Stopped()
         if not d.allowed:
             self._fail(f"Gateway が拒否しました: {d.reason}")
@@ -2606,6 +2633,9 @@ class AssessmentService:
             "evidence_id": "ev_" + entry["hash"][:12],
             "kind": f"{tool} 出力",
             "tool": tool,
+            # fixed at the moment of measurement; later changes to the asset list
+            # (deletion, re-registration under the same name) cannot relabel it
+            "origin": origin,
             "target_url": args.get("url", self.a.target_url),
             "saved_at": entry["ts"],
             "audit_hash": entry["hash"],
@@ -2614,6 +2644,8 @@ class AssessmentService:
         return json.loads(clean_stdout), evidence
 
     def _analyze(self, res: dict, ev: dict) -> str:
+        if self._stale_runner():
+            raise _Stopped()
         if self._is_external_service_asset():
             l1_findings = analyze_l1_service_response(
                 res, ev, self.a.target_url, self.cve_monitor
@@ -2739,7 +2771,7 @@ class AssessmentService:
 
     def _checkpoint(self, allow_pause=False) -> None:
         while True:
-            if self.gateway.state is State.STOPPED or self.a.state == "stopped":
+            if self.gateway.state is State.STOPPED or self.a.state == "stopped" or self._stale_runner():
                 raise _Stopped()
             if self.a.state != "paused" or allow_pause:
                 return
@@ -2747,6 +2779,8 @@ class AssessmentService:
 
     def _phase(self, key, status, detail):
         with self._lock:
+            if self._stale_runner():
+                raise _Stopped()
             p = next(p for p in self.a.phases if p["key"] == key)
             p["status"], p["detail"] = status, detail
             self._save_state_locked()
@@ -2759,12 +2793,16 @@ class AssessmentService:
             self.bus.publish(self.a.id, "activity.updated", activity=self.a.activity)
 
     def _set_state(self, state):
+        if self._stale_runner():
+            raise _Stopped()
         self.a.state = state
         self._save_state_locked()
         self.bus.publish(self.a.id, "assessment.state", state=state, risk=self._risk())
 
     def _upsert_finding(self, f):
         with self._lock:
+            if self._stale_runner():
+                raise _Stopped()
             self.a.findings[f["id"]] = f
             self._save_state_locked()
             self.bus.publish(self.a.id, "finding.upserted",
@@ -2779,6 +2817,8 @@ class AssessmentService:
 
     def _fail(self, msg):
         with self._lock:
+            if self._stale_runner():
+                return          # not this workspace's failure to report
             self.audit.record("assessment.failed", reason=msg)
             self.bus.publish(self.a.id, "agent.note", message=msg)
             for p in self.a.phases:
@@ -2852,18 +2892,19 @@ class AssessmentService:
             return {"message": ai_msg, "chat_messages": list(self.a.chat_messages), "planner": self.planner_status()}
 
     def _finding_touches_real_service(self, finding: dict | None) -> bool:
-        """True if any evidence of the finding was taken from a host registered as
-        a real service - whatever asset happens to be active now."""
+        """Whether a finding may NOT be shown to an external model. Allow-list: only
+        evidence that was recorded as taken from the local lab passes. Evidence
+        from a real service, evidence of unknown origin, and anything that names a
+        host registered as a real service are all treated as real."""
         if not finding:
             return False
         if finding.get("l2_profile") or finding.get("requires_l2_approval"):
             return True
         for ev in finding.get("evidence") or []:
-            if not isinstance(ev, dict):
-                continue
+            if not isinstance(ev, dict) or ev.get("origin") != "lab":
+                return True
             host = (urllib.parse.urlsplit(str(ev.get("target_url") or "")).hostname or "").lower()
-            if host and host not in ("lab.test", "api.lab.test") and (
-                    self._in_ownership_flow(host) or host not in self._allowed_hosts):
+            if not host or self._in_ownership_flow(host) or host not in self._allowed_hosts:
                 return True
         return False
 
@@ -2889,13 +2930,17 @@ class AssessmentService:
             })
             done_phases = sum(1 for p in self.a.phases if p["status"] == "done")
             total_phases = len(self.a.phases)
+            # decided under the same lock that took the context: nothing can change
+            # the asset or its registration between the check and the send
+            external_ok = (not self._in_ownership_flow(self.a.asset.get("name"))
+                           and not self._finding_touches_real_service(target_f)
+                           and not any(k in self.a.asset for k in ("challenge", "ownership_proof")))
         target_f = context["target_finding"]
         ext = self._chat_backend
         # Findings and evidence of a real service (response bodies, cookies, the
         # ownership challenge, names) never leave this machine: the external model
         # is used for the local lab only.
-        if (ext is not None and not self._in_ownership_flow(context["asset"].get("name"))
-                and not self._finding_touches_real_service(target_f)):
+        if ext is not None and external_ok:
             ans = ext.chat(q, context)
             if ans:
                 with self._lock:
