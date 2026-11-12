@@ -76,14 +76,16 @@ def ruleset(name: str, ip: str, port: int) -> str:
     if not _NAME.fullmatch(name) or not 0 < int(port) < 65536:
         raise ConfinementError("invalid confinement parameters")
     fam = "ip6" if addr.version == 6 else "ip"
+    mark = flow_mark(name)
     return "\n".join([
         f"table inet {name} {{",
         "  chain confined {",
-        # only flows this cgroup opened itself (those can only go to the pinned
-        # destination); replies on a connection somebody else opened TO the worker
-        # are not let out
-        "    ct state established ct direction original accept",
-        f"    {fam} daddr {addr} tcp dport {int(port)} ct state new accept",
+        # Established traffic passes only on a flow whose FIRST packet this run's
+        # pinned rule accepted (it carries this run's conntrack mark) - not on a
+        # flow somebody else opened (e.g. a UDP tuple a closed socket left in
+        # conntrack), and not replies on a connection opened TO the worker.
+        f"    ct state established ct direction original ct mark {mark:#x} {fam} daddr {addr} accept",
+        f"    {fam} daddr {addr} tcp dport {int(port)} ct state new ct mark set {mark:#x} accept",
         "    counter drop",
         "  }",
         "  chain output {",
@@ -93,6 +95,12 @@ def ruleset(name: str, ip: str, port: int) -> str:
         "}",
         "",
     ])
+
+
+def flow_mark(name: str) -> int:
+    """A conntrack mark that belongs to one run (never 0)."""
+    import hashlib as _h
+    return (int.from_bytes(_h.sha256(name.encode()).digest()[:4], "big") | 0x1) & 0x7FFFFFFF
 
 
 def dropped_packets(listing: str) -> int:
@@ -165,8 +173,15 @@ class KernelConfinement:
         import pwd
         for _ in range(64):
             uid = self.UID_RANGE[0] + secrets.randbelow(self.UID_RANGE[1] - self.UID_RANGE[0])
+            import grp
             try:
                 pwd.getpwuid(uid)
+                continue
+            except KeyError:
+                pass
+            try:
+                grp.getgrgid(uid)            # used as the gid as well
+                continue
             except KeyError:
                 return uid
         raise ConfinementError("Worker 用の未使用 UID を確保できません")
@@ -219,6 +234,21 @@ class KernelConfinement:
             return False
         return True
 
+    def reattach(self, name: str) -> "ConfinementSession":
+        """A cgroup (and its nftables table) left behind by an earlier run of this
+        installation, e.g. found on record after a restart: it can be checked,
+        killed and removed, nothing else."""
+        if not _NAME.fullmatch(name or ""):
+            raise ConfinementError("invalid cgroup name")
+        sess = ConfinementSession.__new__(ConfinementSession)
+        sess._o, sess.name = self, name
+        sess.cgroup = self._root / name
+        sess.ip, sess.port, sess.uid, sess.forbidden = "", 0, None, ()
+        sess.protected_pid, sess.evidence, sess.on_leftover = os.getpid(), {}, None
+        sess._table = sess._dir = True
+        sess.leftover = True
+        return sess
+
     def interpreter_reachable_by_others(self) -> str:
         """"" when an unrelated uid can run this Python; otherwise why not."""
         import sysconfig
@@ -255,6 +285,7 @@ class ConfinementSession:
         self._o = owner
         self.ip, self.port = ip, port
         self.forbidden = tuple(forbidden_paths)
+        self.on_leftover = None
         self.protected_pid = int(protected_pid if protected_pid is not None else os.getpid())
         self.uid = owner.fresh_identity()           # this run's own uid
         self.name = "aegis_l2_" + secrets.token_hex(6)
@@ -465,3 +496,10 @@ class ConfinementSession:
         self.leftover = not removed
         if removed:
             self._table = self._dir = False
+        elif self.on_leftover is not None:
+            # something in the cgroup could not be killed: the caller keeps it on
+            # record (blocks new launches, keeps killing, reports the stop unconfirmed)
+            try:
+                self.on_leftover(self)
+            except Exception:
+                pass

@@ -857,3 +857,183 @@ class TestExpiryNoticeSurvivesAnAuditFailure(ReleaseBase):
             while time.time() < end and not self.events("scope.expired"):
                 time.sleep(0.1)
         self.assertTrue(self.events("scope.expired"))
+
+
+# ---- findings of the final review of ba131eb ---------------------------------
+class TestFinalReviewAuthFindings(AuthBase):
+    def test_mfa_enable_that_cannot_be_saved_is_not_enabled(self):
+        from aegis.operators import AuthError
+        from aegis.operators import totp_code
+        info = self.store.begin_totp_enroll("op") if hasattr(self.store, "begin_totp_enroll") else None
+        secret = self.store._pending_totp["op"]
+        with self.failing("operators.json"):
+            with self.assertRaises(AuthError):
+                self.store.confirm_totp("op", totp_code(secret, self.store._clock()))
+        self.assertFalse(self.store.totp_enabled("op"))
+        self.assertFalse(self.restart().totp_enabled("op"))
+
+    def test_a_sign_in_that_cannot_be_saved_is_not_handed_out(self):
+        from aegis.operators import AuthError
+        with self.failing("sessions.json"):
+            with self.assertRaises(AuthError):
+                self.store.login("op", "op-password-12")
+        self.assertEqual(self.store._sessions, {})
+
+    def test_an_account_that_cannot_be_saved_is_not_created(self):
+        from aegis.operators import AuthError
+        with self.failing("operators.json"):
+            with self.assertRaises(AuthError):
+                self.store.create_account("newbie", "a-long-password-1", actor="root")
+        self.assertNotIn("newbie", self.store._ops)
+        self.store._last_retry = -1e9
+        self.assertNotIn("newbie", self.restart()._ops)
+
+    def test_revoke_all_that_cannot_be_saved_says_so(self):
+        from aegis.operators import AuthError
+        self.store.login("op", "op-password-12")
+        with self.failing("sessions.json"):
+            with self.assertRaises(AuthError):
+                self.store.revoke_all_sessions("test")
+
+
+class TestFailedStartAfterAnUncleanRun(unittest.TestCase):
+    def run_server(self, data, markers, port):
+        return subprocess.run([sys.executable, "-m", "aegis.server", "--port", str(port), "--lab-port", "19432",
+                               "--data-dir", str(data)], cwd=str(REPO), capture_output=True, text=True,
+                              timeout=120, env={**os.environ, "VULNIX_REVOCATION_MARKER_DIR": str(markers)})
+
+    def test_the_unclean_record_survives_a_failed_start_until_sessions_are_revoked(self):
+        import socket
+        data, markers = Path(tempfile.mkdtemp()), Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, data, True)
+        self.addCleanup(shutil.rmtree, markers, True)
+        data.mkdir(exist_ok=True)
+        (data / "session.open").write_text(json.dumps({"pid": 1, "started_at": 0}))   # an unclean previous run
+        (data / "operators.json").write_text("{ broken")                            # and the store cannot open
+        busy = socket.socket()
+        busy.bind(("127.0.0.1", 0))
+        busy.listen(1)
+        self.addCleanup(busy.close)
+        p = self.run_server(data, markers, busy.getsockname()[1])
+        self.assertNotEqual(p.returncode, 0)
+        self.assertTrue((data / "session.open").exists(), p.stderr[-1500:])      # still owed: sessions revoked
+
+
+class TestInProcessHandoverHonoursAnUncleanClose(ReleaseBase):
+    def test_an_unclean_close_is_seen_by_the_next_instance(self):
+        self.onboard()
+        self.assertFalse(self.svc.close(external_clean=False))
+        self.svc.workers.kill_all()
+        again = self.open()                              # same process: the previous instance is asked
+        self.assertFalse(again.previous_session_clean)
+        again.workers.kill_all()
+
+
+class TestExpiryWithAnUnwritableAuditLog(ReleaseBase):
+    def test_no_blocking_loop_when_survivors_and_audit_both_fail(self):
+        self.onboard()
+        t = threading.Thread(target=lambda: self.svc.workers.run(SLEEPER, 120))
+        t.start()
+        while not self.svc.workers.active_pids():
+            time.sleep(0.01)
+        pid = self.svc.workers.active_pids()[0]
+        real = self.svc.audit.record
+
+        def record(event, **fields):
+            if event in ("workers.stop_unconfirmed", "scope.expired"):
+                raise OSError("no space")
+            return real(event, **fields)
+        calls = {"n": 0}
+        real_reduce = self.svc._authority_reduced_locked
+
+        def counting(host):
+            calls["n"] += 1
+            return real_reduce(host)
+        self.svc._authority_reduced_locked = counting
+        with patch("aegis.runtime._killpg"), patch.object(self.svc.audit, "record", side_effect=record):
+            self.svc._verified_external_hosts[HOST]["not_after"] = time.time() - 1
+            end = time.time() + 15
+            while time.time() < end and "期限" not in (self.svc.snapshot()["authority_notice"] or ""):
+                time.sleep(0.1)
+            time.sleep(1.5)
+            self.assertEqual(calls["n"], 1)                       # the blocking stop ran once
+            self.assertEqual(len(self.svc._unstopped), 1)         # no duplicate records
+            self.assertIn("確認できていません", self.svc.snapshot()["authority_notice"])
+        os.killpg(pid, 9)
+        t.join(10)
+
+
+class _StuckCgroup:
+    def __init__(self, name="aegis_l2_0123456789ab"):
+        self.name, self.leftover, self.kills, self.stuck, self.torn_down = name, True, 0, True, False
+
+    def empty(self):
+        return not self.stuck
+
+    def kill(self):
+        self.kills += 1
+        return True
+
+    def _teardown(self):
+        self.torn_down = True
+
+
+class TestALeftoverConfinedRunStaysOnRecord(ReleaseBase):
+    def test_launches_blocked_stop_unconfirmed_until_it_is_gone(self):
+        self.onboard()
+        stuck = _StuckCgroup()
+        self.svc._note_leftover_session(stuck)
+        self.assertIsNotNone(self.svc.system_status()["unstopped_workers"])
+        self.assertGreaterEqual(stuck.kills, 1)                     # killed again on every look
+        snap = self.run_l1()
+        self.assertEqual(snap["state"], "failed")                   # nothing new launched beside it
+        self.assertEqual(self.fake.seen, [])
+        rep = self.svc.emergency_stop("appr")
+        self.assertFalse(rep["confirmed"])                          # not a confirmed stop
+        stuck.stuck = False                                         # it finally dies
+        self.assertIsNone(self.svc.system_status()["unstopped_workers"])
+        self.assertTrue(stuck.torn_down)                            # its rules and cgroup are removed
+
+    def test_it_is_re_attached_after_a_restart(self):
+        self.onboard()
+        self.svc._note_leftover_session(_StuckCgroup("aegis_l2_aaaaaaaaaaaa"))
+        with self.svc._lock:
+            self.svc._save_state_locked()
+        self.svc.workers.kill_all()
+        seen = []
+
+        class Conf:
+            def status(self):
+                return {"ok": True, "reason": "", "mechanism": "fake"}
+
+            def session(self, *a, **k):
+                raise AssertionError("no new run while a leftover exists")
+
+            def reattach(self, name):
+                seen.append(name)
+                return _StuckCgroup(name)
+        again = self.open(l2_confinement=Conf())
+        self.assertEqual(seen, ["aegis_l2_aaaaaaaaaaaa"])
+        self.assertIsNotNone(again.system_status()["unstopped_workers"])
+        again.workers.kill_all()
+
+
+class TestMarkersInDirectoriesOfOthersAreIgnored(ReleaseBase):
+    def test_an_unreadable_marker_in_someone_elses_directory_does_not_refuse(self):
+        self.onboard()
+        self.assertTrue(self.svc.close())
+        marker = self.markers / f"{self.svc.ledger.marker_key()}.revoked"
+        marker.write_text("x")
+        real = os.lstat
+        with patch("aegis.authority_ledger.os.lstat") as lst:
+            def owner_is_someone_else(path, *a, **k):
+                st = real(path, *a, **k)
+                if Path(path) == self.markers:
+                    return os.stat_result((st.st_mode, st.st_ino, st.st_dev, st.st_nlink, st.st_uid + 1,
+                                           st.st_gid, st.st_size, st.st_atime, st.st_mtime, st.st_ctime))
+                return st
+            lst.side_effect = owner_is_someone_else
+            again = self.reopen_in_this_process()
+        self.assertEqual(again.ledger.rejected_reason, "")
+        self.assertIsNotNone(again._external_entry(HOST))
+        again.workers.kill_all()

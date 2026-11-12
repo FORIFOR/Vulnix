@@ -710,6 +710,8 @@ class TestRevocationThatCannotBeSavedIsNotUndoneByARestart(RealServiceBase):
         with patch("aegis.assessment.os.replace", side_effect=OSError("disk full")):
             self.svc._save_state_locked()                              # nothing about authority changed
         self.assertGreater((self.dir / "authority.epoch").stat().st_size, 0)
+        self.svc._save_state_locked()                                  # the disk is back (a transient error)
+        self.assertIsNone(self.svc._persist_error)
         self.svc.workers.kill_all()
         again = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT, verify_seconds=0.1, l2_profile_dirs=PROFILE_DIRS)
         self.assertTrue(again._is_external_service_asset(HOST))        # a transient error does not cost the scope

@@ -21,41 +21,76 @@ RET_KILL_PROCESS = 0x80000000
 RET_ERRNO = 0x00050000
 RET_ALLOW = 0x7FFF0000
 EPERM = 1
+ENOSYS = 38
 AF_UNIX = 1
-ARCHES = {  # machine -> (AUDIT_ARCH_*, __NR_socket, __NR_socketpair)
-    "x86_64": (0xC000003E, 41, 53),
-    "aarch64": (0xC00000B7, 198, 199),
+CLONE_NEWUSER = 0x10000000
+# machine -> AUDIT_ARCH and the syscall numbers the filter looks at
+ARCHES = {
+    "x86_64": {"arch": 0xC000003E, "socket": 41, "socketpair": 53, "clone": 56,
+               "unshare": 272, "setns": 308, "clone3": 435},
+    "aarch64": {"arch": 0xC00000B7, "socket": 198, "socketpair": 199, "clone": 220,
+                "unshare": 97, "setns": 268, "clone3": 435},
 }
+IO_URING = (425, 426, 427)   # io_uring_setup / _enter / _register (same on both): io_uring can
+                             # create and connect sockets without passing through seccomp
+
+LD, JEQ, JGE, JSET, RET = 0x20, 0x15, 0x35, 0x45, 0x06
+
+
+def _assemble(items) -> bytes:
+    """items: ("label", name) or (code, jt, jf, k) where jt/jf may be label names."""
+    pos, n = {}, 0
+    for it in items:
+        if it[0] == "label":
+            pos[it[1]] = n
+        else:
+            n += 1
+    out, n = [], 0
+    for it in items:
+        if it[0] == "label":
+            continue
+        code, jt, jf, k = it
+        rel = lambda t: t if isinstance(t, int) else pos[t] - n - 1
+        out.append(struct.pack("HBBI", code, rel(jt), rel(jf), k))
+        n += 1
+    return b"".join(out)
+
+
+def filter_program(cfg: dict) -> bytes:
+    """Refuse: UNIX-domain sockets, io_uring, new user namespaces (unshare, setns,
+    clone with CLONE_NEWUSER; clone3 -> ENOSYS so the C library falls back to
+    clone). Kill: any other ABI (i386, x32). Allow everything else."""
+    eq = lambda nr, target: (JEQ, target, 0, nr)
+    return _assemble([
+        (LD, 0, 0, 4),                                  # arch
+        (JEQ, 0, "kill", cfg["arch"]),
+        (LD, 0, 0, 0),                                  # syscall nr
+        (JGE, "kill", 0, 0x40000000),                   # x32 ABI
+        eq(IO_URING[0], "eperm"), eq(IO_URING[1], "eperm"), eq(IO_URING[2], "eperm"),
+        eq(cfg["unshare"], "eperm"), eq(cfg["setns"], "eperm"),
+        eq(cfg["clone3"], "enosys"),
+        eq(cfg["clone"], "clone"),
+        eq(cfg["socket"], "domain"), eq(cfg["socketpair"], "domain"),
+        (RET, 0, 0, RET_ALLOW),
+        ("label", "domain"),
+        (LD, 0, 0, 16),                                 # args[0] low 32 bits: domain
+        (JEQ, "eperm", "allow", AF_UNIX),
+        ("label", "clone"),
+        (LD, 0, 0, 16),                                 # args[0]: clone flags (x86_64 and aarch64)
+        (JSET, "eperm", "allow", CLONE_NEWUSER),
+        ("label", "allow"),
+        (RET, 0, 0, RET_ALLOW),
+        ("label", "eperm"),
+        (RET, 0, 0, RET_ERRNO | EPERM),
+        ("label", "enosys"),
+        (RET, 0, 0, RET_ERRNO | ENOSYS),
+        ("label", "kill"),
+        (RET, 0, 0, RET_KILL_PROCESS),
+    ])
 
 
 def _ins(code, jt, jf, k):
     return struct.pack("HBBI", code, jt, jf, k)
-
-
-IO_URING = (425, 426, 427)   # io_uring_setup / _enter / _register: same numbers on x86_64 and aarch64;
-                             # io_uring can create and connect sockets without passing through seccomp
-
-
-def filter_program(arch, nr_socket, nr_socketpair) -> bytes:
-    LD, JEQ, JGE, RET = 0x20, 0x15, 0x35, 0x06
-    prog = [
-        _ins(LD, 0, 0, 4),                       # 0  arch
-        _ins(JEQ, 1, 0, arch),                   # 1  -> 3 | 2
-        _ins(RET, 0, 0, RET_KILL_PROCESS),       # 2  another ABI: never
-        _ins(LD, 0, 0, 0),                       # 3  syscall nr
-        _ins(JGE, 9, 0, 0x40000000),             # 4  x32 ABI -> 14 (kill)
-        _ins(JEQ, 7, 0, IO_URING[0]),            # 5  -> 13 (EPERM)
-        _ins(JEQ, 6, 0, IO_URING[1]),            # 6  -> 13
-        _ins(JEQ, 5, 0, IO_URING[2]),            # 7  -> 13
-        _ins(JEQ, 1, 0, nr_socket),              # 8  -> 10 | 9
-        _ins(JEQ, 0, 2, nr_socketpair),          # 9  -> 10 | 12 (allow)
-        _ins(LD, 0, 0, 16),                      # 10 args[0] (domain), low 32 bits
-        _ins(JEQ, 1, 0, AF_UNIX),                # 11 -> 13 | 12
-        _ins(RET, 0, 0, RET_ALLOW),              # 12
-        _ins(RET, 0, 0, RET_ERRNO | EPERM),      # 13 refused
-        _ins(RET, 0, 0, RET_KILL_PROCESS),       # 14
-    ]
-    return b"".join(prog)
 
 
 def install() -> None:
@@ -64,8 +99,9 @@ def install() -> None:
     machine = platform.machine()
     if machine not in ARCHES:
         raise OSError(f"unsupported architecture {machine}")
-    arch, nr_socket, nr_socketpair = ARCHES[machine]
-    raw = filter_program(arch, nr_socket, nr_socketpair)
+    raw = filter_program(ARCHES[machine])
+    import resource
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))     # no core file with the tokens in it (kept across exec)
 
     class SockFprog(ctypes.Structure):
         _fields_ = [("len", ctypes.c_ushort), ("filter", ctypes.c_void_p)]

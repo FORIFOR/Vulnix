@@ -790,6 +790,7 @@ class TestThirdReviewFindingsStayFixed(ApiBase):
         self.assertTrue(self.fake.seen)
 
     def test_role_revocation_that_could_not_be_saved_is_not_reported_as_done(self):
+        self.session("root")                     # signed in while saving still works
         with patch.object(self.ops, "_atomic_write", return_value=False):
             code, body = self.call("/operators/roles", {"name": "appr", "roles": ["operator"]}, "root")
         self.assertEqual(code, 409)

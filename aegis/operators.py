@@ -319,7 +319,7 @@ class OperatorStore:
         with self._lock:
             n = len(self._sessions)
             self._sessions.clear()
-        self._persist_sessions()
+        self._persist_sessions(strict=True)        # raises if it could not be written
         self.recovery_events.append({"event": "auth.sessions_revoked", "name": "*", "reason": reason,
                                      "count": n})
         return n
@@ -341,6 +341,8 @@ class OperatorStore:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())           # a change reported as saved survives a power loss
         os.chmod(path, 0o600)
 
     def _persist_sessions(self, *, strict: bool = False) -> None:
@@ -570,7 +572,9 @@ class OperatorStore:
                 return False
             self._totp_last_counter[op.name] = counter
             op.totp_last_counter = counter
-        self._persist_operators()        # so a used code stays used across a restart
+        # so a used code stays used across a restart: if that cannot be written,
+        # the sign-in fails (the code is still burnt in this process)
+        self._persist_operators(strict=True)
         return True
 
     def login(self, name: str, password: str, code: str | None = None) -> Session:
@@ -600,7 +604,14 @@ class OperatorStore:
         sess = Session(secrets.token_urlsafe(32), op.name, op.roles, now, now + SESSION_TTL)
         with self._lock:
             self._sessions[session_key(sess.token)] = Session("", op.name, (), now, sess.expires)
-        self._persist_sessions()
+        try:
+            self._persist_sessions(strict=True)
+        except AuthError:
+            # not on disk: not handed out either
+            with self._lock:
+                self._sessions.pop(session_key(sess.token), None)
+            raise AuthError("ログインを保存できないため、ログインできません。"
+                            "データディレクトリの書き込み権限を確認してください") from None
         return sess
 
     def resolve(self, token: str | None) -> Session | None:
@@ -675,9 +686,17 @@ class OperatorStore:
             sess = Session(secrets.token_urlsafe(32), clean_name, clean_roles, now, now + SESSION_TTL)
             if _issue_session:
                 self._sessions[session_key(sess.token)] = Session("", clean_name, (), now, sess.expires)
-        self._persist_operators()
-        if _issue_session:
-            self._persist_sessions()
+        try:
+            self._persist_operators(strict=True)
+            if _issue_session:
+                self._persist_sessions(strict=True)
+        except AuthError:
+            with self._lock:            # an account that is not on disk is not created
+                self._ops.pop(clean_name, None)
+                self._sessions.pop(session_key(sess.token), None)
+            self._persist_operators()
+            raise AuthError("アカウントを保存できなかったため、作成していません。"
+                            "データディレクトリの書き込み権限を確認してください") from None
         return sess
 
     def operators(self) -> list[Operator]:
@@ -741,7 +760,13 @@ class OperatorStore:
         with self._lock:
             op.totp_secret = secret
             self._pending_totp.pop(name, None)
-        self._persist_operators()
+        try:
+            self._persist_operators(strict=True)
+        except AuthError:
+            with self._lock:            # not on disk: not in force either (a restart would drop it)
+                op.totp_secret = None
+            raise AuthError("2要素認証の設定を保存できなかったため、有効になっていません。"
+                            "データディレクトリの書き込み権限を確認してください") from None
 
     def disable_totp(self, name: str, current_password: str, code: str | None = None) -> None:
         """Turning the second factor off needs BOTH factors: the password and a

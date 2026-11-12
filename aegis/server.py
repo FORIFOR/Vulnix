@@ -272,7 +272,10 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             if p == "/api/auth/logout":
                 sess = self._session()
                 if sess:
-                    svc.audit.record("auth.logout", actor=sess.operator)
+                    try:
+                        svc.audit.record("auth.logout", actor=sess.operator)
+                    except Exception:
+                        pass        # an audit log that cannot be written must not keep a session alive
                 try:
                     ops.logout(sess.token if sess else None)
                 except AuthError as e:
@@ -644,8 +647,9 @@ def _build_server(svc, a, data, first, seed, env_opt_out):
     ops = OperatorStore(seed)
     if not getattr(svc, "previous_session_clean", True):
         # a logout or sign-out-everywhere of the previous run may not be on disk
-        n = ops.revoke_all_sessions("the control plane did not shut down cleanly")
+        n = ops.revoke_all_sessions("the control plane did not shut down cleanly")   # raises if not saved
         print(f"前回正常に終了しなかったため、すべてのログインセッション（{n}件）を無効にしました。")
+    svc._auth_recovered = True
     read_auth = False if a.no_read_auth else (True if a.require_read_auth else None)
     srv = ThreadingHTTPServer(
         ("127.0.0.1", a.port),
@@ -697,9 +701,12 @@ def main() -> None:
     try:
         srv = _build_server(svc, a, data, first, seed, env_opt_out)
     except BaseException:
-        # e.g. the port is in use: nothing ran, so the service is closed cleanly
-        # (otherwise the next start would hold every real-service authorisation)
-        svc.close()
+        # e.g. the port is in use. Nothing ran in THIS start, so it is closed cleanly -
+        # unless the previous run did not end cleanly and that was not dealt with
+        # yet (its sessions are only revoked once the store could be opened and
+        # saved): then the record stays, and the next start deals with it.
+        svc.close(external_clean=bool(getattr(svc, "previous_session_clean", False))
+                  and getattr(svc, "_auth_recovered", False))
         raise
 
     ops = srv.ops

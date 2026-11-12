@@ -612,6 +612,11 @@ class AuthorityLedger:
                 return "a revocation could not be saved before the last shutdown"
         for path in self.marker_paths():
             try:
+                if hasattr(os, "getuid") and os.lstat(path.parent).st_uid != os.getuid():
+                    continue        # somebody else's directory (e.g. pre-created in /tmp): never ours
+            except OSError:
+                continue
+            try:
                 st = os.lstat(path)
             except FileNotFoundError:
                 continue

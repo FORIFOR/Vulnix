@@ -386,7 +386,8 @@ class AssessmentService:
         if isinstance(body, dict) and body.get("pid") == os.getpid() and prev is not None and prev is not self:
             with prev._lock:            # the previous instance lives in this process: ask it
                 clean = (prev.ledger.error is None and not prev.ledger.dirty()
-                         and not prev._unstopped)
+                         and not prev._unstopped and prev._persist_error is None
+                         and getattr(prev, "_closed_clean", True))
             return clean, "" if clean else "the previous instance in this process ended with unsaved authority changes"
         return False, "the control plane did not shut down cleanly"
 
@@ -467,7 +468,11 @@ class AssessmentService:
                     pass
                 except OSError:
                     clean = False
-            self.audit.record("control_plane.closed", clean=clean)
+            self._closed_clean = clean
+            try:
+                self.audit.record("control_plane.closed", clean=clean)
+            except Exception:
+                pass
             return clean
 
     @staticmethod
@@ -503,9 +508,11 @@ class AssessmentService:
             first = key not in self._expiry_seen
             had = list(self.workers.active_pids())
             if first:
-                # cancel waiting requests; kill the workers and wait (up to 5 s) for them
+                # cancel waiting requests; kill the workers and wait (up to 5 s) for them.
+                # An exception here is retried on the next pass (audit failures inside
+                # are caught, so this does not loop on a full disk).
                 self._authority_reduced_locked(host)
-                self._expiry_seen.add(key)        # only once that call has returned
+                self._expiry_seen.add(key)
             # Marked as handled only once the stop is CONFIRMED. Until then every pass
             # re-checks (and re-kills) the survivors without blocking; new launches
             # are refused all along, because the scope is expired.
@@ -611,7 +618,22 @@ class AssessmentService:
             self._unstopped.append({"host": host, "pids": list(survivors), "at": time.time(), "pool": pool,
                                     # kept here: the pool forgets a session once its direct child is reaped
                                     "sessions": pool.sessions_for(survivors)})
-            self.audit.record("workers.stop_unconfirmed", host=host, survivors=list(survivors))
+            try:
+                self.audit.record("workers.stop_unconfirmed", host=host, survivors=list(survivors))
+            except Exception:
+                pass        # the survivor is on record above; an audit failure must not undo that
+
+    def _note_leftover_session(self, session) -> None:
+        """A confined run whose cgroup could not be emptied: kept on record like any
+        other worker that was not confirmed dead."""
+        with self._lock:
+            self._unstopped.append({"host": (self.a.asset.get("name") or "").lower(), "pids": [],
+                                    "at": time.time(), "pool": None, "sessions": [session]})
+            try:
+                self.audit.record("workers.stop_unconfirmed", host=self.a.asset.get("name"),
+                                  cgroup=getattr(session, "name", ""), survivors=[])
+            except Exception:
+                pass
 
     def _raise_if_unstopped(self, done: str) -> None:
         with self._lock:
@@ -638,6 +660,12 @@ class AssessmentService:
                 alive = pool.confirm_stopped(alive, 0.0)        # still there: kill again
             for x in not_empty:
                 x.kill()
+            for x in sessions:
+                if x not in not_empty and getattr(x, "leftover", False):
+                    try:
+                        x._teardown()                            # empty now: remove its rules and cgroup
+                    except Exception:
+                        pass
             if alive or not_empty:
                 u["pids"] = alive or u["pids"]
                 u["sessions"] = not_empty
@@ -869,6 +897,10 @@ class AssessmentService:
             protected = sorted(str(p) for p in self.data_dir.iterdir() if p.is_file())
             session = self._l2_confinement.session(dest.ip, dest.port, forbidden_paths=protected,
                                                    protected_pid=os.getpid())
+            try:
+                session.on_leftover = self._note_leftover_session
+            except AttributeError:
+                pass
             self._tls.confined = True       # this thread's next worker starts inside it
             return session
         except ConfinementError as e:
@@ -1129,7 +1161,8 @@ class AssessmentService:
                 "defense_comparison": self.a.defense_comparison,
                 "failure": self.a.failure,
                 # survivors of a stop/withdrawal outlive the control plane: so does their record
-                "unstopped_workers": [{"host": u["host"], "pids": u["pids"], "at": u["at"]}
+                "unstopped_workers": [{"host": u["host"], "pids": u["pids"], "at": u["at"],
+                                       "cgroups": [getattr(x, "name", "") for x in u.get("sessions") or []]}
                                       for u in self._unstopped],
                 # authority lives in authority.ledger; this only says that one is in use,
                 # so that a ledger that disappears is noticed as a loss
@@ -1273,9 +1306,16 @@ class AssessmentService:
         for u in (data.get("unstopped_workers") if isinstance(data.get("unstopped_workers"), list) else []):
             try:
                 pids = [int(p) for p in u["pids"] if WorkerPool.group_alive(int(p))]
-                if pids:
+                sessions = []
+                for name in (u.get("cgroups") or []):
+                    try:
+                        sessions.append(self._l2_confinement.reattach(str(name)))
+                    except Exception:
+                        continue
+                if pids or sessions:
                     self._unstopped.append({"host": str(u.get("host") or ""), "pids": pids,
-                                            "at": float(u.get("at") or time.time()), "pool": None, "sessions": []})
+                                            "at": float(u.get("at") or time.time()), "pool": None,
+                                            "sessions": sessions})
             except (KeyError, TypeError, ValueError):
                 continue
         self._state_had_ledger_flag = bool(data.get("authority_ledger"))
@@ -2315,6 +2355,9 @@ class AssessmentService:
                       "at": time.time()}
             # survivors stay on record beyond this report (a later restart clears the report)
             self._note_unstopped_locked((self.a.asset.get("name") or "").lower(), rep.survivors, pool)
+            if self._unstopped_now_locked():
+                # e.g. a confined run left behind earlier: not a confirmed stop either
+                report["confirmed"] = False
             self.a.stop_report = report
             for p in self.a.phases:
                 if p["status"] in ("pending", "running"):

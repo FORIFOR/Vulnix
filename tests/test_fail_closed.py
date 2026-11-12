@@ -613,10 +613,10 @@ class TestKernelConfinementLogic(unittest.TestCase):
     def test_ruleset_drops_everything_but_the_pinned_destination(self):
         text = ruleset("aegis_l2_0123456789ab", "203.0.113.7", 443)
         self.assertIn('socket cgroupv2 level 1 "aegis_l2_0123456789ab" jump confined', text)
-        self.assertIn("ip daddr 203.0.113.7 tcp dport 443 ct state new accept", text)
+        self.assertIn("ip daddr 203.0.113.7 tcp dport 443 ct state new ct mark set", text)
         self.assertIn("counter drop", text)
         self.assertNotIn('oif "lo"', text)                # loopback is not a free pass
-        self.assertEqual(text.count("accept"), 3)         # established, pinned, and the hook's own policy
+        self.assertEqual(text.count(" accept"), 3)        # established (marked), pinned, and the hook's policy
         self.assertIn("ip6 daddr 2001:db8::1", ruleset("aegis_l2_0123456789ab", "2001:db8::1", 443))
 
     def test_ruleset_refuses_metadata_addresses_and_odd_names(self):
@@ -774,24 +774,21 @@ class TestKernelConfinementLogic(unittest.TestCase):
         run_with(lambda o, uid: o.update(read={"/d/.secrets.key": "READ"}), forbidden=("/d/.secrets.key",))
         run_with(lambda o, uid: o.update(read={}), forbidden=("/d/.secrets.key",))   # not checked at all
 
-    def test_the_launcher_filter_refuses_unix_sockets_only(self):
+    def test_the_launcher_filter(self):
         import importlib.util
+        import struct
         spec = importlib.util.spec_from_file_location(
             "sandbox_launch", Path(__file__).resolve().parent.parent / "aegis" / "workers" / "_sandbox_launch.py")
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        import struct
-        progs = {arch: mod.filter_program(*vals) for arch, vals in mod.ARCHES.items()}
 
-        def ins_for(arch):
-            prog = progs["aarch64" if arch == 0xC00000B7 else "x86_64"]
-            return [struct.unpack("HBBI", prog[i:i + 8]) for i in range(0, len(prog), 8)]
-
-        def run(arch, nr, arg0):                     # a tiny BPF interpreter for this program
-            ins = ins_for(arch)
+        def run(machine, nr, arg0=0, arch=None):          # a tiny BPF interpreter
+            cfg = mod.ARCHES[machine]
+            prog = mod.filter_program(cfg)
+            ins = [struct.unpack("HBBI", prog[i:i + 8]) for i in range(0, len(prog), 8)]
+            data = {0: nr, 4: cfg["arch"] if arch is None else arch, 16: arg0}
             pc, acc = 0, 0
-            data = {0: nr, 4: arch, 16: arg0}
-            while True:
+            for _ in range(200):
                 code, jt, jf, k = ins[pc]
                 if code == 0x20:
                     acc = data[k]; pc += 1
@@ -799,25 +796,39 @@ class TestKernelConfinementLogic(unittest.TestCase):
                     pc += 1 + (jt if acc == k else jf)
                 elif code == 0x35:
                     pc += 1 + (jt if acc >= k else jf)
+                elif code == 0x45:
+                    pc += 1 + (jt if acc & k else jf)
                 elif code == 0x06:
                     return k
-        X86 = 0xC000003E
-        self.assertEqual(run(X86, 41, 1), mod.RET_ERRNO | mod.EPERM)        # socket(AF_UNIX)
-        self.assertEqual(run(X86, 53, 1), mod.RET_ERRNO | mod.EPERM)        # socketpair(AF_UNIX)
-        self.assertEqual(run(X86, 41, 2), mod.RET_ALLOW)                    # socket(AF_INET)
-        self.assertEqual(run(X86, 41, 10), mod.RET_ALLOW)                   # socket(AF_INET6)
-        self.assertEqual(run(X86, 0, 0), mod.RET_ALLOW)                     # read
-        self.assertEqual(run(X86, 0x40000000 + 41, 1), mod.RET_KILL_PROCESS)   # x32 ABI
-        self.assertEqual(run(0x40000003, 102, 1), mod.RET_KILL_PROCESS)        # i386 ABI
-        for nr in (425, 426, 427):                                          # io_uring: never
-            self.assertEqual(run(X86, nr, 0), mod.RET_ERRNO | mod.EPERM)
-        self.assertEqual(run(X86, 53, 2), mod.RET_ALLOW)                    # socketpair(AF_INET)
-        self.assertEqual(run(X86, 42, 1), mod.RET_ALLOW)                    # connect(): allowed, nothing to connect
-        A64 = 0xC00000B7
-        self.assertEqual(run(A64, 198, 1), mod.RET_ERRNO | mod.EPERM)
-        self.assertEqual(run(A64, 199, 1), mod.RET_ERRNO | mod.EPERM)
-        self.assertEqual(run(A64, 198, 2), mod.RET_ALLOW)
-        self.assertEqual(run(A64, 425, 0), mod.RET_ERRNO | mod.EPERM)
+            self.fail("no return")
+        EPERM, ENOSYS = mod.RET_ERRNO | mod.EPERM, mod.RET_ERRNO | mod.ENOSYS
+        for m in ("x86_64", "aarch64"):
+            c = mod.ARCHES[m]
+            self.assertEqual(run(m, c["socket"], 1), EPERM)            # socket(AF_UNIX)
+            self.assertEqual(run(m, c["socketpair"], 1), EPERM)
+            self.assertEqual(run(m, c["socket"], 2), mod.RET_ALLOW)    # AF_INET
+            self.assertEqual(run(m, c["socket"], 10), mod.RET_ALLOW)   # AF_INET6
+            self.assertEqual(run(m, c["socketpair"], 2), mod.RET_ALLOW)
+            for nr in (425, 426, 427):
+                self.assertEqual(run(m, nr), EPERM)                    # io_uring
+            self.assertEqual(run(m, c["unshare"], 0x10000000), EPERM)  # user namespace
+            self.assertEqual(run(m, c["unshare"], 0), EPERM)
+            self.assertEqual(run(m, c["setns"], 0), EPERM)
+            self.assertEqual(run(m, c["clone3"], 0), ENOSYS)           # libc falls back to clone
+            self.assertEqual(run(m, c["clone"], 0x10000000 | 17), EPERM)
+            self.assertEqual(run(m, c["clone"], 17), mod.RET_ALLOW)    # an ordinary fork
+            self.assertEqual(run(m, 0), mod.RET_ALLOW)                 # read / io_setup
+            self.assertEqual(run(m, 63), mod.RET_ALLOW)
+            self.assertEqual(run(m, c["socket"], 1, arch=0x40000003), mod.RET_KILL_PROCESS)   # i386
+        self.assertEqual(run("x86_64", 0x40000000 + 41, 1), mod.RET_KILL_PROCESS)        # x32
+        # every syscall number the filter does not name is allowed, on both architectures
+        named = {425, 426, 427}
+        for m in ("x86_64", "aarch64"):
+            c = mod.ARCHES[m]
+            names = named | {c[k] for k in ("socket", "socketpair", "clone", "unshare", "setns", "clone3")}
+            for nr in range(0, 600):
+                if nr not in names:
+                    self.assertEqual(run(m, nr, 1), mod.RET_ALLOW, (m, nr))
 
     def test_tools_are_not_taken_from_path(self):
         from aegis import confinement
@@ -830,8 +841,13 @@ class TestKernelConfinementLogic(unittest.TestCase):
 
     def test_only_flows_opened_from_inside_are_let_out(self):
         text = ruleset("aegis_l2_0123456789ab", "203.0.113.7", 443)
-        self.assertIn("ct state established ct direction original accept", text)
+        from aegis.confinement import flow_mark
+        mark = flow_mark("aegis_l2_0123456789ab")
+        self.assertIn(f"ct state established ct direction original ct mark {mark:#x} ip daddr 203.0.113.7 accept", text)
+        self.assertIn(f"tcp dport 443 ct state new ct mark set {mark:#x} accept", text)
         self.assertNotIn("related", text)
+        self.assertNotEqual(flow_mark("aegis_l2_0123456789ab"), flow_mark("aegis_l2_ba9876543210"))
+        self.assertNotIn("ct state established ct direction original accept", text)   # not unmarked
 
     def test_non_canonical_addresses_are_refused(self):
         for ip in ("fe80::1%eth0", "2001:db8::1%1", "203.0.113.7 ", "not-an-ip", "0x7f.1"):
@@ -848,10 +864,12 @@ class TestKernelConfinementLogic(unittest.TestCase):
                 return subprocess.CompletedProcess(argv, 1, "", "busy")
             return real(argv, **kw)
         conf = self.make(stuck)
+        called = []
         with patch("aegis.confinement.time.sleep"):
             with conf.session("203.0.113.7", 443) as s:
-                pass
+                s.on_leftover = called.append
         self.assertTrue(s.leftover)
+        self.assertEqual(called, [s])                              # the caller is told
         self.assertEqual(run.ran("delete", "table"), [])           # still confined
 
     def test_a_kernel_without_cgroup_kill_is_refused(self):
@@ -1191,6 +1209,10 @@ class TestKernelConfinementOnLinux(unittest.TestCase):
             "r=libc.syscall(425,4,ctypes.create_string_buffer(120))\n"
             "out['io_uring']='CREATED' if r>=0 else 'DENIED:%d' % ctypes.get_errno()\n"
             "out['stdin']=os.readlink('/proc/self/fd/0')\n"
+            "try:\n    os.unshare(os.CLONE_NEWUSER); out['userns']='CREATED'\n"
+            "except OSError as e:\n    out['userns']='DENIED:'+type(e).__name__\n"
+            "import resource\n"
+            "out['core']=list(resource.getrlimit(resource.RLIMIT_CORE))\n"
             "print(json.dumps(out))\n")
         _, pinned = self.listener()
         forbidden = [str(p) for p in files.values()]
@@ -1220,6 +1242,8 @@ class TestKernelConfinementOnLinux(unittest.TestCase):
         self.assertEqual(out["loose"], "x")                               # ordinary world-readable files: yes
         self.assertTrue(out["io_uring"].startswith("DENIED:"), out)        # no way around the AF_UNIX rule
         self.assertEqual(out["stdin"], "/dev/null")                       # nothing inherited from us
+        self.assertTrue(out["userns"].startswith("DENIED:"), out)          # no capabilities in a new namespace either
+        self.assertEqual(out["core"], [0, 0])                             # no core file with the tokens
 
     def test_the_same_program_outside_the_confinement_is_not_blocked(self):
         _, pinned = self.listener()
