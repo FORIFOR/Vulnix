@@ -3569,6 +3569,13 @@ class AssessmentService:
     @staticmethod
     def _worker_failure_text(tool: str, result) -> str:
         """Why a worker failed, from its own structured report when it gave one."""
+        if getattr(result, "timed_out", False):
+            stage = {"started": "開始直後", "connect": "TCP接続", "tls": "TLSハンドシェイク", "send": "リクエスト送信",
+                     "first_byte": "応答の最初のバイト待ち", "body": "応答本文の受信", "report": "結果の出力"}.get(
+                         str(getattr(result, "last_stage", None) or "started"), "不明な段階")
+            confirmed = "" if getattr(result, "stop_confirmed", True) else "。停止を確認できていません"
+            return (f"Worker が制限時間（{float(result.deadline_s or 0):g} 秒）内に終わらず、Gateway が停止しました"
+                    f"（最後に確認した段階: {stage}、{tool}）{confirmed}")
         if result.killed:
             return f"Worker が制限時間内に終わらず停止されました（{tool}）"
         try:

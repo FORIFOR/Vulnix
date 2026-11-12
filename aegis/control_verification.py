@@ -286,7 +286,8 @@ def _verify_worker_confinement() -> dict:
             res = WorkerPool().run([sys.executable, "-I", "-c", code], 30, session=sess)
             held = sess.still_enforced()
             evidence = dict(sess.evidence)
-        seen = json.loads(res.stdout.strip().splitlines()[-1]) if res.returncode == 0 and res.stdout.strip() else {}
+        ran_clean = res.returncode == 0 and not res.timed_out and not res.pipes_held   # the runtime's own verdict
+        seen = json.loads(res.stdout.strip().splitlines()[-1]) if ran_clean and res.stdout.strip() else {}
         ok = (held and seen.get("pinned") == "CONNECTED"
               and all(str(seen.get(k, "")).startswith("BLOCKED:") for k in ("other_port", "metadata", "external"))
               and evidence.get("kernel_dropped_packets", 0) >= 1 and evidence.get("probe_in_cgroup") is True)
