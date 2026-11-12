@@ -223,7 +223,9 @@ class AssessmentService:
                          frozenset({"read_only_probe", "safe_reproduction"}))
         self.approval_store = ApprovalStore()
         self.tokens = TokenAuthority(secrets.token_bytes(32), time.time)
-        self.workers = WorkerPool(max_concurrent=2)
+        from .runtime import HeldSessions
+        self._held_sessions = HeldSessions()
+        self.workers = WorkerPool(max_concurrent=2, held=self._held_sessions)
         self.gateway = Gateway(
             engagement=eng, tokens=self.tokens, approvals=self.approval_store,
             egress=EgressGuard(self._resolve_host),
@@ -287,6 +289,7 @@ class AssessmentService:
         self._unstopped: list[dict] = []         # workers a withdrawal or stop could not confirm dead
         self._cleanup_pending: list = []         # emptied cgroups whose rules/directory remain to remove
         self._cleanup_at = -1e9
+        self._cleanup_running = False
         self._state_had_ledger_flag = False
         self._closed = False
         self._session_written = False
@@ -616,34 +619,57 @@ class AssessmentService:
                     "authority_notice": self._authority_notice}
 
     def _note_unstopped_locked(self, host: str, survivors: list[int], pool) -> None:
-        if survivors:
+        # a confined run still being probed or torn down (its process is not a pid
+        # of this pool any more, or not yet) counts as a survivor as well
+        busy = [x for x in pool.busy_sessions() if not self._session_on_record(x)]
+        if survivors or busy:
+            sessions = pool.sessions_for(survivors)
+            sessions += [x for x in busy if not any(x is y for y in sessions)]
             self._unstopped.append({"host": host, "pids": list(survivors), "at": time.time(), "pool": pool,
                                     # kept here: the pool forgets a session once its direct child is reaped
-                                    "sessions": pool.sessions_for(survivors)})
+                                    "sessions": sessions})
             try:
                 self.audit.record("workers.stop_unconfirmed", host=host, survivors=list(survivors))
             except Exception:
                 pass        # the survivor is on record above; an audit failure must not undo that
 
+    def _session_on_record(self, session) -> bool:
+        return any(session is x for u in self._unstopped for x in (u.get("sessions") or []))
+
     def _retry_cleanup_locked(self) -> None:
+        """Removing the rules and directory of emptied cgroups is slow (sudo) and not
+        a safety matter any more: it runs in the background, never under the
+        service lock, one batch at a time, at most every 30 s."""
         now = time.monotonic()
-        if not self._cleanup_pending or now - self._cleanup_at < 30:
+        if not self._cleanup_pending or self._cleanup_running or now - self._cleanup_at < 30:
             return
         self._cleanup_at = now
-        pending, self._cleanup_pending = self._cleanup_pending, []
-        for x in pending:
-            x.on_leftover = None                 # a failed cleanup is not a new leftover
-            try:
-                x._teardown()
-            except Exception:
-                pass
-            if getattr(x, "leftover", False):
-                self._cleanup_pending.append(x)
+        self._cleanup_running = True
+        batch, self._cleanup_pending = self._cleanup_pending, []
+
+        def run():
+            left = []
+            for x in batch:
+                x.on_leftover = None             # a failed cleanup is not a new leftover
+                try:
+                    x._teardown()
+                except Exception:
+                    pass
+                if getattr(x, "leftover", False):
+                    left.append(x)
+            with self._lock:
+                for x in left:
+                    if not any(x is y for y in self._cleanup_pending):
+                        self._cleanup_pending.append(x)
+                self._cleanup_running = False
+        threading.Thread(target=run, daemon=True, name="cgroup-cleanup").start()
 
     def _note_leftover_session(self, session) -> None:
         """A confined run whose cgroup could not be emptied: kept on record like any
         other worker that was not confirmed dead."""
         with self._lock:
+            if self._session_on_record(session):
+                return
             self._unstopped.append({"host": (self.a.asset.get("name") or "").lower(), "pids": [],
                                     "at": time.time(), "pool": None, "sessions": [session]})
             try:
@@ -663,7 +689,7 @@ class AssessmentService:
     def _unstopped_now_locked(self) -> dict | None:
         """Workers that a withdrawal, reset or stop could not confirm dead and that
         are STILL not confirmed dead. While there are any, nothing new launches."""
-        keep = []
+        keep, confirmed_late = [], []
         for u in list(self._unstopped):          # a copy: nothing below may extend this pass
             pool, sessions = u.get("pool"), u.get("sessions") or []
             # LOOK first. A process that is gone is never signalled again (its pid
@@ -682,15 +708,21 @@ class AssessmentService:
                     # Empty now: nothing is running in it any more, so it no longer
                     # blocks anything. Removing its rules and cgroup is cleanup, retried
                     # at most every 30 s and never re-reported as a new leftover.
-                    self._cleanup_pending.append(x)
+                    if not any(x is y for y in self._cleanup_pending):
+                        self._cleanup_pending.append(x)
                     x.on_leftover = None
             if alive or not_empty:
                 u["pids"] = alive or u["pids"]
                 u["sessions"] = not_empty
                 keep.append(u)
             else:
-                self.audit.record("workers.stop_confirmed_late", host=u["host"], pids=u["pids"])
+                confirmed_late.append(u)
         self._unstopped = keep
+        for u in confirmed_late:                 # recorded only after the list is consistent
+            try:
+                self.audit.record("workers.stop_confirmed_late", host=u["host"], pids=u["pids"])
+            except Exception:
+                pass
         self._retry_cleanup_locked()
         if not keep:
             return None
@@ -2187,7 +2219,7 @@ class AssessmentService:
         self._note_unstopped_locked((self.a.asset.get("name") or "").lower(), survivors, old)
         if survivors and end_stop:
             stays_stopped = self.gateway.state is State.STOPPED or self.a.state == "stopped"
-        self.workers = WorkerPool(max_concurrent=2)
+        self.workers = WorkerPool(max_concurrent=2, held=self._held_sessions)
         self.gateway.workers = self.workers
         if not stays_stopped:
             self.gateway._state = State.RUNNING

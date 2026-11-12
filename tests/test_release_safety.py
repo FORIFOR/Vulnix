@@ -1104,3 +1104,124 @@ class TestTeardownWindowIsTracked(ReleaseBase):
         b.busy = False
         self.svc._launch_guard("http_probe", {"url": self.url + "/"}, dest)
         self.svc.workers.release(b)
+
+
+# ---- findings of the re-review of dee3e2f ------------------------------------
+class _SlowEmptyStuck(_EmptyButStuck):
+    def _teardown(self):
+        self.teardowns += 1
+        time.sleep(1.5)                          # sudo calls that take long
+
+
+class TestCleanupNeverHoldsTheServiceLock(ReleaseBase):
+    def test_status_and_stop_do_not_wait_for_a_slow_cleanup(self):
+        self.onboard()
+        xs = [_SlowEmptyStuck() for _ in range(3)]
+        for x in xs:
+            self.svc._note_leftover_session(x)
+        t0 = time.monotonic()
+        self.svc.system_status()                 # moves them to cleanup and starts it in the background
+        rep = self.svc.emergency_stop("appr")
+        self.assertLess(time.monotonic() - t0, 3.0)
+        end = time.time() + 15
+        while time.time() < end and self.svc._cleanup_running:
+            time.sleep(0.1)
+        self.assertEqual(sum(x.teardowns for x in xs), 3)
+
+    def test_no_duplicates_while_the_audit_log_fails(self):
+        self.onboard()
+        x = _EmptyButStuck()
+        self.svc._note_leftover_session(x)
+        self.svc._note_leftover_session(x)                       # the same session twice: one record
+        self.assertEqual(len(self.svc._unstopped), 1)
+        self.svc._cleanup_at = time.monotonic()                  # no cleanup run during this test
+        with patch.object(self.svc.audit, "record", side_effect=OSError("no space")):
+            for _ in range(50):
+                self.svc.system_status()
+        self.assertEqual(len(self.svc._cleanup_pending), 1)
+        self.assertEqual(self.svc._unstopped, [])
+
+
+class _BusySession(_Busy):
+    name = "aegis_l2_cccccccccccc"
+    leftover = False
+
+
+class TestHeldSessionsAcrossAPoolSwap(ReleaseBase):
+    def test_a_reset_does_not_hide_a_session_still_tearing_down(self):
+        self.onboard()
+        b = _BusySession()
+        old_pool = self.svc.workers
+        old_pool.hold(b)                                          # held by the Gateway's (old) pool
+        rep1 = self.svc.emergency_stop("appr")
+        self.assertFalse(rep1["confirmed"])
+        with self.assertRaises(ValueError):
+            self.svc.restart("appr")                              # not beside it
+        self.assertIsNot(self.svc.workers, None)
+        self.assertTrue(self.svc.workers.busy_sessions())         # the new pool sees it too
+        rep2 = self.svc.emergency_stop("appr")
+        self.assertFalse(rep2["confirmed"])
+        self.assertFalse(self.svc.close())                        # not a clean close either
+        b.busy = False
+        old_pool.release(b)
+
+    def test_a_withdrawal_records_a_busy_session(self):
+        self.onboard()
+        b = _BusySession()
+        self.svc.workers.hold(b)
+        with self.assertRaises(Exception):
+            self.svc.verify_asset_ownership(url_or_host=self.url, dns_lookup=lambda n: [])
+        self.assertIsNotNone(self.svc.system_status()["unstopped_workers"])
+        b.busy = False
+        self.svc.workers.release(b)
+        self.assertIsNone(self.svc.system_status()["unstopped_workers"])
+
+
+class TestProbePhaseIsHeld(ReleaseBase):
+    def test_a_stop_during_the_probe_is_not_confirmed(self):
+        self.onboard()
+        entered, release = threading.Event(), threading.Event()
+
+        class SlowEnter(_BusySession):
+            def __enter__(self):
+                entered.set()
+                release.wait(10)                 # the probe is running inside the cgroup
+                raise __import__("aegis.confinement").confinement.ConfinementError("probe failed")
+
+            def __exit__(self, *a):
+                return None
+        s = SlowEnter()
+        self.svc.gateway.confinement_provider = lambda tool, args, dest: s
+        self.set_secrets()
+        out = {}
+
+        def run():
+            try:
+                self.svc.verify_finding("f_ex_idor", actor="appr", roles={"approver"})
+            except Exception as e:               # refused once the probe fails: expected
+                out["err"] = e
+        t = threading.Thread(target=run)
+        t.start()
+        self.assertTrue(entered.wait(10))
+        rep = self.svc.gateway.emergency_stop("appr", confirm_timeout_s=0.3)
+        self.assertFalse(rep.confirmed)
+        s.busy = False
+        release.set()
+        t.join(30)
+        self.assertEqual(self.svc.workers.busy_sessions(), [])
+
+
+class TestBusySessionsAreRobust(unittest.TestCase):
+    def test_a_session_that_cannot_answer_counts_as_busy(self):
+        class NoAnswer:
+            def empty(self):
+                raise OSError("unreadable")
+        pool = WorkerPool()
+        pool.hold(NoAnswer())
+        self.assertEqual(len(pool.busy_sessions()), 1)
+
+        class NoMethod:
+            pass
+        pool2 = WorkerPool()
+        pool2.hold(NoMethod())
+        self.assertEqual(len(pool2.busy_sessions()), 1)

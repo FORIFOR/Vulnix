@@ -27,13 +27,37 @@ class WorkerResult:
     elapsed_s: float
 
 
+class HeldSessions:
+    """Thread-safe registry of confinement sessions in use (shared between pools)."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._items: list = []
+
+    def add(self, session) -> None:
+        with self._lock:
+            if not any(x is session for x in self._items):
+                self._items.append(session)
+
+    def remove(self, session) -> None:
+        with self._lock:
+            self._items = [x for x in self._items if x is not session]
+
+    def snapshot(self) -> list:
+        with self._lock:
+            return list(self._items)
+
+
 class WorkerPool:
-    def __init__(self, max_concurrent: int = 4, cpu_seconds: int = 60):
+    def __init__(self, max_concurrent: int = 4, cpu_seconds: int = 60, held: "HeldSessions | None" = None):
         self._sem = threading.BoundedSemaphore(max_concurrent)
         self._cpu = cpu_seconds
         self._procs: dict[int, subprocess.Popen] = {}
         self._sessions: dict[int, object] = {}
-        self._held: list = []        # confinement sessions from apply until their teardown has finished
+        # confinement sessions from apply until their teardown has finished. Shared
+        # by every pool of one service, so replacing the pool (a workspace reset)
+        # does not hide a confined process that is still being torn down.
+        self._held = held if held is not None else HeldSessions()
         self._lock = threading.Lock()
         self._closed = False
 
@@ -96,7 +120,8 @@ class WorkerPool:
         with self._lock:
             self._closed = True
             pids = list(self._procs)
-            sessions = list(self._sessions.values()) + [x for x in self._held if x not in self._sessions.values()]
+            sessions = list(self._sessions.values()) + [x for x in self._held.snapshot()
+                                                         if x not in self._sessions.values()]
         for sess in sessions:          # confined workers: kill the whole cgroup
             sess.kill()
         for pid in pids:
@@ -144,19 +169,23 @@ class WorkerPool:
             time.sleep(0.02)
 
     def hold(self, session) -> None:
-        with self._lock:
-            self._held.append(session)
+        self._held.add(session)
 
     def release(self, session) -> None:
-        with self._lock:
-            self._held = [x for x in self._held if x is not session]
+        self._held.remove(session)
 
     def busy_sessions(self) -> list:
-        """Held confinement sessions that still contain a process (e.g. between the
-        worker being reaped and the end of the cgroup's teardown)."""
-        with self._lock:
-            held = list(self._held)
-        return [x for x in held if not x.empty()]
+        """Held confinement sessions that still contain a process (e.g. while the
+        probe runs, or between the worker being reaped and the end of the cgroup's
+        teardown). A session that cannot say counts as busy."""
+        busy = []
+        for x in self._held.snapshot():
+            try:
+                if not getattr(x, "empty")():
+                    busy.append(x)
+            except Exception:
+                busy.append(x)
+        return busy
 
     def sessions_for(self, pids: list[int]) -> list:
         with self._lock:

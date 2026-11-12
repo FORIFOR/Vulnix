@@ -197,11 +197,10 @@ class Gateway:
             else:
                 # Applied and confirmed by the kernel BEFORE any secret is read for
                 # the worker; a failure here means nothing is launched.
-                held = []
+                workers.hold(confine)              # from the probe on, until the teardown has finished
+                held = [confine]
                 try:
                     with confine as session:
-                        workers.hold(session)
-                        held.append(session)
                         self.audit.record("confinement.applied", jti=claims["jti"], tool=tool.name,
                                           **dict(getattr(session, "evidence", {}) or {}))
                         if not session.still_enforced():
