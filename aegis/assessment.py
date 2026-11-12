@@ -28,7 +28,7 @@ from . import cve
 from .audit import AuditLog
 from .authz import ApprovalStore, Engagement, Target, TokenAuthority
 from .events import EventBus
-from .evidence import (EVIDENCE_LABELS, evidence_status,
+from .evidence import (EVIDENCE_LABELS, enforce_verdict, evidence_status,
                        evidence_summary, reproduction_note, reproduction_verdict)
 from .gateway import (LAB_REPRODUCTION_CHECKS, Gateway, State, http_probe_tool,
                       reproduction_probe_tool)
@@ -1333,7 +1333,8 @@ class AssessmentService:
         if isinstance(data.get("phases"), list) and data["phases"]:
             self.a.phases = [dict(p) for p in data["phases"] if isinstance(p, dict)]
         if isinstance(data.get("findings"), dict) and data["findings"]:
-            self.a.findings = {str(k): dict(v) for k, v in data["findings"].items() if isinstance(v, dict)}
+            # saved by an older version, an L1 observation may still read "proven"
+            self.a.findings = {str(k): enforce_verdict(dict(v)) for k, v in data["findings"].items() if isinstance(v, dict)}
         if isinstance(data.get("approvals"), dict):
             self.a.approvals = {str(k): dict(v) for k, v in data["approvals"].items() if isinstance(v, dict)}
             for ap in self.a.approvals.values():
@@ -2985,11 +2986,12 @@ class AssessmentService:
                 else:
                     sc = " ".join((res or {}).get("set_cookies") or [h.get("set-cookie", "")]).lower()
                     remains = bool(sc.strip()) and any(flag not in sc for flag in ("secure", "httponly", "samesite"))
-                verdict = ("proven" if remains else "not_reproduced") if valid_headers else "unverified"
+                # an L1 re-check observes; it never proves (proven is reserved for L2 runs)
+                verdict = ("detected" if remains else "not_reproduced") if valid_headers else "unverified"
                 note = ("最新のHTTP応答ヘッダーに設定不備が残っています。" if remains else "最新のHTTP応答ヘッダーで、この設定項目の対策を確認しました。") if valid_headers else "修正確認できず。HTTP応答ヘッダーを取得できませんでした。"
                 latest_ids[fid] = ev_http["evidence_id"] if ev_http else None
                 self._upsert_finding({
-                    **finding, "verdict": verdict, "what_was_established": note if verdict == "proven" else None,
+                    **finding, "verdict": verdict, "what_was_established": note if verdict == "detected" else None,
                     "verdict_note": note,
                     "evidence": finding["evidence"] + ([ev_http] if ev_http else []),
                 })
@@ -3370,7 +3372,7 @@ class AssessmentService:
                 self._fail("診断許可が終了したため、この実行の結果は記録しません")
                 return None, None
         if d.result.killed or d.result.returncode != 0:
-            self._fail(f"Worker が異常終了しました (rc={d.result.returncode})")
+            self._fail(self._worker_failure_text(tool, d.result))
             return None, None
         entry = next(e for e in reversed(self.audit.entries()) if e["event"] == "result")
         clean_stdout = self.secrets.redact(d.result.stdout.strip())
@@ -3458,7 +3460,7 @@ class AssessmentService:
         if missing:
             self._upsert_finding({
                 "id": "f_headers", "title": "セキュリティヘッダーが設定されていない",
-                "severity": "low", "verdict": "proven", "category": "設定不備", "cve": [],
+                "severity": "low", "verdict": "detected", "verdict_basis": "l1_observation", "category": "設定不備", "cve": [],
                 "risk_level": "L1", "help_term": "security_headers",
                 "summary": "ブラウザ側の防御を有効にするヘッダーが応答に含まれていません。",
                 "what_was_established": "実際のHTTP応答に " + ", ".join(missing) + " が含まれないことを確認しました。",
@@ -3470,7 +3472,7 @@ class AssessmentService:
         if "x-powered-by" in h:
             self._upsert_finding({
                 "id": "f_powered", "title": "使用技術のバージョンが露出している",
-                "severity": "low", "verdict": "proven", "category": "情報露出", "cve": [],
+                "severity": "low", "verdict": "detected", "verdict_basis": "l1_observation", "category": "情報露出", "cve": [],
                 "risk_level": "L1", "help_term": "info_disclosure",
                 "summary": f"X-Powered-By ヘッダーが「{h['x-powered-by']}」を示しています。",
                 "what_was_established": "実際のHTTP応答で X-Powered-By ヘッダーが返されることを確認しました。",
@@ -3564,7 +3566,28 @@ class AssessmentService:
         self.bus.publish(self.a.id, "assessment.state", state=state, risk=self._risk(),
                          failure=self.a.failure)
 
+    @staticmethod
+    def _worker_failure_text(tool: str, result) -> str:
+        """Why a worker failed, from its own structured report when it gave one."""
+        if result.killed:
+            return f"Worker が制限時間内に終わらず停止されました（{tool}）"
+        try:
+            err = json.loads((result.stdout or "").strip() or "{}").get("error")
+        except (ValueError, AttributeError):
+            err = None
+        if isinstance(err, dict):
+            stage = {"connect": "TCP接続", "tls": "TLSハンドシェイク", "send": "リクエスト送信",
+                     "first_byte": "応答の最初のバイト待ち", "body": "応答本文の受信"}.get(str(err.get("stage")), "不明な段階")
+            kind = {"timeout": "タイムアウト", "tls_verify_failed": "証明書の検証失敗", "tls_error": "TLSエラー",
+                    "connection_refused": "接続拒否", "connection_reset": "接続リセット",
+                    "bad_http_response": "不正なHTTP応答", "network_error": "ネットワークエラー"}.get(str(err.get("kind")), "エラー")
+            limit = err.get("timeout_s")
+            limit_txt = f"、上限 {float(limit):g} 秒" if isinstance(limit, (int, float)) else ""
+            return f"Worker が{stage}の段階で失敗しました（{kind}{limit_txt}、rc={result.returncode}）"
+        return f"Worker が異常終了しました (rc={result.returncode})"
+
     def _upsert_finding(self, f):
+        f = enforce_verdict(f)          # "proven" only with a recorded L2 reproduction
         with self._lock:
             if self._stale_runner():
                 raise _Stopped()

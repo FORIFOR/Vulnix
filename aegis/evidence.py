@@ -10,6 +10,26 @@ EVIDENCE_LABELS = {
 }
 
 
+def l2_reproduction_recorded(finding: dict) -> bool:
+    """True only when a recorded L2 run (`reproduction_probe`) is part of the evidence."""
+    return any(isinstance(e, dict) and e.get("tool") == "reproduction_probe"
+               and e.get("audit_hash") and e.get("saved_at") is not None
+               for e in finding.get("evidence") or [])
+
+
+def enforce_verdict(finding: dict) -> dict:
+    """`proven` is reserved for a recorded L2 reproduction.
+
+    A read-only L1 observation (a header, TLS, cookie or CORS check) shows that
+    something is configured in a way that may be a weakness; it does not
+    reproduce one. Whatever produced it, such a finding is stored and shown as
+    `detected`. Demo fixtures are labelled as fixtures and left as they are."""
+    if (finding.get("verdict") == "proven" and not finding.get("demo_fixture")
+            and not l2_reproduction_recorded(finding)):
+        return {**finding, "verdict": "detected", "verdict_basis": "l1_observation"}
+    return finding
+
+
 def evidence_status(finding: dict) -> str:
     if finding.get("demo_fixture"):
         return "fixture"
@@ -20,7 +40,7 @@ def evidence_status(finding: dict) -> str:
                    for e in finding.get("evidence", []))
     if not recorded:
         return "candidate"
-    verdict = finding.get("verdict")
+    verdict = enforce_verdict(finding).get("verdict")
     return verdict if verdict in {"detected", "proven", "not_reproduced"} else "incomplete"
 
 
