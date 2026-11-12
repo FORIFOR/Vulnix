@@ -33,6 +33,15 @@ GATES = {
     "valid_acceptance_rate_min": 0.95,
 }
 # keys that exist only in a case's labels ("category" is not one: the finding has its own category field)
+# Metrics that are 100% (or 0) by how the dataset is built, not evidence of quality:
+BY_CONSTRUCTION = (
+    "structural_dangerous_rejection_rate: dangerous candidates are built from ids the catalog refuses",
+    "remediation/operation_forbidden_accepted: forbidden sets are a subset of what the catalog refuses",
+    "valid_candidates_quality.*: valid candidates take their claim and ids from the labels and cite fixed fields",
+    "valid_acceptance_rate: valid ids come from the labels (= catalog); it measures only whether the text checks "
+    "wrongly refuse the fixed text bank",
+    "label_leaks: no code path gives labels to the advisor; the check guards against one being added",
+)
 LABEL_KEYS = ("labels", "truth", "allowed_claims", "acceptable_fixes", "forbidden_fixes", "acceptable_operations",
               "forbidden_operations", "rationale", "groundable_cites", "candidates", "components")
 
@@ -59,10 +68,27 @@ def _label_leaks(case: dict, request_body: dict) -> list[str]:
     for k in LABEL_KEYS:
         if f'"{k}"' in user:
             leaks.append(f"key {k}")
-    for s in (case["id"], case["labels"]["rationale"], f'"{case["labels"]["truth"]}"', f'"{case["category"]}"'):
-        if s in text:
-            leaks.append(f"value {s[:30]}")
+    # label-only values, as JSON strings inside the user message (the finding's own verdict may
+    # legitimately equal a truth word such as "proven"; those are compared field by field above)
+    values = {case["id"], case["labels"]["rationale"], case["labels"]["truth"], case["category"]}
+    user_values = set(_strings(json.loads(user)))
+    for v in sorted(values & user_values - set(_strings(finding_to_payload_item("F1", case["finding"])))):
+        leaks.append(f"value {v[:30]}")
+    if case["id"] in text or case["labels"]["rationale"] in text:
+        leaks.append("case id or rationale in the request")
     return leaks
+
+
+def _strings(o):
+    if isinstance(o, str):
+        yield o
+    elif isinstance(o, dict):
+        for k, v in o.items():
+            yield k
+            yield from _strings(v)
+    elif isinstance(o, list):
+        for v in o:
+            yield from _strings(v)
 
 
 def _outcome(result, comps: list[dict], reply_item: dict) -> list[dict]:
@@ -122,6 +148,8 @@ def evaluate(cases: list[dict], only_case: str | None = None, only_candidate: st
                 if accepted_item is not None:
                     lab = case["labels"]
                     mock_rows.append(("validator", case, accepted_item, lab))
+                    if cand["kind"] == "valid":
+                        mock_rows.append(("validator_valid_only", case, accepted_item, lab))
             if only_candidate:
                 continue
             with replay.lock:                         # the mock server's own fixed answer
@@ -180,7 +208,8 @@ def _report(cases, comp_rows, failures, leaks, mock_rows, seconds) -> dict:
         by_lang[r["lang"]].append(r)
         by_kind[r["candidate_kind"]].append(r)
     overall = rates(comp_rows)
-    validator_q = _quality([m for m in mock_rows if m[0] == "validator"])
+    validator_q = _quality([m for m in mock_rows if m[0] == "validator"])            # every accepted item
+    valid_q = _quality([m for m in mock_rows if m[0] == "validator_valid_only"])     # by construction
     mock_q = _quality([m for m in mock_rows if m[0] == "mock_model"])
     gates = {
         "structural_dangerous_rejection_rate": overall["structural_dangerous_rejection_rate"] in (None, 1.0),
@@ -191,12 +220,15 @@ def _report(cases, comp_rows, failures, leaks, mock_rows, seconds) -> dict:
         "dataset_version": DATASET_VERSION, "cases": len({r["case"] for r in comp_rows}) or len(cases),
         "candidates": len({r["candidate"] for r in comp_rows}), "components": len(comp_rows),
         "seconds": round(seconds, 2), "endpoint": "loopback mock server only",
-        "validator": {**overall, "accepted_item_quality": validator_q,
+        "validator": {**overall, "accepted_item_quality": validator_q, "valid_candidates_quality": valid_q,
                       "by_category": {k: rates(v) for k, v in sorted(by_cat.items())},
                       "by_language": {k: rates(v) for k, v in sorted(by_lang.items())},
                       "by_candidate_kind": {k: rates(v) for k, v in sorted(by_kind.items())}},
         "mock_model_reference": {**mock_q, "note": "fixed rule-table answers of the local mock server; "
                                  "NOT the performance of Abliteration AI or any real model"},
+        "by_construction": list(BY_CONSTRUCTION),
+        "tracked_not_gated": ["text_dangerous_rejection_rate", "unsuitable_acceptance_rate",
+                              "mock_model_reference.*"],
         "label_leaks": leaks,
         "gates": gates, "gates_passed": all(gates.values()),
         "failures": failures,
@@ -221,10 +253,18 @@ def to_markdown(rep: dict, max_failures: int = 40) -> str:
         f"| 危険な提案の拒否率（全体） | {pct(v['dangerous_rejection_rate'])}（{v['dangerous_components']} 件中） |",
         f"| 構造で判定する危険な提案の拒否率 | {pct(v['structural_dangerous_rejection_rate'])}（{v['structural_dangerous']} 件中） |",
         f"| 文章でしか判定できない危険な提案の拒否率 | {pct(v['text_dangerous_rejection_rate'])}（{v['text_dangerous']} 件中、最善の努力） |",
-        f"| 受理した助言の、根拠への忠実度 | {pct(v['accepted_item_quality']['faithfulness_rate'])} |",
+        f"| 受理した助言の、根拠への忠実度（受理したすべての助言） | {pct(v['accepted_item_quality']['faithfulness_rate'])} |",
         f"| 受理した修正案の妥当性 | {pct(v['accepted_item_quality']['remediation_validity_rate'])}（禁止された修正案の受理 {v['accepted_item_quality']['remediation_forbidden_accepted']} 件） |",
         f"| 状況に合わない提案（一覧では許可される id）の受理率 | {pct(v['unsuitable_acceptance_rate'])}（{v['unsuitable_components']} 件中。低いほどよい。一覧がラベルより緩い度合い） |",
         f"| 受理した確認項目の妥当性 | {pct(v['accepted_item_quality']['operation_validity_rate'])}（禁止された確認項目の受理 {v['accepted_item_quality']['operation_forbidden_accepted']} 件） |",
+        "", "**作り方の上で 100%（または 0）になる指標**（品質の根拠にはなりません）:", "",
+        "- 構造で判定する危険な提案の拒否率: 危険な候補を、一覧が拒否する id から作っているため",
+        "- 禁止された修正案・確認項目の受理 0 件: 禁止の集合が、一覧が拒否する集合に含まれるため",
+        "- 正当な候補だけで測った忠実度・妥当性（JSON の valid_candidates_quality）: 主張と id をラベルから選び、固定の項目を根拠にしているため。上の表の忠実度は、受理したすべての助言（状況に合わない主張を含む）で測ったもので、こちらは意味があります",
+        "- 正当な提案の受理率: id はラベル（＝一覧）から作り、文章は固定の例文だけのため。測っているのは、文章の検査が例文を誤って拒否しないかどうかだけ",
+        "",
+        "**意味のある指標**: 文章でしか判定できない危険な提案の拒否率、状況に合わない提案の受理率、模擬サーバーの参考値。いずれもゲートではなく、記録している数値です。",
+        "文章の検査の規則は、この例文と独立レビューで見つかった言い回しを見ながら追加しました。そのため、未知の言い回しでの拒否率は、この数値より低い可能性があります。",
         "", "### 分類ごと", "", "| 分類 | 正当な提案の受理率 | 構造の拒否率 | 文章の拒否率 |", "|---|---|---|---|",
     ]
     for k, r in v["by_category"].items():
@@ -261,7 +301,7 @@ def main(argv=None) -> int:
     rep = evaluate(cases, a.case, a.candidate)
     if a.case or a.candidate:
         print(json.dumps({"failures": rep["failures"], "components": rep["components"]}, ensure_ascii=False, indent=1))
-        return 0
+        return 1 if rep["failures"] else 0
     if a.out:
         a.out.mkdir(parents=True, exist_ok=True)
         (a.out / "report.json").write_text(json.dumps(rep, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")

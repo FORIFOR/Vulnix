@@ -157,21 +157,37 @@ _HOSTISH_IN_PATH = re.compile(r"/api/|/admin|/\.well-known")
 _ACT = r"(?:し|す|さ|せ)"
 # "総当たり対策" / "DoS対策" / "brute-force protection" name a defence, not an attack to run
 _NOT_DEFENCE = r"(?!\s*(?:対策|への対策|防止|保護|protection|mitigation|defen[cs]e))"
+# A defence named together with switching it off: "総当たり対策を無効にして", "DoS対策を回避",
+# "disable brute-force protection", "レート制限を外して", "認証を回避". Checked before the other rules,
+# so the _NOT_DEFENCE exemptions below cannot be used to get a disabled defence through.
+_DEF = (r"(?:対策|防止|保護|制限|レート制限|認証|ロックアウト|WAF|ファイアウォール|protection|mitigation|defen[cs]e|"
+        r"rate[\s-]*limit\w*|authentication|auth|firewall|lockout|captcha)")
+_DIS = r"(?:無効|回避|迂回|外し|外す|外して|切っ|切る|切り|オフ|停止|止め|off|disabl\w*|bypass\w*|turn\w*\s+off|remov\w*|skip\w*|circumvent\w*)"
 _FORBIDDEN_CHECK = [
+    ("defence_disabled", re.compile(_DEF + r".{0,15}?" + _DIS + r"|" + _DIS + r".{0,15}?" + _DEF, re.I)),
     ("destructive", re.compile(r"(?:を|も)(?:削除|消去|破棄|初期化|改ざん|書き換え|上書き)" + _ACT
-                               + r"|drop\s+table|truncate\s+table|rm\s+-rf|delete\s+from|update\s+\w+\s+set", re.I)),
+                               + r"|drop\s+table|truncate\s+table|rm\s+-rf|delete\s+from|update\s+\w+\s+set"
+                               r"|(?:delete|wipe|drop|purge)\s+(?:the\s+|all\s+)?(?:test\s+|user\s+)?(?:records|data|tables?|accounts)", re.I)),
     ("load_or_dos", re.compile(r"大量(?:に|の)?(?:送|リクエスト|要求|アクセス)|連続(?:で|して)?送|高頻度|繰り返し(?:送|実行|リクエスト)"
                                r"|(?:リクエスト|要求)を繰り返|負荷(?:を(?:かけ|与え)|試験|テスト)|" + _B0 + r"D?DoS" + _B1 + _NOT_DEFENCE
                                + r"|フラッド|flood|stress\s*test"
                                r"|総当たり" + _NOT_DEFENCE + r"|ブルートフォース" + _NOT_DEFENCE
-                               + r"|brute(?:[\s-]*force)?(?![\s-]*(?:force\s+)?(?:protection|mitigation|defen[cs]e))", re.I)),
+                               + r"|brute(?:[\s-]*force)?(?![\s-]*(?:force\s+)?(?:protection|mitigation|defen[cs]e))"
+                               r"|辞書攻撃|何千回|数千回|数万回|\d{3,}\s*回|全(?:アカウント|ユーザー)の(?:パスワード|ログイン)"
+                               r"|thousands?\s+of\s+(?:requests|attempts|passwords|logins)|many\s+requests|\d{3,}\s*(?:requests|passwords|attempts)"
+                               r"|password\s+spray\w*|dictionary\s+attack|credential\s+stuffing|hammer\w*", re.I)),
     ("production_or_other_users", re.compile(r"本番データ|実データ|顧客(?:データ|の個人情報)|実在の(?:利用者|アカウント)"
                                              r"|他(?:の)?(?:ユーザー|利用者|人)の(?:アカウント|データ|資源|情報)"
-                                             r"|(?:他|別)(?:の)?(?:ユーザー|利用者)に影響", re.I)),
+                                             r"|(?:他|別)(?:の)?(?:ユーザー|利用者)に影響"
+                                             r"|(?:real|live|production)\s+(?:customer|user)?\s*data|customer\s+data"
+                                             r"|other\s+users?'?s?\s+accounts?|another\s+user'?s\s+account", re.I)),
     ("approval_bypass", re.compile(r"承認(?:なし|無し|を省略|不要|をスキップ|を回避|を待たず|を得ず|より先に|せずに)|承認(?:取得)?前に(?:実行|試|送|検証|開始)|ゲートを(?:回避|迂回|無効)"
-                                   r"|自動承認|bypass|skip\s+approval|without\s+approval", re.I)),
+                                   r"|自動承認|bypass|skip\w*\s+(?:the\s+)?approval|without\s+(?:waiting\s+for\s+|getting\s+|an?\s+)?approval"
+                                   r"|before\s+(?:the\s+)?approval|no\s+approval", re.I)),
     ("scope_expansion", re.compile(r"(?:リダイレクト先|外部サービス|別ドメイン|サブドメイン)(?:を|も)(?:調べ|確認|診断|検査|列挙|対象|スキャン)"
-                                   r"|スコープ(?:を広げ|外|を追加|を拡)|対象(?:を広げ|に含め|を追加|を拡)", re.I)),
+                                   r"|スコープ(?:を広げ|外|を追加|を拡)|対象(?:を広げ|に含め|を追加|を拡)"
+                                   r"|(?:scan|enumerat\w*|probe|crawl)\s+(?:the\s+)?(?:other\s+|all\s+)?(?:subdomains|domains|hosts)"
+                                   r"|out\s+of\s+scope|expand\w*\s+(?:the\s+)?scope|redirect\s+targets?", re.I)),
     ("tooling_or_commands", re.compile(_B0 + r"(?:sqlmap|nmap|hydra|metasploit|burp|curl|wget|nikto|ffuf|gobuster)" + _B1
                                        + r"|`[^`]+`|\$\(", re.I)),
 ]
@@ -330,8 +346,8 @@ def validate_advice(raw: object, ref_map: dict[str, dict]) -> tuple[list[Advice]
         if claim not in catalog.CLAIM_LEVELS:
             reject("claim_level", "schema: claim_level is not a catalog value")
             continue
-        if claim not in catalog.CLAIMS_BY_VERDICT.get(verdict, ()):
-            reject("claim_level", f"unfaithful_claim: {claim} is not allowed for verdict {verdict}")
+        if (p := catalog.claim_problem(claim, rule, verdict, sent["verdict_basis"])):
+            reject("claim_level", p)
             continue
         cites = item.get("cites")
         if (not isinstance(cites, list) or not cites or len(cites) > len(catalog.CITABLE_FIELDS)

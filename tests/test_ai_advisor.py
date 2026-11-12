@@ -541,3 +541,32 @@ class TestHostnameFormsAndFileNames(unittest.TestCase):
             t = time.perf_counter()
             adv.leak_reasons(pattern)
             self.assertLess(time.perf_counter() - t, 0.5, pattern[:10])
+
+
+class TestEvaluationReviewFindings(unittest.TestCase):
+    """Independent review of f4b4028."""
+
+    def run_with(self, items, findings=None):
+        with _MockServer(_advice_reply(items)) as m:
+            return adv.AbliterationAdvisor(m.url).advise(findings or [_leaky_finding()])
+
+    def test_a_defence_named_with_switching_it_off_is_refused(self):
+        # HIGH: the "総当たり対策" exemption let these through
+        for reason in ("総当たり対策を無効にして試す", "DoS対策を回避して確認する", "ブルートフォース防止を切ってから試す",
+                       "disable brute-force protection and retry", "DoS protection off then send many",
+                       "レート制限を外して試す", "認証を回避して試す"):
+            r = self.run_with([_ok_item(next_checks=[_chk(reason)])])
+            self.assertEqual(r.advice[0].next_checks, (), reason)
+            self.assertTrue(r.rejected[0]["reason"].startswith("text_misproposal"), (reason, r.rejected))
+        for reason in ("総当たり対策の設定とあわせて確認するため", "DDoS対策の有無を確認する", "レート制限が効いているかを確認する"):
+            r = self.run_with([_ok_item(next_checks=[_chk(reason)])])
+            self.assertEqual(r.rejected, (), reason)
+
+    def test_an_l2_only_issue_is_not_observed_by_l1(self):
+        idor = dict(remediation=[_rem("所有者を照合する", "enforce_object_ownership")],
+                    next_checks=[_chk("承認つきで確かめるため", "l2_authz_boundary_check")])
+        r = self.run_with([_ok_item(claim_level="observed", **idor)], findings=[{"id": "f_idor", "verdict": "detected"}])
+        self.assertEqual(r.advice, ())
+        self.assertIn("cannot be observed by L1 alone", r.rejected[0]["reason"])
+        r = self.run_with([_ok_item(claim_level="suspected", **idor)], findings=[{"id": "f_idor", "verdict": "detected"}])
+        self.assertEqual(len(r.advice), 1)

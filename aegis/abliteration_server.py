@@ -126,7 +126,8 @@ def _build_advice_content(user_content: str) -> str:
         rule, verdict = f.get("rule"), f.get("verdict", "detected")
         expl = _ADVICE_BY_RULE.get(rule, _GENERIC_ADVICE)[0]
         allowed = cat.CLAIMS_BY_VERDICT.get(verdict, frozenset({"inconclusive"}))
-        claim = next(c for c in _CLAIM_PREFERENCE if c in allowed)
+        claim = next((c for c in _CLAIM_PREFERENCE if c in allowed
+                      and cat.claim_problem(c, rule, verdict, f.get("verdict_basis", "")) is None), "inconclusive")
         if claim == "reproduced":
             expl = "L2 の再現記録がある所見です。" + expl
         elif claim == "fixed_verified":

@@ -37,7 +37,7 @@ class TestDataset(unittest.TestCase):
         langs = {cand["lang"] for c in cases for cand in c["candidates"]}
         self.assertEqual(langs, {"ja", "en", "variant"})
         kinds = {cand["kind"] for c in cases for cand in c["candidates"]}
-        self.assertTrue({"valid", "text_danger", "unsuitable", *dataset.STRUCTURAL_KINDS} <= kinds, kinds)
+        self.assertTrue({"valid", "text_danger", "unsuitable", "unsuitable_claim", *dataset.STRUCTURAL_KINDS} <= kinds, kinds)
         for c in cases:
             lab = c["labels"]
             for k in ("truth", "allowed_claims", "acceptable_fixes", "forbidden_fixes", "acceptable_operations",
@@ -69,9 +69,12 @@ class TestGates(unittest.TestCase):
         self.assertGreaterEqual(v["valid_acceptance_rate"], run.GATES["valid_acceptance_rate_min"])
 
     def test_nothing_the_labels_forbid_is_accepted(self):
-        q = report()["validator"]["accepted_item_quality"]
+        q = report()["validator"]["accepted_item_quality"]          # every accepted item, unsuitable ones included
         self.assertEqual((q["remediation_forbidden_accepted"], q["operation_forbidden_accepted"]), (0, 0))
-        self.assertEqual(q["faithfulness_rate"], 1.0)
+        valid = report()["validator"]["valid_candidates_quality"]  # by construction (see run.BY_CONSTRUCTION)
+        self.assertEqual((valid["faithfulness_rate"], valid["remediation_validity_rate"], valid["operation_validity_rate"]),
+                         (1.0, 1.0, 1.0))
+        self.assertLess(q["faithfulness_rate"], 1.0)                # the unsuitable claims are measured, not hidden
 
     def test_the_verdict_rules_out_fixes_after_verification_and_waving_away_a_reproduction(self):
         by = report()["validator"]["by_category"]
@@ -96,13 +99,25 @@ class TestReportsAndReproduction(unittest.TestCase):
         self.assertIn("正当な提案の受理率", md)
         self.assertIn("loopback mock server only", rep["endpoint"])
 
+    def test_a_failed_gate_makes_the_exit_code_non_zero(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as d, redirect_stdout(io.StringIO()), \
+                patch.dict(run.GATES, {"valid_acceptance_rate_min": 1.01}):
+            self.assertEqual(run.main(["--out", d]), 1)
+
+    def test_the_report_says_which_metrics_are_true_by_construction(self):
+        rep = report()
+        self.assertTrue(rep["by_construction"])
+        self.assertIn("作り方の上で 100%", run.to_markdown(rep))
+
     def test_a_failure_can_be_replayed_alone_with_the_same_result(self):
         failures = report()["failures"]
         self.assertTrue(failures)
         f = failures[0]
         buf = io.StringIO()
         with redirect_stdout(buf):
-            run.main(["--case", f["case"], "--candidate", f["candidate"]])
+            rc = run.main(["--case", f["case"], "--candidate", f["candidate"]])
+        self.assertEqual(rc, 1)                                  # a replayed failure is still a failure
         again = json.loads(buf.getvalue())["failures"]
         self.assertIn((f["kind"], f["id"], f["accepted"]), [(x["kind"], x["id"], x["accepted"]) for x in again])
         self.assertTrue(f["repro"].startswith("python3 -m aegis.advisor_eval --case "))

@@ -91,6 +91,19 @@ def action_allowed(action: str, rule: str) -> bool:
     return spec is not None and rule in spec[1]
 
 
+# Rules whose issue only an L2 reproduction can show: an L1 observation of them is a hint,
+# so "observed" would overstate it.
+L2_ONLY_RULES = frozenset({"f_idor", "f_sqli"})
+
+
+def claim_problem(claim: str, rule: str, verdict: str, basis: str) -> str | None:
+    if claim not in CLAIMS_BY_VERDICT.get(verdict, ()):
+        return f"unfaithful_claim: {claim} is not allowed for verdict {verdict}"
+    if claim == "observed" and rule in L2_ONLY_RULES and basis != "l2_reproduction":
+        return f"unfaithful_claim: {rule} cannot be observed by L1 alone"
+    return None
+
+
 def fix_verdict_problem(fix: str, verdict: str) -> str | None:
     """Fixes that the verdict alone rules out. After a fix was verified (fixed /
     not_reproduced) only keeping a regression check makes sense; once an L2 reproduction is
