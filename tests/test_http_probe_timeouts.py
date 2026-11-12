@@ -385,6 +385,99 @@ print("bad", bad)
 """
 
 
+_SWALLOWED = r"""
+import argparse, gc, socket, sys, threading, time
+sys.path.insert(0, sys.argv[1])
+from aegis.workers import http_probe as hp
+srv = socket.socket(); srv.bind(("127.0.0.1", 0)); srv.listen(8)
+held = []
+threading.Thread(target=lambda: [held.append(srv.accept()[0]) for _ in range(8)], daemon=True).start()
+
+
+class Finalizer:
+    # stands in for the alarm landing in a finalizer: Python swallows what __del__ raises
+    def __del__(self):
+        raise hp.DeadlineExceeded("swallowed")
+
+
+real_create = hp.socket.create_connection
+def create(addr, timeout):
+    s = real_create(addr, timeout=timeout)
+    alarm = hp.signal.getsignal(hp.signal.SIGALRM)
+    alarm.fired = True                  # as if the alarm had already gone off ...
+    f = Finalizer(); del f; gc.collect()  # ... inside a finalizer
+    return s
+hp.socket.create_connection = create
+a = argparse.Namespace(scheme="http", host="x.test", ip="127.0.0.1", port=srv.getsockname()[1], path="/", method="GET",
+                       origin="o", connect_timeout=5, read_timeout=30, overall_timeout=0.3)
+t0 = time.monotonic()
+out = hp.probe(a)
+print(out["error"]["stage"], out["error"]["kind"], round(time.monotonic() - t0, 1))
+"""
+
+
+_IN_PREVIOUS_HOOK = r"""
+import argparse, gc, socket, sys, threading, time
+sys.path.insert(0, sys.argv[1])
+from aegis.workers import http_probe as hp
+srv = socket.socket(); srv.bind(("127.0.0.1", 0)); srv.listen(8)
+held = []
+threading.Thread(target=lambda: [held.append(srv.accept()[0]) for _ in range(8)], daemon=True).start()
+seen = []
+
+
+def slow_python_hook(u):
+    # a Python-level hook (pytest, a caller's own) handling an unrelated report when the
+    # alarm lands in it: simulated by raising DeadlineExceeded from inside the hook
+    seen.append(type(u.exc_value).__name__)
+    hp.signal.getsignal(hp.signal.SIGALRM).fired = True
+    raise hp.DeadlineExceeded("landed in the previous hook")
+sys.unraisablehook = slow_python_hook
+
+
+class Unrelated:
+    def __del__(self):
+        raise ValueError("unrelated")
+
+
+real_create = hp.socket.create_connection
+def create(addr, timeout):
+    s = real_create(addr, timeout=timeout)
+    u = Unrelated(); del u; gc.collect()
+    return s
+hp.socket.create_connection = create
+a = argparse.Namespace(scheme="http", host="x.test", ip="127.0.0.1", port=srv.getsockname()[1], path="/", method="GET",
+                       origin="o", connect_timeout=5, read_timeout=30, overall_timeout=0.3)
+t0 = time.monotonic()
+out = hp.probe(a)
+print(out["error"]["kind"], round(time.monotonic() - t0, 1), ",".join(seen), sys.unraisablehook is slow_python_hook)
+"""
+
+
+@unittest.skipUnless(hasattr(__import__("signal"), "setitimer"), "the SIGALRM deadline exists only where setitimer does")
+class TestSwallowedDeadline(unittest.TestCase):
+    """Seen once in a full local run: the alarm landed in a finalizer, Python printed
+    "Exception ignored while finalizing file" and the deadline was lost."""
+
+    def test_a_deadline_swallowed_by_a_finalizer_fires_again_without_stderr_noise(self):
+        p = subprocess.run([sys.executable, "-I", "-c", _SWALLOWED, str(ROOT)], capture_output=True, text=True, timeout=60)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(p.stderr, "")                         # was: "Exception ignored in: <function Finalizer.__del__ ..."
+        stage, kind, took = p.stdout.split()
+        self.assertEqual((stage, kind), ("first_byte", "timeout"))
+        self.assertLess(float(took), 5)                        # the overall deadline still ended the run
+
+    def test_a_deadline_landing_in_the_previous_hook_is_not_lost(self):
+        # review of ed01b9d (MEDIUM): previous_hook() was called outside any handler
+        p = subprocess.run([sys.executable, "-I", "-c", _IN_PREVIOUS_HOOK, str(ROOT)], capture_output=True, text=True,
+                           timeout=60)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(p.stderr, "")                         # was: "Exception ignored in sys.unraisablehook"
+        kind, took, seen, restored = p.stdout.split()
+        self.assertEqual((kind, seen, restored), ("timeout", "ValueError", "True"))
+        self.assertLess(float(took), 5)
+
+
 @unittest.skipUnless(hasattr(__import__("signal"), "setitimer"), "the SIGALRM deadline exists only where setitimer does")
 class TestAlarmRaces(unittest.TestCase):
     """The socket timeout of a stage is cut to the time left, so near the deadline it and SIGALRM
