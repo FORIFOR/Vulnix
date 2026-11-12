@@ -42,7 +42,7 @@ class LoopbackTestConfinement:
     def status(self):
         return {"ok": True, "reason": "", "mechanism": "test stand-in (loopback only)"}
 
-    def session(self, ip, port):
+    def session(self, ip, port, **checks):
         from aegis.confinement import ConfinementError
         if not ipaddress.ip_address(ip).is_loopback:
             raise ConfinementError("the test stand-in confines nothing: loopback targets only")

@@ -438,7 +438,7 @@ class _Refusing:
     def status(self):
         return {"ok": True, "reason": "", "mechanism": "refusing"}
 
-    def session(self, ip, port):
+    def session(self, ip, port, **checks):
         self.asked.append((ip, port))
         raise ConfinementError("nft apply failed")
 
@@ -474,7 +474,7 @@ class _Scripted:
     def status(self):
         return {"ok": True, "reason": "", "mechanism": "fake"}
 
-    def session(self, ip, port):
+    def session(self, ip, port, **checks):
         return self.s
 
 
@@ -582,11 +582,16 @@ class _FakeRun:
             return R(argv, 0, f'table inet {self.name} {{\n chain confined {{\n  counter packets {n} bytes 0 drop\n }}\n'
                               f' chain output {{\n  type filter hook output priority filter; policy accept;\n'
                               f'  socket cgroupv2 level 1 "{self.name}" jump confined\n }}\n}}\n', "")
-        if sys.executable in argv:                        # the probe
-            out = self.probe if self.probe is not None else json.dumps(
-                {"connect": "BLOCKED:TimeoutError", "cgroup": f"0::/{self.name}"})
+        if "-c" in argv and any("_sandbox_launch.py" in str(x) for x in argv):   # the probe
+            uid = int(next(x for x in argv if str(x).startswith("--reuid=")).split("=", 1)[1])
+            out = self.probe if self.probe is not None else json.dumps(self.healthy(uid))
             return R(argv, 0, out + "\n", "")
         return R(argv, 0, "", "")
+
+    def healthy(self, uid):
+        return {"connect": "BLOCKED:TimeoutError", "cgroup": f"0::/{self.name}",
+                "uid": [uid] * 4, "groups": [], "caps": ["0000000000000000"] * 3, "nnp": ["1"],
+                "unix": "DENIED:PermissionError", "read": {}, "signal": "DENIED:PermissionError"}
 
     def ran(self, *needle):
         return [c for c, _ in self.calls if all(n in " ".join(c) for n in needle)]
@@ -598,8 +603,10 @@ class TestKernelConfinementLogic(unittest.TestCase):
         self.addCleanup(shutil.rmtree, root, True)
         if controllers:
             (root / "cgroup.controllers").write_text("cpu memory")
-        return KernelConfinement(runner=run, platform="linux", cgroup_root=root, euid=euid,
+        conf = KernelConfinement(runner=run, platform="linux", cgroup_root=root, euid=euid,
                                  which=lambda t: f"/bin/{t}" if t in tools else None)
+        conf.interpreter_reachable_by_others = lambda: ""        # the host's Python layout is not under test here
+        return conf
 
     def test_ruleset_drops_everything_but_the_pinned_destination(self):
         text = ruleset("aegis_l2_0123456789ab", "203.0.113.7", 443)
@@ -669,26 +676,115 @@ class TestKernelConfinementLogic(unittest.TestCase):
             with self.make(boom).session("203.0.113.7", 443):
                 self.fail("started")
 
-    def test_launch_command_keeps_secrets_out_of_argv_and_drops_root(self):
-        s = ConfinementSession(self.make(_FakeRun()), "203.0.113.7", 443)
-        argv = s.wrap(["/usr/bin/python3", "w.py"], env_keys=("PATH", "VULNIX_L2_TOKEN_A", "X"), cpu_seconds=7)
+    def test_launch_command_keeps_secrets_out_of_argv_and_drops_everything(self):
+        conf = self.make(_FakeRun())
+        s = ConfinementSession(conf, "203.0.113.7", 443)
+        real_worker = str(Path(__file__).resolve().parent.parent / "aegis" / "workers" / "reproduction_probe.py")
+        argv = s.wrap(["/usr/bin/python3", "-I", real_worker, "--x"],
+                      env_keys=("PATH", "VULNIX_L2_TOKEN_A", "X"), cpu_seconds=7)
         self.assertEqual(argv[:2], ["/bin/sudo", "-n"])
         self.assertIn("--preserve-env=VULNIX_L2_TOKEN_A,X", argv)
         self.assertIn(str(s.cgroup / "cgroup.procs"), argv)
-        self.assertTrue(f"--reuid={os.getuid()}" in argv or "--reuid=65534" in argv, argv)
-        self.assertNotIn("--reuid=0", argv)
-        self.assertIn("--no-new-privs", argv)
-        self.assertEqual(argv[-2:], ["/usr/bin/python3", "w.py"])
-        self.assertLess(argv.index("/bin/setpriv"), argv.index("/usr/bin/python3"))
+        self.assertIn(f"--reuid={s.uid}", argv)
+        self.assertIn(f"--regid={s.uid}", argv)
+        self.assertGreaterEqual(s.uid, 3_000_000_000)
+        for flag in ("--clear-groups", "--inh-caps=-all", "--bounding-set=-all", "--no-new-privs"):
+            self.assertIn(flag, argv)
+        staged = conf.staged_workers()
+        self.assertIn(str(staged / "_sandbox_launch.py"), argv)
+        self.assertIn(str(staged / "reproduction_probe.py"), argv)         # the copy, not the repository
+        self.assertNotIn(real_worker, argv)
+        self.assertLess(argv.index("/bin/setpriv"), argv.index(str(staged / "_sandbox_launch.py")))
+        self.assertFalse(any("TOKEN" in a and "=" in a and not a.startswith("--preserve-env") for a in argv))
         with self.assertRaises(ConfinementError):
             s.wrap(["x"], env_keys=("BAD=1,ALL",))
         as_root = ConfinementSession(self.make(_FakeRun(), euid=0), "203.0.113.7", 443)
         root_argv = as_root.wrap(["w"])
         self.assertEqual(root_argv[0], "/bin/sh")
         self.assertNotIn("/bin/sudo", root_argv)
-        self.assertIn("/bin/setpriv", root_argv)                   # a root control plane still drops root
-        self.assertNotIn("--reuid=0", root_argv)
-        self.assertIn("--no-new-privs", root_argv)
+        self.assertIn(f"--reuid={as_root.uid}", root_argv)
+
+    def test_every_run_gets_a_fresh_unassigned_uid(self):
+        import pwd
+        conf = self.make(_FakeRun())
+        uids = {ConfinementSession(conf, "203.0.113.7", 443).uid for _ in range(20)}
+        self.assertGreater(len(uids), 15)
+        for uid in uids:
+            self.assertNotEqual(uid, os.getuid())
+            with self.assertRaises(KeyError):
+                pwd.getpwuid(uid)
+
+    def test_staged_worker_code_is_readable_by_others_and_holds_no_secret(self):
+        staged = self.make(_FakeRun()).staged_workers()
+        self.assertEqual(staged.stat().st_mode & 0o777, 0o755)
+        names = sorted(p.name for p in staged.iterdir())
+        self.assertIn("_sandbox_launch.py", names)
+        self.assertIn("reproduction_probe.py", names)
+        for p in staged.iterdir():
+            self.assertEqual(p.stat().st_mode & 0o777, 0o644)
+            self.assertTrue(p.name.endswith(".py"))
+
+    def test_a_python_others_cannot_run_is_refused(self):
+        conf = self.make(_FakeRun())
+        conf.interpreter_reachable_by_others = lambda: "/home/u を他のユーザーがたどれません"
+        st = conf.status()
+        self.assertFalse(st["ok"])
+        self.assertIn("別の UID", st["reason"])
+
+    def test_separation_that_cannot_be_confirmed_is_refused(self):
+        def run_with(mutate, forbidden=()):
+            run = _FakeRun()
+            real = run.healthy
+
+            def bad(uid):
+                out = real(uid)
+                mutate(out, uid)
+                return out
+            run.healthy = bad
+            conf = self.make(run)
+            with self.assertRaises(ConfinementError):
+                with conf.session("203.0.113.7", 443, forbidden_paths=forbidden):
+                    self.fail("the worker would have been started")
+        run_with(lambda o, uid: o.update(uid=[os.getuid()] * 4))                 # not its own uid
+        run_with(lambda o, uid: o.update(groups=[0]))                            # kept a group
+        run_with(lambda o, uid: o.update(caps=["0000000000000400"] * 3))         # kept a capability
+        run_with(lambda o, uid: o.update(nnp=["0"]))                             # no no_new_privs
+        run_with(lambda o, uid: o.update(unix="CREATED"))                        # UNIX sockets allowed
+        run_with(lambda o, uid: o.update(signal="ALLOWED"))                      # can signal us
+        run_with(lambda o, uid: o.update(read={"/d/.secrets.key": "READ"}), forbidden=("/d/.secrets.key",))
+        run_with(lambda o, uid: o.update(read={}), forbidden=("/d/.secrets.key",))   # not checked at all
+
+    def test_the_launcher_filter_refuses_unix_sockets_only(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "sandbox_launch", Path(__file__).resolve().parent.parent / "aegis" / "workers" / "_sandbox_launch.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        import struct
+        prog = mod.filter_program(*mod.ARCHES["x86_64"])
+        ins = [struct.unpack("HBBI", prog[i:i + 8]) for i in range(0, len(prog), 8)]
+
+        def run(arch, nr, arg0):                     # a tiny BPF interpreter for this program
+            pc, acc = 0, 0
+            data = {0: nr, 4: arch, 16: arg0}
+            while True:
+                code, jt, jf, k = ins[pc]
+                if code == 0x20:
+                    acc = data[k]; pc += 1
+                elif code == 0x15:
+                    pc += 1 + (jt if acc == k else jf)
+                elif code == 0x35:
+                    pc += 1 + (jt if acc >= k else jf)
+                elif code == 0x06:
+                    return k
+        X86 = 0xC000003E
+        self.assertEqual(run(X86, 41, 1), mod.RET_ERRNO | mod.EPERM)        # socket(AF_UNIX)
+        self.assertEqual(run(X86, 53, 1), mod.RET_ERRNO | mod.EPERM)        # socketpair(AF_UNIX)
+        self.assertEqual(run(X86, 41, 2), mod.RET_ALLOW)                    # socket(AF_INET)
+        self.assertEqual(run(X86, 41, 10), mod.RET_ALLOW)                   # socket(AF_INET6)
+        self.assertEqual(run(X86, 0, 0), mod.RET_ALLOW)                     # read
+        self.assertEqual(run(X86, 0x40000000 + 41, 1), mod.RET_KILL_PROCESS)   # x32 ABI
+        self.assertEqual(run(0x40000003, 102, 1), mod.RET_KILL_PROCESS)        # i386 ABI
 
     def test_tools_are_not_taken_from_path(self):
         from aegis import confinement
@@ -1001,11 +1097,88 @@ class TestKernelConfinementOnLinux(unittest.TestCase):
         self.assertTrue(out["other"].startswith("BLOCKED:"), out)
         self.assertTrue(out["external"].startswith("BLOCKED:"), out)
         self.assertEqual(out["env"], "s3cr3t-value")                  # passed in the environment
-        self.assertEqual(out["uid"], os.getuid())                     # not left running as root
+        self.assertEqual(out["uid"], s.uid)                           # its own uid: neither root nor ours
+        self.assertNotEqual(out["uid"], os.getuid())
         self.assertTrue(out["cg"].endswith("/" + name), out)
         # nothing is left behind
         self.assertFalse((Path("/sys/fs/cgroup") / name).exists())
         self.assertFalse(s.still_enforced())
+
+    def test_the_worker_cannot_reach_our_files_sockets_or_process(self):
+        """What a subverted L2 worker could try, run INSIDE the real confinement."""
+        import tempfile as _tf
+        private = Path(_tf.mkdtemp(prefix="vulnix-private-"))          # 0700, like the data directory
+        self.addCleanup(shutil.rmtree, private, True)
+        files = {}
+        for name in (".secrets.key", "authority.ledger", "sessions.json", "secrets.enc.json", "operators.json"):
+            files[name] = private / name
+            files[name].write_text("secret-" + name)
+            os.chmod(files[name], 0o600)
+        loose = Path(_tf.mkdtemp(prefix="vulnix-loose-")) / "readable-by-group.txt"   # 0644 in a 0755 dir
+        os.chmod(loose.parent, 0o755)
+        loose.write_text("x")
+        os.chmod(loose, 0o644)
+        self.addCleanup(shutil.rmtree, loose.parent, True)
+        abstract = socket.socket(socket.AF_UNIX)                     # an abstract UNIX socket of ours
+        abstract.bind("\0vulnix-test-" + str(os.getpid()))
+        abstract.listen(1)
+        self.addCleanup(abstract.close)
+        path_sock_dir = Path(_tf.mkdtemp(prefix="vulnix-sock-"))
+        os.chmod(path_sock_dir, 0o755)
+        path_sock = socket.socket(socket.AF_UNIX)
+        path_sock.bind(str(path_sock_dir / "s"))
+        os.chmod(path_sock_dir / "s", 0o777)                        # even a world-writable socket
+        path_sock.listen(1)
+        self.addCleanup(path_sock.close)
+        self.addCleanup(shutil.rmtree, path_sock_dir, True)
+        code = (
+            "import json,os,socket,sys\n"
+            "out={'read':{},'list':None}\n"
+            "for p in sys.argv[1].split(','):\n"
+            "    try:\n        open(p,'rb').read(1); out['read'][p]='READ'\n"
+            "    except OSError as e:\n        out['read'][p]='DENIED:'+type(e).__name__\n"
+            "try:\n    os.listdir(sys.argv[2]); out['list']='LISTED'\n"
+            "except OSError as e:\n    out['list']='DENIED:'+type(e).__name__\n"
+            "for label,addr in (('abstract',sys.argv[3]),('path',sys.argv[4])):\n"
+            "    try:\n        c=socket.socket(socket.AF_UNIX); c.connect(addr); out[label]='CONNECTED'\n"
+            "    except OSError as e:\n        out[label]='DENIED:'+type(e).__name__\n"
+            "try:\n    os.kill(int(sys.argv[5]),0); out['signal']='ALLOWED'\n"
+            "except OSError as e:\n    out['signal']='DENIED:'+type(e).__name__\n"
+            "try:\n    open('/proc/%s/environ' % sys.argv[5],'rb').read(1); out['environ']='READ'\n"
+            "except OSError as e:\n    out['environ']='DENIED:'+type(e).__name__\n"
+            "try:\n    os.setuid(0); out['setuid']='ALLOWED'\n"
+            "except OSError as e:\n    out['setuid']='DENIED:'+type(e).__name__\n"
+            "st=open('/proc/self/status').read()\n"
+            "out['caps']=[l.split()[1] for l in st.splitlines() if l.startswith(('CapEff','CapPrm','CapBnd','CapAmb'))]\n"
+            "out['nnp']=[l.split()[1] for l in st.splitlines() if l.startswith('NoNewPrivs')]\n"
+            "out['seccomp']=[l.split()[1] for l in st.splitlines() if l.startswith('Seccomp:')]\n"
+            "out['loose']=open(sys.argv[6]).read()\n"
+            "print(json.dumps(out))\n")
+        _, pinned = self.listener()
+        forbidden = [str(p) for p in files.values()]
+        with KernelConfinement().session("127.0.0.1", pinned, forbidden_paths=forbidden) as s:
+            for key in ("separate_uid", "no_capabilities", "protected_files_denied"):
+                self.assertTrue(s.evidence[key], s.evidence)
+            self.assertTrue(str(s.evidence["unix_sockets"]).startswith("DENIED"), s.evidence)
+            self.assertTrue(str(s.evidence["control_plane_signal"]).startswith("DENIED"), s.evidence)
+            res = WorkerPool().run([sys.executable, "-I", "-c", code, ",".join(forbidden), str(private),
+                                    "\0vulnix-test-" + str(os.getpid()), str(path_sock_dir / "s"),
+                                    str(os.getpid()), str(loose)], 30, session=s)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        out = json.loads(res.stdout.strip().splitlines()[-1])
+        print(f"\n[linux-e2e] worker separation: {json.dumps(out, ensure_ascii=False)}")
+        for p, v in out["read"].items():
+            self.assertTrue(v.startswith("DENIED:"), (p, v))
+        self.assertTrue(out["list"].startswith("DENIED:"), out)
+        self.assertTrue(out["abstract"].startswith("DENIED:"), out)       # seccomp: no AF_UNIX at all
+        self.assertTrue(out["path"].startswith("DENIED:"), out)
+        self.assertTrue(out["signal"].startswith("DENIED:"), out)
+        self.assertTrue(out["environ"].startswith("DENIED:"), out)
+        self.assertTrue(out["setuid"].startswith("DENIED:"), out)
+        self.assertTrue(all(int(c, 16) == 0 for c in out["caps"]), out)
+        self.assertEqual(out["nnp"], ["1"])
+        self.assertEqual(out["seccomp"], ["2"])                           # filter mode
+        self.assertEqual(out["loose"], "x")                               # ordinary world-readable files: yes
 
     def test_the_same_program_outside_the_confinement_is_not_blocked(self):
         _, pinned = self.listener()

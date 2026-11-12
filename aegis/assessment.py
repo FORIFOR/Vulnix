@@ -161,6 +161,13 @@ class AssessmentService:
         # default is the bundled templates plus SITE profiles from the data directory,
         # which stay non-runnable until an admin accepts their exact content.
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            st = self.data_dir.stat()
+            if st.st_uid == os.getuid() and st.st_mode & 0o077:
+                # nobody else may even list it (owner permissions are left as they are)
+                os.chmod(self.data_dir, st.st_mode & 0o700)
+        except OSError:
+            pass
         _claim_data_dir(self.data_dir)
         # Every workspace reset starts a new generation. A runner thread belongs to
         # the generation it was started in; once that is over it may not write a
@@ -281,7 +288,8 @@ class AssessmentService:
         self._state_had_ledger_flag = False
         self._closed = False
         self._session_written = False
-        self._expiry_handled: set = set()
+        self._expiry_handled: set = set()       # expiries whose stop was confirmed
+        self._expiry_seen: set = set()
         self._load_state_locked()
         with self._lock:
             self._reconcile_assets_with_ledger_locked()
@@ -384,6 +392,7 @@ class AssessmentService:
 
     def _begin_session_locked(self) -> None:
         clean, why = self._previous_session_clean()
+        self.previous_session_clean = clean
         if not clean:
             self._hold_all_authority_locked(why)
         if not self._write_session_record():
@@ -491,14 +500,28 @@ class AssessmentService:
             key = (host, entry.get("not_after"), entry.get("confirmed_at"))
             if key in self._expiry_handled:
                 return
-            self._expiry_handled.add(key)
+            first = key not in self._expiry_seen
             had = list(self.workers.active_pids())
-            self._authority_reduced_locked(host)
-            self.audit.record("scope.expired", host=host, not_after=entry.get("not_after"),
-                              workers_stopped=had,
-                              unconfirmed=(self._unstopped_now_locked() or {}).get("pids", []))
-            self._authority_notice = (f"{host} の診断許可の期限が切れました。実行中の処理を停止しました。"
-                                      "続けるには承認責任者が範囲確認をやり直してください")
+            if first:
+                # cancel waiting requests; kill the workers and wait (up to 5 s) for them
+                self._authority_reduced_locked(host)
+                self._expiry_seen.add(key)        # only once that call has returned
+            # Marked as handled only once the stop is CONFIRMED. Until then every pass
+            # re-checks (and re-kills) the survivors without blocking; new launches
+            # are refused all along, because the scope is expired.
+            unconfirmed = (self._unstopped_now_locked() or {}).get("pids", [])
+            if not unconfirmed:
+                self._expiry_handled.add(key)
+            if first or not unconfirmed:
+                self.audit.record("scope.expired", host=host, not_after=entry.get("not_after"),
+                                  workers_stopped=had, unconfirmed=unconfirmed,
+                                  retry=not first)
+            if not first:
+                return
+            self._authority_notice = (f"{host} の診断許可の期限が切れました。"
+                                      + ("実行中の処理を停止しました。" if not unconfirmed else
+                                         "実行中の処理の停止を確認できていません（確認できるまで新しい処理は起動しません）。")
+                                      + "続けるには承認責任者が範囲確認をやり直してください")
             for rec in (self.a.asset, *self._extra_assets):
                 if str(rec.get("name", "")).lower() == host:
                     rec["scope_confirmed"] = False
@@ -839,7 +862,11 @@ class AssessmentService:
         if not real:
             return None
         try:
-            session = self._l2_confinement.session(dest.ip, dest.port)
+            # everything in the data directory (master key, ledger, sessions, the
+            # stored test accounts of EVERY service) must be unreadable to the worker
+            protected = sorted(str(p) for p in self.data_dir.iterdir() if p.is_file())
+            session = self._l2_confinement.session(dest.ip, dest.port, forbidden_paths=protected,
+                                                   protected_pid=os.getpid())
             self._tls.confined = True       # this thread's next worker starts inside it
             return session
         except ConfinementError as e:

@@ -285,6 +285,14 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             sess = self._session()
             if not sess:
                 return self._json(401, {"error": "ログインが必要です"})
+            if not ops.trusted() and not p.endswith(("/emergency-stop", "/pause")) \
+                    and p not in ("/api/operators/roles", "/api/operators/reset-mfa"):
+                # The auth state on disk is not the one in force (a logout, password
+                # change or role removal could not be saved). Nothing new is done until
+                # it is; stopping things and removing power stay possible.
+                return self._json(503, {"error": "認証情報を保存できないため、操作を停止しています。"
+                                                 "データディレクトリの書き込み権限を確認してください",
+                                        "auth_unsaved": ops.unsaved()})
             if p == "/api/auth/password":
                 return self._change_password(body, sess)
             if p == "/api/auth/totp/enroll":
@@ -632,6 +640,10 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
 
 def _build_server(svc, a, data, first, seed, env_opt_out):
     ops = OperatorStore(seed)
+    if not getattr(svc, "previous_session_clean", True):
+        # a logout or sign-out-everywhere of the previous run may not be on disk
+        n = ops.revoke_all_sessions("the control plane did not shut down cleanly")
+        print(f"前回正常に終了しなかったため、すべてのログインセッション（{n}件）を無効にしました。")
     read_auth = False if a.no_read_auth else (True if a.require_read_auth else None)
     srv = ThreadingHTTPServer(
         ("127.0.0.1", a.port),

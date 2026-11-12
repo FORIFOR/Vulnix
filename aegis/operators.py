@@ -187,6 +187,10 @@ class OperatorStore:
         # one fixed dummy hash, so an unknown name costs the same single scrypt as a known one
         self._dummy_hash = hash_password(secrets.token_urlsafe(12))
         self.legacy_sessions_revoked = 0             # plaintext-token sessions dropped at load
+        # Files whose last write failed. While any is listed, what is on disk is not
+        # what is in force (e.g. a logout that a restart would undo): the auth state
+        # is not trusted, and no NEW sign-in is accepted.
+        self._unsaved: set[str] = set()
         self._pending_totp: dict[str, str] = {}   # name -> secret awaiting confirmation
         self.credentials_path: Path | None = None
         self.admin_credentials_path: Path | None = None
@@ -280,6 +284,33 @@ class OperatorStore:
         # Rewrite so the file sheds expired/stale entries on load.
         self._persist_sessions()
 
+    def trusted(self) -> bool:
+        """True when accounts and sessions on disk are what is in force. If not,
+        writing them again is tried first."""
+        with self._lock:
+            pending = set(self._unsaved)
+        if "operators" in pending:
+            self._persist_operators()
+        if "sessions" in pending:
+            self._persist_sessions()
+        with self._lock:
+            return not self._unsaved
+
+    def unsaved(self) -> list[str]:
+        with self._lock:
+            return sorted(self._unsaved)
+
+    def revoke_all_sessions(self, reason: str) -> int:
+        """Everyone signs in again (e.g. after an unclean shutdown, when a logout
+        or sign-out-everywhere may not have reached the disk)."""
+        with self._lock:
+            n = len(self._sessions)
+            self._sessions.clear()
+        self._persist_sessions()
+        self.recovery_events.append({"event": "auth.sessions_revoked", "name": "*", "reason": reason,
+                                     "count": n})
+        return n
+
     def _atomic_write(self, path: Path, data: str) -> bool:
         """Write 0600 via a temp file + rename so a reader never sees a half file."""
         tmp = path.with_name(path.name + f".tmp.{os.getpid()}")
@@ -311,6 +342,7 @@ class OperatorStore:
                 for key, s in self._sessions.items()
             ]}
             written = self._atomic_write(self.sessions_path, json.dumps(payload, ensure_ascii=False))
+            (self._unsaved.discard if written else self._unsaved.add)("sessions")
         if strict and not written:
             # a logout or a sign-out-everywhere that is not on disk comes back after a restart
             raise AuthError("サインアウトは現在のプロセスには反映されましたが、ファイルへの保存に失敗しました。"
@@ -331,6 +363,7 @@ class OperatorStore:
                 for o in self._ops.values()
             ]}
             written = self._atomic_write(self.seed_path, json.dumps(payload, ensure_ascii=False, indent=2))
+            (self._unsaved.discard if written else self._unsaved.add)("operators")
         if strict and not written:
             raise AuthError("変更は現在のプロセスには反映されましたが、ファイルへの保存に失敗しました。"
                             "このままでは再起動後に元へ戻ります。データディレクトリの書き込み権限を確認してください")
@@ -355,8 +388,10 @@ class OperatorStore:
             keep = session_key(keep_token) if keep_token else None
             for key in [k for k, s in self._sessions.items() if s.operator == name and k != keep]:
                 del self._sessions[key]
-        self._persist_operators(strict=True)       # else the OLD password works again after a restart
-        self._persist_sessions(strict=True)
+        try:
+            self._persist_operators(strict=True)   # else the OLD password works again after a restart
+        finally:
+            self._persist_sessions(strict=True)    # the other sessions' revocation is written regardless
 
     # ---- sign-in throttling ----------------------------------------------
     @staticmethod
@@ -526,6 +561,11 @@ class OperatorStore:
         return True
 
     def login(self, name: str, password: str, code: str | None = None) -> Session:
+        if not self.trusted():
+            # e.g. a logout or a password change that did not reach the disk: no new
+            # sessions until it has (a restart would otherwise undo it)
+            raise AuthError("認証情報を保存できないため、新しいログインを受け付けていません。"
+                            "データディレクトリの書き込み権限を確認してください")
         self._begin_attempt(name)           # while locked, even the right password is refused
         with self._lock:
             op = self._ops.get(name)
@@ -722,6 +762,8 @@ class OperatorStore:
             self._pending_totp.pop(target, None)
             for key in [k for k, s in self._sessions.items() if s.operator == target]:
                 del self._sessions[key]
-        self._persist_operators(strict=True)
-        self._persist_sessions(strict=True)
+        try:
+            self._persist_operators(strict=True)
+        finally:
+            self._persist_sessions(strict=True)
         return had

@@ -119,7 +119,7 @@ class KernelConfinement:
         self._euid = (os.geteuid() if hasattr(os, "geteuid") else -1) if euid is None else euid
         self._which = which
         self._status: tuple[float, dict] | None = None
-        self._separate_uid: bool | None = None
+        self._staged: Path | None = None
 
     # ---- preflight -----------------------------------------------------------
     def status(self) -> dict:
@@ -142,6 +142,10 @@ class KernelConfinement:
                 return no(f"{tool} が見つかりません")
         if not self._which("setpriv"):
             return no("setpriv が見つかりません")
+        unreachable = self.interpreter_reachable_by_others()
+        if unreachable:
+            # the worker runs under a uid of its own; it has to be able to run Python
+            return no("Worker を別の UID で実行できない配置です: " + unreachable)
         if self._euid != 0:
             if not self._which("sudo"):
                 return no("root 権限がなく、sudo も見つかりません")
@@ -152,70 +156,76 @@ class KernelConfinement:
                 return no(f"sudo を実行できません（{type(e).__name__}）")
         return {"ok": True, "reason": "", "mechanism": self.mechanism}
 
-    NOBODY = (65534, 65534)
+    # Worker uids are taken from a range no installer hands out; each run gets one
+    # nobody else is using, so no other process shares its uid (it cannot read the
+    # worker's environment, signal it, or be signalled by it).
+    UID_RANGE = (3_000_000_000, 3_900_000_000)
 
-    def worker_identity(self) -> tuple[int, int]:
-        """uid/gid the confined worker runs as. Never root. Preferably `nobody`, so
-        that a subverted worker cannot read the control plane's own 0600 files
-        (master key, secret store, accounts) or ptrace it; that needs the worker's
-        code and the interpreter to be readable by others. Otherwise the control
-        plane's own account (or, under root, the account that invoked sudo)."""
-        if self._worker_code_world_readable():
-            return self.NOBODY
-        if self._euid != 0:
-            return os.getuid(), os.getgid()
-        try:
-            uid, gid = int(os.environ.get("SUDO_UID", "0")), int(os.environ.get("SUDO_GID", "0"))
-        except ValueError:
-            uid = gid = 0
-        return (uid, gid) if uid > 0 and gid > 0 else self.NOBODY
-
-    def _worker_code_world_readable(self) -> bool:
-        if self._separate_uid is not None:
-            return self._separate_uid
-        import sysconfig
-        targets = [Path(__file__).resolve().parent / "workers",
-                   Path(sys.executable).resolve(),
-                   Path(sysconfig.get_paths()["stdlib"]).resolve()]
-        ok = True
-        for target in targets:
+    def fresh_identity(self) -> int:
+        import pwd
+        for _ in range(64):
+            uid = self.UID_RANGE[0] + secrets.randbelow(self.UID_RANGE[1] - self.UID_RANGE[0])
             try:
-                st = target.stat()
-                need = 0o005 if target.is_dir() else 0o005
-                if st.st_mode & need != need:
-                    ok = False
-                    break
+                pwd.getpwuid(uid)
+            except KeyError:
+                return uid
+        raise ConfinementError("Worker 用の未使用 UID を確保できません")
+
+    def staged_workers(self) -> Path:
+        """The worker programs, copied once per process into a directory every user
+        may read (the worker runs under a uid of its own, which cannot read the
+        repository if it sits in a private home directory). No secrets in it."""
+        if self._staged is not None and (self._staged / "_sandbox_launch.py").exists():
+            return self._staged
+        import shutil as _shutil
+        import tempfile
+        src = Path(__file__).resolve().parent / "workers"
+        staged = Path(tempfile.mkdtemp(prefix="vulnix-worker-"))
+        for f in src.glob("*.py"):
+            _shutil.copyfile(f, staged / f.name)
+            os.chmod(staged / f.name, 0o644)
+        os.chmod(staged, 0o755)
+        self._staged = staged
+        return staged
+
+    def interpreter_reachable_by_others(self) -> str:
+        """"" when an unrelated uid can run this Python; otherwise why not."""
+        import sysconfig
+        for target in (Path(sys.executable).resolve(), Path(sysconfig.get_paths()["stdlib"]).resolve()):
+            try:
+                if target.stat().st_mode & 0o005 != 0o005:
+                    return f"{target} を他のユーザーが読めません"
                 for parent in target.parents:
-                    if parent.stat().st_mode & 0o001 == 0:       # others cannot traverse
-                        ok = False
-                        break
-            except OSError:
-                ok = False
-            if not ok:
-                break
-        if ok:
-            for f in (Path(__file__).resolve().parent / "workers").glob("*.py"):
-                if f.stat().st_mode & 0o004 == 0:
-                    ok = False
-                    break
-        self._separate_uid = ok
-        return ok
+                    if parent.stat().st_mode & 0o001 == 0:
+                        return f"{parent} を他のユーザーがたどれません"
+            except OSError as e:
+                return f"{target} を確認できません（{type(e).__name__}）"
+        return ""
 
     def _priv(self) -> list[str]:
         return [] if self._euid == 0 else [self._which("sudo") or "sudo", "-n"]
 
     # ---- one run -------------------------------------------------------------
-    def session(self, ip: str, port: int) -> "ConfinementSession":
+    def session(self, ip: str, port: int, *, forbidden_paths=(), protected_pid: int | None = None
+                ) -> "ConfinementSession":
+        """`forbidden_paths`: files the worker must not be able to read (verified
+        by the probe before the worker starts); `protected_pid`: a process the
+        worker must not be able to signal (the control plane)."""
         st = self.status()
         if not st["ok"]:
             raise ConfinementError(st["reason"])
-        return ConfinementSession(self, ip, int(port))
+        return ConfinementSession(self, ip, int(port), forbidden_paths=tuple(str(p) for p in forbidden_paths),
+                                  protected_pid=protected_pid if protected_pid is not None else os.getpid())
 
 
 class ConfinementSession:
-    def __init__(self, owner: KernelConfinement, ip: str, port: int):
+    def __init__(self, owner: KernelConfinement, ip: str, port: int, *, forbidden_paths=(),
+                 protected_pid: int | None = None):
         self._o = owner
         self.ip, self.port = ip, port
+        self.forbidden = tuple(forbidden_paths)
+        self.protected_pid = int(protected_pid if protected_pid is not None else os.getpid())
+        self.uid = owner.fresh_identity()           # this run's own uid
         self.name = "aegis_l2_" + secrets.token_hex(6)
         self.cgroup = owner._root / self.name
         self.evidence: dict = {}
@@ -232,23 +242,27 @@ class ConfinementSession:
                             capture_output=True, text=True, **kw)
 
     def wrap(self, argv: list[str], env_keys=(), cpu_seconds: int = 60) -> list[str]:
-        """The command that starts `argv` inside the cgroup. Secrets stay in the
-        environment: only the NAMES of the variables to keep appear on a command line."""
+        """The command that starts `argv` inside the cgroup, as this run's own
+        unprivileged uid, with no capabilities and no_new_privs, through the
+        seccomp launcher (no UNIX-domain sockets). Secrets stay in the environment:
+        only the NAMES of the variables to keep appear on a command line."""
         enter = [self._o._which("sh") or "sh", "-c", _ENTER, "sh",
                  str(self.cgroup / "cgroup.procs"), str(int(cpu_seconds))]
         keys = sorted({k for k in env_keys if k != "PATH"})
         if any(not _ENV_NAME.fullmatch(k) for k in keys):
             raise ConfinementError("invalid environment variable name")
-        uid, gid = self._o.worker_identity()
-        # root only for the one write that joins the cgroup; the worker itself never
-        # runs as root (a root worker could leave the cgroup or delete the rules)
-        own = (uid, gid) == (os.getuid(), os.getgid()) and self._o._euid != 0
-        drop = [self._o._which("setpriv") or "setpriv", f"--reuid={uid}", f"--regid={gid}",
-                "--init-groups" if own else "--clear-groups", "--no-new-privs"]
+        staged = self._o.staged_workers()
+        real = Path(__file__).resolve().parent / "workers"
+        mapped = [str(staged / Path(a).name) if Path(a).parent == real else a for a in argv]
+        # root only for the one write that joins the cgroup and for dropping to the
+        # worker's uid; the worker itself never holds root, a capability, or our uid
+        drop = [self._o._which("setpriv") or "setpriv", f"--reuid={self.uid}", f"--regid={self.uid}",
+                "--clear-groups", "--inh-caps=-all", "--bounding-set=-all", "--no-new-privs"]
+        launch = [mapped[0], "-I", str(staged / "_sandbox_launch.py"), *mapped]
         if self._o._euid == 0:
-            return [*enter, *drop, *argv]
+            return [*enter, *drop, *launch]
         keep = [f"--preserve-env={','.join(keys)}"] if keys else []
-        return [*self._o._priv(), *keep, *enter, *drop, *argv]
+        return [*self._o._priv(), *keep, *enter, *drop, *launch]
 
     def __enter__(self) -> "ConfinementSession":
         try:
@@ -278,13 +292,33 @@ class ConfinementSession:
             if not _table_is_live(before, self.name):
                 raise ConfinementError("適用した nftables ルールをカーネルから確認できません")
             probe = (
-                "import json,socket\n"
+                "import json,os,socket\n"
+                "out={}\n"
                 "s=socket.socket(); s.settimeout(0.6)\n"
                 "try:\n"
-                f"    s.connect({PROBE_ADDR!r}); r='CONNECTED'\n"
+                f"    s.connect({PROBE_ADDR!r}); out['connect']='CONNECTED'\n"
                 "except OSError as e:\n"
-                "    r='BLOCKED:'+type(e).__name__\n"
-                "print(json.dumps({'connect': r, 'cgroup': open('/proc/self/cgroup').read().strip()}))\n"
+                "    out['connect']='BLOCKED:'+type(e).__name__\n"
+                "out['cgroup']=open('/proc/self/cgroup').read().strip()\n"
+                "out['uid']=[os.getuid(),os.geteuid(),os.getgid(),os.getegid()]\n"
+                "out['groups']=os.getgroups()\n"
+                "out['caps']=[l.split()[1] for l in open('/proc/self/status') if l.startswith(('CapEff','CapPrm','CapBnd'))]\n"
+                "out['nnp']=[l.split()[1] for l in open('/proc/self/status') if l.startswith('NoNewPrivs')]\n"
+                "try:\n"
+                "    socket.socket(socket.AF_UNIX); out['unix']='CREATED'\n"
+                "except OSError as e:\n"
+                "    out['unix']='DENIED:'+type(e).__name__\n"
+                "out['read']={}\n"
+                f"for p in {list(self.forbidden)!r}:\n"
+                "    try:\n"
+                "        open(p,'rb').read(1); out['read'][p]='READ'\n"
+                "    except OSError as e:\n"
+                "        out['read'][p]='DENIED:'+type(e).__name__\n"
+                "try:\n"
+                f"    os.kill({self.protected_pid},0); out['signal']='ALLOWED'\n"
+                "except OSError as e:\n"
+                "    out['signal']='DENIED:'+type(e).__name__\n"
+                "print(json.dumps(out))\n"
             )
             pr = self._o._run(self.wrap([sys.executable, "-I", "-c", probe]),
                               capture_output=True, text=True, timeout=15, env={"PATH": "/usr/bin:/bin"})
@@ -297,15 +331,30 @@ class ConfinementSession:
             counted = dropped_packets(after) - dropped_packets(before)
             in_cgroup = any(line.split("::", 1)[-1] == f"/{self.name}"
                             for line in str(seen.get("cgroup", "")).splitlines())
+            reads = seen.get("read") if isinstance(seen.get("read"), dict) else {}
+            uid_ok = seen.get("uid") == [self.uid, self.uid, self.uid, self.uid] and seen.get("groups") == []
+            caps_ok = (isinstance(seen.get("caps"), list) and len(seen["caps"]) == 3
+                       and all(int(c, 16) == 0 for c in seen["caps"]) and seen.get("nnp") == ["1"])
+            files_ok = (set(reads) == set(self.forbidden)
+                        and all(str(v).startswith("DENIED:") for v in reads.values()))
+            unix_ok = str(seen.get("unix", "")).startswith("DENIED:")
+            signal_ok = str(seen.get("signal", "")).startswith("DENIED:")
             self.evidence = {"mechanism": self._o.mechanism, "cgroup": self.name,
-                             "worker_uid": self._o.worker_identity()[0],
-                             "pinned": f"{self.ip}:{self.port}",
+                             "worker_uid": self.uid, "pinned": f"{self.ip}:{self.port}",
                              "probe_connect": seen.get("connect"), "probe_in_cgroup": in_cgroup,
-                             "kernel_dropped_packets": counted}
+                             "kernel_dropped_packets": counted,
+                             "separate_uid": uid_ok, "no_capabilities": caps_ok,
+                             "unix_sockets": seen.get("unix"), "control_plane_signal": seen.get("signal"),
+                             "protected_files_denied": files_ok, "protected_files": len(self.forbidden)}
             if not (in_cgroup and str(seen.get("connect", "")).startswith("BLOCKED:") and counted >= 1):
                 raise ConfinementError(
                     "カーネル隔離が実際に適用されていることを確認できませんでした"
                     f"（cgroup内={in_cgroup}, 接続={seen.get('connect')}, 遮断数={counted}）")
+            if not (uid_ok and caps_ok and files_ok and unix_ok and signal_ok):
+                raise ConfinementError(
+                    "Worker の権限分離を確認できませんでした"
+                    f"（UID={seen.get('uid')}, 権限なし={caps_ok}, UNIXソケット={seen.get('unix')}, "
+                    f"保護ファイル={reads}, シグナル={seen.get('signal')}）")
         except ConfinementError:
             raise
         except (OSError, subprocess.SubprocessError) as e:

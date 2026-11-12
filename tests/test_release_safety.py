@@ -307,7 +307,10 @@ class TestOnLinuxWithTheRealKernelConfinement(ReleaseBase):
         applied = self.events("confinement.applied")
         self.assertEqual(len(applied), 1)
         self.assertTrue(applied[0]["fields"]["probe_in_cgroup"])
-        self.assertNotEqual(applied[0]["fields"]["worker_uid"], 0)
+        self.assertNotIn(applied[0]["fields"]["worker_uid"], (0, os.getuid()))
+        for key in ("separate_uid", "no_capabilities", "protected_files_denied"):
+            self.assertTrue(applied[0]["fields"][key], applied[0]["fields"])
+        self.assertGreaterEqual(applied[0]["fields"]["protected_files"], 4)   # key, ledger, state, secrets...
         print(f"\n[linux-e2e] confined L2 worker ran as uid {applied[0]['fields']['worker_uid']} "
               f"(control plane uid {os.getuid()}); dropped={applied[0]['fields']['kernel_dropped_packets']}")
         self.assertTrue([a for _, a in self.fake.seen if a])
@@ -464,30 +467,6 @@ class TestCredentialReductionsAreNotSilentlyLost(unittest.TestCase):
                 self.store.reset_totp("op", actor="root")
 
 
-class TestWorkerIdentity(unittest.TestCase):
-    def conf(self, *, euid, separate):
-        c = KernelConfinement(platform="linux", euid=euid, runner=lambda *a, **k: None,
-                              which=lambda t: f"/bin/{t}")
-        c._separate_uid = separate
-        return c
-
-    def test_the_worker_runs_as_nobody_when_its_code_is_readable_by_others(self):
-        from aegis.confinement import ConfinementSession
-        for euid in (0, 1000):
-            argv = ConfinementSession(self.conf(euid=euid, separate=True), "203.0.113.7", 443).wrap(["w"])
-            self.assertIn("--reuid=65534", argv)
-            self.assertIn("--clear-groups", argv)
-
-    def test_otherwise_never_root(self):
-        from aegis.confinement import ConfinementSession
-        argv = ConfinementSession(self.conf(euid=1000, separate=False), "203.0.113.7", 443).wrap(["w"])
-        self.assertIn(f"--reuid={os.getuid()}", argv)
-        with patch.dict(os.environ, {"SUDO_UID": "", "SUDO_GID": ""}):
-            argv = ConfinementSession(self.conf(euid=0, separate=False), "203.0.113.7", 443).wrap(["w"])
-        self.assertIn("--reuid=65534", argv)
-        self.assertNotIn("--reuid=0", argv)
-
-
 # ---- findings of the review of the release fixes ------------------------------
 class TestSessionRecordIsAPrecondition(ReleaseBase):
     def test_no_grant_and_no_traffic_until_the_session_record_is_written(self):
@@ -615,3 +594,190 @@ class TestProofFileWithBom(unittest.TestCase):
     def test_a_bom_does_not_hide_the_token(self):
         from aegis.ownership import proof_file_matches
         self.assertTrue(proof_file_matches("﻿vulnix-verify=abc\n", "vulnix-verify=abc"))
+
+
+# ---- auth state: save failures and restarts; expiry retries ---------------------
+class AuthBase(unittest.TestCase):
+    def setUp(self):
+        from aegis.operators import OperatorStore, hash_password
+        self.dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        (self.dir / "operators.json").write_text(json.dumps({"operators": [
+            {"name": "root", "display": "r", "roles": ["operator", "admin"], "password_hash": hash_password("root-password-1")},
+            {"name": "op", "display": "o", "roles": ["operator"], "password_hash": hash_password("op-password-12")}]}))
+        self.Store = OperatorStore
+        self.store = OperatorStore(self.dir / "operators.json")
+
+    def restart(self):
+        self.store = self.Store(self.dir / "operators.json")
+        return self.store
+
+    def failing(self, *names):
+        real = self.store._atomic_write
+
+        def write(path, data):
+            if Path(path).name in names:
+                return False
+            return real(path, data)
+        return patch.object(self.store, "_atomic_write", side_effect=write)
+
+
+class TestAuthStateAcrossSaveFailuresAndRestarts(AuthBase):
+    def test_logout_saved_stays_logged_out_after_restart(self):
+        tok = self.store.login("op", "op-password-12").token
+        self.store.logout(tok)
+        self.assertIsNone(self.restart().resolve(tok))
+
+    def test_unsaved_logout_blocks_new_sign_ins_until_saved(self):
+        from aegis.operators import AuthError
+        tok = self.store.login("op", "op-password-12").token
+        with self.failing("sessions.json"):
+            with self.assertRaises(AuthError):
+                self.store.logout(tok)
+            self.assertIsNone(self.store.resolve(tok))          # gone in this process
+            self.assertFalse(self.store.trusted())
+            with self.assertRaises(AuthError) as cm:
+                self.store.login("root", "root-password-1")      # nothing new while untrusted
+            self.assertIn("保存できない", str(cm.exception))
+        self.assertTrue(self.store.trusted())                   # the next write goes through...
+        self.assertIsNone(self.restart().resolve(tok))           # ...and the logout is durable
+        self.assertIsNotNone(self.store.login("root", "root-password-1"))
+
+    def test_unsaved_password_change_and_restart(self):
+        from aegis.operators import AuthError
+        keep = self.store.login("op", "op-password-12").token
+        other = self.store.login("op", "op-password-12").token
+        with self.failing("operators.json"):
+            with self.assertRaises(AuthError):
+                self.store.change_password("op", "op-password-12", "new-password-123", keep_token=keep)
+            self.assertFalse(self.store.trusted())
+            with self.assertRaises(AuthError):
+                self.store.login("op", "new-password-123")
+        self.assertTrue(self.store.trusted())                   # retried: now on disk
+        again = self.restart()
+        self.assertIsNotNone(again.login("op", "new-password-123"))
+        with self.assertRaises(AuthError):
+            again.login("op", "op-password-12")
+        self.assertIsNone(again.resolve(other))                 # the other session stays revoked
+
+    def test_expired_sessions_do_not_come_back(self):
+        t = [1000.0]
+        store = self.Store(self.dir / "operators.json", clock=lambda: t[0])
+        tok = store.login("op", "op-password-12").token
+        t[0] += 10 * 24 * 3600
+        self.assertIsNone(store.resolve(tok))
+        again = self.Store(self.dir / "operators.json", clock=lambda: t[0])
+        self.assertIsNone(again.resolve(tok))
+
+    def test_revoke_all_sessions(self):
+        toks = [self.store.login(n, p).token for n, p in (("op", "op-password-12"), ("root", "root-password-1"))]
+        self.assertEqual(self.store.revoke_all_sessions("test"), 2)
+        again = self.restart()
+        self.assertTrue(all(again.resolve(t) is None for t in toks))
+
+
+class TestUntrustedAuthStateOverHttp(unittest.TestCase):
+    def setUp(self):
+        import urllib.request
+        from http.server import ThreadingHTTPServer
+        from aegis.operators import OperatorStore
+        from aegis.server import make_handler
+        from tests.test_access_control import seed
+        self.urllib = urllib.request
+        self.data = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.data, True)
+        self.svc = AssessmentService(self.data, LAB_PORT, verify_seconds=0.1, l2_confinement=TEST_CONFINEMENT,
+                                     revocation_marker_dirs=[Path(tempfile.mkdtemp())])
+        self.addCleanup(self.svc.workers.kill_all)
+        self.ops = OperatorStore(seed(self.data))
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(self.svc, self.ops))
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.shutdown)
+        self.api = f"http://127.0.0.1:{srv.server_port}/api"
+
+    def post(self, path, body, cookie=None):
+        import urllib.error
+        hdr = {"Content-Type": "application/json", "X-Aegis-Request": "1", **({"Cookie": cookie} if cookie else {})}
+        try:
+            with self.urllib.urlopen(self.urllib.Request(self.api + path, json.dumps(body).encode(), hdr)) as r:
+                return r.status, json.loads(r.read() or b"{}"), r.headers
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read() or b"{}"), e.headers
+
+    def test_new_operations_are_refused_but_stopping_is_not(self):
+        code, _, h = self.post("/auth/login", {"name": "appr", "password": "appr-password"})
+        cookie = h["Set-Cookie"].split(";")[0]
+        with patch.object(self.ops, "_atomic_write", return_value=False):
+            self.ops._persist_sessions()                         # some write failed
+            self.assertEqual(self.post("/assessments/scan_001/start", {}, cookie)[0], 503)
+            self.assertEqual(self.post("/assessments/scan_001/verify-finding", {"finding_id": "all"}, cookie)[0], 503)
+            self.assertEqual(self.post("/assets", {"name": "x.example.test"}, cookie)[0], 503)
+            self.assertNotEqual(self.post("/auth/login", {"name": "op", "password": "op-password"})[0], 200)
+            code, body, _ = self.post("/assessments/scan_001/emergency-stop", {}, cookie)
+            self.assertEqual(code, 200, body)                    # stopping is always possible
+        self.assertEqual(self.post("/auth/login", {"name": "op", "password": "op-password"})[0], 200)
+
+
+class TestUncleanShutdownSignsEveryoneOut(ReleaseBase):
+    def test_build_server_revokes_sessions_after_an_unclean_shutdown(self):
+        from types import SimpleNamespace
+        from aegis.operators import OperatorStore
+        from aegis.server import _build_server
+        from tests.test_access_control import seed
+        seed_path = seed(self.dir)
+        tok = OperatorStore(seed_path).login("op", "op-password").token
+        self.assertEqual(self.other_process("kill"), "")
+        again = self.reopen_in_this_process()
+        self.assertFalse(again.previous_session_clean)
+        a = SimpleNamespace(port=0, no_read_auth=False, require_read_auth=False)
+        srv = _build_server(again, a, self.dir, False, seed_path, False)
+        self.addCleanup(srv.server_close)
+        self.assertIsNone(OperatorStore(seed_path).resolve(tok))
+        again.workers.kill_all()
+
+
+class TestExpiryStopIsRetriedUntilConfirmed(ReleaseBase):
+    def test_retries_until_the_worker_is_confirmed_dead(self):
+        self.onboard()
+        t = threading.Thread(target=lambda: self.svc.workers.run(SLEEPER, 120))
+        t.start()
+        while not self.svc.workers.active_pids():
+            time.sleep(0.01)
+        pid = self.svc.workers.active_pids()[0]
+        with patch("aegis.runtime._killpg"):                    # the kill does not take
+            self.svc._verified_external_hosts[HOST]["not_after"] = time.time() - 1
+            end = time.time() + 15
+            while time.time() < end and not self.events("scope.expired"):
+                time.sleep(0.1)
+            self.assertEqual(self.events("scope.expired")[0]["fields"]["unconfirmed"], [pid])
+            self.assertIn("確認できていません", self.svc.snapshot()["authority_notice"])
+            time.sleep(1.2)
+            self.assertTrue(WorkerPool.group_alive(pid))
+            self.assertEqual(len(self.events("scope.expired")), 1)      # no stream of duplicates
+        end = time.time() + 10                                         # the kill works again: retried
+        while time.time() < end and len(self.events("scope.expired")) < 2:
+            time.sleep(0.1)
+        t.join(10)
+        self.assertFalse(WorkerPool.group_alive(pid))
+        last = self.events("scope.expired")[-1]["fields"]
+        self.assertTrue(last["retry"])
+        self.assertEqual(last["unconfirmed"], [])
+        self.assertIsNone(self.svc.system_status()["unstopped_workers"])
+
+    def test_an_exception_during_the_stop_is_retried(self):
+        self.onboard()
+        calls = {"n": 0}
+        real = self.svc._authority_reduced_locked
+
+        def flaky(host):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("transient")
+            return real(host)
+        self.svc._authority_reduced_locked = flaky
+        self.svc._verified_external_hosts[HOST]["not_after"] = time.time() - 1
+        end = time.time() + 10
+        while time.time() < end and not self.events("scope.expired"):
+            time.sleep(0.1)
+        self.assertGreaterEqual(calls["n"], 2)
+        self.assertEqual(self.events("scope.expired")[0]["fields"]["unconfirmed"], [])
