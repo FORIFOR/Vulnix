@@ -254,8 +254,16 @@ def probe(a: argparse.Namespace, clock=time.monotonic) -> dict:
         # The 5 ms timer may itself expire before we return: then it raises right here and
         # is re-armed again. Bounded: after 5 tries in a row (each needing a stall of over
         # 5 ms) the last timer is 50 ms. If even that one lands somewhere it is swallowed,
-        # the deadline can be lost; the per-stage socket timeouts and the gateway's own limit
-        # still end the run. So this makes losing it unlikely, not impossible.
+        # the overall deadline is lost. This makes losing it unlikely, not impossible.
+        # Once it is lost, the per-stage socket timeouts do NOT end a stage that a target
+        # drips: each received byte resets them. The deadline is still checked by the clock
+        # when the next stage starts (budget()), so if there is a next stage the run ends there
+        # with a timeout report; the body is the last stage, so a dripped body the target
+        # finishes (under 4 KiB) returns a normal result past the deadline. The dripping stage
+        # itself only ends when the target finishes it, http.client's
+        # own limits are hit (100 header lines, 64 KiB per line), the 4 KiB body cap is
+        # reached, or, in the end, the gateway's worker limit (http_probe_tool timeout_s=50 in
+        # aegis/gateway.py) kills the process group, and that run has no structured report.
         for attempt in range(5):
             try:
                 if not alarm.armed:
