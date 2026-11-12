@@ -28,13 +28,15 @@ from __future__ import annotations
 import json
 import math
 import re
+import unicodedata
 import urllib.parse
+import urllib.request
 from dataclasses import dataclass, field
 from functools import partial
 from typing import Callable, Iterable
 
-from .router import (DEFAULT_MODEL_TIMEOUT_SECONDS, Transport, _extract_json_from_text,
-                     _http_transport, _model_timeout)
+from .router import (DEFAULT_MODEL_TIMEOUT_SECONDS, MAX_MODEL_RESPONSE_BYTES, Transport,
+                     _extract_json_from_text, _model_timeout, _NoRedirect)
 
 PROMPT_MARKER = "vulnix-advisor/v1"
 
@@ -92,7 +94,9 @@ def finding_to_payload_item(ref: str, finding: dict) -> dict:
 _URL_RE = re.compile(r"[a-z][a-z0-9+.-]*://|www\.", re.I)
 _HOST_RE = re.compile(r"\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:[a-z]{2,24})\b", re.I)
 _IPV4_RE = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b")
-_IPV6_RE = re.compile(r"\b(?:[0-9a-f]{1,4}:){2,7}[0-9a-f]{0,4}\b", re.I)
+_IPV6_RE = re.compile(r"(?:[0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}", re.I)
+_HEX_IP_RE = re.compile(r"\b0x[0-9a-f]{8}\b", re.I)
+_DEFANGED_RE = re.compile(r"\[\.\]|\(\.\)|\[dot\]", re.I)
 _EMAIL_RE = re.compile(r"[^\s@]+@[^\s@]+\.[^\s@]+")
 _JWT_RE = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")
 # credential *values*, not vocabulary: "Cookie" or "Authorization" as words are fine in advice
@@ -104,14 +108,22 @@ _PATH_RE = re.compile(r"(?:^|\s)/(?:[\w.-]+/)*[\w.-]+")
 _HOSTLIKE_OK = frozenset({"x-powered-by", "node.js", "asp.net", "vue.js", "next.js"})
 
 
+def _norm(text: str) -> str:
+    """NFKC folds full-width letters and digits (ｂｕｒｐ, ＤｏＳ, １０．０．０．１) into ASCII before matching."""
+    return unicodedata.normalize("NFKC", text)
+
+
 def leak_reasons(text: str) -> list[str]:
     """Why a string must not be sent to, or shown from, the model. Empty when it is clean."""
     out = []
+    text = _norm(text)
     if _URL_RE.search(text):
         out.append("url")
     if [h for h in _HOST_RE.findall(text) if h.lower() not in _HOSTLIKE_OK]:
         out.append("hostname")
-    if _IPV4_RE.search(text) or _IPV6_RE.search(text):
+    if _DEFANGED_RE.search(text):
+        out.append("hostname")
+    if _IPV4_RE.search(text) or _IPV6_RE.search(text) or _HEX_IP_RE.search(text):
         out.append("ip_address")
     if _EMAIL_RE.search(text):
         out.append("email")
@@ -123,15 +135,18 @@ def leak_reasons(text: str) -> list[str]:
 _HOSTISH_IN_PATH = re.compile(r"/api/|/admin|/\.well-known")
 # Next checks that are not acceptable as a suggestion at all, whatever the gate says.
 _FORBIDDEN_CHECK = [
-    ("destructive", re.compile(r"削除|改ざん|書き換え|上書き|drop\s+table|truncate|rm\s+-rf|delete\s+from|update\s+\w+\s+set", re.I)),
-    ("load_or_dos", re.compile(r"負荷|大量送信|連続送信|DoS|DDoS|フラッド|flood|stress|総当たり|ブルートフォース|brute", re.I)),
-    ("production_or_other_users", re.compile(r"本番データ|実データ|他ユーザー(?:の|に)(?:データ|影響)|実在の利用者|顧客データ", re.I)),
-    ("approval_bypass", re.compile(r"承認(?:なし|を省略|不要|をスキップ|を回避)|ゲートを(?:回避|迂回|無効)|自動承認|bypass|skip\s+approval", re.I)),
-    ("scope_expansion", re.compile(r"リダイレクト先|外部サービス|別ドメイン|サブドメインを列挙|スコープ(?:を広げ|外|を追加)", re.I)),
+    ("destructive", re.compile(r"削除|消去|破棄|初期化|改ざん|書き換え|上書き|drop\s+table|truncate|rm\s+-rf|delete\s+from|update\s+\w+\s+set", re.I)),
+    ("load_or_dos", re.compile(r"負荷|大量|連続(?:で|して)?送|高頻度|繰り返し(?:送|実行|リクエスト)|(?:リクエスト|要求)を繰り返|DoS|DDoS|フラッド|flood|stress|総当たり|ブルートフォース|brute", re.I)),
+    ("production_or_other_users", re.compile(r"本番(?:データ|環境|の)|実データ|他(?:の)?(?:ユーザー|利用者|人)|別(?:の)?(?:ユーザー|利用者)|実在の(?:利用者|アカウント)|顧客(?:データ|の)", re.I)),
+    ("approval_bypass", re.compile(r"承認(?:なし|無し|を省略|不要|をスキップ|を回避|を待たず|せず|前に)|ゲートを(?:回避|迂回|無効)|自動承認|bypass|skip\s+approval|without\s+approval", re.I)),
+    ("scope_expansion", re.compile(r"リダイレクト先|外部サービス|別ドメイン|サブドメイン|スコープ(?:を広げ|外|を追加|を拡)|対象(?:を広げ|に含め|を追加)", re.I)),
     ("tooling_or_commands", re.compile(r"\b(?:sqlmap|nmap|hydra|metasploit|burp|curl|wget|nikto|ffuf|gobuster)\b|`[^`]+`|\$\(", re.I)),
 ]
 _TOOLING_RE = dict(_FORBIDDEN_CHECK)["tooling_or_commands"]
-_OVERCLAIM_RE = re.compile(r"実証済み|実証された|確定(?:した|済み|です)|悪用(?:された|に成功)|侵害(?:された|済み)|\bproven\b|exploited", re.I)
+_OVERCLAIM_RE = re.compile(r"実証済み|実証され|確定(?:した|済み|です|して)|確実に|悪用(?:され|に成功|可能(?:です|と確認|である))|侵害(?:され|済み)|侵入され|\bproven\b|exploited|confirmed\s+vulnerab", re.I)
+# Words that are fine in remediation ("不要なヘッダーを削除する") but not in a verification step.
+_REMEDIATION_RULES = ("load_or_dos", "production_or_other_users", "approval_bypass", "scope_expansion",
+                      "tooling_or_commands")
 
 
 # ---- output schema --------------------------------------------------------------
@@ -174,7 +189,7 @@ class AdviceResult:
     sent_refs: tuple[str, ...]
     missing_refs: tuple[str, ...]  # sent but not answered (after rejection)
     backend: str
-    endpoint_kind: str             # "loopback_mock" in phase 1
+    endpoint_kind: str             # "loopback_mock" (or "injected_transport" in tests)
     status: str = "proposal_only"
 
     def to_dict(self) -> dict:
@@ -248,7 +263,8 @@ def validate_advice(raw: object, ref_map: dict[str, dict]) -> tuple[list[Advice]
         if leak_reasons(explanation):
             reject("risk_explanation", f"leak: {leak_reasons(explanation)}")
             continue
-        if finding.get("verdict") != "proven" and _OVERCLAIM_RE.search(explanation):
+        overclaim_ok = finding.get("verdict") == "proven"
+        if not overclaim_ok and _OVERCLAIM_RE.search(_norm(explanation)):
             reject("risk_explanation", "overclaim: a detected finding described as proven or exploited")
             continue
         rem_raw = item.get("remediation")
@@ -263,8 +279,12 @@ def validate_advice(raw: object, ref_map: dict[str, dict]) -> tuple[list[Advice]
                 bad = "schema: remediation entry missing, too long or control characters"
             elif leak_reasons(s):
                 bad = f"leak: {leak_reasons(s)}"
-            elif _TOOLING_RE.search(s):
+            elif _TOOLING_RE.search(_norm(s)):
                 bad = "commands are not given as remediation text"
+            elif not overclaim_ok and _OVERCLAIM_RE.search(_norm(s)):
+                bad = "overclaim: a detected finding described as proven or exploited"
+            elif (hit := next((n for n, rx in _FORBIDDEN_CHECK if n in _REMEDIATION_RULES and rx.search(_norm(s))), None)):
+                bad = f"misproposal: {hit}"
             if bad:
                 break
             remediation.append(s)
@@ -293,12 +313,15 @@ def validate_advice(raw: object, ref_map: dict[str, dict]) -> tuple[list[Advice]
                 continue
             text = f"{title} {reason}"
             leaks = leak_reasons(text)
-            if leaks or _HOSTISH_IN_PATH.search(text) or _PATH_RE.search(text):
+            if leaks or _HOSTISH_IN_PATH.search(_norm(text)) or _PATH_RE.search(_norm(text)):
                 reject("next_check", f"leak: {leaks or ['path']}")
                 continue
-            hit = next((name for name, rx in _FORBIDDEN_CHECK if rx.search(text)), None)
+            hit = next((name for name, rx in _FORBIDDEN_CHECK if rx.search(_norm(text))), None)
             if hit:
                 reject("next_check", f"misproposal: {hit}")
+                continue
+            if not overclaim_ok and _OVERCLAIM_RE.search(_norm(text)):
+                reject("next_check", "overclaim: a detected finding described as proven or exploited")
                 continue
             checks.append(NextCheck(title=title, level=level, reason=reason, required_gates=_gates_for(level)))
         seen.add(ref)
@@ -309,12 +332,30 @@ def validate_advice(raw: object, ref_map: dict[str, dict]) -> tuple[list[Advice]
 
 # ---- the adapter ------------------------------------------------------------------
 
+LOOPBACK_HOSTS = ("127.0.0.1", "::1")      # literals: "localhost" would depend on name resolution
+
+
 def _require_loopback(url: str) -> None:
-    """Phase 1 is mock-only: an endpoint other than loopback is refused, whatever the scheme."""
+    """Phase 1 is mock-only: an endpoint other than a loopback address literal is refused."""
     parts = urllib.parse.urlsplit(url)
-    if parts.scheme not in ("http", "https") or (parts.hostname or "").lower() not in ("127.0.0.1", "localhost", "::1"):
-        raise AdvisorError("phase 1 advisor accepts only a loopback mock endpoint; "
+    if (parts.scheme not in ("http", "https") or parts.username is not None or parts.password is not None
+            or (parts.hostname or "").lower() not in LOOPBACK_HOSTS):
+        raise AdvisorError("phase 1 advisor accepts only a loopback mock endpoint (127.0.0.1 / ::1); "
                            "connecting the real Abliteration AI API is not enabled")
+
+
+def _loopback_transport(url: str, headers: dict, body: bytes, *, timeout_s: float) -> bytes:
+    """POST to the loopback endpoint directly. Unlike the planner transport, no proxy is ever
+    used (an http_proxy in the environment would otherwise carry the request off the machine),
+    and redirects are not followed."""
+    _require_loopback(url)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
+    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    with opener.open(req, timeout=timeout_s) as r:
+        data = r.read(MAX_MODEL_RESPONSE_BYTES + 1)
+    if len(data) > MAX_MODEL_RESPONSE_BYTES:
+        raise AdvisorError("reply too large")
+    return data
 
 
 @dataclass
@@ -326,11 +367,14 @@ class AbliterationAdvisor:
     timeout_s: float = DEFAULT_MODEL_TIMEOUT_SECONDS
     transport: Transport | None = None
     _send: Callable[[str, dict, bytes], bytes] = field(init=False, repr=False)
+    endpoint_kind: str = field(init=False, default="loopback_mock")
 
     def __post_init__(self) -> None:
         _require_loopback(self.url)
         self.timeout_s = _model_timeout(self.timeout_s)
-        self._send = self.transport or partial(_http_transport, timeout_s=self.timeout_s)
+        self._send = self.transport or partial(_loopback_transport, timeout_s=self.timeout_s)
+        # an injected transport (tests) is not the loopback transport; say so in results and audit
+        self.endpoint_kind = "loopback_mock" if self.transport is None else "injected_transport"
 
     def build_request(self, findings: list[dict]) -> tuple[bytes, dict[str, dict]]:
         findings = [f for f in findings if isinstance(f, dict) and isinstance(f.get("id"), str)][:MAX_FINDINGS]
@@ -351,7 +395,7 @@ class AbliterationAdvisor:
     def advise(self, findings: list[dict]) -> AdviceResult:
         body, ref_map = self.build_request(findings)
         if not ref_map:
-            return AdviceResult((), (), (), (), self.name, "loopback_mock")
+            return AdviceResult((), (), (), (), self.name, self.endpoint_kind)
         _require_loopback(self.url)
         try:
             raw = self._send(self.url, {"Content-Type": "application/json"}, body)
@@ -365,5 +409,5 @@ class AbliterationAdvisor:
         return AdviceResult(
             advice=tuple(advice), rejected=tuple(rejected), sent_refs=tuple(ref_map),
             missing_refs=tuple(r for r in ref_map if r not in answered),
-            backend=self.name, endpoint_kind="loopback_mock",
+            backend=self.name, endpoint_kind=self.endpoint_kind,
         )

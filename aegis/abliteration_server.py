@@ -68,6 +68,7 @@ def _build_chat_content(user_content: str) -> str:
 
 # Advisor mode (aegis/ai_advisor.py): deterministic advice from the allow-listed payload only.
 ADVISOR_MARKER = "vulnix-advisor/v1"
+MAX_RECORDED = 50
 _ADVICE_BY_RULE = {
     "f_headers": ("ブラウザ側の防御を指示するヘッダーが無いため、スクリプトの埋め込みやクリックジャッキングの被害が大きくなりやすい状態です。",
                   ["Content-Security-Policy を段階的に導入する（まず Report-Only で影響を確認する）",
@@ -169,6 +170,7 @@ def make_abliteration_handler(advisor_reply=None, received=None):
 
             if received is not None:
                 received.append(body)
+                del received[:-MAX_RECORDED]          # keep only the latest requests
             if ADVISOR_MARKER in sys_prompt:
                 content = advisor_reply(user_prompt) if advisor_reply else _build_advice_content(user_prompt)
             elif "proposals" in sys_prompt or "diagnostic planner" in sys_prompt:

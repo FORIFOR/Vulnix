@@ -106,11 +106,13 @@ class TestPayloadIsAnAllowList(unittest.TestCase):
 class TestPhaseOneIsMockOnly(unittest.TestCase):
     def test_only_a_loopback_endpoint_is_accepted(self):
         for url in ("https://api.abliteration.ai/v1/chat/completions", "http://10.0.0.1/v1/chat/completions",
-                    "https://127.0.0.1.example/v1", "file:///etc/passwd"):
+                    "https://127.0.0.1.example/v1", "file:///etc/passwd",
+                    "http://localhost:1/v1/chat/completions",          # resolved by name: refused
+                    "http://user:pw@127.0.0.1:1/v1/chat/completions"):
             with self.assertRaises(adv.AdvisorError, msg=url):
                 adv.AbliterationAdvisor(url)
         adv.AbliterationAdvisor("http://127.0.0.1:1/v1/chat/completions")
-        adv.AbliterationAdvisor("http://localhost:1/v1/chat/completions")
+        adv.AbliterationAdvisor("http://[::1]:1/v1/chat/completions")
 
     def test_the_adapter_takes_no_api_key_and_sends_no_authorization(self):
         fields = {f.name for f in dataclasses.fields(adv.AbliterationAdvisor)}
@@ -307,3 +309,100 @@ class TestServiceIntegration(RealServiceBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestReviewFindingsStayFixed(unittest.TestCase):
+    """Independent review of the first advisor commit."""
+
+    def test_an_http_proxy_in_the_environment_is_not_used(self):
+        import os
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        from unittest.mock import patch
+        import threading
+        hits = []
+
+        class Proxy(BaseHTTPRequestHandler):
+            def do_POST(self):
+                hits.append(self.path)
+                self.send_response(502)
+                self.end_headers()
+
+            def log_message(self, *a):
+                pass
+        proxy = ThreadingHTTPServer(("127.0.0.1", 0), Proxy)
+        threading.Thread(target=proxy.serve_forever, daemon=True).start()
+        env = {k: v for k, v in os.environ.items() if k.lower() not in ("no_proxy",)}
+        env.update({"http_proxy": f"http://127.0.0.1:{proxy.server_port}",
+                    "HTTP_PROXY": f"http://127.0.0.1:{proxy.server_port}", "no_proxy": "", "NO_PROXY": ""})
+        try:
+            with _MockServer() as m, patch.dict(os.environ, env, clear=True):
+                r = adv.AbliterationAdvisor(m.url).advise([{"id": "f_headers", "severity": "medium"}])
+                self.assertEqual(len(m.srv.received), 1)
+        finally:
+            proxy.shutdown()
+            proxy.server_close()
+        self.assertEqual(hits, [])
+        self.assertEqual(len(r.advice), 1)
+
+    def run_with(self, items, findings=None):
+        with _MockServer(_advice_reply(items)) as m:
+            return adv.AbliterationAdvisor(m.url).advise(findings or [_leaky_finding()])
+
+    def test_overclaims_and_misproposals_in_remediation_and_next_checks(self):
+        cases = [
+            (_ok_item(remediation=["この脆弱性は実証済みなので直ちに直す"]), "overclaim"),
+            (_ok_item(remediation=["承認なしで直ちに本番データを作り直す"]), "misproposal"),
+            (_ok_item(next_checks=[{"title": "実証済みの脆弱性を再確認", "level": "L1", "reason": "確定したため"}]), "overclaim"),
+            (_ok_item(risk_explanation="確実に悪用可能です。"), "overclaim"),
+            (_ok_item(risk_explanation="既に侵入されています。"), "overclaim"),
+        ]
+        for item, expected in cases:
+            r = self.run_with([item])
+            self.assertTrue(r.rejected and r.rejected[0]["reason"].startswith(expected), (item, r.rejected))
+
+    def test_rephrased_and_full_width_misproposals(self):
+        for title in ("テーブルを消去して初期化する", "古いデータを破棄して確かめる", "承認を待たずに高頻度でリクエストを繰り返す",
+                      "ｂｕｒｐ で確認する", "ＤｏＳ 耐性を見る", "他の利用者のアカウントで試す", "サブドメインも対象に含める"):
+            r = self.run_with([_ok_item(next_checks=[{"title": title, "level": "L1", "reason": "x"}])])
+            self.assertEqual(r.advice[0].next_checks, (), title)
+            self.assertTrue(r.rejected[0]["reason"].startswith("misproposal"), (title, r.rejected))
+
+    def test_remediation_may_still_say_remove(self):
+        r = self.run_with([_ok_item(remediation=["不要な Server ヘッダーを削除する"])])
+        self.assertEqual(r.rejected, ())
+
+    def test_more_address_forms_are_leaks(self):
+        for dirty in ("::1", "fe80::1", "0x7f000001", "example[.]com", "ｅｘａｍｐｌｅ．ｃｏｍ", "１０．０．０．１"):
+            self.assertNotEqual(adv.leak_reasons(dirty), [], dirty)
+
+    def test_an_injected_transport_is_not_reported_as_the_loopback_mock(self):
+        a = adv.AbliterationAdvisor("http://127.0.0.1:9/x", transport=lambda *x: json.dumps(
+            {"choices": [{"message": {"content": '{"advice": []}'}}]}).encode())
+        self.assertEqual(a.advise([{"id": "f_headers"}]).endpoint_kind, "injected_transport")
+
+    def test_the_mock_server_keeps_only_recent_requests(self):
+        from aegis import abliteration_server as srv_mod
+        with _MockServer() as m:
+            a = adv.AbliterationAdvisor(m.url)
+            for _ in range(srv_mod.MAX_RECORDED + 5):
+                a.advise([{"id": "f_headers"}])
+            self.assertEqual(len(m.srv.received), srv_mod.MAX_RECORDED)
+
+
+class TestServiceAuditOnFailure(RealServiceBase):
+    def test_a_failed_request_is_audited_and_other_advisors_are_refused(self):
+        self.svc.select_asset("lab")
+        dead = adv.AbliterationAdvisor("http://127.0.0.1:1/v1/chat/completions", timeout_s=1)
+        with self.assertRaises(adv.AdvisorError):
+            self.svc.advise_findings(dead, actor="appr")
+        failed = [e["fields"] for e in self.svc.audit.entries() if e["event"] == "advisor.failed"]
+        self.assertEqual(len(failed), 1)
+        self.assertEqual((failed[0]["offered"], failed[0]["sent_to_external_model"]), (3, False))
+
+        class Duck:
+            name, endpoint_kind = "duck", "loopback_mock"
+
+            def advise(self, findings):
+                raise AssertionError("must not be called")
+        with self.assertRaises(TypeError):
+            self.svc.advise_findings(Duck(), actor="appr")
