@@ -239,7 +239,8 @@ class AssessmentService:
             ephemeral_env_provider=self._ephemeral_worker_env,
             secret_redactor=self.secrets.redact,
             confinement_provider=self._worker_confinement,
-            launch_guard=self._launch_guard)
+            launch_guard=self._launch_guard,
+            on_unstopped=self._note_deadline_survivor)
 
         # Wire ARTEX (in-process + optional external CLI subprocess) + Abliteration ProposalRouter
         self._artex_cli_backend = ArtexSubprocessBackend()
@@ -673,6 +674,12 @@ class AssessmentService:
         except Exception:
             self._cleanup_pending.extend(x for x in batch if not any(x is y for y in self._cleanup_pending))
             self._cleanup_running = False
+
+    def _note_deadline_survivor(self, pids: list[int], pool) -> None:
+        """A worker the runtime killed at its deadline but could not confirm dead: on the
+        same record as any other unstopped worker (system status, launch block, restart)."""
+        with self._lock:
+            self._note_unstopped_locked((self.a.asset.get("name") or "").lower(), list(pids), pool)
 
     def _note_leftover_session(self, session) -> None:
         """A confined run whose cgroup could not be emptied: kept on record like any

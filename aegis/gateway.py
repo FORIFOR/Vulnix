@@ -54,7 +54,9 @@ def deadline_report(tool_name: str, result: WorkerResult) -> WorkerResult:
                     "stages_seen": [s for s, _ in result.stages],
                     "stop_confirmed": result.stop_confirmed, "worker_stdout_discarded": True},
     }
-    return replace(result, stdout=json.dumps(report), stderr="", killed=True)
+    # never rc 0: a caller that looks only at the return code must not see a success
+    return replace(result, stdout=json.dumps(report), stderr="", killed=True,
+                   returncode=result.returncode if result.returncode not in (0, None) else -9)
 
 
 def http_probe_tool() -> Tool:
@@ -117,8 +119,11 @@ class Gateway:
                  approvals: ApprovalStore, egress: EgressGuard, workers: WorkerPool,
                  audit: AuditLog, tools: dict[str, Tool], budget: Budget, clock=time.time,
                  ephemeral_env_provider=None, secret_redactor=None,
-                 confinement_provider=None, launch_guard=None):
+                 confinement_provider=None, launch_guard=None, on_unstopped=None):
         self.engagement = engagement
+        # Optional callable(pids, pool): a worker the runtime could not confirm stopped at
+        # its deadline is handed to the control plane's record of unstopped workers.
+        self.on_unstopped = on_unstopped
         self.tokens = tokens
         self.approvals = approvals
         self.egress = egress
@@ -248,6 +253,14 @@ class Gateway:
                     # is not evidence of a confined run
                     self.audit.record("confinement.lost", jti=claims["jti"], tool=tool.name)
                     raise PolicyError("kernel confinement was not in place for the whole run")
+            unconfirmed = result.timed_out and result.stop_confirmed is not True
+            if unconfirmed:
+                # the deadline passed and the worker could not be confirmed dead: fail closed,
+                # no result of any kind, and the worker goes on the unstopped record
+                self.audit.record("worker.stop_unconfirmed", jti=claims["jti"], tool=tool.name,
+                                  deadline_s=result.deadline_s, pid=result.pid)
+                if self.on_unstopped and result.pid:
+                    self.on_unstopped([result.pid], workers)
             if result.pipes_held:
                 # something outside the worker's (dead) process group kept its output open: an
                 # escaped descendant could have written anything there; nothing of this run counts
@@ -255,11 +268,7 @@ class Gateway:
                                   timed_out=result.timed_out, elapsed=round(result.elapsed_s, 3))
                 raise PolicyError("a process outside the worker's process group kept its output open; "
                                   "this run is not accepted")
-            if result.timed_out and result.stop_confirmed is not True:
-                # the deadline passed and the worker could not be confirmed dead: fail closed,
-                # no result of any kind (the pool keeps it on record as unstopped)
-                self.audit.record("worker.stop_unconfirmed", jti=claims["jti"], tool=tool.name,
-                                  deadline_s=result.deadline_s, pid=result.pid)
+            if unconfirmed:
                 raise PolicyError("the worker passed its deadline and could not be confirmed stopped; "
                                   "this run is not accepted")
             if result.timed_out:

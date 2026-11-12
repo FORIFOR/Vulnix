@@ -173,6 +173,12 @@ class WorkerPool:
             # The readers of held pipes are left to end on their own (daemon threads): closing an
             # fd another thread is blocked reading could let that thread read a reused fd.
             pipes_held = any(r.is_alive() for r in readers)
+            if not pipes_held:
+                for f in (proc.stdout, proc.stderr):    # both readers are done: release the pipes
+                    try:
+                        f.close()
+                    except (OSError, ValueError):
+                        pass
             returncode = proc.poll()
             if returncode is None:                      # not reaped (survivor): reported, not waited for
                 returncode = -signal.SIGKILL

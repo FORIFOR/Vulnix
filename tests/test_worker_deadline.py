@@ -204,7 +204,8 @@ class TestStopRacesAndNoTrafficAfterTheStop(unittest.TestCase):
             else:
                 outcomes.add("ok")
                 self.assertEqual((r.returncode, r.stdout.strip()), (0, "{}"), i)
-                self.assertLessEqual(r.elapsed_s, deadline + 0.05, i)   # never "ok" past the deadline
+                # never "ok" past the deadline (elapsed_s also covers reading the pipes after the exit)
+                self.assertLessEqual(r.elapsed_s, deadline + 0.5, i)
             self.assertFalse(r.pipes_held, i)
         self.assertEqual(outcomes, {"ok", "timed_out"})         # both sides of the race were exercised
 
@@ -291,6 +292,26 @@ class TestUnconfirmedStopFailsClosed(GatewayBase):
         self.assertIn("could not be confirmed stopped", d.reason)
         self.assertEqual(len(self.events("worker.stop_unconfirmed")), 1)
         self.assertEqual(self.events("result"), [])          # no result, not even the timeout report
+
+    def test_the_unconfirmed_worker_goes_on_the_unstopped_record(self):
+        srv = _Drip("headers")
+        seen = []
+        try:
+            self.make(srv.port, {"http_probe": replace(http_probe_tool(), timeout_s=1.5)})
+            self.gw.on_unstopped = lambda pids, pool: seen.append((list(pids), pool))
+            real = self.workers.confirm_stopped
+            self.workers.confirm_stopped = lambda pids, confirm_timeout_s=5.0: (real(pids, confirm_timeout_s), list(pids))[1]
+            d = self.execute("http_probe", "GET")
+        finally:
+            self.workers.confirm_stopped = real
+            srv.close()
+        self.assertFalse(d.allowed)
+        self.assertEqual(len(seen), 1)
+        self.assertIs(seen[0][1], self.workers)
+
+    def test_the_gateway_report_never_carries_return_code_zero(self):
+        r = WorkerResult(0, '{"status": 200}', "", False, 3.0, timed_out=True, deadline_s=2.0, stop_confirmed=True)
+        self.assertNotEqual(deadline_report("http_probe", r).returncode, 0)
 
 
 class TestPipesHeldByAnEscapedDescendant(GatewayBase):

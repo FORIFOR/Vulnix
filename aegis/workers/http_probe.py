@@ -264,7 +264,8 @@ def probe(a: argparse.Namespace, clock=time.monotonic) -> dict:
         # itself only ends when the target finishes it, http.client's
         # own limits are hit (100 header lines, 64 KiB per line), the 4 KiB body cap is
         # reached, or, in the end, the gateway's worker limit (http_probe_tool timeout_s=50 in
-        # aegis/gateway.py) kills the process group, and that run has no structured report.
+        # aegis/gateway.py) kills the process group; that run's report then comes from the
+        # gateway (deadline_report), not from this worker.
         for attempt in range(5):
             try:
                 if not alarm.armed:
