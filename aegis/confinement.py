@@ -353,15 +353,15 @@ class ConfinementSession:
         rules = ruleset(self.name, self.ip, self.port)
         self._check_cancelled()
         try:
-            p = self._sh('mkdir "$1"', str(self.cgroup))
+            p = self._sh('mkdir "$1"', str(self.cgroup), timeout=10)
             if p.returncode != 0:
                 raise ConfinementError(f"cgroup を作成できません: {p.stderr.strip()[:200]}")
             self._dir = True
             self._check_cancelled()          # stopped while the cgroup was being created
-            if self._sh('test -e "$1"', str(self.cgroup / "cgroup.kill")).returncode != 0:
+            if self._sh('test -e "$1"', str(self.cgroup / "cgroup.kill"), timeout=10).returncode != 0:
                 raise ConfinementError("このカーネルには cgroup.kill がありません（Linux 5.14 以降が必要です）")
             self._check_cancelled()
-            p = self._nft("-f", "-", input=rules)
+            p = self._nft("-f", "-", input=rules, timeout=10)
             if p.returncode != 0:
                 raise ConfinementError(f"nftables ルールを適用できません: {p.stderr.strip()[:200]}")
             self._table = True
@@ -462,7 +462,7 @@ class ConfinementSession:
             raise ConfinementError(f"カーネル隔離を適用できません（{type(e).__name__}）") from None
 
     def _listing(self) -> str:
-        p = self._nft("list", "table", "inet", self.name)
+        p = self._nft("list", "table", "inet", self.name, timeout=10)
         return p.stdout if p.returncode == 0 else ""
 
     def still_enforced(self) -> bool:

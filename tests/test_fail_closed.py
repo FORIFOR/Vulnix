@@ -1339,3 +1339,29 @@ class TestAStopAnywhereDuringApplyIsNeverFollowedByAProbe(TestASessionStoppedBef
                 probes = [c for c, _ in run.calls if any("_sandbox_launch.py" in str(x) for x in c) and "-c" in c]
                 self.assertEqual(probes, [], step)                      # no probe after the stop
                 self.assertTrue(s.empty())                               # torn down afterwards
+
+
+class TestApplyNeverHangsForever(TestASessionStoppedBeforeItExistsIsNeverCreated):
+    def test_every_privileged_call_during_apply_has_a_timeout(self):
+        run = _FakeRun()
+        conf = self.make(run)
+        with conf.session("203.0.113.7", 443):
+            pass
+        for argv, kw in run.calls:
+            joined = " ".join(str(a) for a in argv)
+            if any(k in joined for k in ("mkdir", "test -e", "nft -f", "nft list")):
+                self.assertIn("timeout", kw, joined)
+
+    def test_a_hung_call_ends_the_apply_and_clears_busy(self):
+        run = _FakeRun()
+        real = run.__call__
+
+        def hang(argv, **kw):
+            if "-f" in argv and any(str(a).endswith("nft") for a in argv):
+                raise subprocess.TimeoutExpired(argv, kw.get("timeout", 0))
+            return real(argv, **kw)
+        s = self.make(hang).session("203.0.113.7", 443)
+        with self.assertRaises(ConfinementError):
+            with s:
+                self.fail("started")
+        self.assertFalse(s._entering)
