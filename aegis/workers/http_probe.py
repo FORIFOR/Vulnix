@@ -250,15 +250,32 @@ def probe(a: argparse.Namespace, clock=time.monotonic) -> dict:
     result = None
     previous_hook = sys.unraisablehook
 
+    def rearm():
+        # the 5 ms timer may itself expire before we return: then it raises right here,
+        # and is caught and re-armed again (bounded), so the deadline is never lost
+        for _ in range(5):
+            try:
+                if not alarm.armed:
+                    return
+                alarm.fired = False
+                signal.setitimer(signal.ITIMER_REAL, 0.005)
+                return
+            except DeadlineExceeded:
+                continue
+
     def swallowed(unraisable):
         # The alarm can land in code whose exceptions Python only reports, e.g. an object's
         # finalizer ("Exception ignored while finalizing file ..."). The deadline would then be
         # lost and the noise would go to stderr: let it fire again a moment later instead.
-        if isinstance(unraisable.exc_value, DeadlineExceeded) and alarm.armed:
-            alarm.fired = False
-            signal.setitimer(signal.ITIMER_REAL, 0.005)
-            return
-        previous_hook(unraisable)
+        # The alarm can also land inside this hook, or inside the previous hook while it
+        # handles an unrelated report: caught here too, never raised out of the hook.
+        try:
+            if isinstance(unraisable.exc_value, DeadlineExceeded):
+                rearm()
+                return
+            previous_hook(unraisable)
+        except DeadlineExceeded:
+            rearm()
 
     if use_alarm:
         previous = signal.signal(signal.SIGALRM, alarm)
