@@ -91,13 +91,16 @@ def finding_to_payload_item(ref: str, finding: dict) -> dict:
 
 # ---- leak and misproposal detectors ----------------------------------------------
 
+# Boundaries are ASCII-only: Python's \b treats kana and kanji as word characters, so
+# "接続先は10.0.0.1です" would hide the address from a \b-anchored pattern.
+_B0, _B1 = r"(?<![A-Za-z0-9_])", r"(?![A-Za-z0-9_])"
 _URL_RE = re.compile(r"[a-z][a-z0-9+.-]*://|www\.", re.I)
-_HOST_RE = re.compile(r"\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:[a-z]{2,24})\b", re.I)
-_IPV4_RE = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b")
+_HOST_RE = re.compile(r"(?<![A-Za-z0-9_.-])(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:[a-z]{2,24})(?![A-Za-z0-9_-])", re.I)
+_IPV4_RE = re.compile(_B0 + r"\d{1,3}(?:\.\d{1,3}){3}" + _B1)
 # an IPv6 address has "::" or eight groups; times (12:00:00) and C++ scopes (std::string) do not match
-_IPV6_RE = re.compile(r"(?<![\w:])(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4}){7}"
-                      r"|(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4})*)?::(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4})*)?)(?![\w:])", re.I)
-_HEX_IP_RE = re.compile(r"\b0x[0-9a-f]{8}\b", re.I)
+_IPV6_RE = re.compile(r"(?<![A-Za-z0-9_:])(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4}){7}"
+                      r"|(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4})*)?::(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4})*)?)(?![A-Za-z0-9_:])", re.I)
+_HEX_IP_RE = re.compile(_B0 + r"0x[0-9a-f]{8}" + _B1, re.I)
 _DEFANGED_RE = re.compile(r"\[\.\]|\(\.\)|\[dot\]", re.I)
 _EMAIL_RE = re.compile(r"[^\s@]+@[^\s@]+\.[^\s@]+")
 _JWT_RE = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")
@@ -143,16 +146,17 @@ _FORBIDDEN_CHECK = [
     ("destructive", re.compile(r"(?:を|も)(?:削除|消去|破棄|初期化|改ざん|書き換え|上書き)" + _ACT
                                + r"|drop\s+table|truncate\s+table|rm\s+-rf|delete\s+from|update\s+\w+\s+set", re.I)),
     ("load_or_dos", re.compile(r"大量(?:に|の)?(?:送|リクエスト|要求|アクセス)|連続(?:で|して)?送|高頻度|繰り返し(?:送|実行|リクエスト)"
-                               r"|(?:リクエスト|要求)を繰り返|負荷(?:を(?:かけ|与え)|試験|テスト)|\bD?DoS\b|フラッド|flood|stress\s*test"
+                               r"|(?:リクエスト|要求)を繰り返|負荷(?:を(?:かけ|与え)|試験|テスト)|" + _B0 + r"D?DoS" + _B1 + r"|フラッド|flood|stress\s*test"
                                r"|総当たり|ブルートフォース|brute", re.I)),
     ("production_or_other_users", re.compile(r"本番データ|実データ|顧客(?:データ|の個人情報)|実在の(?:利用者|アカウント)"
                                              r"|他(?:の)?(?:ユーザー|利用者|人)の(?:アカウント|データ|資源|情報)"
                                              r"|(?:他|別)(?:の)?(?:ユーザー|利用者)に影響", re.I)),
-    ("approval_bypass", re.compile(r"承認(?:なし|無し|を省略|不要|をスキップ|を回避|を待たず|せずに)|ゲートを(?:回避|迂回|無効)"
+    ("approval_bypass", re.compile(r"承認(?:なし|無し|を省略|不要|をスキップ|を回避|を待たず|を得ずに?|より先に|せずに)|ゲートを(?:回避|迂回|無効)"
                                    r"|自動承認|bypass|skip\s+approval|without\s+approval", re.I)),
     ("scope_expansion", re.compile(r"(?:リダイレクト先|外部サービス|別ドメイン|サブドメイン)(?:を|も)(?:調べ|確認|診断|検査|列挙|対象|スキャン)"
                                    r"|スコープ(?:を広げ|外|を追加|を拡)|対象(?:を広げ|に含め|を追加|を拡)", re.I)),
-    ("tooling_or_commands", re.compile(r"\b(?:sqlmap|nmap|hydra|metasploit|burp|curl|wget|nikto|ffuf|gobuster)\b|`[^`]+`|\$\(", re.I)),
+    ("tooling_or_commands", re.compile(_B0 + r"(?:sqlmap|nmap|hydra|metasploit|burp|curl|wget|nikto|ffuf|gobuster)" + _B1
+                                       + r"|`[^`]+`|\$\(", re.I)),
 ]
 _TOOLING_RE = dict(_FORBIDDEN_CHECK)["tooling_or_commands"]
 _OVERCLAIM_RE = re.compile(r"実証済み|実証され|確定(?:済み|した(?:ため|脆弱性|問題|不備))|(?:脆弱性|問題|不備)(?:が|は)確定"

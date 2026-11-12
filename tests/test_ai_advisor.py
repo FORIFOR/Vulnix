@@ -473,3 +473,19 @@ class TestAssetLevelRule(RealServiceBase):
             out = self.svc.advise_findings(adv.AbliterationAdvisor(m.url), actor="appr")
             self.assertEqual(out["sent_refs"], [])
             self.assertEqual(m.srv.received, [])
+
+
+class TestJapaneseAdjacentText(unittest.TestCase):
+    """Final re-review of 5f11dde: \\b treats kana and kanji as word characters."""
+
+    def test_addresses_written_right_after_japanese_are_leaks(self):
+        for dirty in ("接続先は10.0.0.1です", "接続先はevil.comです", "接続先は::1です", "宛先fe80::1へ"):
+            self.assertNotEqual(adv.leak_reasons(dirty), [], dirty)
+        for clean in ("TLS 1.2以上にする", "Node.jsのバージョンを隠す", "12:00:00までに", "std::stringで受ける"):
+            self.assertEqual(adv.leak_reasons(clean), [], clean)
+
+    def test_misproposals_written_right_after_japanese(self):
+        for title, rule in (("DoS耐性を確認する", "load_or_dos"), ("burpで確認する", "tooling_or_commands"),
+                            ("承認を得ずに実行する", "approval_bypass"), ("承認より先に実行する", "approval_bypass")):
+            hit = next((n for n, rx in adv._FORBIDDEN_CHECK if rx.search(adv._norm(title))), None)
+            self.assertEqual(hit, rule, title)
