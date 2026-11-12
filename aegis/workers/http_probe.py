@@ -74,11 +74,18 @@ class DeadlineExceeded(Exception):
 class _Alarm:
     """One-shot SIGALRM handler: raises DeadlineExceeded at most once per run, and never
     after disarm(). A second delivery, or one that is still pending when the timer is
-    cancelled, is swallowed instead of interrupting the error handling or cleanup."""
+    cancelled, is swallowed instead of interrupting the error handling or cleanup.
+
+    It starts disarmed and is armed only inside the protected region, right before its own
+    timer is set: a SIGALRM still in flight from an earlier run (macOS can deliver one after
+    setitimer(0)) must not raise while the handler is being installed."""
 
     def __init__(self) -> None:
-        self.armed = True
+        self.armed = False
         self.fired = False
+
+    def arm(self) -> None:
+        self.armed = True
 
     def __call__(self, signum, frame):  # noqa: ARG002
         if self.armed and not self.fired:
@@ -241,8 +248,21 @@ def probe(a: argparse.Namespace, clock=time.monotonic) -> dict:
     use_alarm = hasattr(signal, "setitimer")
     previous = None
     result = None
+    previous_hook = sys.unraisablehook
+
+    def swallowed(unraisable):
+        # The alarm can land in code whose exceptions Python only reports, e.g. an object's
+        # finalizer ("Exception ignored while finalizing file ..."). The deadline would then be
+        # lost and the noise would go to stderr: let it fire again a moment later instead.
+        if isinstance(unraisable.exc_value, DeadlineExceeded) and alarm.armed:
+            alarm.fired = False
+            signal.setitimer(signal.ITIMER_REAL, 0.005)
+            return
+        previous_hook(unraisable)
+
     if use_alarm:
         previous = signal.signal(signal.SIGALRM, alarm)
+        sys.unraisablehook = swallowed
     try:
         # The one-shot alarm raises at most once, and only inside this outer try: wherever
         # it lands (a stage, between stages, the handlers below), it is caught here, and
@@ -250,6 +270,7 @@ def probe(a: argparse.Namespace, clock=time.monotonic) -> dict:
         try:
             try:
                 if use_alarm:
+                    alarm.arm()
                     signal.setitimer(signal.ITIMER_REAL, overall)
                 result = run()
             except StageError as e:
@@ -267,6 +288,7 @@ def probe(a: argparse.Namespace, clock=time.monotonic) -> dict:
     finally:
         if use_alarm:
             _stop_alarm(alarm, previous)
+            sys.unraisablehook = previous_hook
         if held["sock"] is not None:
             try:
                 held["sock"].close()
