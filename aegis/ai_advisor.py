@@ -54,7 +54,7 @@ SYSTEM_ADVISOR_PROMPT = (
     + catalog.catalog_for_prompt() +
     ' JSON だけを返してください: {"advice": [{"ref": "F1", "claim_level": "observed", "cites": ["rule", "verdict"], '
     '"risk_explanation": "...", "remediation": [{"fix": "<id>", "detail": "..."}], '
-    '"next_checks": [{"operation": "<id>", "reason": "..."}]}]}'
+    '"next_checks": [{"operation": "<id>", "purpose": "<id>"}]}]}'
 )
 
 # ---- input allow-list -------------------------------------------------------------
@@ -116,7 +116,6 @@ _JWT_RE = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")
 # credential *values*, not vocabulary: "Cookie" or "Authorization" as words are fine in advice
 _SECRETISH_RE = re.compile(r"\bbearer\s+\S{8,}|\b(?:set-)?cookie\s*:\s*[^\s=;]+=|\bapi[_-]?key\s*[:=]\s*\S+|\bsk-[a-z0-9]{8,}", re.I)
 _LONG_OPAQUE_RE = re.compile(r"\b(?=[A-Za-z0-9_\-]*\d)(?=[A-Za-z0-9_\-]*[A-Za-z])[A-Za-z0-9_\-]{32,}\b")
-_PATH_RE = re.compile(r"(?:^|\s)/(?:[\w.-]+/)*[\w.-]+")
 
 # names that look like hosts but are header / technology vocabulary the advice may use
 _HOSTLIKE_OK = frozenset({"x-powered-by", "node.js", "asp.net", "vue.js", "next.js", "express.js", "react.js",
@@ -150,48 +149,15 @@ def leak_reasons(text: str) -> list[str]:
     return out
 
 
-_HOSTISH_IN_PATH = re.compile(r"/api/|/admin|/\.well-known")
-# Next checks that are not acceptable as a suggestion at all, whatever the gate says.
-# A next check is something Vulnix itself might later be asked to do, so these describe
-# *actions*: "削除して確認する" is refused, "削除されたかを確認する" is not.
-_ACT = r"(?:し|す|さ|せ)"
-# "総当たり対策" / "DoS対策" / "brute-force protection" name a defence, not an attack to run
-_NOT_DEFENCE = r"(?!\s*(?:対策|への対策|防止|保護|protection|mitigation|defen[cs]e))"
-# A defence named together with switching it off: "総当たり対策を無効にして", "DoS対策を回避",
-# "disable brute-force protection", "レート制限を外して", "認証を回避". Checked before the other rules,
-# so the _NOT_DEFENCE exemptions below cannot be used to get a disabled defence through.
-_DEF = (r"(?:対策|防止|保護|制限|レート制限|認証|ロックアウト|WAF|ファイアウォール|protection|mitigation|defen[cs]e|"
-        r"rate[\s-]*limit\w*|authentication|auth|firewall|lockout|captcha)")
-_DIS = r"(?:無効|回避|迂回|外し|外す|外して|切っ|切る|切り|オフ|停止|止め|off|disabl\w*|bypass\w*|turn\w*\s+off|remov\w*|skip\w*|circumvent\w*)"
-_FORBIDDEN_CHECK = [
-    ("defence_disabled", re.compile(_DEF + r".{0,15}?" + _DIS + r"|" + _DIS + r".{0,15}?" + _DEF, re.I)),
-    ("destructive", re.compile(r"(?:を|も)(?:削除|消去|破棄|初期化|改ざん|書き換え|上書き)" + _ACT
-                               + r"|drop\s+table|truncate\s+table|rm\s+-rf|delete\s+from|update\s+\w+\s+set"
-                               r"|(?:delete|wipe|drop|purge)\s+(?:the\s+|all\s+)?(?:test\s+|user\s+)?(?:records|data|tables?|accounts)", re.I)),
-    ("load_or_dos", re.compile(r"大量(?:に|の)?(?:送|リクエスト|要求|アクセス)|連続(?:で|して)?送|高頻度|繰り返し(?:送|実行|リクエスト)"
-                               r"|(?:リクエスト|要求)を繰り返|負荷(?:を(?:かけ|与え)|試験|テスト)|" + _B0 + r"D?DoS" + _B1 + _NOT_DEFENCE
-                               + r"|フラッド|flood|stress\s*test"
-                               r"|総当たり" + _NOT_DEFENCE + r"|ブルートフォース" + _NOT_DEFENCE
-                               + r"|brute(?:[\s-]*force)?(?![\s-]*(?:force\s+)?(?:protection|mitigation|defen[cs]e))"
-                               r"|辞書攻撃|何千回|数千回|数万回|\d{3,}\s*回|全(?:アカウント|ユーザー)の(?:パスワード|ログイン)"
-                               r"|thousands?\s+of\s+(?:requests|attempts|passwords|logins)|many\s+requests|\d{3,}\s*(?:requests|passwords|attempts)"
-                               r"|password\s+spray\w*|dictionary\s+attack|credential\s+stuffing|hammer\w*", re.I)),
-    ("production_or_other_users", re.compile(r"本番データ|実データ|顧客(?:データ|の個人情報)|実在の(?:利用者|アカウント)"
-                                             r"|他(?:の)?(?:ユーザー|利用者|人)の(?:アカウント|データ|資源|情報)"
-                                             r"|(?:他|別)(?:の)?(?:ユーザー|利用者)に影響"
-                                             r"|(?:real|live|production)\s+(?:customer|user)?\s*data|customer\s+data"
-                                             r"|other\s+users?'?s?\s+accounts?|another\s+user'?s\s+account", re.I)),
-    ("approval_bypass", re.compile(r"承認(?:なし|無し|を省略|不要|をスキップ|を回避|を待たず|を得ず|より先に|せずに)|承認(?:取得)?前に(?:実行|試|送|検証|開始)|ゲートを(?:回避|迂回|無効)"
-                                   r"|自動承認|bypass|skip\w*\s+(?:the\s+)?approval|without\s+(?:waiting\s+for\s+|getting\s+|an?\s+)?approval"
-                                   r"|before\s+(?:the\s+)?approval|no\s+approval", re.I)),
-    ("scope_expansion", re.compile(r"(?:リダイレクト先|外部サービス|別ドメイン|サブドメイン)(?:を|も)(?:調べ|確認|診断|検査|列挙|対象|スキャン)"
-                                   r"|スコープ(?:を広げ|外|を追加|を拡)|対象(?:を広げ|に含め|を追加|を拡)"
-                                   r"|(?:scan|enumerat\w*|probe|crawl)\s+(?:the\s+)?(?:other\s+|all\s+)?(?:subdomains|domains|hosts)"
-                                   r"|out\s+of\s+scope|expand\w*\s+(?:the\s+)?scope|redirect\s+targets?", re.I)),
-    ("tooling_or_commands", re.compile(_B0 + r"(?:sqlmap|nmap|hydra|metasploit|burp|curl|wget|nikto|ffuf|gobuster)" + _B1
-                                       + r"|`[^`]+`|\$\(", re.I)),
-]
-_TOOLING_RE = dict(_FORBIDDEN_CHECK)["tooling_or_commands"]
+# Free text is left only in the explanation and the remediation details (advice to the
+# operator, where words such as 本番環境, 総当たり対策 or リダイレクト先 are normal). Next checks have
+# none: they are an operation id and a purpose id. So these rules are few and narrow on purpose.
+_APPROVAL_BYPASS_RE = re.compile(
+    r"承認(?:なし|無し|を省略|不要|をスキップ|を回避|を待たず|を得ず|より先に|せずに)|承認(?:取得)?前に(?:実行|試|送|検証|開始)"
+    r"|ゲートを(?:回避|迂回|無効)|自動承認|skip\w*\s+(?:the\s+)?approval"
+    r"|without\s+(?:waiting\s+for\s+|getting\s+|an?\s+)?approval|no\s+approval", re.I)
+_TOOLING_RE = re.compile(_B0 + r"(?:sqlmap|nmap|hydra|metasploit|burp|curl|wget|nikto|ffuf|gobuster)" + _B1
+                         + r"|`[^`]+`|\$\(", re.I)
 _OVERCLAIM_RE = re.compile(r"実証済み|実証され|確定(?:済み|した(?:ため|脆弱性|問題|不備))|(?:脆弱性|問題|不備)(?:が|は)確定"
                            r"|確実に悪用|悪用(?:され|に成功|可能(?:です|と確認|である))|侵害(?:され|済み)|侵入され"
                            r"|\bproven\b|exploited|confirmed\s+vulnerab", re.I)
@@ -199,7 +165,7 @@ _OVERCLAIM_RE = re.compile(r"実証済み|実証され|確定(?:済み|した(?:
 # サブドメイン, 削除) is normal there. Only directives that undermine the gates or destroy real
 # data, and commands, are refused.
 _REMEDIATION_FORBIDDEN = [
-    ("approval_bypass", dict(_FORBIDDEN_CHECK)["approval_bypass"]),
+    ("approval_bypass", _APPROVAL_BYPASS_RE),
     ("destroy_real_data", re.compile(r"(?:本番|実|顧客|利用者)(?:の)?データを(?:削除|消去|破棄|作り直|初期化|書き換え|上書き)", re.I)),
 ]
 
@@ -208,12 +174,12 @@ _REMEDIATION_FORBIDDEN = [
 
 ADVICE_KEYS = frozenset({"ref", "claim_level", "cites", "risk_explanation", "remediation", "next_checks"})
 REMEDIATION_KEYS = frozenset({"fix", "detail"})   # not "action": that is a gateway proposal key
-CHECK_KEYS = frozenset({"operation", "reason"})
+CHECK_KEYS = frozenset({"operation", "purpose"})      # no free text in a next check
 AUTHORITY_KEYS = frozenset({"approved", "approval", "token", "tool", "action", "args", "target_id",
                             "execute", "run", "scope", "url", "command", "status", "level", "gates"})
 MAX_EXPLANATION = 800
 MAX_REMEDIATION_ITEMS, MAX_REMEDIATION_LEN = 6, 300
-MAX_CHECKS, MAX_CHECK_REASON = 5, 300
+MAX_CHECKS = 5
 _CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
@@ -233,7 +199,8 @@ class NextCheck:
     operation: str
     level: str                     # "L1" | "L2" | "manual", from the catalog
     label: str
-    reason: str
+    purpose: str                   # a catalog id
+    purpose_label: str
     status: str = "proposal_only"
     required_gates: tuple[str, ...] = ()
 
@@ -273,8 +240,9 @@ class AdviceResult:
                 "cites": list(a.cites),
                 "risk_explanation": a.risk_explanation,
                 "remediation": [{"fix": r.fix, "label": r.label, "detail": r.detail} for r in a.remediation],
-                "next_checks": [{"operation": c.operation, "level": c.level, "label": c.label, "reason": c.reason,
-                                 "status": c.status, "required_gates": list(c.required_gates)}
+                "next_checks": [{"operation": c.operation, "level": c.level, "label": c.label, "purpose": c.purpose,
+                                 "purpose_label": c.purpose_label, "status": c.status,
+                                 "required_gates": list(c.required_gates)}
                                 for c in a.next_checks],
             } for a in self.advice],
         }
@@ -429,18 +397,14 @@ def validate_advice(raw: object, ref_map: dict[str, dict]) -> tuple[list[Advice]
             if op in ops:
                 reject("next_check", "duplicate_operation")
                 continue
-            reason = _clean_text(c.get("reason", "") or "-", MAX_CHECK_REASON)
-            if reason is None:
-                reject("next_check", "schema: reason too long or control characters")
-                continue
-            if (p := _text_problem(reason, overclaim_ok=overclaim_ok, rules=_FORBIDDEN_CHECK)) or \
-                    _HOSTISH_IN_PATH.search(_norm(reason)) or _PATH_RE.search(_norm(reason)):
-                reject("next_check", p or "leak: ['path']")
+            purpose = c.get("purpose")
+            if purpose not in catalog.PURPOSES:
+                reject("next_check", "schema: purpose is not a catalog value")
                 continue
             level, label, _ = catalog.OPERATIONS[op]
             ops.add(op)
-            checks.append(NextCheck(operation=op, level=level, label=label, reason=reason,
-                                    required_gates=catalog.gates_for(level)))
+            checks.append(NextCheck(operation=op, level=level, label=label, purpose=purpose,
+                                    purpose_label=catalog.PURPOSES[purpose], required_gates=catalog.gates_for(level)))
         seen.add(ref)
         out.append(Advice(ref=ref, finding_id=finding["id"], claim_level=claim, cites=tuple(dict.fromkeys(cites)),
                           risk_explanation=explanation, remediation=tuple(remediation), next_checks=tuple(checks)))

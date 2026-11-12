@@ -143,7 +143,8 @@ def _build_advice_content(user_content: str) -> str:
         advice.append({"ref": f["ref"], "claim_level": claim, "cites": cites, "risk_explanation": expl,
                        "remediation": [{"fix": a, "detail": cat.REMEDIATION_ACTIONS[a][0]} for a in actions]
                        or [{"fix": "keep_regression_check", "detail": "再発を防ぐ確認を続ける"}],
-                       "next_checks": [{"operation": o, "reason": "修正の反映を確かめるため"} for o in ops]})
+                       "next_checks": [{"operation": o, "purpose": "regression_watch" if fixed else "confirm_fix"}
+                                       for o in ops]})
     return "```json\n" + json.dumps({"advice": advice}, ensure_ascii=False) + "\n```"
 
 

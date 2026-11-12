@@ -81,6 +81,17 @@ REMEDIATION_ACTIONS = MappingProxyType({
 })
 
 
+# Why a next check is suggested. A fixed list instead of free text: a next check carries no
+# words of the model at all, so nothing dangerous can be phrased into one.
+PURPOSES = MappingProxyType({
+    "confirm_fix": "修正の反映を確かめる",
+    "confirm_current_state": "現在の状態を確かめる",
+    "collect_evidence": "判断に必要な証拠を集める",
+    "regression_watch": "再発していないかを見る",
+    "confirm_intent": "公開が意図どおりかを確かめる",
+})
+
+
 def operation_allowed(op: str, rule: str) -> bool:
     spec = OPERATIONS.get(op)
     return spec is not None and rule in spec[2]
@@ -101,6 +112,8 @@ def claim_problem(claim: str, rule: str, verdict: str, basis: str) -> str | None
         return f"unfaithful_claim: {claim} is not allowed for verdict {verdict}"
     if claim == "observed" and rule in L2_ONLY_RULES and basis != "l2_reproduction":
         return f"unfaithful_claim: {rule} cannot be observed by L1 alone"
+    if claim == "reproduced" and basis != "l2_reproduction":
+        return "unfaithful_claim: reproduced needs an L2 reproduction as the basis"
     return None
 
 
@@ -131,4 +144,5 @@ def catalog_for_prompt() -> str:
     ops = "; ".join(f"{k}({v[0]}: {', '.join(sorted(v[2]))})" for k, v in OPERATIONS.items())
     acts = "; ".join(f"{k}({', '.join(sorted(v[1]))})" for k, v in REMEDIATION_ACTIONS.items())
     claims = ", ".join(f"{v}: {', '.join(sorted(c))}" for v, c in CLAIMS_BY_VERDICT.items())
-    return f"operations: {ops}. remediation actions: {acts}. claim_level by verdict: {claims}."
+    return (f"operations: {ops}. remediation fixes: {acts}. claim_level by verdict: {claims}. "
+            f"next check purposes: {', '.join(PURPOSES)}.")

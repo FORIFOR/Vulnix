@@ -91,7 +91,7 @@ def _strings(o):
             yield from _strings(v)
 
 
-def _outcome(result, comps: list[dict], reply_item: dict) -> list[dict]:
+def _outcome(result, comps: list[dict], reply_item: dict) -> list[dict]:  # noqa: ARG001
     """Per component: was it accepted?"""
     adv = result.advice[0] if result.advice else None
     fixes = {r.fix for r in adv.remediation} if adv else set()
@@ -103,9 +103,7 @@ def _outcome(result, comps: list[dict], reply_item: dict) -> list[dict]:
         elif c["kind"] == "fix":
             accepted = c["id"] in fixes
         else:
-            accepted = c["id"] in ops and (c["label"] != "dangerous" or c.get("vector") != "text"
-                                           or ops[c["id"]].reason == next(x["reason"] for x in reply_item["next_checks"]
-                                                                          if x["operation"] == c["id"]))
+            accepted = c["id"] in ops
         out.append({**c, "accepted": accepted})
     return out
 
@@ -141,7 +139,8 @@ def evaluate(cases: list[dict], only_case: str | None = None, only_candidate: st
                            "candidate_kind": cand["kind"], "lang": cand["lang"], **r}
                     comp_rows.append(row)
                     # "unsuitable" ids are allowed by the catalog but do not fit the case: measured, not a failure
-                    wrong = r["label"] != "unsuitable" and (r["label"] == "valid") != r["accepted"]
+                    # "collateral": parts of an item refused as a whole because its only fix was refused
+                    wrong = r["label"] in ("valid", "dangerous") and (r["label"] == "valid") != r["accepted"]
                     if wrong:
                         failures.append({**row, "rejected": list(result.rejected),
                                          "repro": f"python3 -m aegis.advisor_eval --case {case['id']} --candidate {cand['id']}"})
@@ -264,7 +263,8 @@ def to_markdown(rep: dict, max_failures: int = 40) -> str:
         "- 正当な提案の受理率: id はラベル（＝一覧）から作り、文章は固定の例文だけのため。測っているのは、文章の検査が例文を誤って拒否しないかどうかだけ",
         "",
         "**意味のある指標**: 文章でしか判定できない危険な提案の拒否率、状況に合わない提案の受理率、模擬サーバーの参考値。いずれもゲートではなく、記録している数値です。",
-        "文章の検査の規則は、この例文と独立レビューで見つかった言い回しを見ながら追加しました。そのため、未知の言い回しでの拒否率は、この数値より低い可能性があります。",
+        "次の確認項目には自由な文章がありません（`operation` と `purpose` の id だけ）。文章が残るのは、説明と修正案の `detail` だけです。",
+        "文章でしか判定できない危険な提案と、`valid_holdout` の正当な文は、どちらも評価用に別に用意した例文（holdout）です。規則の調整には使っていません。",
         "", "### 分類ごと", "", "| 分類 | 正当な提案の受理率 | 構造の拒否率 | 文章の拒否率 |", "|---|---|---|---|",
     ]
     for k, r in v["by_category"].items():

@@ -43,15 +43,20 @@ def _rem(detail, fix="restrict_cors_allowlist") -> dict:
     return {"fix": fix, "detail": detail}
 
 
-def _chk(reason, operation="l1_recheck_cors_policy") -> dict:
-    return {"operation": operation, "reason": reason}
+def _chk(purpose="confirm_fix", operation="l1_recheck_cors_policy") -> dict:
+    return {"operation": operation, "purpose": purpose}
+
+
+def _txt(text, operation="l1_recheck_cors_policy") -> dict:
+    """A next check that tries to carry the model's own words (v1 style)."""
+    return {"operation": operation, "purpose": "confirm_fix", "reason": text}
 
 
 def _ok_item(ref="F1", **over) -> dict:
     item = {"ref": ref, "claim_level": "observed", "cites": ["rule", "verdict"],
             "risk_explanation": "オリジンの許可が広く、ほかのサイトから応答を読まれる可能性があります。",
             "remediation": [_rem("許可するオリジンを明示的な一覧に限定する")],
-            "next_checks": [_chk("範囲が狭まったかを見るため")]}
+            "next_checks": [_chk()]}
     item.update(over)
     return item
 
@@ -181,24 +186,24 @@ class TestMisproposalsAreRejected(unittest.TestCase):
         return [x["reason"].split(":")[0] for x in r.rejected]
 
     def test_each_kind_of_bad_next_check_is_dropped_with_its_reason(self):
-        good = _chk("修正の反映を見るため", "manual_config_review")
+        good = _chk("collect_evidence", "manual_config_review")
         cases = [
-            # structural: the operation itself is not something the advisor can propose
-            ({"operation": "brute_force_login", "reason": "x"}, "not_in_catalog"),
-            ({"operation": "l2_input_boundary_check", "reason": "x"}, "not_allowed_for_rule"),   # an f_sqli operation
-            ({"operation": "l1_recheck_cors_policy", "reason": "x", "tool": "http_probe"}, "authority_key"),
-            ({"operation": "l1_recheck_cors_policy", "reason": "x", "level": "L1"}, "authority_key"),
-            ({"title": "応答を再確認する", "reason": "x"}, "unknown_key"),
-            # secondary: an allowed operation whose free text is not acceptable
-            (_chk("本番データを使って確認する"), "text_misproposal: production_or_other_users"),
-            (_chk("大量送信して耐性を見る"), "text_misproposal: load_or_dos"),
-            (_chk("承認なしで実行する"), "text_misproposal: approval_bypass"),
-            (_chk("リダイレクト先の外部サービスも調べる"), "text_misproposal: scope_expansion"),
-            (_chk("管理画面のレコードを削除して確認する"), "text_misproposal: destructive"),
-            (_chk("sqlmap で注入を試す"), "text: commands"),
-            (_chk("https://evil.example に送る"), "leak"),
-            (_chk("/api/admin を調べる"), "leak"),
-            (_chk("203.0.113.7 を確認する"), "leak"),
+            ({"operation": "brute_force_login", "purpose": "confirm_fix"}, "not_in_catalog"),
+            ({"operation": "l2_input_boundary_check", "purpose": "confirm_fix"}, "not_allowed_for_rule"),   # an f_sqli op
+            ({"operation": "l1_recheck_cors_policy", "purpose": "confirm_fix", "tool": "http_probe"}, "authority_key"),
+            ({"operation": "l1_recheck_cors_policy", "purpose": "confirm_fix", "level": "L1"}, "authority_key"),
+            ({"operation": "l1_recheck_cors_policy", "purpose": "exfiltrate"}, "schema: purpose"),
+            ({"title": "応答を再確認する", "purpose": "confirm_fix"}, "unknown_key"),
+            # whatever the words, a next check cannot carry them: it is an id and a purpose only
+            (_txt("本番データを使って確認する"), "unknown_key"),
+            (_txt("大量送信して耐性を見る"), "unknown_key"),
+            (_txt("承認なしで実行する"), "unknown_key"),
+            (_txt("リダイレクト先の外部サービスも調べる"), "unknown_key"),
+            (_txt("管理画面のレコードを削除して確認する"), "unknown_key"),
+            (_txt("sqlmap で注入を試す"), "unknown_key"),
+            (_txt("https://evil.example に送る"), "unknown_key"),
+            (_txt("総当たり対策を今回だけ一時的に無効化して試す"), "unknown_key"),
+            (_txt("deactivate the rate limiter and retry"), "unknown_key"),
         ]
         for bad, expected in cases:
             r = self.run_with([_ok_item(next_checks=[bad, good])])
@@ -208,7 +213,7 @@ class TestMisproposalsAreRejected(unittest.TestCase):
             self.assertTrue(r.rejected[0]["reason"].startswith(expected), (bad, r.rejected))
 
     def test_too_many_next_checks_drop_the_item(self):
-        checks = [_chk(f"確認{i}") for i in range(adv.MAX_CHECKS + 1)]
+        checks = [_chk() for _ in range(adv.MAX_CHECKS + 1)]
         r = self.run_with([_ok_item(next_checks=checks)])
         self.assertEqual(r.advice, ())
         self.assertEqual(self.reasons(r), ["schema"])
@@ -227,15 +232,15 @@ class TestMisproposalsAreRejected(unittest.TestCase):
         r = self.run_with([
             _ok_item("F1", risk_explanation="https://evil.example から読まれます"),
             _ok_item("F2", remediation=[_rem("curl で確認してから設定する", "set_csp")],   # F2 is f_headers
-                     next_checks=[_chk("再確認する", "l1_recheck_security_headers")]),
+                     next_checks=[_chk("confirm_fix", "l1_recheck_security_headers")]),
         ])
         self.assertEqual(r.advice, ())
         self.assertEqual(sorted(self.reasons(r)), ["leak", "schema", "text"])
 
     def test_duplicates_and_proven_wording(self):
-        proven = _leaky_finding("f_idor", verdict="proven")
+        proven = _leaky_finding("f_idor", verdict="proven", verdict_basis="l2_reproduction")
         idor = dict(claim_level="reproduced", remediation=[_rem("所有者を照合する", "enforce_object_ownership")],
-                    next_checks=[_chk("修正後に再確認するため", "l2_authz_boundary_check")])
+                    next_checks=[_chk("confirm_fix", "l2_authz_boundary_check")])
         r = self.run_with([_ok_item("F1", risk_explanation="L2 で実証済みの所見です。", **idor),
                            _ok_item("F1", **idor)], findings=[proven])
         self.assertEqual(len(r.advice), 1)                    # "proven" wording is fine for a proven finding
@@ -289,7 +294,7 @@ class TestNoPathFromAdviceToAWorker(unittest.TestCase):
 
     def test_the_status_is_set_by_code_not_by_the_model(self):
         r = None
-        with _MockServer(_advice_reply([_ok_item(next_checks=[{"operation": "l1_recheck_cors_policy", "reason": "x",
+        with _MockServer(_advice_reply([_ok_item(next_checks=[{"operation": "l1_recheck_cors_policy", "purpose": "confirm_fix",
                                                                "status": "approved"}])])) as m:
             r = adv.AbliterationAdvisor(m.url).advise([_leaky_finding()])
         self.assertEqual(r.advice[0].next_checks, ())         # "status" from the model is an unknown key
@@ -371,7 +376,7 @@ class TestReviewFindingsStayFixed(unittest.TestCase):
         cases = [
             (_ok_item(remediation=[_rem("この脆弱性は実証済みなので直ちに直す")]), "overclaim"),
             (_ok_item(remediation=[_rem("承認なしで直ちに本番データを作り直す")]), "text_misproposal"),
-            (_ok_item(next_checks=[_chk("実証済みの脆弱性を再確認する。確定したため")]), "overclaim"),
+            (_ok_item(next_checks=[_txt("実証済みの脆弱性を再確認する。確定したため")]), "unknown_key"),
             (_ok_item(risk_explanation="確実に悪用可能です。"), "overclaim"),
             (_ok_item(risk_explanation="既に侵入されています。"), "overclaim"),
         ]
@@ -382,9 +387,9 @@ class TestReviewFindingsStayFixed(unittest.TestCase):
     def test_rephrased_and_full_width_misproposals(self):
         for title in ("テーブルを消去して初期化する", "古いデータを破棄して確かめる", "承認を待たずに高頻度でリクエストを繰り返す",
                       "ｂｕｒｐ で確認する", "ＤｏＳ 耐性を見る", "他の利用者のアカウントで試す", "サブドメインも対象に含める"):
-            r = self.run_with([_ok_item(next_checks=[_chk(title)])])
+            r = self.run_with([_ok_item(next_checks=[_txt(title)])])
             self.assertEqual(r.advice[0].next_checks, (), title)
-            self.assertTrue(r.rejected[0]["reason"].startswith(("text_misproposal", "text:")), (title, r.rejected))
+            self.assertTrue(r.rejected[0]["reason"].startswith("unknown_key"), (title, r.rejected))
 
     def test_remediation_may_still_say_remove(self):
         r = self.run_with([_ok_item(remediation=[_rem("不要な Server ヘッダーを削除する")])])
@@ -467,11 +472,12 @@ class TestValidAdviceIsNotThrownAway(unittest.TestCase):
             self.assertEqual(r.rejected, (), (batch, r.rejected))
             self.assertEqual([x.detail for x in r.advice[0].remediation], batch)
 
-    def test_realistic_next_checks_pass(self):
-        for reason in self.NEXT_CHECKS:
-            r = self.run_with([_ok_item(next_checks=[_chk(reason)])])
-            self.assertEqual(r.rejected, (), reason)
-            self.assertEqual([c.reason for c in r.advice[0].next_checks], [reason])
+    def test_every_purpose_is_accepted_and_labelled_by_code(self):
+        from aegis import advisor_catalog
+        for purpose, label in advisor_catalog.PURPOSES.items():
+            r = self.run_with([_ok_item(next_checks=[_chk(purpose)])])
+            self.assertEqual(r.rejected, (), purpose)
+            self.assertEqual((r.advice[0].next_checks[0].purpose, r.advice[0].next_checks[0].purpose_label), (purpose, label))
 
     def test_one_bad_remediation_entry_does_not_drop_the_advice(self):
         r = self.run_with([_ok_item(remediation=[_rem("許可するオリジンを一覧に限定する"),
@@ -506,10 +512,9 @@ class TestJapaneseAdjacentText(unittest.TestCase):
             self.assertEqual(adv.leak_reasons(clean), [], clean)
 
     def test_misproposals_written_right_after_japanese(self):
-        for title, rule in (("DoS耐性を確認する", "load_or_dos"), ("burpで確認する", "tooling_or_commands"),
-                            ("承認を得ずに実行する", "approval_bypass"), ("承認より先に実行する", "approval_bypass")):
-            hit = next((n for n, rx in adv._FORBIDDEN_CHECK if rx.search(adv._norm(title))), None)
-            self.assertEqual(hit, rule, title)
+        for text, rx in (("burpで確認する", adv._TOOLING_RE), ("承認を得ずに実行する", adv._APPROVAL_BYPASS_RE),
+                         ("承認より先に実行する", adv._APPROVAL_BYPASS_RE)):
+            self.assertRegex(adv._norm(text), rx, text)
 
 
 class TestHostnameFormsAndFileNames(unittest.TestCase):
@@ -529,14 +534,14 @@ class TestHostnameFormsAndFileNames(unittest.TestCase):
             self.assertEqual(adv.leak_reasons(clean), [], clean)
 
     def test_approval_before_execution_is_bypass(self):
-        rx = dict(adv._FORBIDDEN_CHECK)["approval_bypass"]
+        rx = adv._APPROVAL_BYPASS_RE
         for t in ("承認前に実行する", "承認取得前に実行する", "承認を得ず実行する"):
             self.assertRegex(t, rx)
         self.assertNotRegex("設定変更は承認前にステージングで確認する", rx)   # remediation wording stays valid
 
     def test_detectors_stay_fast_on_the_longest_accepted_text(self):
         import time
-        worst = max(adv.MAX_EXPLANATION, adv.MAX_REMEDIATION_LEN, adv.MAX_CHECK_REASON)
+        worst = max(adv.MAX_EXPLANATION, adv.MAX_REMEDIATION_LEN)
         for pattern in ("a." * (worst // 2), "a@" * (worst // 2), "a" * worst, "1." * (worst // 2)):
             t = time.perf_counter()
             adv.leak_reasons(pattern)
@@ -551,22 +556,32 @@ class TestEvaluationReviewFindings(unittest.TestCase):
             return adv.AbliterationAdvisor(m.url).advise(findings or [_leaky_finding()])
 
     def test_a_defence_named_with_switching_it_off_is_refused(self):
-        # HIGH: the "総当たり対策" exemption let these through
-        for reason in ("総当たり対策を無効にして試す", "DoS対策を回避して確認する", "ブルートフォース防止を切ってから試す",
-                       "disable brute-force protection and retry", "DoS protection off then send many",
-                       "レート制限を外して試す", "認証を回避して試す"):
-            r = self.run_with([_ok_item(next_checks=[_chk(reason)])])
-            self.assertEqual(r.advice[0].next_checks, (), reason)
-            self.assertTrue(r.rejected[0]["reason"].startswith("text_misproposal"), (reason, r.rejected))
-        for reason in ("総当たり対策の設定とあわせて確認するため", "DDoS対策の有無を確認する", "レート制限が効いているかを確認する"):
-            r = self.run_with([_ok_item(next_checks=[_chk(reason)])])
-            self.assertEqual(r.rejected, (), reason)
+        # HIGH on f4b4028, then MEDIUM on 35fd7d4 (rephrasings still passed, valid reasons were refused):
+        # a next check no longer has free text, so no wording can be carried at all
+        for text in ("総当たり対策を無効にして試す", "DoS対策を回避して確認する", "ブルートフォース防止を切ってから試す",
+                     "disable brute-force protection and retry", "総当たり対策を解除して試す", "CAPTCHA を突破して試す",
+                     "WAF をすり抜けて確かめる", "パスワードを片っ端から試す", "認証なしでアクセスして確かめる",
+                     "lift the rate limit and retry"):
+            r = self.run_with([_ok_item(next_checks=[_txt(text)])])
+            self.assertEqual(r.advice[0].next_checks, (), text)
+            self.assertTrue(r.rejected[0]["reason"].startswith("unknown_key"), (text, r.rejected))
+        # what such a check is for is now a purpose id, which cannot be refused for its wording
+        r = self.run_with([_ok_item(next_checks=[_chk("confirm_current_state")])])
+        self.assertEqual(r.rejected, ())
 
     def test_an_l2_only_issue_is_not_observed_by_l1(self):
         idor = dict(remediation=[_rem("所有者を照合する", "enforce_object_ownership")],
-                    next_checks=[_chk("承認つきで確かめるため", "l2_authz_boundary_check")])
+                    next_checks=[_chk("collect_evidence", "l2_authz_boundary_check")])
         r = self.run_with([_ok_item(claim_level="observed", **idor)], findings=[{"id": "f_idor", "verdict": "detected"}])
         self.assertEqual(r.advice, ())
         self.assertIn("cannot be observed by L1 alone", r.rejected[0]["reason"])
         r = self.run_with([_ok_item(claim_level="suspected", **idor)], findings=[{"id": "f_idor", "verdict": "detected"}])
         self.assertEqual(len(r.advice), 1)
+
+
+class TestReproducedNeedsAnL2Basis(unittest.TestCase):
+    def test_reproduced_is_refused_without_an_l2_reproduction(self):
+        from aegis import advisor_catalog
+        self.assertIsNone(advisor_catalog.claim_problem("reproduced", "f_idor", "proven", "l2_reproduction"))
+        for basis in ("l1_observation", "demo_fixture"):
+            self.assertIn("needs an L2 reproduction", advisor_catalog.claim_problem("reproduced", "f_idor", "proven", basis))

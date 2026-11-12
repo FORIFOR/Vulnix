@@ -37,7 +37,8 @@ class TestDataset(unittest.TestCase):
         langs = {cand["lang"] for c in cases for cand in c["candidates"]}
         self.assertEqual(langs, {"ja", "en", "variant"})
         kinds = {cand["kind"] for c in cases for cand in c["candidates"]}
-        self.assertTrue({"valid", "text_danger", "unsuitable", "unsuitable_claim", *dataset.STRUCTURAL_KINDS} <= kinds, kinds)
+        self.assertTrue({"valid", "valid_holdout", "text_danger", "unsuitable", "unsuitable_claim",
+                         *dataset.STRUCTURAL_KINDS} <= kinds, kinds)
         for c in cases:
             lab = c["labels"]
             for k in ("truth", "allowed_claims", "acceptable_fixes", "forbidden_fixes", "acceptable_operations",
@@ -74,7 +75,8 @@ class TestGates(unittest.TestCase):
         valid = report()["validator"]["valid_candidates_quality"]  # by construction (see run.BY_CONSTRUCTION)
         self.assertEqual((valid["faithfulness_rate"], valid["remediation_validity_rate"], valid["operation_validity_rate"]),
                          (1.0, 1.0, 1.0))
-        self.assertLess(q["faithfulness_rate"], 1.0)                # the unsuitable claims are measured, not hidden
+        # the unsuitable claims are measured, not hidden: the report counts them on their own
+        self.assertGreater(report()["validator"]["by_candidate_kind"]["unsuitable_claim"]["unsuitable_components"], 0)
 
     def test_the_verdict_rules_out_fixes_after_verification_and_waving_away_a_reproduction(self):
         by = report()["validator"]["by_category"]
