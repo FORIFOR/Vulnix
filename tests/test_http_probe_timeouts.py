@@ -265,18 +265,140 @@ class TestOverallDeadlineAgainstADrippingTarget(unittest.TestCase):
         self.assertEqual((out["error"]["stage"], out["error"]["kind"]), ("connect", "egress_blocked"))
 
 
-class TestDeadlineBetweenStages(unittest.TestCase):
-    def test_a_deadline_outside_any_stage_is_still_a_structured_timeout(self):
-        import argparse
+def _ns(**kw):
+    import argparse
+    d = dict(scheme="http", host="x.test", ip="127.0.0.1", port=1, path="/", method="GET",
+             origin="https://untrusted-origin.example", connect_timeout=1, read_timeout=1, overall_timeout=1)
+    d.update(kw)
+    return argparse.Namespace(**d)
+
+
+class _RaisingClock:
+    """monotonic() stand-in that raises DeadlineExceeded on its n-th call, as SIGALRM would there."""
+
+    def __init__(self, n: int):
+        self.n, self.calls = n, 0
+
+    def __call__(self):
+        from aegis.workers import http_probe as hp
+        self.calls += 1
+        if self.calls == self.n:
+            raise hp.DeadlineExceeded("x")
+        return time.monotonic()
+
+
+class TestDeadlineOutsideAStage(unittest.TestCase):
+    def test_a_failure_building_the_request_belongs_to_the_send_stage(self):
         from unittest.mock import patch
         from aegis.workers import http_probe as hp
-        a = argparse.Namespace(scheme="http", host="x.test", ip="127.0.0.1", port=1, path="/", method="GET",
-                               origin="https://untrusted-origin.example", connect_timeout=1, read_timeout=1, overall_timeout=1)
         sock = socket.socket()
         with patch.object(hp.socket, "create_connection", return_value=sock), \
                 patch.object(hp.http.client, "HTTPConnection", side_effect=hp.DeadlineExceeded("x")):
-            out = hp.probe(a)
-        self.assertEqual((out["error"]["stage"], out["error"]["kind"]), ("between_stages", "timeout"))
+            out = hp.probe(_ns())
+        self.assertEqual((out["error"]["stage"], out["error"]["kind"]), ("send", "timeout"))
+
+    def test_a_deadline_in_a_stage_bookkeeping_is_named_after_that_stage(self):
+        from unittest.mock import patch
+        from aegis.workers import http_probe as hp
+        sock = socket.socket()
+        # calls: t0, connect start, connect budget, connect finally -> raise there, after the socket exists
+        with patch.object(hp.socket, "create_connection", return_value=sock):
+            out = hp.probe(_ns(), clock=_RaisingClock(4))
+        self.assertEqual((out["error"]["stage"], out["error"]["kind"]), ("connect", "timeout"))
+        self.assertEqual(sock.fileno(), -1)          # the socket created in that stage is still closed
+
+    def test_a_deadline_while_reporting_a_stage_error_is_still_structured(self):
+        from aegis.workers import http_probe as hp
+        # port 1 is refused at once; calls: t0, start, budget, finally, then error_result's total -> raise
+        out = hp.probe(_ns(), clock=_RaisingClock(5))
+        self.assertEqual((out["error"]["stage"], out["error"]["kind"], out["error"]["exception"]),
+                         ("between_stages", "timeout", "DeadlineExceeded"))
+
+    def test_an_unreadable_test_ca_file_is_a_tls_stage_error(self):
+        from unittest.mock import patch
+        from aegis.workers import http_probe as hp
+        sock = socket.socket()
+        with patch.object(hp.socket, "create_connection", return_value=sock), \
+                patch.dict("os.environ", {"VULNIX_TEST_CA_FILE": "/nonexistent/ca.pem"}):
+            out = hp.probe(_ns(scheme="https"))
+        self.assertEqual(out["error"]["stage"], "tls")
+
+
+_LATE_ALARM = r"""
+import os, signal, sys, time, argparse
+sys.path.insert(0, sys.argv[1])
+from aegis.workers import http_probe as hp
+a = argparse.Namespace(scheme="http", host="x.test", ip="127.0.0.1", port=1, path="/", method="GET",
+                       origin="o", connect_timeout=1, read_timeout=1, overall_timeout=1)
+print(hp.probe(a)["error"]["stage"])
+os.kill(os.getpid(), signal.SIGALRM)          # an expiry that arrives after the timer was cancelled
+time.sleep(0.05)
+print("alive")
+"""
+
+_RACE = r"""
+import argparse, signal, socket, sys, threading
+sys.path.insert(0, sys.argv[1])
+from aegis.workers import http_probe as hp
+srv = socket.socket(); srv.bind(("127.0.0.1", 0)); srv.listen(512)
+held = []
+def accept():
+    while True:
+        try:
+            held.append(srv.accept()[0])     # accepts and never answers
+        except OSError:
+            return
+threading.Thread(target=accept, daemon=True).start()
+bad = 0
+for i in range(int(sys.argv[2])):
+    a = argparse.Namespace(scheme="http", host="x.test", ip="127.0.0.1", port=srv.getsockname()[1], path="/",
+                           method="GET", origin="o", connect_timeout=5, read_timeout=30, overall_timeout=float(sys.argv[3]))
+    try:
+        out = hp.probe(a)
+        if "error" not in out or out["error"]["kind"] not in ("timeout", "network_error"):
+            bad += 1
+    except BaseException as e:
+        print("ESCAPED", type(e).__name__); bad += 1
+    if signal.getitimer(signal.ITIMER_REAL) != (0.0, 0.0):
+        bad += 1
+    while len(held) > 200:
+        held.pop(0).close()
+print("bad", bad)
+"""
+
+
+@unittest.skipUnless(hasattr(__import__("signal"), "setitimer"), "the SIGALRM deadline exists only where setitimer does")
+class TestAlarmRaces(unittest.TestCase):
+    """The socket timeout of a stage is cut to the time left, so near the deadline it and SIGALRM
+    fire together. Whatever order they land in, the worker must print a result, not die."""
+
+    def py(self, script: str, *args: str):
+        return subprocess.run([sys.executable, "-I", "-c", script, str(ROOT), *args],
+                              capture_output=True, text=True, timeout=120)
+
+    def test_an_alarm_after_the_run_does_not_kill_the_worker(self):
+        p = self.py(_LATE_ALARM)
+        self.assertEqual(p.returncode, 0, p.stderr)          # was 142 (killed by SIGALRM) with SIG_DFL restored
+        self.assertEqual(p.stdout.split(), ["connect", "alive"])
+        self.assertEqual(p.stderr, "")
+
+    def test_deadline_and_socket_timeout_landing_together(self):
+        for overall in ("0.001", "0.003"):
+            p = self.py(_RACE, "400", overall)
+            self.assertEqual(p.returncode, 0, (overall, p.returncode, p.stderr[-2000:]))
+            self.assertEqual(p.stdout.strip().splitlines()[-1], "bad 0", (overall, p.stdout[-2000:]))
+            self.assertEqual(p.stderr, "", overall)
+
+    def test_a_previous_python_handler_is_restored(self):
+        import signal
+        from aegis.workers import http_probe as hp
+        mine = lambda s, f: None  # noqa: E731
+        old = signal.signal(signal.SIGALRM, mine)
+        try:
+            hp.probe(_ns())
+            self.assertIs(signal.getsignal(signal.SIGALRM), mine)
+        finally:
+            signal.signal(signal.SIGALRM, old)
 
 
 class TestDowngradedVerdictIsRescored(unittest.TestCase):

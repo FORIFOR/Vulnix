@@ -19,8 +19,13 @@ instead of a traceback, so the control plane can record why it failed.
 The overall deadline is enforced with SIGALRM, because per-recv socket timeouts
 reset on every byte of a target that drips its answer. `probe()` therefore
 belongs to this worker process's main thread: it replaces any SIGALRM timer for
-its run. Where `signal.setitimer` does not exist (Windows), only the per-stage
-timeouts apply and the gateway's own limit is what ends a dripping target.
+its run. The alarm raises at most once and is caught wherever it lands, also while
+a stage error is being reported. Afterwards a previous Python handler is restored;
+a default one (SIG_DFL) is not, because a late alarm would then kill the worker
+before it prints: a disarmed no-op handler stays installed instead.
+Where `signal.setitimer` does not exist (Windows), only the per-stage
+timeouts apply and the gateway's own limit is what ends a dripping target; such a
+run ends without the structured stage report, so Windows is not equivalent here.
 """
 from __future__ import annotations
 
@@ -66,8 +71,22 @@ class DeadlineExceeded(Exception):
     byte at a time resets them on every byte."""
 
 
-def _on_alarm(signum, frame):  # noqa: ARG001
-    raise DeadlineExceeded("overall deadline reached")
+class _Alarm:
+    """One-shot SIGALRM handler: raises DeadlineExceeded at most once per run, and never
+    after disarm(). A second delivery, or one that is still pending when the timer is
+    cancelled, is swallowed instead of interrupting the error handling or cleanup."""
+
+    def __init__(self) -> None:
+        self.armed = True
+        self.fired = False
+
+    def __call__(self, signum, frame):  # noqa: ARG002
+        if self.armed and not self.fired:
+            self.fired = True
+            raise DeadlineExceeded("overall deadline reached")
+
+    def disarm(self) -> None:
+        self.armed = False
 
 
 class StageError(Exception):
@@ -96,10 +115,37 @@ def _kind(e: BaseException) -> str:
     return "error"
 
 
+def _stop_alarm(alarm: _Alarm, previous) -> None:
+    """Cancel the timer and restore the previous handler without dying of a late alarm.
+
+    A timer that expires around setitimer(0) can still deliver SIGALRM after it: blocking
+    and unblocking the signal while the disarmed handler is installed catches one that is
+    already pending, but on macOS the expiry was also seen to arrive later than that. With
+    SIG_DFL back in place such a late alarm kills the worker (exit 142) before it prints
+    anything, so SIG_DFL is not restored: the disarmed handler stays installed and
+    swallows a late alarm. (Swapping in SIG_IGN instead races the same way: CPython then
+    prints "Signal 14 ignored due to race condition" to stderr.) A previous Python
+    handler is restored as it was."""
+    alarm.disarm()
+    can_mask = hasattr(signal, "pthread_sigmask")
+    if can_mask:
+        signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGALRM})
+    try:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+    finally:
+        if can_mask:
+            signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGALRM})
+    if previous not in (signal.SIG_DFL, None):
+        signal.signal(signal.SIGALRM, previous)
+
+
 def probe(a: argparse.Namespace, clock=time.monotonic) -> dict:
     t0 = clock()
     timings: dict[str, int] = {}
-    deadline = t0 + min(a.overall_timeout, MAX_STAGE_TIMEOUT_S)
+    overall = min(a.overall_timeout, MAX_STAGE_TIMEOUT_S)
+    deadline = t0 + overall
+    current = {"stage": None}      # the stage being run, for a deadline that lands in its bookkeeping
+    held = {"sock": None}          # every socket is recorded here as soon as it exists, and closed at the end
 
     def budget(stage_timeout: float) -> float:
         left = deadline - clock()
@@ -108,41 +154,48 @@ def probe(a: argparse.Namespace, clock=time.monotonic) -> dict:
         return max(0.001, min(stage_timeout, left))
 
     def stage(name: str, stage_timeout: float, fn):
+        current["stage"] = name
         start = clock()
         limit = None
         try:
             limit = budget(stage_timeout)
             return fn(limit)
         except DeadlineExceeded:
-            raise StageError(name, "timeout", round(min(a.overall_timeout, MAX_STAGE_TIMEOUT_S), 3), "DeadlineExceeded") from None
+            raise StageError(name, "timeout", round(overall, 3), "DeadlineExceeded") from None
         except Exception as e:  # noqa: BLE001 - every failure is reported with its stage
             raise StageError(name, _kind(e), None if limit is None else round(limit, 3), type(e).__name__) from None
         finally:
             timings[f"{name}_ms"] = round((clock() - start) * 1000)
+            current["stage"] = None
 
-    sock = None
-    overall = min(a.overall_timeout, MAX_STAGE_TIMEOUT_S)
-    use_alarm = hasattr(signal, "setitimer")
-    if use_alarm:
-        previous = signal.signal(signal.SIGALRM, _on_alarm)
-        signal.setitimer(signal.ITIMER_REAL, overall)
-    try:
-        sock = stage("connect", a.connect_timeout,
-                     lambda lim: socket.create_connection((a.ip, a.port), timeout=lim))
+    def error_result(e: StageError) -> dict:
+        timings["total_ms"] = round((clock() - t0) * 1000)
+        return {
+            "error": {"stage": e.stage, "kind": e.kind, "timeout_s": e.timeout_s, "exception": e.detail},
+            "connected_ip": a.ip,
+            "connected_port": a.port,
+            "scheme": a.scheme,
+            "timings_ms": timings,
+        }
+
+    def deadline_error() -> StageError:
+        # a deadline can land outside a stage's own handlers: between two stages, or in the
+        # bookkeeping of one (then it is named after that stage)
+        return StageError(current["stage"] or "between_stages", "timeout", round(overall, 3), "DeadlineExceeded")
+
+    def run() -> dict:
+        sock = stage("connect", a.connect_timeout, lambda lim: _hold(held, socket.create_connection((a.ip, a.port), timeout=lim)))
         tls_info = None
         if a.scheme == "https":
-            cafile = os.environ.get("VULNIX_TEST_CA_FILE") or None
-            ctx = ssl.create_default_context(cafile=cafile)
-            ctx.set_alpn_protocols(["http/1.1"])       # this worker speaks HTTP/1.1 only
-
             def handshake(lim: float):
-                s = ctx.wrap_socket(sock, server_hostname=a.host, do_handshake_on_connect=False)
+                cafile = os.environ.get("VULNIX_TEST_CA_FILE") or None
+                ctx = ssl.create_default_context(cafile=cafile)
+                ctx.set_alpn_protocols(["http/1.1"])       # this worker speaks HTTP/1.1 only
+                s = _hold(held, ctx.wrap_socket(sock, server_hostname=a.host, do_handshake_on_connect=False))
                 s.settimeout(lim)
                 s.do_handshake()
                 return s, _extract_tls_info(s, a.scheme)
             sock, tls_info = stage("tls", a.connect_timeout, handshake)
-        conn = http.client.HTTPConnection(a.host, a.port)
-        conn.sock = sock
         req_headers = {
             "Host": a.host,
             "User-Agent": "aegis-probe/0.1",
@@ -150,9 +203,12 @@ def probe(a: argparse.Namespace, clock=time.monotonic) -> dict:
         }
 
         def send(lim: float):
+            conn = http.client.HTTPConnection(a.host, a.port)
+            conn.sock = sock
             sock.settimeout(lim)
             conn.request(a.method, a.path, headers=req_headers)
-        stage("send", a.connect_timeout, send)
+            return conn
+        conn = stage("send", a.connect_timeout, send)
 
         def first_byte(lim: float):
             sock.settimeout(lim)
@@ -177,27 +233,47 @@ def probe(a: argparse.Namespace, clock=time.monotonic) -> dict:
             "scheme": a.scheme,
             "timings_ms": timings,
         }
-    except (StageError, DeadlineExceeded) as e:
-        # a deadline can also fall between two stages (building the connection object, the result)
-        if isinstance(e, DeadlineExceeded):
-            e = StageError("between_stages", "timeout", round(overall, 3), "DeadlineExceeded")
-        timings["total_ms"] = round((clock() - t0) * 1000)
-        return {
-            "error": {"stage": e.stage, "kind": e.kind, "timeout_s": e.timeout_s, "exception": e.detail},
-            "connected_ip": a.ip,
-            "connected_port": a.port,
-            "scheme": a.scheme,
-            "timings_ms": timings,
-        }
+
+    alarm = _Alarm()
+    use_alarm = hasattr(signal, "setitimer")
+    previous = None
+    result = None
+    if use_alarm:
+        previous = signal.signal(signal.SIGALRM, alarm)
+    try:
+        # The one-shot alarm raises at most once, and only inside this outer try: wherever
+        # it lands (a stage, between stages, the handlers below), it is caught here, and
+        # the handlers of the outer except cannot be interrupted again.
+        try:
+            try:
+                if use_alarm:
+                    signal.setitimer(signal.ITIMER_REAL, overall)
+                result = run()
+            except StageError as e:
+                result = error_result(e)
+            except DeadlineExceeded:
+                result = error_result(deadline_error())
+            except Exception as e:  # noqa: BLE001 - outside any stage, still no traceback
+                result = error_result(StageError(current["stage"] or "between_stages", _kind(e), None, type(e).__name__))
+            alarm.disarm()
+        except DeadlineExceeded:
+            alarm.disarm()
+            if result is None:            # a finished result (success or a stage error) is kept as is
+                result = error_result(deadline_error())
+        return result
     finally:
         if use_alarm:
-            signal.setitimer(signal.ITIMER_REAL, 0)
-            signal.signal(signal.SIGALRM, previous)
-        if sock is not None:
+            _stop_alarm(alarm, previous)
+        if held["sock"] is not None:
             try:
-                sock.close()
+                held["sock"].close()
             except OSError:
                 pass
+
+
+def _hold(held: dict, s):
+    held["sock"] = s
+    return s
 
 
 def _seconds(v: str) -> float:
