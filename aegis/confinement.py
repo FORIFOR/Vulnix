@@ -246,6 +246,7 @@ class KernelConfinement:
         sess.ip, sess.port, sess.uid, sess.forbidden = "", 0, None, ()
         sess.protected_pid, sess.evidence, sess.on_leftover = os.getpid(), {}, None
         sess._cancelled = False
+        sess._entering = False
         sess._table = sess._dir = True
         sess.leftover = True
         return sess
@@ -287,7 +288,8 @@ class ConfinementSession:
         self.ip, self.port = ip, port
         self.forbidden = tuple(forbidden_paths)
         self.on_leftover = None
-        self._cancelled = False      # killed before it existed: it may not come into existence
+        self._cancelled = False      # killed (stopped) at any point: it may not start anything
+        self._entering = False       # being applied: counts as busy until that has finished
         self.protected_pid = int(protected_pid if protected_pid is not None else os.getpid())
         self.uid = owner.fresh_identity()           # this run's own uid
         self.name = "aegis_l2_" + secrets.token_hex(6)
@@ -328,12 +330,20 @@ class ConfinementSession:
         keep = [f"--preserve-env={','.join(keys)}"] if keys else []
         return [*self._o._priv(), *keep, *enter, *drop, *launch]
 
+    def _check_cancelled(self) -> None:
+        if self._cancelled:
+            raise ConfinementError("停止されたため、隔離を作成しません")
+
     def __enter__(self) -> "ConfinementSession":
+        self._entering = True
         try:
             self._apply_and_verify()
+            self._check_cancelled()          # stopped during the probe: the worker never starts
         except BaseException:
             self._teardown()
             raise
+        finally:
+            self._entering = False
         return self
 
     def __exit__(self, *exc) -> None:
@@ -341,17 +351,16 @@ class ConfinementSession:
 
     def _apply_and_verify(self) -> None:
         rules = ruleset(self.name, self.ip, self.port)
-        if self._cancelled:
-            raise ConfinementError("停止されたため、隔離を作成しません")
+        self._check_cancelled()
         try:
             p = self._sh('mkdir "$1"', str(self.cgroup))
             if p.returncode != 0:
                 raise ConfinementError(f"cgroup を作成できません: {p.stderr.strip()[:200]}")
             self._dir = True
-            if self._cancelled:              # stopped while the cgroup was being created
-                raise ConfinementError("停止されたため、隔離を作成しません")
+            self._check_cancelled()          # stopped while the cgroup was being created
             if self._sh('test -e "$1"', str(self.cgroup / "cgroup.kill")).returncode != 0:
                 raise ConfinementError("このカーネルには cgroup.kill がありません（Linux 5.14 以降が必要です）")
+            self._check_cancelled()
             p = self._nft("-f", "-", input=rules)
             if p.returncode != 0:
                 raise ConfinementError(f"nftables ルールを適用できません: {p.stderr.strip()[:200]}")
@@ -400,6 +409,7 @@ class ConfinementSession:
                 "    out['signal']='DENIED:'+type(e).__name__\n"
                 "print(json.dumps(out))\n"
             )
+            self._check_cancelled()          # last point before anything runs in the cgroup
             pr = self._o._run(self.wrap([sys.executable, "-I", "-c", probe]), stdin=subprocess.DEVNULL,
                               capture_output=True, text=True, timeout=15, env={"PATH": "/usr/bin:/bin"})
             import json
@@ -463,7 +473,11 @@ class ConfinementSession:
             return False
 
     def empty(self) -> bool:
-        """True only when the cgroup is known to hold no process (or is gone)."""
+        """True only when the cgroup is known to hold no process (or is gone), and
+        the session is not in the middle of being applied (a stop has to wait for
+        that, or report itself unconfirmed)."""
+        if getattr(self, "_entering", False):
+            return False
         try:
             return (self.cgroup / "cgroup.procs").read_text().strip() == ""
         except FileNotFoundError:
@@ -475,8 +489,8 @@ class ConfinementSession:
         """Kill everything in the cgroup (the worker may have been started through
         sudo, so signalling our own child is not enough). A session killed before
         its cgroup exists is cancelled: it will refuse to be applied."""
+        self._cancelled = True       # whatever state it is in, nothing more starts in it
         if not self._dir:
-            self._cancelled = True
             return True
         try:
             return self._sh('echo 1 > "$1"', str(self.cgroup / "cgroup.kill"), timeout=10).returncode == 0

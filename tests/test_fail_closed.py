@@ -1312,3 +1312,30 @@ class TestASessionStoppedBeforeItExistsIsNeverCreated(unittest.TestCase):
             with s:
                 self.fail("probe ran after a stop")
         self.assertEqual(run.ran("nft", "-f"), [])
+
+
+class TestAStopAnywhereDuringApplyIsNeverFollowedByAProbe(TestASessionStoppedBeforeItExistsIsNeverCreated):
+    def test_every_step_before_the_probe(self):
+        for step in ("mkdir", "test -e", "nft -f", "nft list"):
+            with self.subTest(step):
+                run = _FakeRun()
+                conf = self.make(run)
+                s = conf.session("203.0.113.7", 443)
+                real = run.__call__
+                seen = {"busy_during": None}
+
+                def stop_here(argv, **kw):
+                    out = real(argv, **kw)
+                    joined = " ".join(str(a) for a in argv)
+                    if step.split()[0] in joined and (step.split()[-1] in joined) and seen["busy_during"] is None:
+                        seen["busy_during"] = not s.empty()   # what a concurrent stop sees
+                        s.kill()
+                    return out
+                s._o._run = stop_here
+                with self.assertRaises(ConfinementError):
+                    with s:
+                        self.fail("started after a stop")
+                self.assertTrue(seen["busy_during"], step)              # the stop could not call it confirmed
+                probes = [c for c, _ in run.calls if any("_sandbox_launch.py" in str(x) for x in c) and "-c" in c]
+                self.assertEqual(probes, [], step)                      # no probe after the stop
+                self.assertTrue(s.empty())                               # torn down afterwards

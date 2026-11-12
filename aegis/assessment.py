@@ -648,17 +648,20 @@ class AssessmentService:
         batch, self._cleanup_pending = self._cleanup_pending, []
 
         def run():
-            left = list(batch)
+            left = list(batch)                   # until proven removed, everything stays queued
             try:
-                left = []
                 for x in batch:
-                    x.on_leftover = None         # a failed cleanup is not a new leftover
                     try:
+                        x.on_leftover = None     # a failed cleanup is not a new leftover
                         x._teardown()
                     except Exception:
                         pass
-                    if getattr(x, "leftover", True):
-                        left.append(x)
+                    try:
+                        removed = not getattr(x, "leftover", True)
+                    except Exception:
+                        removed = False
+                    if removed:
+                        left = [y for y in left if y is not x]
             finally:                             # whatever happened: nothing is lost, the next run can start
                 with self._lock:
                     for x in left:
