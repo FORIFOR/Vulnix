@@ -325,6 +325,13 @@ class ConfinementSession:
             probe = (
                 "import json,os,socket\n"
                 "out={}\n"
+                # first, before this probe opens anything itself: what was inherited
+                "fds={}\n"
+                "for f in os.listdir('/proc/self/fd'):\n"
+                "    try:\n        fds[f]=os.readlink('/proc/self/fd/'+f)\n"
+                "    except OSError:\n        pass\n"
+                "out['fds']=fds\n"
+
                 "s=socket.socket(); s.settimeout(0.6)\n"
                 "try:\n"
                 f"    s.connect({PROBE_ADDR!r}); out['connect']='CONNECTED'\n"
@@ -344,11 +351,6 @@ class ConfinementSession:
                 "p=ctypes.create_string_buffer(120)\n"
                 "r=libc.syscall(425,4,p)\n"
                 "out['io_uring']='CREATED' if r>=0 else 'DENIED:%d' % ctypes.get_errno()\n"
-                "fds={}\n"
-                "for f in os.listdir('/proc/self/fd'):\n"
-                "    try:\n        fds[f]=os.readlink('/proc/self/fd/'+f)\n"
-                "    except OSError:\n        pass\n"
-                "out['fds']=fds\n"
                 "out['read']={}\n"
                 f"for p in {list(self.forbidden)!r}:\n"
                 "    try:\n"
