@@ -32,6 +32,10 @@ def _ins(code, jt, jf, k):
     return struct.pack("HBBI", code, jt, jf, k)
 
 
+IO_URING = (425, 426, 427)   # io_uring_setup / _enter / _register: same numbers on x86_64 and aarch64;
+                             # io_uring can create and connect sockets without passing through seccomp
+
+
 def filter_program(arch, nr_socket, nr_socketpair) -> bytes:
     LD, JEQ, JGE, RET = 0x20, 0x15, 0x35, 0x06
     prog = [
@@ -39,14 +43,17 @@ def filter_program(arch, nr_socket, nr_socketpair) -> bytes:
         _ins(JEQ, 1, 0, arch),                   # 1  -> 3 | 2
         _ins(RET, 0, 0, RET_KILL_PROCESS),       # 2  another ABI: never
         _ins(LD, 0, 0, 0),                       # 3  syscall nr
-        _ins(JGE, 6, 0, 0x40000000),             # 4  x32 ABI -> 11 (kill)
-        _ins(JEQ, 1, 0, nr_socket),              # 5  -> 7 | 6
-        _ins(JEQ, 0, 3, nr_socketpair),          # 6  -> 7 | 10
-        _ins(LD, 0, 0, 16),                      # 7  args[0] (domain), low 32 bits
-        _ins(JEQ, 0, 1, AF_UNIX),                # 8  -> 9 | 10
-        _ins(RET, 0, 0, RET_ERRNO | EPERM),      # 9  AF_UNIX: refused
-        _ins(RET, 0, 0, RET_ALLOW),              # 10
-        _ins(RET, 0, 0, RET_KILL_PROCESS),       # 11
+        _ins(JGE, 9, 0, 0x40000000),             # 4  x32 ABI -> 14 (kill)
+        _ins(JEQ, 7, 0, IO_URING[0]),            # 5  -> 13 (EPERM)
+        _ins(JEQ, 6, 0, IO_URING[1]),            # 6  -> 13
+        _ins(JEQ, 5, 0, IO_URING[2]),            # 7  -> 13
+        _ins(JEQ, 1, 0, nr_socket),              # 8  -> 10 | 9
+        _ins(JEQ, 0, 2, nr_socketpair),          # 9  -> 10 | 12 (allow)
+        _ins(LD, 0, 0, 16),                      # 10 args[0] (domain), low 32 bits
+        _ins(JEQ, 1, 0, AF_UNIX),                # 11 -> 13 | 12
+        _ins(RET, 0, 0, RET_ALLOW),              # 12
+        _ins(RET, 0, 0, RET_ERRNO | EPERM),      # 13 refused
+        _ins(RET, 0, 0, RET_KILL_PROCESS),       # 14
     ]
     return b"".join(prog)
 

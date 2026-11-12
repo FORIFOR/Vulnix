@@ -72,7 +72,7 @@ def reproduction_probe_tool(l2_rules=None) -> Tool:
     """`l2_rules` (an `aegis.l2_rules.L2RuleSet`) adds profile-defined checks. Their
     rule is passed to the worker on argv (no secrets in it); the gateway itself
     carries no service-specific check names."""
-    workers = Path(__file__).parent / "workers"
+    workers = Path(__file__).resolve().parent / "workers"
     worker = str(workers / "reproduction_probe.py")
     sentinel = str(workers / "egress_sentinel.py")
     # only rules confirmed against the target API are executable at all

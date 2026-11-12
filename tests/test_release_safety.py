@@ -639,6 +639,7 @@ class TestAuthStateAcrossSaveFailuresAndRestarts(AuthBase):
             with self.assertRaises(AuthError) as cm:
                 self.store.login("root", "root-password-1")      # nothing new while untrusted
             self.assertIn("保存できない", str(cm.exception))
+        self.store._last_retry = -1e9                          # (retries happen at most once a second)
         self.assertTrue(self.store.trusted())                   # the next write goes through...
         self.assertIsNone(self.restart().resolve(tok))           # ...and the logout is durable
         self.assertIsNotNone(self.store.login("root", "root-password-1"))
@@ -653,6 +654,7 @@ class TestAuthStateAcrossSaveFailuresAndRestarts(AuthBase):
             self.assertFalse(self.store.trusted())
             with self.assertRaises(AuthError):
                 self.store.login("op", "new-password-123")
+        self.store._last_retry = -1e9
         self.assertTrue(self.store.trusted())                   # retried: now on disk
         again = self.restart()
         self.assertIsNotNone(again.login("op", "new-password-123"))
@@ -715,6 +717,7 @@ class TestUntrustedAuthStateOverHttp(unittest.TestCase):
             self.assertNotEqual(self.post("/auth/login", {"name": "op", "password": "op-password"})[0], 200)
             code, body, _ = self.post("/assessments/scan_001/emergency-stop", {}, cookie)
             self.assertEqual(code, 200, body)                    # stopping is always possible
+        self.ops._last_retry = -1e9                              # (retries happen at most once a second)
         self.assertEqual(self.post("/auth/login", {"name": "op", "password": "op-password"})[0], 200)
 
 
@@ -781,3 +784,76 @@ class TestExpiryStopIsRetriedUntilConfirmed(ReleaseBase):
             time.sleep(0.1)
         self.assertGreaterEqual(calls["n"], 2)
         self.assertEqual(self.events("scope.expired")[0]["fields"]["unconfirmed"], [])
+
+
+# ---- findings of the review of d49ac02 ------------------------------------------
+class TestAuthStateReviewFindings(AuthBase):
+    def test_registration_is_refused_while_untrusted(self):
+        from aegis.operators import AuthError
+        with self.failing("sessions.json"):
+            self.store._persist_sessions()
+            with self.assertRaises(AuthError):
+                self.store.register("newbie", "a-long-password-1")
+        self.assertNotIn("newbie", self.store._ops)
+
+    def test_retries_are_rate_limited(self):
+        calls = {"n": 0}
+        real = self.store._atomic_write
+
+        def count(path, data):
+            calls["n"] += 1
+            return False
+        with patch.object(self.store, "_atomic_write", side_effect=count):
+            self.store._persist_sessions()
+            before = calls["n"]
+            for _ in range(50):
+                self.store.trusted()
+            self.assertLessEqual(calls["n"] - before, 2)          # not 50 writes for 50 requests
+
+
+class TestUnsavedAuthMakesTheShutdownUnclean(ReleaseBase):
+    def test_close_with_unsaved_auth_leaves_the_session_record(self):
+        self.assertFalse(self.svc.close(external_clean=False))
+        self.assertTrue((self.dir / "session.open").exists())
+        again = self.reopen_in_this_process()
+        self.assertFalse(again.previous_session_clean)
+        again.workers.kill_all()
+
+
+class TestRolesWhileUntrustedOverHttp(TestUntrustedAuthStateOverHttp):
+    def test_only_removals_pass_the_gate(self):
+        code, _, h = self.post("/auth/login", {"name": "root", "password": "root-password"})
+        cookie = h["Set-Cookie"].split(";")[0]
+        with patch.object(self.ops, "_atomic_write", return_value=False):
+            self.ops._persist_sessions()
+            self.ops._last_retry = -1e9
+            code, body, _ = self.post("/operators/roles", {"name": "op", "roles": ["operator", "approver"]}, cookie)
+            self.assertEqual(code, 503, body)                         # a grant: refused
+            self.assertNotIn("approver", self.ops.roles_of("op"))
+            code, body, _ = self.post("/operators/roles", {"name": "appr", "roles": ["operator"]}, cookie)
+            self.assertNotEqual(code, 503, body)                      # a removal: allowed (and reported if unsaved)
+            self.assertNotIn("approver", self.ops.roles_of("appr"))
+
+
+class TestExpiryNoticeSurvivesAnAuditFailure(ReleaseBase):
+    def test_the_asset_is_marked_and_the_event_recorded_later(self):
+        self.onboard()
+        real = self.svc.audit.record
+        fail = {"on": True}
+
+        def record(event, **fields):
+            if event == "scope.expired" and fail["on"]:
+                raise OSError("no space")
+            return real(event, **fields)
+        with patch.object(self.svc.audit, "record", side_effect=record):
+            self.svc._verified_external_hosts[HOST]["not_after"] = time.time() - 1
+            end = time.time() + 10
+            while time.time() < end and "期限" not in (self.svc.snapshot()["authority_notice"] or ""):
+                time.sleep(0.1)
+            self.assertIn("期限", self.svc.snapshot()["authority_notice"])
+            self.assertFalse(next(x for x in self.svc.assets() if x["name"] == HOST)["scope_confirmed"])
+            fail["on"] = False
+            end = time.time() + 10
+            while time.time() < end and not self.events("scope.expired"):
+                time.sleep(0.1)
+        self.assertTrue(self.events("scope.expired"))

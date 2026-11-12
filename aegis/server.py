@@ -285,8 +285,10 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             sess = self._session()
             if not sess:
                 return self._json(401, {"error": "ログインが必要です"})
-            if not ops.trusted() and not p.endswith(("/emergency-stop", "/pause")) \
-                    and p not in ("/api/operators/roles", "/api/operators/reset-mfa"):
+            reduces_power = p.endswith(("/emergency-stop", "/pause")) or p == "/api/operators/reset-mfa" or (
+                p == "/api/operators/roles" and isinstance(body.get("roles"), list)
+                and set(map(str, body["roles"])) <= set(ops.roles_of(str(body.get("name", "")).strip())))
+            if not ops.trusted() and not reduces_power:
                 # The auth state on disk is not the one in force (a logout, password
                 # change or role removal could not be saved). Nothing new is done until
                 # it is; stopping things and removing power stay possible.
@@ -659,6 +661,7 @@ def _build_server(svc, a, data, first, seed, env_opt_out):
         print("警告: 開発モードのため、読み取りAPIの認証を無効にしています（本番運用では使用不可）。")
     if ops.admin_credentials_path:
         print(f"管理者アカウントを作成しました（ロール付与用・平文・600権限）: {ops.admin_credentials_path}")
+    srv.ops = ops
     return srv
 
 
@@ -699,6 +702,8 @@ def main() -> None:
         svc.close()
         raise
 
+    ops = srv.ops
+
     def _stop(signum, frame):
         # serve_forever() must be stopped from another thread
         threading.Thread(target=srv.shutdown, daemon=True).start()
@@ -710,7 +715,10 @@ def main() -> None:
         srv.server_close()
         # Only a clean close removes the session record; otherwise the next start
         # holds every real-service authorisation until an approver re-confirms it.
-        clean = svc.close()
+        # an auth change that never reached the disk (a logout, a password change)
+        # makes this an unclean shutdown too: the next start then signs everyone out
+        auth_saved = ops.trusted()
+        clean = svc.close(external_clean=auth_saved)
         print("コントロールプレーンを停止しました" + ("" if clean else
               "（保存または Worker の停止を確認できなかったため、次回起動時に実サービスの診断許可を保留します）"))
 

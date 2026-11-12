@@ -446,7 +446,7 @@ class AssessmentService:
                                       "実サービスの診断許可を保留しました。承認責任者が所有確認と範囲確認をやり直すまで診断しません")
             self.audit.record("authority.held_after_unclean_shutdown", reason=why, hosts=sorted(set(held)))
 
-    def close(self) -> bool:
+    def close(self, external_clean: bool = True) -> bool:
         """Clean shutdown. Workers are stopped and confirmed, everything is
         committed, and only then is the session record removed. Returns False (and
         leaves the record, so the next start holds all authority) otherwise."""
@@ -457,7 +457,7 @@ class AssessmentService:
             self._note_unstopped_locked((self.a.asset.get("name") or "").lower(),
                                         pool.confirm_stopped(pool.kill_all(), 5.0), pool)
             self._save_state_locked()
-            clean = (self._persist_error is None and self.ledger.error is None
+            clean = (external_clean and self._persist_error is None and self.ledger.error is None
                      and not self.ledger.dirty() and not self._unstopped_now_locked())
             if clean:
                 try:
@@ -512,22 +512,24 @@ class AssessmentService:
             unconfirmed = (self._unstopped_now_locked() or {}).get("pids", [])
             if not unconfirmed:
                 self._expiry_handled.add(key)
+            if first:
+                self._authority_notice = (f"{host} の診断許可の期限が切れました。"
+                                          + ("実行中の処理を停止しました。" if not unconfirmed else
+                                             "実行中の処理の停止を確認できていません（確認できるまで新しい処理は起動しません）。")
+                                          + "続けるには承認責任者が範囲確認をやり直してください")
+                for rec in (self.a.asset, *self._extra_assets):
+                    if str(rec.get("name", "")).lower() == host:
+                        rec["scope_confirmed"] = False
+                        rec["status"] = "範囲確認待ち"
+                        rec["note"] = "診断許可の期限が切れました。範囲確認をやり直してください"
+                self._save_state_locked()
             if first or not unconfirmed:
-                self.audit.record("scope.expired", host=host, not_after=entry.get("not_after"),
-                                  workers_stopped=had, unconfirmed=unconfirmed,
-                                  retry=not first)
-            if not first:
-                return
-            self._authority_notice = (f"{host} の診断許可の期限が切れました。"
-                                      + ("実行中の処理を停止しました。" if not unconfirmed else
-                                         "実行中の処理の停止を確認できていません（確認できるまで新しい処理は起動しません）。")
-                                      + "続けるには承認責任者が範囲確認をやり直してください")
-            for rec in (self.a.asset, *self._extra_assets):
-                if str(rec.get("name", "")).lower() == host:
-                    rec["scope_confirmed"] = False
-                    rec["status"] = "範囲確認待ち"
-                    rec["note"] = "診断許可の期限が切れました。範囲確認をやり直してください"
-            self._save_state_locked()
+                try:
+                    self.audit.record("scope.expired", host=host, not_after=entry.get("not_after"),
+                                      workers_stopped=had, unconfirmed=unconfirmed, retry=not first)
+                except Exception:
+                    # not recorded: not "handled" either - the next pass records it
+                    self._expiry_handled.discard(key)
 
     def _real_asset_records(self) -> dict[str, dict]:
         out = {}

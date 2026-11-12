@@ -58,7 +58,8 @@ class WorkerPool:
                     # table and kills it; whoever did so before, stops it here.
                     permit()
                 proc = subprocess.Popen(
-                    argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                    argv, stdin=subprocess.DEVNULL,       # never the control plane's terminal or socket
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                     encoding="utf-8", errors="replace",      # a target cannot make decoding raise
                     start_new_session=True, close_fds=True, env=proc_env,
                     preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu)),

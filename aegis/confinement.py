@@ -172,21 +172,52 @@ class KernelConfinement:
         raise ConfinementError("Worker 用の未使用 UID を確保できません")
 
     def staged_workers(self) -> Path:
-        """The worker programs, copied once per process into a directory every user
-        may read (the worker runs under a uid of its own, which cannot read the
-        repository if it sits in a private home directory). No secrets in it."""
-        if self._staged is not None and (self._staged / "_sandbox_launch.py").exists():
-            return self._staged
+        """The worker programs, copied into a directory every user may read (the
+        worker runs under a uid of its own, which cannot read the repository if it
+        sits in a private home directory). No secrets in it.
+
+        Checked on EVERY use, not only when created: the directory and each file
+        must still be ours, not symlinks, not writable by anyone else, and
+        byte-identical to the source. Anything else (e.g. /tmp was cleaned and
+        another user recreated the name) means a fresh copy is made."""
         import shutil as _shutil
         import tempfile
         src = Path(__file__).resolve().parent / "workers"
+        sources = {f.name: f.read_bytes() for f in src.glob("*.py")}
+        if self._staged is not None and self._staged_intact(self._staged, sources):
+            return self._staged
         staged = Path(tempfile.mkdtemp(prefix="vulnix-worker-"))
-        for f in src.glob("*.py"):
-            _shutil.copyfile(f, staged / f.name)
-            os.chmod(staged / f.name, 0o644)
+        for name, raw in sources.items():
+            fd = os.open(staged / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o644)
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(raw)
+            os.chmod(staged / name, 0o644)
         os.chmod(staged, 0o755)
+        if not self._staged_intact(staged, sources):
+            raise ConfinementError("Worker のコードを安全に配置できません")
         self._staged = staged
         return staged
+
+    @staticmethod
+    def _staged_intact(staged: Path, sources: dict) -> bool:
+        import stat as _stat
+        uid = os.getuid()
+        try:
+            st = os.lstat(staged)
+            if not _stat.S_ISDIR(st.st_mode) or st.st_uid != uid or st.st_mode & 0o022:
+                return False
+            names = set(os.listdir(staged))
+            if names != set(sources):
+                return False
+            for name, raw in sources.items():
+                fst = os.lstat(staged / name)
+                if not _stat.S_ISREG(fst.st_mode) or fst.st_uid != uid or fst.st_mode & 0o022:
+                    return False
+                if (staged / name).read_bytes() != raw:
+                    return False
+        except OSError:
+            return False
+        return True
 
     def interpreter_reachable_by_others(self) -> str:
         """"" when an unrelated uid can run this Python; otherwise why not."""
@@ -308,6 +339,16 @@ class ConfinementSession:
                 "    socket.socket(socket.AF_UNIX); out['unix']='CREATED'\n"
                 "except OSError as e:\n"
                 "    out['unix']='DENIED:'+type(e).__name__\n"
+                "import ctypes\n"
+                "libc=ctypes.CDLL(None,use_errno=True)\n"
+                "p=ctypes.create_string_buffer(120)\n"
+                "r=libc.syscall(425,4,p)\n"
+                "out['io_uring']='CREATED' if r>=0 else 'DENIED:%d' % ctypes.get_errno()\n"
+                "fds={}\n"
+                "for f in os.listdir('/proc/self/fd'):\n"
+                "    try:\n        fds[f]=os.readlink('/proc/self/fd/'+f)\n"
+                "    except OSError:\n        pass\n"
+                "out['fds']=fds\n"
                 "out['read']={}\n"
                 f"for p in {list(self.forbidden)!r}:\n"
                 "    try:\n"
@@ -320,7 +361,7 @@ class ConfinementSession:
                 "    out['signal']='DENIED:'+type(e).__name__\n"
                 "print(json.dumps(out))\n"
             )
-            pr = self._o._run(self.wrap([sys.executable, "-I", "-c", probe]),
+            pr = self._o._run(self.wrap([sys.executable, "-I", "-c", probe]), stdin=subprocess.DEVNULL,
                               capture_output=True, text=True, timeout=15, env={"PATH": "/usr/bin:/bin"})
             import json
             try:
@@ -337,23 +378,34 @@ class ConfinementSession:
                        and all(int(c, 16) == 0 for c in seen["caps"]) and seen.get("nnp") == ["1"])
             files_ok = (set(reads) == set(self.forbidden)
                         and all(str(v).startswith("DENIED:") for v in reads.values()))
-            unix_ok = str(seen.get("unix", "")).startswith("DENIED:")
+            unix_ok = (str(seen.get("unix", "")).startswith("DENIED:")
+                       and str(seen.get("io_uring", "")).startswith("DENIED:"))
+            fds = seen.get("fds") if isinstance(seen.get("fds"), dict) else None
+            # only stdin (/dev/null), stdout/stderr (pipes) and the directory being listed:
+            # nothing inherited - no socket, no terminal, no file of the control plane
+            fds_ok = (fds is not None and fds.get("0") == "/dev/null"
+                      and all(not str(t).startswith(("socket:", "/dev/pts", "/dev/tty", "anon_inode:"))
+                              for t in fds.values())
+                      and all(k in ("0", "1", "2") or str(t).startswith("/proc/") for k, t in fds.items()))
             signal_ok = str(seen.get("signal", "")).startswith("DENIED:")
             self.evidence = {"mechanism": self._o.mechanism, "cgroup": self.name,
                              "worker_uid": self.uid, "pinned": f"{self.ip}:{self.port}",
                              "probe_connect": seen.get("connect"), "probe_in_cgroup": in_cgroup,
                              "kernel_dropped_packets": counted,
                              "separate_uid": uid_ok, "no_capabilities": caps_ok,
-                             "unix_sockets": seen.get("unix"), "control_plane_signal": seen.get("signal"),
+                             "unix_sockets": seen.get("unix"), "io_uring": seen.get("io_uring"),
+                             "inherited_fds_clean": fds_ok,
+                             "control_plane_signal": seen.get("signal"),
                              "protected_files_denied": files_ok, "protected_files": len(self.forbidden)}
             if not (in_cgroup and str(seen.get("connect", "")).startswith("BLOCKED:") and counted >= 1):
                 raise ConfinementError(
                     "カーネル隔離が実際に適用されていることを確認できませんでした"
                     f"（cgroup内={in_cgroup}, 接続={seen.get('connect')}, 遮断数={counted}）")
-            if not (uid_ok and caps_ok and files_ok and unix_ok and signal_ok):
+            if not (uid_ok and caps_ok and files_ok and unix_ok and signal_ok and fds_ok):
                 raise ConfinementError(
                     "Worker の権限分離を確認できませんでした"
                     f"（UID={seen.get('uid')}, 権限なし={caps_ok}, UNIXソケット={seen.get('unix')}, "
+                    f"io_uring={seen.get('io_uring')}, 継承fd={fds}, "
                     f"保護ファイル={reads}, シグナル={seen.get('signal')}）")
         except ConfinementError:
             raise

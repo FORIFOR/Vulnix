@@ -591,7 +591,9 @@ class _FakeRun:
     def healthy(self, uid):
         return {"connect": "BLOCKED:TimeoutError", "cgroup": f"0::/{self.name}",
                 "uid": [uid] * 4, "groups": [], "caps": ["0000000000000000"] * 3, "nnp": ["1"],
-                "unix": "DENIED:PermissionError", "read": {}, "signal": "DENIED:PermissionError"}
+                "unix": "DENIED:PermissionError", "io_uring": "DENIED:1", "read": {},
+                "fds": {"0": "/dev/null", "1": "pipe:[1]", "2": "pipe:[2]", "3": "/proc/1/fd"},
+                "signal": "DENIED:PermissionError"}
 
     def ran(self, *needle):
         return [c for c, _ in self.calls if all(n in " ".join(c) for n in needle)]
@@ -724,6 +726,20 @@ class TestKernelConfinementLogic(unittest.TestCase):
             self.assertEqual(p.stat().st_mode & 0o777, 0o644)
             self.assertTrue(p.name.endswith(".py"))
 
+    def test_a_tampered_staged_copy_is_replaced(self):
+        conf = self.make(_FakeRun())
+        first = conf.staged_workers()
+        (first / "reproduction_probe.py").write_text("print('evil')")      # changed content
+        second = conf.staged_workers()
+        self.assertNotEqual(first, second)
+        self.assertNotIn("evil", (second / "reproduction_probe.py").read_text())
+        os.chmod(second, 0o777)                                              # writable by others
+        third = conf.staged_workers()
+        self.assertNotEqual(second, third)
+        shutil.rmtree(third)                                                 # removed (e.g. /tmp cleaned)
+        third.mkdir()                                                        # and recreated by someone
+        self.assertNotEqual(conf.staged_workers(), third)
+
     def test_a_python_others_cannot_run_is_refused(self):
         conf = self.make(_FakeRun())
         conf.interpreter_reachable_by_others = lambda: "/home/u を他のユーザーがたどれません"
@@ -751,6 +767,10 @@ class TestKernelConfinementLogic(unittest.TestCase):
         run_with(lambda o, uid: o.update(nnp=["0"]))                             # no no_new_privs
         run_with(lambda o, uid: o.update(unix="CREATED"))                        # UNIX sockets allowed
         run_with(lambda o, uid: o.update(signal="ALLOWED"))                      # can signal us
+        run_with(lambda o, uid: o.update(io_uring="CREATED"))                    # io_uring allowed
+        run_with(lambda o, uid: o.update(fds={"0": "/dev/pts/3", "1": "pipe:[1]", "2": "pipe:[2]"}))   # a tty
+        run_with(lambda o, uid: o["fds"].update({"5": "socket:[99]"}))           # an inherited socket
+        run_with(lambda o, uid: o.pop("fds"))                                    # not checked
         run_with(lambda o, uid: o.update(read={"/d/.secrets.key": "READ"}), forbidden=("/d/.secrets.key",))
         run_with(lambda o, uid: o.update(read={}), forbidden=("/d/.secrets.key",))   # not checked at all
 
@@ -761,10 +781,14 @@ class TestKernelConfinementLogic(unittest.TestCase):
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         import struct
-        prog = mod.filter_program(*mod.ARCHES["x86_64"])
-        ins = [struct.unpack("HBBI", prog[i:i + 8]) for i in range(0, len(prog), 8)]
+        progs = {arch: mod.filter_program(*vals) for arch, vals in mod.ARCHES.items()}
+
+        def ins_for(arch):
+            prog = progs["aarch64" if arch == 0xC00000B7 else "x86_64"]
+            return [struct.unpack("HBBI", prog[i:i + 8]) for i in range(0, len(prog), 8)]
 
         def run(arch, nr, arg0):                     # a tiny BPF interpreter for this program
+            ins = ins_for(arch)
             pc, acc = 0, 0
             data = {0: nr, 4: arch, 16: arg0}
             while True:
@@ -785,6 +809,15 @@ class TestKernelConfinementLogic(unittest.TestCase):
         self.assertEqual(run(X86, 0, 0), mod.RET_ALLOW)                     # read
         self.assertEqual(run(X86, 0x40000000 + 41, 1), mod.RET_KILL_PROCESS)   # x32 ABI
         self.assertEqual(run(0x40000003, 102, 1), mod.RET_KILL_PROCESS)        # i386 ABI
+        for nr in (425, 426, 427):                                          # io_uring: never
+            self.assertEqual(run(X86, nr, 0), mod.RET_ERRNO | mod.EPERM)
+        self.assertEqual(run(X86, 53, 2), mod.RET_ALLOW)                    # socketpair(AF_INET)
+        self.assertEqual(run(X86, 42, 1), mod.RET_ALLOW)                    # connect(): allowed, nothing to connect
+        A64 = 0xC00000B7
+        self.assertEqual(run(A64, 198, 1), mod.RET_ERRNO | mod.EPERM)
+        self.assertEqual(run(A64, 199, 1), mod.RET_ERRNO | mod.EPERM)
+        self.assertEqual(run(A64, 198, 2), mod.RET_ALLOW)
+        self.assertEqual(run(A64, 425, 0), mod.RET_ERRNO | mod.EPERM)
 
     def test_tools_are_not_taken_from_path(self):
         from aegis import confinement
@@ -1139,7 +1172,7 @@ class TestKernelConfinementOnLinux(unittest.TestCase):
             "    except OSError as e:\n        out['read'][p]='DENIED:'+type(e).__name__\n"
             "try:\n    os.listdir(sys.argv[2]); out['list']='LISTED'\n"
             "except OSError as e:\n    out['list']='DENIED:'+type(e).__name__\n"
-            "for label,addr in (('abstract',sys.argv[3]),('path',sys.argv[4])):\n"
+            "for label,addr in (('abstract','\\0'+sys.argv[3]),('path',sys.argv[4])):\n"
             "    try:\n        c=socket.socket(socket.AF_UNIX); c.connect(addr); out[label]='CONNECTED'\n"
             "    except OSError as e:\n        out[label]='DENIED:'+type(e).__name__\n"
             "try:\n    os.kill(int(sys.argv[5]),0); out['signal']='ALLOWED'\n"
@@ -1153,16 +1186,22 @@ class TestKernelConfinementOnLinux(unittest.TestCase):
             "out['nnp']=[l.split()[1] for l in st.splitlines() if l.startswith('NoNewPrivs')]\n"
             "out['seccomp']=[l.split()[1] for l in st.splitlines() if l.startswith('Seccomp:')]\n"
             "out['loose']=open(sys.argv[6]).read()\n"
+            "import ctypes\n"
+            "libc=ctypes.CDLL(None,use_errno=True)\n"
+            "r=libc.syscall(425,4,ctypes.create_string_buffer(120))\n"
+            "out['io_uring']='CREATED' if r>=0 else 'DENIED:%d' % ctypes.get_errno()\n"
+            "out['stdin']=os.readlink('/proc/self/fd/0')\n"
             "print(json.dumps(out))\n")
         _, pinned = self.listener()
         forbidden = [str(p) for p in files.values()]
         with KernelConfinement().session("127.0.0.1", pinned, forbidden_paths=forbidden) as s:
-            for key in ("separate_uid", "no_capabilities", "protected_files_denied"):
+            for key in ("separate_uid", "no_capabilities", "protected_files_denied", "inherited_fds_clean"):
                 self.assertTrue(s.evidence[key], s.evidence)
+            self.assertTrue(str(s.evidence["io_uring"]).startswith("DENIED"), s.evidence)
             self.assertTrue(str(s.evidence["unix_sockets"]).startswith("DENIED"), s.evidence)
             self.assertTrue(str(s.evidence["control_plane_signal"]).startswith("DENIED"), s.evidence)
             res = WorkerPool().run([sys.executable, "-I", "-c", code, ",".join(forbidden), str(private),
-                                    "\0vulnix-test-" + str(os.getpid()), str(path_sock_dir / "s"),
+                                    "vulnix-test-" + str(os.getpid()), str(path_sock_dir / "s"),
                                     str(os.getpid()), str(loose)], 30, session=s)
         self.assertEqual(res.returncode, 0, res.stderr)
         out = json.loads(res.stdout.strip().splitlines()[-1])
@@ -1179,6 +1218,8 @@ class TestKernelConfinementOnLinux(unittest.TestCase):
         self.assertEqual(out["nnp"], ["1"])
         self.assertEqual(out["seccomp"], ["2"])                           # filter mode
         self.assertEqual(out["loose"], "x")                               # ordinary world-readable files: yes
+        self.assertTrue(out["io_uring"].startswith("DENIED:"), out)        # no way around the AF_UNIX rule
+        self.assertEqual(out["stdin"], "/dev/null")                       # nothing inherited from us
 
     def test_the_same_program_outside_the_confinement_is_not_blocked(self):
         _, pinned = self.listener()

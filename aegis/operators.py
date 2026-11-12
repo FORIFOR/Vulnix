@@ -191,6 +191,7 @@ class OperatorStore:
         # what is in force (e.g. a logout that a restart would undo): the auth state
         # is not trusted, and no NEW sign-in is accepted.
         self._unsaved: set[str] = set()
+        self._last_retry = -1e9
         self._pending_totp: dict[str, str] = {}   # name -> secret awaiting confirmation
         self.credentials_path: Path | None = None
         self.admin_credentials_path: Path | None = None
@@ -286,15 +287,27 @@ class OperatorStore:
 
     def trusted(self) -> bool:
         """True when accounts and sessions on disk are what is in force. If not,
-        writing them again is tried first."""
+        writing them again is tried first (at most once a second, so a stream of
+        requests does not turn into a stream of writes)."""
         with self._lock:
             pending = set(self._unsaved)
+            if not pending:
+                return True
+            now = time.monotonic()
+            if now - self._last_retry < 1.0:
+                return False
+            self._last_retry = now
         if "operators" in pending:
             self._persist_operators()
         if "sessions" in pending:
             self._persist_sessions()
         with self._lock:
             return not self._unsaved
+
+    def roles_of(self, name: str) -> tuple[str, ...]:
+        with self._lock:
+            op = self._ops.get(name)
+            return tuple(op.roles) if op else ()
 
     def unsaved(self) -> list[str]:
         with self._lock:
@@ -640,6 +653,9 @@ class OperatorStore:
         Called directly it is SELF-registration, which the server allows only in
         development mode. It can never grant `approver` or `admin`; those are
         assigned by an admin via `set_roles`."""
+        if not self.trusted():
+            raise AuthError("認証情報を保存できないため、新しいアカウントを作成できません。"
+                            "データディレクトリの書き込み権限を確認してください")
         clean_name = (name or "").strip()
         if not clean_name or len(clean_name) < 2 or len(clean_name) > 32:
             raise AuthError("ユーザー名は2〜32文字で入力してください")
