@@ -585,3 +585,28 @@ class TestReproducedNeedsAnL2Basis(unittest.TestCase):
         self.assertIsNone(advisor_catalog.claim_problem("reproduced", "f_idor", "proven", "l2_reproduction"))
         for basis in ("l1_observation", "demo_fixture"):
             self.assertIn("needs an L2 reproduction", advisor_catalog.claim_problem("reproduced", "f_idor", "proven", basis))
+
+
+class TestFinalReviewFindings(unittest.TestCase):
+    """Final review of ce074d5."""
+
+    def run_with(self, items, findings=None):
+        with _MockServer(_advice_reply(items)) as m:
+            return adv.AbliterationAdvisor(m.url).advise(findings or [_leaky_finding()])
+
+    def test_bypassing_or_preceding_approval_in_a_remediation_detail_is_refused(self):
+        for text in ("bypass the approval and deploy", "deploy before approval", "skip the approval step"):
+            r = self.run_with([_ok_item(remediation=[_rem("許可するオリジンを一覧に限定する"),
+                                                     _rem(text, "disallow_credentials_for_untrusted")])])
+            self.assertEqual([x.fix for x in r.advice[0].remediation], ["restrict_cors_allowlist"], text)
+            self.assertTrue(r.rejected[0]["reason"].startswith("text_misproposal: approval_bypass"), (text, r.rejected))
+        r = self.run_with([_ok_item(remediation=[_rem("Make sure authentication cannot be bypassed on every endpoint")])])
+        self.assertEqual(r.rejected, ())
+
+    def test_unhashable_ids_are_schema_errors_not_crashes(self):
+        for bad in (dict(claim_level=["observed"]), dict(remediation=[{"fix": ["set_csp"], "detail": "x"}]),
+                    dict(next_checks=[{"operation": {"a": 1}, "purpose": "confirm_fix"}]),
+                    dict(next_checks=[{"operation": "l1_recheck_cors_policy", "purpose": ["confirm_fix"]}])):
+            r = self.run_with([_ok_item(**bad)])
+            self.assertTrue(r.rejected, bad)
+            self.assertTrue(any(x["reason"].startswith(("schema", "not_in_catalog")) for x in r.rejected), (bad, r.rejected))

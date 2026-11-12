@@ -154,7 +154,7 @@ def leak_reasons(text: str) -> list[str]:
 # none: they are an operation id and a purpose id. So these rules are few and narrow on purpose.
 _APPROVAL_BYPASS_RE = re.compile(
     r"承認(?:なし|無し|を省略|不要|をスキップ|を回避|を待たず|を得ず|より先に|せずに)|承認(?:取得)?前に(?:実行|試|送|検証|開始)"
-    r"|ゲートを(?:回避|迂回|無効)|自動承認|skip\w*\s+(?:the\s+)?approval"
+    r"|ゲートを(?:回避|迂回|無効)|自動承認|(?:skip|bypass|circumvent)\w*\s+(?:the\s+)?approval|before\s+(?:the\s+)?approval"
     r"|without\s+(?:waiting\s+for\s+|getting\s+|an?\s+)?approval|no\s+approval", re.I)
 _TOOLING_RE = re.compile(_B0 + r"(?:sqlmap|nmap|hydra|metasploit|burp|curl|wget|nikto|ffuf|gobuster)" + _B1
                          + r"|`[^`]+`|\$\(", re.I)
@@ -311,7 +311,7 @@ def validate_advice(raw: object, ref_map: dict[str, dict]) -> tuple[list[Advice]
         rule, verdict = sent["rule"], sent["verdict"]
         # claim and citations: structural faithfulness to the input
         claim = item.get("claim_level")
-        if claim not in catalog.CLAIM_LEVELS:
+        if not isinstance(claim, str) or claim not in catalog.CLAIM_LEVELS:
             reject("claim_level", "schema: claim_level is not a catalog value")
             continue
         if (p := catalog.claim_problem(claim, rule, verdict, sent["verdict_basis"])):
@@ -350,7 +350,7 @@ def validate_advice(raw: object, ref_map: dict[str, dict]) -> tuple[list[Advice]
                 reject("remediation", p)
                 continue
             action = r.get("fix")
-            if action not in catalog.REMEDIATION_ACTIONS:
+            if not isinstance(action, str) or action not in catalog.REMEDIATION_ACTIONS:
                 reject("remediation", "not_in_catalog: unknown remediation action")
                 continue
             if not catalog.action_allowed(action, rule):
@@ -388,7 +388,7 @@ def validate_advice(raw: object, ref_map: dict[str, dict]) -> tuple[list[Advice]
                 reject("next_check", p)
                 continue
             op = c.get("operation")
-            if op not in catalog.OPERATIONS:
+            if not isinstance(op, str) or op not in catalog.OPERATIONS:
                 reject("next_check", "not_in_catalog: unknown operation")
                 continue
             if not catalog.operation_allowed(op, rule):
@@ -398,7 +398,7 @@ def validate_advice(raw: object, ref_map: dict[str, dict]) -> tuple[list[Advice]
                 reject("next_check", "duplicate_operation")
                 continue
             purpose = c.get("purpose")
-            if purpose not in catalog.PURPOSES:
+            if not isinstance(purpose, str) or purpose not in catalog.PURPOSES:
                 reject("next_check", "schema: purpose is not a catalog value")
                 continue
             level, label, _ = catalog.OPERATIONS[op]
@@ -485,7 +485,10 @@ class AbliterationAdvisor:
         except Exception as e:  # noqa: BLE001 - any transport / format failure is one error
             raise AdvisorError(f"no usable reply: {type(e).__name__}") from None
         parsed = _extract_json_from_text(content) if isinstance(content, str) else None
-        advice, rejected = validate_advice(parsed, ref_map)
+        try:
+            advice, rejected = validate_advice(parsed, ref_map)
+        except Exception as e:  # noqa: BLE001 - a reply the validator cannot even walk is one error, audited
+            raise AdvisorError(f"reply could not be validated: {type(e).__name__}") from None
         answered = {a.ref for a in advice}
         return AdviceResult(
             advice=tuple(advice), rejected=tuple(rejected), sent_refs=tuple(ref_map),

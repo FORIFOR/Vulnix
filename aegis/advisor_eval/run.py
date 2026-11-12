@@ -200,7 +200,8 @@ def _report(cases, comp_rows, failures, leaks, mock_rows, seconds) -> dict:
                 "structural_dangerous_rejection_rate": _rate(sum(not r["accepted"] for r in st), len(st)),
                 "text_dangerous_rejection_rate": _rate(sum(not r["accepted"] for r in tx), len(tx)),
                 "structural_dangerous": len(st), "text_dangerous": len(tx),
-                "unsuitable_components": len(un), "unsuitable_acceptance_rate": _rate(sum(r["accepted"] for r in un), len(un))}
+                "unsuitable_components": len(un), "unsuitable_acceptance_rate": _rate(sum(r["accepted"] for r in un), len(un)),
+                "collateral_components": sum(r["label"] == "collateral" for r in rows)}
     by_cat, by_lang, by_kind = defaultdict(list), defaultdict(list), defaultdict(list)
     for r in comp_rows:
         by_cat[r["category"]].append(r)
@@ -237,6 +238,7 @@ def _report(cases, comp_rows, failures, leaks, mock_rows, seconds) -> dict:
 
 def to_markdown(rep: dict, max_failures: int = 40) -> str:
     v, mq = rep["validator"], rep["mock_model_reference"]
+    k = v["by_candidate_kind"]
     pct = lambda x: "—" if x is None else f"{x * 100:.1f}%"  # noqa: E731
     lines = [
         "# AI アドバイザー評価レポート", "",
@@ -251,7 +253,10 @@ def to_markdown(rep: dict, max_failures: int = 40) -> str:
         f"| 正当な提案の受理率 | {pct(v['valid_acceptance_rate'])}（{v['valid_components']} 件中） |",
         f"| 危険な提案の拒否率（全体） | {pct(v['dangerous_rejection_rate'])}（{v['dangerous_components']} 件中） |",
         f"| 構造で判定する危険な提案の拒否率 | {pct(v['structural_dangerous_rejection_rate'])}（{v['structural_dangerous']} 件中） |",
-        f"| 文章でしか判定できない危険な提案の拒否率 | {pct(v['text_dangerous_rejection_rate'])}（{v['text_dangerous']} 件中、最善の努力） |",
+        f"| 文章でしか判定できない危険な提案の拒否率（holdout の修正案の文章） | {pct(k['text_danger']['dangerous_rejection_rate'])}（{k['text_danger']['dangerous_components']} 件中、最善の努力） |",
+        f"| 正当な修正案の文章の受理率（holdout） | {pct(k['valid_holdout']['valid_acceptance_rate'])}（{k['valid_holdout']['valid_components']} 件中。文章以外の要素を含む） |",
+        f"| 漏れ（URL・IP・ホスト名など）の拒否率（holdout ではない例文） | {pct(k['leak']['dangerous_rejection_rate'])}（{k['leak']['dangerous_components']} 件中） |",
+        f"| 修正案1つの拒否で助言ごと捨てられた要素（collateral、集計の対象外） | {v['collateral_components']} 件 |",
         f"| 受理した助言の、根拠への忠実度（受理したすべての助言） | {pct(v['accepted_item_quality']['faithfulness_rate'])} |",
         f"| 受理した修正案の妥当性 | {pct(v['accepted_item_quality']['remediation_validity_rate'])}（禁止された修正案の受理 {v['accepted_item_quality']['remediation_forbidden_accepted']} 件） |",
         f"| 状況に合わない提案（一覧では許可される id）の受理率 | {pct(v['unsuitable_acceptance_rate'])}（{v['unsuitable_components']} 件中。低いほどよい。一覧がラベルより緩い度合い） |",
@@ -260,11 +265,14 @@ def to_markdown(rep: dict, max_failures: int = 40) -> str:
         "- 構造で判定する危険な提案の拒否率: 危険な候補を、一覧が拒否する id から作っているため",
         "- 禁止された修正案・確認項目の受理 0 件: 禁止の集合が、一覧が拒否する集合に含まれるため",
         "- 正当な候補だけで測った忠実度・妥当性（JSON の valid_candidates_quality）: 主張と id をラベルから選び、固定の項目を根拠にしているため。上の表の忠実度は、受理したすべての助言（状況に合わない主張を含む）で測ったもので、こちらは意味があります",
-        "- 正当な提案の受理率: id はラベル（＝一覧）から作り、文章は固定の例文だけのため。測っているのは、文章の検査が例文を誤って拒否しないかどうかだけ",
+        "- 正当な提案の受理率（全体）: id はラベル（＝一覧）から作っているため。文章は、固定の例文と holdout の正当な文です。測っているのは、文章の検査がこれらの文を誤って拒否しないかどうかだけ",
         "",
         "**意味のある指標**: 文章でしか判定できない危険な提案の拒否率、状況に合わない提案の受理率、模擬サーバーの参考値。いずれもゲートではなく、記録している数値です。",
         "次の確認項目には自由な文章がありません（`operation` と `purpose` の id だけ）。文章が残るのは、説明と修正案の `detail` だけです。",
-        "文章でしか判定できない危険な提案と、`valid_holdout` の正当な文は、どちらも評価用に別に用意した例文（holdout）です。規則の調整には使っていません。",
+        "修正案の文章の危険な例（`text_danger`）と正当な例（`valid_holdout`）は、評価用に別に用意した例文（holdout）です。測定したあとに、規則を合わせて変えたことはありません。ただし、次の2点に注意してください。",
+        "- 例文を書いたのは、規則を知っている開発者本人です。拒否された文は、既存の規則の語彙をそのまま使っています。そのため、49% 前後の拒否率は、未知の書き手が書いた文に対しては高めの見積もりです。",
+        "- 測定の前に行った規則の変更（単独の bypass の削除）によって、正当な holdout の文が1件、受理に変わっています。",
+        "漏れの例文（`leak`）は holdout ではありません。過去のコミットで、検出器の調整に使った例文です。",
         "", "### 分類ごと", "", "| 分類 | 正当な提案の受理率 | 構造の拒否率 | 文章の拒否率 |", "|---|---|---|---|",
     ]
     for k, r in v["by_category"].items():
