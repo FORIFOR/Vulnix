@@ -162,6 +162,7 @@ def probe(a: argparse.Namespace, clock=time.monotonic) -> dict:
 
     def stage(name: str, stage_timeout: float, fn):
         current["stage"] = name
+        _progress(name)
         start = clock()
         limit = None
         try:
@@ -324,6 +325,22 @@ def probe(a: argparse.Namespace, clock=time.monotonic) -> dict:
                 pass
 
 
+_PROGRESS = {"on": False}
+
+
+def _progress(stage: str) -> None:
+    """Tell the runtime which stage starts (aegis/runtime.py PROGRESS_STAGES), so that a run it
+    has to kill at its own deadline is still reported with the last stage. Only with
+    --progress stderr (the gateway passes it): otherwise the worker writes nothing to stderr."""
+    if not _PROGRESS["on"]:
+        return
+    try:
+        sys.stderr.write(f"@@vulnix-stage {stage}\n")
+        sys.stderr.flush()
+    except (OSError, ValueError):
+        pass
+
+
 def _hold(held: dict, s):
     held["sock"] = s
     return s
@@ -348,8 +365,11 @@ def main() -> None:
     p.add_argument("--connect-timeout", type=_seconds, default=CONNECT_TIMEOUT_S)
     p.add_argument("--read-timeout", type=_seconds, default=FIRST_BYTE_TIMEOUT_S)
     p.add_argument("--overall-timeout", type=_seconds, default=OVERALL_DEADLINE_S)
+    p.add_argument("--progress", default="none", choices=["none", "stderr"])
     a = p.parse_args()
+    _PROGRESS["on"] = a.progress == "stderr"
     out = probe(a)
+    _progress("report")
     print(json.dumps(out))
     sys.exit(3 if "error" in out else 0)
 
