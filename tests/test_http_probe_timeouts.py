@@ -312,7 +312,25 @@ class TestDeadlineOutsideAStage(unittest.TestCase):
         # port 1 is refused at once; calls: t0, start, budget, finally, then error_result's total -> raise
         out = hp.probe(_ns(), clock=_RaisingClock(5))
         self.assertEqual((out["error"]["stage"], out["error"]["kind"], out["error"]["exception"]),
-                         ("between_stages", "timeout", "DeadlineExceeded"))
+                         ("connect", "timeout", "DeadlineExceeded"))
+
+    def test_a_deadline_while_a_stage_failure_is_classified_keeps_the_stage(self):
+        from unittest.mock import patch
+        from aegis.workers import http_probe as hp
+        # the alarm lands in stage()'s own except handler, after the socket timeout fired
+        with patch.object(hp, "_kind", side_effect=hp.DeadlineExceeded("x")):
+            out = hp.probe(_ns())
+        self.assertEqual((out["error"]["stage"], out["error"]["kind"]), ("connect", "timeout"))
+
+    @unittest.skipUnless(hasattr(__import__("signal"), "setitimer"), "needs setitimer")
+    def test_a_deadline_outside_every_stage_is_between_stages(self):
+        from unittest.mock import patch
+        from aegis.workers import http_probe as hp
+        # the alarm lands right after the timer is armed, before the first stage is entered;
+        # the second setitimer call is the cancel in _stop_alarm
+        with patch.object(hp.signal, "setitimer", side_effect=[hp.DeadlineExceeded("x"), None]):
+            out = hp.probe(_ns())
+        self.assertEqual((out["error"]["stage"], out["error"]["kind"]), ("between_stages", "timeout"))
 
     def test_an_unreadable_test_ca_file_is_a_tls_stage_error(self):
         from unittest.mock import patch

@@ -159,14 +159,17 @@ def probe(a: argparse.Namespace, clock=time.monotonic) -> dict:
         limit = None
         try:
             limit = budget(stage_timeout)
-            return fn(limit)
+            value = fn(limit)
         except DeadlineExceeded:
             raise StageError(name, "timeout", round(overall, 3), "DeadlineExceeded") from None
         except Exception as e:  # noqa: BLE001 - every failure is reported with its stage
             raise StageError(name, _kind(e), None if limit is None else round(limit, 3), type(e).__name__) from None
         finally:
             timings[f"{name}_ms"] = round((clock() - start) * 1000)
-            current["stage"] = None
+        # cleared only once the stage has finished: a deadline that lands while its failure
+        # is being turned into a StageError, or in this bookkeeping, keeps the stage's name
+        current["stage"] = None
+        return value
 
     def error_result(e: StageError) -> dict:
         timings["total_ms"] = round((clock() - t0) * 1000)
