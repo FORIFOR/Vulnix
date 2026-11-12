@@ -94,7 +94,9 @@ def finding_to_payload_item(ref: str, finding: dict) -> dict:
 _URL_RE = re.compile(r"[a-z][a-z0-9+.-]*://|www\.", re.I)
 _HOST_RE = re.compile(r"\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:[a-z]{2,24})\b", re.I)
 _IPV4_RE = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b")
-_IPV6_RE = re.compile(r"(?:[0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}", re.I)
+# an IPv6 address has "::" or eight groups; times (12:00:00) and C++ scopes (std::string) do not match
+_IPV6_RE = re.compile(r"(?<![\w:])(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4}){7}"
+                      r"|(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4})*)?::(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4})*)?)(?![\w:])", re.I)
 _HEX_IP_RE = re.compile(r"\b0x[0-9a-f]{8}\b", re.I)
 _DEFANGED_RE = re.compile(r"\[\.\]|\(\.\)|\[dot\]", re.I)
 _EMAIL_RE = re.compile(r"[^\s@]+@[^\s@]+\.[^\s@]+")
@@ -134,19 +136,35 @@ def leak_reasons(text: str) -> list[str]:
 
 _HOSTISH_IN_PATH = re.compile(r"/api/|/admin|/\.well-known")
 # Next checks that are not acceptable as a suggestion at all, whatever the gate says.
+# A next check is something Vulnix itself might later be asked to do, so these describe
+# *actions*: "削除して確認する" is refused, "削除されたかを確認する" is not.
+_ACT = r"(?:し|す|さ|せ)"
 _FORBIDDEN_CHECK = [
-    ("destructive", re.compile(r"削除|消去|破棄|初期化|改ざん|書き換え|上書き|drop\s+table|truncate|rm\s+-rf|delete\s+from|update\s+\w+\s+set", re.I)),
-    ("load_or_dos", re.compile(r"負荷|大量|連続(?:で|して)?送|高頻度|繰り返し(?:送|実行|リクエスト)|(?:リクエスト|要求)を繰り返|DoS|DDoS|フラッド|flood|stress|総当たり|ブルートフォース|brute", re.I)),
-    ("production_or_other_users", re.compile(r"本番(?:データ|環境|の)|実データ|他(?:の)?(?:ユーザー|利用者|人)|別(?:の)?(?:ユーザー|利用者)|実在の(?:利用者|アカウント)|顧客(?:データ|の)", re.I)),
-    ("approval_bypass", re.compile(r"承認(?:なし|無し|を省略|不要|をスキップ|を回避|を待たず|せず|前に)|ゲートを(?:回避|迂回|無効)|自動承認|bypass|skip\s+approval|without\s+approval", re.I)),
-    ("scope_expansion", re.compile(r"リダイレクト先|外部サービス|別ドメイン|サブドメイン|スコープ(?:を広げ|外|を追加|を拡)|対象(?:を広げ|に含め|を追加)", re.I)),
+    ("destructive", re.compile(r"(?:を|も)(?:削除|消去|破棄|初期化|改ざん|書き換え|上書き)" + _ACT
+                               + r"|drop\s+table|truncate\s+table|rm\s+-rf|delete\s+from|update\s+\w+\s+set", re.I)),
+    ("load_or_dos", re.compile(r"大量(?:に|の)?(?:送|リクエスト|要求|アクセス)|連続(?:で|して)?送|高頻度|繰り返し(?:送|実行|リクエスト)"
+                               r"|(?:リクエスト|要求)を繰り返|負荷(?:を(?:かけ|与え)|試験|テスト)|\bD?DoS\b|フラッド|flood|stress\s*test"
+                               r"|総当たり|ブルートフォース|brute", re.I)),
+    ("production_or_other_users", re.compile(r"本番データ|実データ|顧客(?:データ|の個人情報)|実在の(?:利用者|アカウント)"
+                                             r"|他(?:の)?(?:ユーザー|利用者|人)の(?:アカウント|データ|資源|情報)"
+                                             r"|(?:他|別)(?:の)?(?:ユーザー|利用者)に影響", re.I)),
+    ("approval_bypass", re.compile(r"承認(?:なし|無し|を省略|不要|をスキップ|を回避|を待たず|せずに)|ゲートを(?:回避|迂回|無効)"
+                                   r"|自動承認|bypass|skip\s+approval|without\s+approval", re.I)),
+    ("scope_expansion", re.compile(r"(?:リダイレクト先|外部サービス|別ドメイン|サブドメイン)(?:を|も)(?:調べ|確認|診断|検査|列挙|対象|スキャン)"
+                                   r"|スコープ(?:を広げ|外|を追加|を拡)|対象(?:を広げ|に含め|を追加|を拡)", re.I)),
     ("tooling_or_commands", re.compile(r"\b(?:sqlmap|nmap|hydra|metasploit|burp|curl|wget|nikto|ffuf|gobuster)\b|`[^`]+`|\$\(", re.I)),
 ]
 _TOOLING_RE = dict(_FORBIDDEN_CHECK)["tooling_or_commands"]
-_OVERCLAIM_RE = re.compile(r"実証済み|実証され|確定(?:した|済み|です|して)|確実に|悪用(?:され|に成功|可能(?:です|と確認|である))|侵害(?:され|済み)|侵入され|\bproven\b|exploited|confirmed\s+vulnerab", re.I)
-# Words that are fine in remediation ("不要なヘッダーを削除する") but not in a verification step.
-_REMEDIATION_RULES = ("load_or_dos", "production_or_other_users", "approval_bypass", "scope_expansion",
-                      "tooling_or_commands")
+_OVERCLAIM_RE = re.compile(r"実証済み|実証され|確定(?:済み|した(?:ため|脆弱性|問題|不備))|(?:脆弱性|問題|不備)(?:が|は)確定"
+                           r"|確実に悪用|悪用(?:され|に成功|可能(?:です|と確認|である))|侵害(?:され|済み)|侵入され"
+                           r"|\bproven\b|exploited|confirmed\s+vulnerab", re.I)
+# Remediation is advice to the operator, so security vocabulary (本番環境, 総当たり対策, リダイレクト先,
+# サブドメイン, 削除) is normal there. Only directives that undermine the gates or destroy real
+# data, and commands, are refused.
+_REMEDIATION_FORBIDDEN = [
+    ("approval_bypass", dict(_FORBIDDEN_CHECK)["approval_bypass"]),
+    ("destroy_real_data", re.compile(r"(?:本番|実|顧客|利用者)(?:の)?データを(?:削除|消去|破棄|作り直|初期化|書き換え|上書き)", re.I)),
+]
 
 
 # ---- output schema --------------------------------------------------------------
@@ -272,8 +290,7 @@ def validate_advice(raw: object, ref_map: dict[str, dict]) -> tuple[list[Advice]
             reject("remediation", f"schema: 1..{MAX_REMEDIATION_ITEMS} strings expected")
             continue
         remediation = []
-        bad = None
-        for r in rem_raw:
+        for r in rem_raw:                      # a bad entry is dropped on its own, not the whole advice
             s = _clean_text(r, MAX_REMEDIATION_LEN)
             if s is None:
                 bad = "schema: remediation entry missing, too long or control characters"
@@ -283,13 +300,15 @@ def validate_advice(raw: object, ref_map: dict[str, dict]) -> tuple[list[Advice]
                 bad = "commands are not given as remediation text"
             elif not overclaim_ok and _OVERCLAIM_RE.search(_norm(s)):
                 bad = "overclaim: a detected finding described as proven or exploited"
-            elif (hit := next((n for n, rx in _FORBIDDEN_CHECK if n in _REMEDIATION_RULES and rx.search(_norm(s))), None)):
-                bad = f"misproposal: {hit}"
+            else:
+                hit = next((n for n, rx in _REMEDIATION_FORBIDDEN if rx.search(_norm(s))), None)
+                bad = f"misproposal: {hit}" if hit else None
             if bad:
-                break
-            remediation.append(s)
-        if bad:
-            reject("remediation", bad)
+                reject("remediation", bad)
+            else:
+                remediation.append(s)
+        if not remediation:
+            reject("item", "schema: no usable remediation left")
             continue
         checks_raw = item.get("next_checks", [])
         if not isinstance(checks_raw, list) or len(checks_raw) > MAX_CHECKS:

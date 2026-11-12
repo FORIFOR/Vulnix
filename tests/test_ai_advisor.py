@@ -215,7 +215,7 @@ class TestMisproposalsAreRejected(unittest.TestCase):
             _ok_item("F2", remediation=["curl で確認してから設定する"]),
         ])
         self.assertEqual(r.advice, ())
-        self.assertEqual(sorted(self.reasons(r)), ["commands are not given as remediation text", "leak"])
+        self.assertEqual(sorted(self.reasons(r)), ["commands are not given as remediation text", "leak", "schema"])
 
     def test_duplicates_and_proven_wording(self):
         proven = _leaky_finding("f_idor", verdict="proven")
@@ -332,8 +332,9 @@ class TestReviewFindingsStayFixed(unittest.TestCase):
         proxy = ThreadingHTTPServer(("127.0.0.1", 0), Proxy)
         threading.Thread(target=proxy.serve_forever, daemon=True).start()
         env = {k: v for k, v in os.environ.items() if k.lower() not in ("no_proxy",)}
-        env.update({"http_proxy": f"http://127.0.0.1:{proxy.server_port}",
-                    "HTTP_PROXY": f"http://127.0.0.1:{proxy.server_port}", "no_proxy": "", "NO_PROXY": ""})
+        purl = f"http://127.0.0.1:{proxy.server_port}"
+        env.update({k: purl for k in ("http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY")})
+        env.update({"no_proxy": "", "NO_PROXY": ""})
         try:
             with _MockServer() as m, patch.dict(os.environ, env, clear=True):
                 r = adv.AbliterationAdvisor(m.url).advise([{"id": "f_headers", "severity": "medium"}])
@@ -406,3 +407,69 @@ class TestServiceAuditOnFailure(RealServiceBase):
                 raise AssertionError("must not be called")
         with self.assertRaises(TypeError):
             self.svc.advise_findings(Duck(), actor="appr")
+
+
+class TestValidAdviceIsNotThrownAway(unittest.TestCase):
+    """Re-review of 78639eb: the broadened rules rejected 13 of 15 realistic remediation texts."""
+
+    REMEDIATION = [
+        "本番環境の Web サーバー設定で HSTS を有効にする",
+        "他の利用者の資源に到達できないよう、サーバー側で所有者を照合する（IDOR の基本対策）",
+        "顧客の個人情報を返さないよう返却項目を最小限にする",
+        "ログインの総当たり対策として試行回数の制限とアカウントロックを導入する",
+        "大量のリクエストに備えてレート制限を設ける",
+        "リダイレクト先を許可リストで検証する",
+        "サブドメインにも HSTS を適用する",
+        "外部サービスから読み込むスクリプトに SRI を付ける",
+        "設定変更は承認前にステージングで確認する",
+        "すべての応答に確実に Secure 属性を付ける",
+        "期限 2026-12-01 12:00:00 までに更新する",
+        "std::string を使う箇所で長さを検証する",
+        "不要な Server ヘッダーを削除する",
+        "パラメータ化クエリを徹底し、入力の型と長さをサーバー側で検証する",
+        "セッション Cookie に Secure、HttpOnly、SameSite を付ける",
+    ]
+    NEXT_CHECKS = [
+        "修正後に X-Powered-By ヘッダーが削除されたかを L1 で再確認する",
+        "本番の応答ヘッダーを L1 で再確認する",
+        "テスト用アカウントAで、テスト用アカウントBの模擬データに到達できないことを確認する",
+        "TLS の設定変更後にネゴシエーション結果を確認する",
+    ]
+
+    def run_with(self, items, findings=None):
+        with _MockServer(_advice_reply(items)) as m:
+            return adv.AbliterationAdvisor(m.url).advise(findings or [_leaky_finding()])
+
+    def test_realistic_remediation_passes(self):
+        for i in range(0, len(self.REMEDIATION), adv.MAX_REMEDIATION_ITEMS):
+            batch = self.REMEDIATION[i:i + adv.MAX_REMEDIATION_ITEMS]
+            r = self.run_with([_ok_item(remediation=batch)])
+            self.assertEqual(r.rejected, (), (batch, r.rejected))
+            self.assertEqual(list(r.advice[0].remediation), batch)
+
+    def test_realistic_next_checks_pass(self):
+        checks = [{"title": t, "level": "L1", "reason": "修正の反映を見るため"} for t in self.NEXT_CHECKS]
+        r = self.run_with([_ok_item(next_checks=checks)])
+        self.assertEqual(r.rejected, ())
+        self.assertEqual([c.title for c in r.advice[0].next_checks], self.NEXT_CHECKS)
+
+    def test_one_bad_remediation_entry_does_not_drop_the_advice(self):
+        r = self.run_with([_ok_item(remediation=["許可するオリジンを一覧に限定する", "curl で確かめてから直す"])])
+        self.assertEqual(list(r.advice[0].remediation), ["許可するオリジンを一覧に限定する"])
+        self.assertEqual([x["where"] for x in r.rejected], ["remediation"])
+
+
+class TestAssetLevelRule(RealServiceBase):
+    def test_an_evidence_less_finding_of_a_real_service_asset_is_not_sent(self):
+        self.onboard()
+        self.run_l1()
+        # a finding with no evidence and no L2 profile passes the per-finding rule on its own
+        bare = {"id": "f_headers", "severity": "medium", "verdict": "detected", "category": "設定不備",
+                "evidence": [], "demo_fixture": False}
+        self.assertFalse(self.svc._finding_touches_real_service(bare))
+        with self.svc._lock:
+            self.svc.a.findings["f_bare"] = bare
+        with _MockServer() as m:
+            out = self.svc.advise_findings(adv.AbliterationAdvisor(m.url), actor="appr")
+            self.assertEqual(out["sent_refs"], [])
+            self.assertEqual(m.srv.received, [])
