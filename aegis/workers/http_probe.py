@@ -251,14 +251,17 @@ def probe(a: argparse.Namespace, clock=time.monotonic) -> dict:
     previous_hook = sys.unraisablehook
 
     def rearm():
-        # the 5 ms timer may itself expire before we return: then it raises right here,
-        # and is caught and re-armed again (bounded), so the deadline is never lost
-        for _ in range(5):
+        # The 5 ms timer may itself expire before we return: then it raises right here and
+        # is re-armed again. Bounded: after 5 tries in a row (each needing a stall of over
+        # 5 ms) the last timer is 50 ms. If even that one lands somewhere it is swallowed,
+        # the deadline can be lost; the per-stage socket timeouts and the gateway's own limit
+        # still end the run. So this makes losing it unlikely, not impossible.
+        for attempt in range(5):
             try:
                 if not alarm.armed:
                     return
                 alarm.fired = False
-                signal.setitimer(signal.ITIMER_REAL, 0.005)
+                signal.setitimer(signal.ITIMER_REAL, 0.05 if attempt == 4 else 0.005)
                 return
             except DeadlineExceeded:
                 continue
