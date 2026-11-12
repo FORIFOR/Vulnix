@@ -95,7 +95,9 @@ def finding_to_payload_item(ref: str, finding: dict) -> dict:
 # "接続先は10.0.0.1です" would hide the address from a \b-anchored pattern.
 _B0, _B1 = r"(?<![A-Za-z0-9_])", r"(?![A-Za-z0-9_])"
 _URL_RE = re.compile(r"[a-z][a-z0-9+.-]*://|www\.", re.I)
-_HOST_RE = re.compile(r"(?<![A-Za-z0-9_.-])(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:[a-z]{2,24})(?![A-Za-z0-9_-])", re.I)
+# a label may start right after ".", "-", "_" or "*" (*.example.com, _dmarc.example.com) and be
+# followed by "-": only an ASCII letter or digit next to it means it is part of a longer word
+_HOST_RE = re.compile(r"(?<![A-Za-z0-9])(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:[a-z]{2,24})(?![A-Za-z0-9])", re.I)
 _IPV4_RE = re.compile(_B0 + r"\d{1,3}(?:\.\d{1,3}){3}" + _B1)
 # an IPv6 address has "::" or eight groups; times (12:00:00) and C++ scopes (std::string) do not match
 _IPV6_RE = re.compile(r"(?<![A-Za-z0-9_:])(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4}){7}"
@@ -110,7 +112,10 @@ _LONG_OPAQUE_RE = re.compile(r"\b(?=[A-Za-z0-9_\-]*\d)(?=[A-Za-z0-9_\-]*[A-Za-z]
 _PATH_RE = re.compile(r"(?:^|\s)/(?:[\w.-]+/)*[\w.-]+")
 
 # names that look like hosts but are header / technology vocabulary the advice may use
-_HOSTLIKE_OK = frozenset({"x-powered-by", "node.js", "asp.net", "vue.js", "next.js"})
+_HOSTLIKE_OK = frozenset({"x-powered-by", "node.js", "asp.net", "vue.js", "next.js", "express.js", "react.js",
+                          "nuxt.js", "nest.js", "php.ini", "web.config", "nginx.conf", "httpd.conf", ".htaccess"})
+# 。 and ｡ written where a dot belongs ("evil。com", "１０。０。０。１"); NFKC keeps 。 as it is
+_IDEOGRAPHIC_DOT = str.maketrans({"。": ".", "｡": "."})
 
 
 def _norm(text: str) -> str:
@@ -124,11 +129,12 @@ def leak_reasons(text: str) -> list[str]:
     text = _norm(text)
     if _URL_RE.search(text):
         out.append("url")
-    if [h for h in _HOST_RE.findall(text) if h.lower() not in _HOSTLIKE_OK]:
+    dotted = text.translate(_IDEOGRAPHIC_DOT)
+    if [h for t in (text, dotted) for h in _HOST_RE.findall(t) if h.lower() not in _HOSTLIKE_OK]:
         out.append("hostname")
     if _DEFANGED_RE.search(text):
         out.append("hostname")
-    if _IPV4_RE.search(text) or _IPV6_RE.search(text) or _HEX_IP_RE.search(text):
+    if _IPV4_RE.search(dotted) or _IPV6_RE.search(text) or _HEX_IP_RE.search(text):
         out.append("ip_address")
     if _EMAIL_RE.search(text):
         out.append("email")
@@ -151,7 +157,7 @@ _FORBIDDEN_CHECK = [
     ("production_or_other_users", re.compile(r"本番データ|実データ|顧客(?:データ|の個人情報)|実在の(?:利用者|アカウント)"
                                              r"|他(?:の)?(?:ユーザー|利用者|人)の(?:アカウント|データ|資源|情報)"
                                              r"|(?:他|別)(?:の)?(?:ユーザー|利用者)に影響", re.I)),
-    ("approval_bypass", re.compile(r"承認(?:なし|無し|を省略|不要|をスキップ|を回避|を待たず|を得ずに?|より先に|せずに)|ゲートを(?:回避|迂回|無効)"
+    ("approval_bypass", re.compile(r"承認(?:なし|無し|を省略|不要|をスキップ|を回避|を待たず|を得ず|より先に|せずに)|承認(?:取得)?前に(?:実行|試|送|検証|開始)|ゲートを(?:回避|迂回|無効)"
                                    r"|自動承認|bypass|skip\s+approval|without\s+approval", re.I)),
     ("scope_expansion", re.compile(r"(?:リダイレクト先|外部サービス|別ドメイン|サブドメイン)(?:を|も)(?:調べ|確認|診断|検査|列挙|対象|スキャン)"
                                    r"|スコープ(?:を広げ|外|を追加|を拡)|対象(?:を広げ|に含め|を追加|を拡)", re.I)),

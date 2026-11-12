@@ -489,3 +489,34 @@ class TestJapaneseAdjacentText(unittest.TestCase):
                             ("承認を得ずに実行する", "approval_bypass"), ("承認より先に実行する", "approval_bypass")):
             hit = next((n for n, rx in adv._FORBIDDEN_CHECK if rx.search(adv._norm(title))), None)
             self.assertEqual(hit, rule, title)
+
+
+class TestHostnameFormsAndFileNames(unittest.TestCase):
+    """Independent review of 50fa827: the hostname lookbehind missed *. / _ / . / - prefixed names,
+    and file names of common software were refused as hostnames."""
+
+    def test_wildcard_and_underscore_names_are_leaks(self):
+        for dirty in ("*.evil.com", "*.example.co.jpの証明書", ".evil.com", "-evil.com", "_dmarc.evil.com",
+                      "_acme-challenge.evil.com", "evil.com-", "evil。com", "１０。０。０。１"):
+            self.assertIn("hostname" if "0" not in dirty and "１" not in dirty else "ip_address",
+                          adv.leak_reasons(dirty), dirty)
+
+    def test_common_software_file_names_are_not_hostnames(self):
+        for clean in ("Express.jsを更新する", "php.iniでexpose_phpをOffにする", "web.configで設定する",
+                      "nginx.confに追記する", "httpd.confの設定", "React.jsの", "Ｅｘｐｒｅｓｓ．ｊｓを更新する",
+                      "設定を見直す。次に確認する", "完了。Next.jsを更新する"):
+            self.assertEqual(adv.leak_reasons(clean), [], clean)
+
+    def test_approval_before_execution_is_bypass(self):
+        rx = dict(adv._FORBIDDEN_CHECK)["approval_bypass"]
+        for t in ("承認前に実行する", "承認取得前に実行する", "承認を得ず実行する"):
+            self.assertRegex(t, rx)
+        self.assertNotRegex("設定変更は承認前にステージングで確認する", rx)   # remediation wording stays valid
+
+    def test_detectors_stay_fast_on_the_longest_accepted_text(self):
+        import time
+        worst = max(adv.MAX_EXPLANATION, adv.MAX_REMEDIATION_LEN, adv.MAX_CHECK_TITLE + adv.MAX_CHECK_REASON)
+        for pattern in ("a." * (worst // 2), "a@" * (worst // 2), "a" * worst, "1." * (worst // 2)):
+            t = time.perf_counter()
+            adv.leak_reasons(pattern)
+            self.assertLess(time.perf_counter() - t, 0.5, pattern[:10])
