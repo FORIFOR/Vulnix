@@ -361,7 +361,7 @@ class TestL1AnalyzerSaysOnlyWhatTheResponseShows(unittest.TestCase):
 
     def test_plain_http_is_reported(self):
         found = analyze({"Content-Type": "text/html"}, url="http://x.example/", tls=False)
-        self.assertEqual((found["f_l1_no_tls"]["severity"], found["f_l1_no_tls"]["verdict"]), ("high", "proven"))
+        self.assertEqual((found["f_l1_no_tls"]["severity"], found["f_l1_no_tls"]["verdict"]), ("high", "detected"))
         self.assertNotIn("f_l1_no_tls", analyze(GOOD))
 
 
@@ -387,9 +387,11 @@ class TestExport(Ready):
         text = json.dumps(out, ensure_ascii=False)
         for leak in (HOST, HOST.upper(), "203.0.113.9", "2001:db8::1", ":8443"):
             self.assertNotIn(leak, text)
-        l1 = [f for f in out["confirmed_findings"] if f["verification_status"] == "proven"]
+        # L1 observations are exported as "detected", never as "proven" or with an L2 badge
+        l1 = [f for f in out["confirmed_findings"] if f["verification_status"] == "detected"]
         self.assertTrue(l1)
         self.assertTrue(all("L2" not in f["verification_badge"] for f in l1))
+        self.assertEqual([f for f in out["confirmed_findings"] if f["verification_status"] == "proven"], [])
         self.svc.verify_finding("f_ex_idor", "appr")
         public = self.svc.remotion_export()
         self.assertEqual([f["title"] for f in public["confirmed_findings"] if "L2" in f["verification_badge"]],
@@ -497,7 +499,8 @@ class TestPublicExportIsAnAllowList(unittest.TestCase):
                       "approver": f"{m}-approver", "challenge": {"token": f"vulnix-verify={m}"}, "environment": f"{m} env"},
             "authorization": {"ref": f"SOW-{m}"},
             "findings": [finding("f_headers", "proven"), finding(f"f_{m}_custom", "detected"),
-                         finding(f"f_{m}_l2", "proven", "L2", executor={"tool": "reproduction_probe"}),
+                         finding(f"f_{m}_l2", "proven", "L2", executor={"tool": "reproduction_probe"},
+                                 evidence=[{**ev, "tool": "reproduction_probe"}]),
                          finding("f_l1_cors", "candidate"), finding(f"f_{m}_sev", "detected", severity=f"{m}-sev")],
             "artex_tasks": [{"id": f"t_{m}", "phase": "config", "title": f"{m} model rationale", "tool": "http_probe",
                              "status": "completed"},
@@ -538,10 +541,13 @@ class TestPublicExportIsAnAllowList(unittest.TestCase):
             self.assertTrue(ok, f"string not on the allow-list: {s!r}")
         # still useful: counts, statuses, badges and evidence digests survive
         self.assertEqual(out["summary"]["confirmed_findings_count"], 4)
-        self.assertEqual(out["summary"]["proven_count"], 2)
+        # the L1 header observation marked "proven" in the snapshot is published as detected
+        self.assertEqual(out["summary"]["proven_count"], 1)
         badges = [f["verification_badge"] for f in out["confirmed_findings"]]
         self.assertIn("実証済み（L2再現確認）", badges)
-        self.assertIn("実測で確認（L1読み取り専用の観測）", badges)
+        self.assertNotIn("実測で確認（L1読み取り専用の観測）", badges)
+        self.assertEqual(out["confirmed_findings"][0]["verification_status"], "detected")
+        self.assertEqual(out["confirmed_findings"][0]["verification_badge"], "検出済み（L1観測・実証未実施）")
         self.assertEqual(out["confirmed_findings"][0]["title"], "セキュリティヘッダーの未設定")
         self.assertEqual(out["confirmed_findings"][0]["audit_hash"], "ab12cd34ef56ab12")
         self.assertEqual(out["confirmed_findings"][-1]["severity"], "medium")        # unknown value -> default

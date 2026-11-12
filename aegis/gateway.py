@@ -61,7 +61,9 @@ def http_probe_tool() -> Tool:
         name="http_probe", action="read_only_probe",
         args={"url": ArgSpec(str, pattern=r"https?://[^\s]+"),
               "method": ArgSpec(str, required=False, choices=("HEAD", "GET"))},
-        build_argv=build, timeout_s=20,
+        # above the worker's own overall deadline (45 s, workers/http_probe.py), so a
+        # slow first byte is reported by the worker with its stage, not killed blind
+        build_argv=build, timeout_s=50,
     )
 
 

@@ -19,6 +19,8 @@ import re
 from datetime import datetime, timezone
 from typing import Callable, Optional
 
+from .evidence import l2_reproduction_recorded
+
 
 _URL_HOST_RE = re.compile(r"https?://([^/\s\"':]+)")
 
@@ -126,6 +128,9 @@ def build_remotion_export(
         ev_status = f.get("evidence_status") or f.get("verification_status") or "candidate"
         if ev_status == "fixture":
             continue
+        if ev_status == "proven" and not l2_reproduction_recorded(f):
+            # whatever the snapshot says, an L1 observation is not published (or counted) as proven
+            ev_status = "detected"
 
         ev_raw = f.get("evidence")
         ev_list = ev_raw if isinstance(ev_raw, list) else ([ev_raw] if isinstance(ev_raw, dict) else [])
@@ -141,8 +146,8 @@ def build_remotion_export(
             "risk_rationale": _clean(f.get("risk_rationale", "")),
             "verification_status": ev_status,
             "verification_badge": (
-                ("実証済み（L2再現確認）" if str(f.get("risk_level", "")).upper() == "L2"
-                 else "実測で確認（L1読み取り専用の観測）")
+                # evidence_status() returns "proven" only with a recorded L2 reproduction
+                "実証済み（L2再現確認）"
                 if ev_status == "proven"
                 else "検出済み（L1観測・実証未実施）"
                 if ev_status == "detected"
@@ -342,7 +347,7 @@ _GENERIC = ("検出事項", WITHHELD, WITHHELD)
 
 _BADGES = {
     ("proven", True): "実証済み（L2再現確認）",
-    ("proven", False): "実測で確認（L1読み取り専用の観測）",
+    # no ("proven", False): an L1 observation is never shown as proven (see finding())
     ("detected", False): "検出済み（L1観測・実証未実施）", ("detected", True): "検出済み（L1観測・実証未実施）",
     ("not_reproduced", False): "再現せず（防御有効）", ("not_reproduced", True): "再現せず（防御有効）",
 }
@@ -386,6 +391,8 @@ def to_public_export(full: dict) -> dict:
     def finding(f: dict) -> dict:
         status = _enum(f.get("verification_status"), _STATUSES, "candidate")
         is_l2 = "L2" in str(f.get("verification_badge", "")) or str(f.get("tool")) == "reproduction_probe"
+        if status == "proven" and not is_l2:
+            status = "detected"          # only an L2 reproduction is published as proven
         title, impact, fix = PUBLIC_FINDING_TEXT.get(str(f.get("id")), _GENERIC_L2 if is_l2 else _GENERIC)
         return {
             "id": neutral(f.get("id")),

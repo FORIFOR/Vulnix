@@ -104,6 +104,22 @@ def _enrich_ev(
     }
 
 
+# `Server` values set by a managed front end / CDN in front of every customer
+# (Cloud Run, App Engine, Cloudflare, Vercel, Netlify, CloudFront, S3 ...).
+# Without a version they identify the hosting platform, which is public anyway,
+# and the service owner cannot remove them: reporting them is a false positive.
+MANAGED_EDGE_SERVERS = frozenset({
+    "google frontend", "gfe", "esf", "cloudflare", "vercel", "netlify", "cloudfront",
+    "amazons3", "awselb", "akamaighost", "github.com", "fastly",
+})
+
+
+def _managed_edge_server(value: str) -> bool:
+    v = (value or "").strip().lower()
+    # a version ("nginx/1.18", "2.4.49") is a real disclosure even on a managed platform
+    return bool(v) and not re.search(r"/\s*\d|\d+\.\d+", v) and v.split("/")[0].strip() in MANAGED_EDGE_SERVERS
+
+
 def analyze_l1_service_response(
     res: dict,
     ev: dict,
@@ -137,14 +153,15 @@ def analyze_l1_service_response(
         tls_version = str(tls_info.get("version") or "")
         if tls_version in ("TLSv1", "TLSv1.1", "SSLv3"):
             r_score, r_rat = compute_finding_risk_score(
-                "high", "proven", internet_facing=True
+                "high", "detected", internet_facing=True
             )
             findings.append(
                 {
                     "id": "f_l1_tls",
                     "title": f"旧世代のTLSプロトコル（{tls_version}）が有効",
                     "severity": "high",
-                    "verdict": "proven",
+                    "verdict": "detected",
+                    "verdict_basis": "l1_observation",
                     "category": "暗号・TLS設定",
                     "cve": [],
                     "risk_level": "L1",
@@ -187,13 +204,14 @@ def analyze_l1_service_response(
                           and location_host != ""
                           and location_host == (parsed_url.hostname or "").rstrip(".").lower())
     if not is_https and not redirects_to_https:
-        r_score, r_rat = compute_finding_risk_score("high", "proven", internet_facing=False)
+        r_score, r_rat = compute_finding_risk_score("high", "detected", internet_facing=False)
         findings.append(
             {
                 "id": "f_l1_no_tls",
                 "title": "HTTPS が使われていません（平文HTTPでの提供）",
                 "severity": "high",
-                "verdict": "proven",
+                "verdict": "detected",
+                "verdict_basis": "l1_observation",
                 "category": "暗号・TLS設定",
                 "cve": [],
                 "risk_level": "L1",
@@ -231,14 +249,15 @@ def analyze_l1_service_response(
 
     if missing_sec_headers:
         r_score, r_rat = compute_finding_risk_score(
-            "low", "proven", internet_facing=is_https
+            "low", "detected", internet_facing=is_https
         )
         findings.append(
             {
                 "id": "f_headers",
                 "title": f"セキュリティヘッダーの未設定（{', '.join(missing_sec_headers)}）",
                 "severity": "low",
-                "verdict": "proven",
+                "verdict": "detected",
+                "verdict_basis": "l1_observation",
                 "category": "設定不備",
                 "cve": [],
                 "risk_level": "L1",
@@ -287,14 +306,15 @@ def analyze_l1_service_response(
 
     if insecure_cookies:
         r_score, r_rat = compute_finding_risk_score(
-            "medium", "proven", internet_facing=is_https
+            "medium", "detected", internet_facing=is_https
         )
         findings.append(
             {
                 "id": "f_l1_cookies",
                 "title": "Cookieのセキュリティ属性（Secure / HttpOnly / SameSite）不足",
                 "severity": "medium",
-                "verdict": "proven",
+                "verdict": "detected",
+                "verdict_basis": "l1_observation",
                 "category": "セッション・Cookie設定",
                 "cve": [],
                 "risk_level": "L1",
@@ -331,14 +351,15 @@ def analyze_l1_service_response(
     if acao in ("*", "null") or (acao and probe_origin and acao == probe_origin):
         sev = "high" if (acao in (probe_origin, "null") and acac == "true") else "medium"
         r_score, r_rat = compute_finding_risk_score(
-            sev, "proven", internet_facing=is_https
+            sev, "detected", internet_facing=is_https
         )
         findings.append(
             {
                 "id": "f_l1_cors",
                 "title": f"CORS設定の過剰な許可（Access-Control-Allow-Origin: {acao}）",
                 "severity": sev,
-                "verdict": "proven",
+                "verdict": "detected",
+                "verdict_basis": "l1_observation",
                 "category": "CORS・オリジン境界",
                 "cve": [],
                 "risk_level": "L1",
@@ -374,6 +395,8 @@ def analyze_l1_service_response(
 
     # 5. Exposed technology info & 7. NVD / CISA KEV correlation
     server_hdr = headers_lower.get("server", "")
+    if _managed_edge_server(server_hdr):
+        server_hdr = ""
     powered_by = headers_lower.get("x-powered-by", "")
     exposed_tech = [
         f"{k}: {v}"
@@ -394,7 +417,7 @@ def analyze_l1_service_response(
         cve_ids = sorted({c.cve.id for c in candidates})
         kev_flag = any(c.in_kev for c in candidates)
         sev = "high" if cve_ids else "low"
-        verdict = "detected" if cve_ids else "proven"
+        verdict = "detected"
         r_score, r_rat = compute_finding_risk_score(
             sev, verdict, kev=kev_flag, internet_facing=is_https
         )
@@ -409,6 +432,7 @@ def analyze_l1_service_response(
                 "title": f"公開技術情報の露出（{', '.join(exposed_tech)}）",
                 "severity": sev,
                 "verdict": verdict,
+                "verdict_basis": "l1_observation",
                 "category": "既知の脆弱性（CVE）" if cve_ids else "情報露出",
                 "cve": cve_ids,
                 "risk_level": "L1",

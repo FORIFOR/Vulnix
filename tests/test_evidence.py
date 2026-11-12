@@ -18,8 +18,16 @@ class TestEvidenceStatus(unittest.TestCase):
 
     def test_recorded_verdicts_and_interrupted_checks_remain_distinct(self):
         evidence = [{"audit_hash": "hash", "saved_at": 0}]
-        for verdict in ("detected", "proven", "not_reproduced"):
+        l2 = [{"audit_hash": "hash", "saved_at": 0, "tool": "reproduction_probe"}]
+        for verdict in ("detected", "not_reproduced"):
             self.assertEqual(evidence_status({"verdict": verdict, "evidence": evidence}), verdict)
+        # "proven" needs a recorded L2 reproduction; an L1 observation stays "detected"
+        self.assertEqual(evidence_status({"verdict": "proven", "evidence": l2}), "proven")
+        self.assertEqual(evidence_status({"verdict": "proven", "evidence": evidence}), "detected")
+        self.assertEqual(evidence_status({"verdict": "proven", "evidence": [{"audit_hash": "h", "saved_at": 0, "tool": "http_probe"}]}),
+                         "detected")
+        # an L2 entry without an audit record is not a recorded reproduction
+        self.assertEqual(evidence_status({"verdict": "proven", "evidence": evidence + [{"tool": "reproduction_probe"}]}), "detected")
         for verdict in ("unverified", "aborted"):
             self.assertEqual(evidence_status({"verdict": verdict, "evidence": evidence}), "incomplete")
         self.assertEqual(evidence_status({"demo_fixture": True, "verdict": "proven", "evidence": evidence}), "fixture")
@@ -75,7 +83,7 @@ class TestTrustSnapshot(unittest.TestCase):
 
     def test_sse_finding_event_carries_the_same_labels_and_counts_as_snapshot(self):
         finding = {**self.svc.a.findings["f_banner"], "verdict": "proven",
-                   "evidence": [{"audit_hash": "recorded", "saved_at": 1}]}
+                   "evidence": [{"audit_hash": "recorded", "saved_at": 1, "tool": "reproduction_probe"}]}
         self.svc._upsert_finding(finding)
         event = self.svc.bus.since(0)[-1]
         snap = self.svc.snapshot()

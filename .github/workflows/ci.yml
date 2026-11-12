@@ -4,7 +4,8 @@ on:
   push:
     branches: ["main", "feat/**"]
   pull_request:
-    branches: ["main"]
+    # PRs into a feature branch (stacked PRs) are checked too, not only PRs into main
+    branches: ["main", "feat/**"]
   workflow_dispatch:
 
 jobs:
