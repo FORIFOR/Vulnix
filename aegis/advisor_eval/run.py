@@ -38,8 +38,8 @@ BY_CONSTRUCTION = (
     "structural_dangerous_rejection_rate: dangerous candidates are built from ids the catalog refuses",
     "remediation/operation_forbidden_accepted: forbidden sets are a subset of what the catalog refuses",
     "valid_candidates_quality.*: valid candidates take their claim and ids from the labels and cite fixed fields",
-    "valid_acceptance_rate: valid ids come from the labels (= catalog); it measures only whether the text checks "
-    "wrongly refuse the fixed text bank",
+    "valid_acceptance_rate: valid ids come from the labels (= catalog); among its components only the holdout "
+    "valid texts (valid_text_acceptance_rate) can actually be refused",
     "label_leaks: no code path gives labels to the advisor; the check guards against one being added",
 )
 LABEL_KEYS = ("labels", "truth", "allowed_claims", "acceptable_fixes", "forbidden_fixes", "acceptable_operations",
@@ -192,7 +192,9 @@ def _report(cases, comp_rows, failures, leaks, mock_rows, seconds) -> dict:
         valid = [r for r in rows if r["label"] == "valid"]
         dang = [r for r in rows if r["label"] == "dangerous"]
         st = [r for r in dang if r["vector"] == "structural"]
-        tx = [r for r in dang if r["vector"] == "text"]
+        tx = [r for r in dang if r["vector"] == "text" and r["candidate_kind"] == "text_danger"]   # holdout only
+        lk = [r for r in dang if r["vector"] == "text" and r["candidate_kind"] == "leak"]          # not a holdout
+        vt = [r for r in valid if r["vector"] == "text"]                                           # holdout valid text
         un = [r for r in rows if r["label"] == "unsuitable"]
         return {"valid_components": len(valid), "valid_acceptance_rate": _rate(sum(r["accepted"] for r in valid), len(valid)),
                 "dangerous_components": len(dang),
@@ -200,8 +202,12 @@ def _report(cases, comp_rows, failures, leaks, mock_rows, seconds) -> dict:
                 "structural_dangerous_rejection_rate": _rate(sum(not r["accepted"] for r in st), len(st)),
                 "text_dangerous_rejection_rate": _rate(sum(not r["accepted"] for r in tx), len(tx)),
                 "structural_dangerous": len(st), "text_dangerous": len(tx),
+                "leak_components": len(lk), "leak_rejection_rate": _rate(sum(not r["accepted"] for r in lk), len(lk)),
+                "valid_text_components": len(vt), "valid_text_acceptance_rate": _rate(sum(r["accepted"] for r in vt), len(vt)),
+                "valid_text_distinct": len({r.get("text") for r in vt}),
                 "unsuitable_components": len(un), "unsuitable_acceptance_rate": _rate(sum(r["accepted"] for r in un), len(un)),
-                "collateral_components": sum(r["label"] == "collateral" for r in rows)}
+                # parts that were actually thrown away with their item (labelled collateral and not accepted)
+                "collateral_discarded": sum(r["label"] == "collateral" and not r["accepted"] for r in rows)}
     by_cat, by_lang, by_kind = defaultdict(list), defaultdict(list), defaultdict(list)
     for r in comp_rows:
         by_cat[r["category"]].append(r)
@@ -227,8 +233,8 @@ def _report(cases, comp_rows, failures, leaks, mock_rows, seconds) -> dict:
         "mock_model_reference": {**mock_q, "note": "fixed rule-table answers of the local mock server; "
                                  "NOT the performance of Abliteration AI or any real model"},
         "by_construction": list(BY_CONSTRUCTION),
-        "tracked_not_gated": ["text_dangerous_rejection_rate", "unsuitable_acceptance_rate",
-                              "mock_model_reference.*"],
+        "tracked_not_gated": ["text_dangerous_rejection_rate (holdout only)", "valid_text_acceptance_rate (holdout)",
+                              "leak_rejection_rate (not a holdout)", "unsuitable_acceptance_rate", "mock_model_reference.*"],
         "label_leaks": leaks,
         "gates": gates, "gates_passed": all(gates.values()),
         "failures": failures,
@@ -250,10 +256,10 @@ def to_markdown(rep: dict, max_failures: int = 40) -> str:
         "## 要約: 実測した値と、テストの作り方で保証される値", "",
         "「実測」は、検証器の判定が実際に分かれうる要素について測った値です。「作り方で保証」は、データセットの作り方の上で必ずその値になるもので、品質の根拠にはなりません。「参考値」は、模擬サーバーの固定応答を測ったもので、実モデルの性能ではありません。", "",
         "| 指標 | 値 | 種類 |", "|---|---|---|",
-        f"| 文章でしか判定できない危険な提案（修正案の文章、holdout）の拒否率 | **{pct(k['text_danger']['dangerous_rejection_rate'])}** | 実測（最善の努力。高めの見積もり） |",
+        f"| 文章でしか判定できない危険な提案（修正案の文章、holdout）の拒否率 | **{pct(v['text_dangerous_rejection_rate'])}**（{v['text_dangerous']} 件） | 実測（最善の努力。高めの見積もり） |",
         f"| 状況に合わない提案（一覧では許可される id）の受理率 | **{pct(v['unsuitable_acceptance_rate'])}** | 実測（低いほどよい） |",
         f"| 受理したすべての助言の、根拠への忠実度 | {pct(v['accepted_item_quality']['faithfulness_rate'])} | 実測 |",
-        f"| 正当な修正案の文章（holdout）の受理率 | {pct(k['valid_holdout']['valid_acceptance_rate'])} | 実測（文章の検査の誤った拒否） |",
+        f"| 正当な修正案の文章（holdout）の受理率 | {pct(v['valid_text_acceptance_rate'])}（文章 {v['valid_text_components']} 件、異なる文 {v['valid_text_distinct']} 文） | 実測（文章の検査の誤った拒否） |",
         f"| 構造で判定する危険な提案の拒否率 | {pct(v['structural_dangerous_rejection_rate'])} | 作り方で保証（一覧が拒否する id から作った候補） |",
         f"| 禁止された修正案・確認項目の受理 | {v['accepted_item_quality']['remediation_forbidden_accepted'] + v['accepted_item_quality']['operation_forbidden_accepted']} 件 | 作り方で保証 |",
         f"| 正当な提案の受理率（全体） | {pct(v['valid_acceptance_rate'])} | 作り方でほぼ保証（id はラベル＝一覧から作っている） |",
@@ -266,10 +272,10 @@ def to_markdown(rep: dict, max_failures: int = 40) -> str:
         f"| 正当な提案の受理率 | {pct(v['valid_acceptance_rate'])}（{v['valid_components']} 件中） |",
         f"| 危険な提案の拒否率（全体） | {pct(v['dangerous_rejection_rate'])}（{v['dangerous_components']} 件中） |",
         f"| 構造で判定する危険な提案の拒否率 | {pct(v['structural_dangerous_rejection_rate'])}（{v['structural_dangerous']} 件中） |",
-        f"| 文章でしか判定できない危険な提案の拒否率（holdout の修正案の文章） | {pct(k['text_danger']['dangerous_rejection_rate'])}（{k['text_danger']['dangerous_components']} 件中、最善の努力） |",
-        f"| 正当な修正案の文章の受理率（holdout） | {pct(k['valid_holdout']['valid_acceptance_rate'])}（{k['valid_holdout']['valid_components']} 件中。文章以外の要素を含む） |",
-        f"| 漏れ（URL・IP・ホスト名など）の拒否率（holdout ではない例文） | {pct(k['leak']['dangerous_rejection_rate'])}（{k['leak']['dangerous_components']} 件中） |",
-        f"| 修正案1つの拒否で助言ごと捨てられた要素（collateral、集計の対象外） | {v['collateral_components']} 件 |",
+        f"| 文章でしか判定できない危険な提案の拒否率（holdout の修正案の文章） | {pct(v['text_dangerous_rejection_rate'])}（{v['text_dangerous']} 件中、最善の努力） |",
+        f"| 正当な修正案の文章の受理率（holdout） | {pct(v['valid_text_acceptance_rate'])}（文章 {v['valid_text_components']} 件、異なる文 {v['valid_text_distinct']} 文） |",
+        f"| 漏れ（URL・IP・ホスト名など）の拒否率（holdout ではない例文） | {pct(v['leak_rejection_rate'])}（{v['leak_components']} 件中） |",
+        f"| 唯一の修正案が拒否され、助言ごと捨てられた要素（collateral、集計の対象外） | {v['collateral_discarded']} 件 |",
         f"| 受理した助言の、根拠への忠実度（受理したすべての助言） | {pct(v['accepted_item_quality']['faithfulness_rate'])} |",
         f"| 受理した修正案の妥当性 | {pct(v['accepted_item_quality']['remediation_validity_rate'])}（禁止された修正案の受理 {v['accepted_item_quality']['remediation_forbidden_accepted']} 件） |",
         f"| 状況に合わない提案（一覧では許可される id）の受理率 | {pct(v['unsuitable_acceptance_rate'])}（{v['unsuitable_components']} 件中。低いほどよい。一覧がラベルより緩い度合い） |",
@@ -283,14 +289,16 @@ def to_markdown(rep: dict, max_failures: int = 40) -> str:
         "**意味のある指標**: 文章でしか判定できない危険な提案の拒否率、状況に合わない提案の受理率、模擬サーバーの参考値。いずれもゲートではなく、記録している数値です。",
         "次の確認項目には自由な文章がありません（`operation` と `purpose` の id だけ）。文章が残るのは、説明と修正案の `detail` だけです。",
         "修正案の文章の危険な例（`text_danger`）と正当な例（`valid_holdout`）は、評価用に別に用意した例文（holdout）です。測定したあとに、規則を合わせて変えたことはありません。ただし、次の2点に注意してください。",
-        "- 例文を書いたのは、規則を知っている開発者本人です。拒否された文は、既存の規則の語彙をそのまま使っています。そのため、49% 前後の拒否率は、未知の書き手が書いた文に対しては高めの見積もりです。",
+        f"- 例文を書いたのは、規則を知っている開発者本人です。拒否された文は、既存の規則の語彙をそのまま使っています。そのため、{pct(v['text_dangerous_rejection_rate'])} という拒否率は、未知の書き手が書いた文に対しては高めの見積もりです。",
+        "- 独立レビューで、英語の承認の規則が正当な文（「review ... before approval」「cannot bypass approval」）を拒否する問題が見つかりました。このため規則を修正しました（否定形の除外、デプロイなどの操作に限定）。holdout の結果は、修正の前後で変わっていません。",
         "- 測定の前に行った規則の変更（単独の bypass の削除）によって、正当な holdout の文が1件、受理に変わっています。",
         "漏れの例文（`leak`）は holdout ではありません。過去のコミットで、検出器の調整に使った例文です。",
-        "", "### 分類ごと", "", "| 分類 | 正当な提案の受理率 | 構造の拒否率 | 文章の拒否率 |", "|---|---|---|---|",
+        "", "### 分類ごと", "", "| 分類 | 正当な提案の受理率 | 構造の拒否率 | 文章の拒否率（holdout） |", "|---|---|---|---|",
     ]
     for k, r in v["by_category"].items():
         lines.append(f"| {k} | {pct(r['valid_acceptance_rate'])} | {pct(r['structural_dangerous_rejection_rate'])} | {pct(r['text_dangerous_rejection_rate'])} |")
-    lines += ["", "### 言語・表記ごと", "", "| 言語 | 正当な提案の受理率 | 危険な提案の拒否率 |", "|---|---|---|"]
+    lines += ["", "### 言語・表記ごと", "", "`variant`（全角などの表記ゆれ）は holdout の危険な文の 1 文だけで、拒否されていません。", "",
+              "| 言語 | 正当な提案の受理率 | 危険な提案の拒否率 |", "|---|---|---|"]
     for k, r in v["by_language"].items():
         lines.append(f"| {k} | {pct(r['valid_acceptance_rate'])} | {pct(r['dangerous_rejection_rate'])} |")
     lines += ["", "## 2. 模擬サーバーの固定応答（参考値）", "",

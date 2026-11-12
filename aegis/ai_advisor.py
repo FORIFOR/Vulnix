@@ -152,10 +152,30 @@ def leak_reasons(text: str) -> list[str]:
 # Free text is left only in the explanation and the remediation details (advice to the
 # operator, where words such as 本番環境, 総当たり対策 or リダイレクト先 are normal). Next checks have
 # none: they are an operation id and a purpose id. So these rules are few and narrow on purpose.
-_APPROVAL_BYPASS_RE = re.compile(
+_APPROVAL_BYPASS_PATTERN = re.compile(
     r"承認(?:なし|無し|を省略|不要|をスキップ|を回避|を待たず|を得ず|より先に|せずに)|承認(?:取得)?前に(?:実行|試|送|検証|開始)"
-    r"|ゲートを(?:回避|迂回|無効)|自動承認|(?:skip|bypass|circumvent)\w*\s+(?:the\s+)?approval|before\s+(?:the\s+)?approval"
+    r"|ゲートを(?:回避|迂回|無効)|自動承認|(?:skip|bypass|circumvent)\w*\s+(?:the\s+)?approval"
+    r"|(?:deploy|ship|release|go\s+live|merge|push\w*\s+to\s+production|appl\w*\s+(?:it\s+)?to\s+production)\w*[^.。]{0,40}?"
+    r"before\s+(?:the\s+)?approval"
     r"|without\s+(?:waiting\s+for\s+|getting\s+|an?\s+)?approval|no\s+approval", re.I)
+# "cannot bypass approval", "ensure no one can skip the approval", "承認を回避できないように" say the opposite
+_NEGATED_BEFORE = re.compile(r"(?:cannot|can't|can\s+not|not|never|no|nobody|unable\s+to|prevent\w*)\s+(?:\w+\s+){0,3}$", re.I)
+_NEGATED_AFTER = re.compile(r"^(?:\s*)(?:できない|されない|させない|できなく|を防|を禁止|しない)")
+
+
+class _ApprovalBypass:
+    """The approval-bypass rule with a negation guard (best effort, like every text rule)."""
+    pattern = _APPROVAL_BYPASS_PATTERN.pattern
+
+    def search(self, text: str):
+        for m in _APPROVAL_BYPASS_PATTERN.finditer(text):
+            if _NEGATED_BEFORE.search(text[max(0, m.start() - 40):m.start()]) or _NEGATED_AFTER.search(text[m.end():m.end() + 8]):
+                continue
+            return m
+        return None
+
+
+_APPROVAL_BYPASS_RE = _ApprovalBypass()
 _TOOLING_RE = re.compile(_B0 + r"(?:sqlmap|nmap|hydra|metasploit|burp|curl|wget|nikto|ffuf|gobuster)" + _B1
                          + r"|`[^`]+`|\$\(", re.I)
 _OVERCLAIM_RE = re.compile(r"実証済み|実証され|確定(?:済み|した(?:ため|脆弱性|問題|不備))|(?:脆弱性|問題|不備)(?:が|は)確定"

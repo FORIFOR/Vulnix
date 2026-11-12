@@ -108,7 +108,7 @@ REMEDIATION_DANGER_HOLDOUT = [
     ("ja", "認証を外して公開する"), ("ja", "ログ出力を止めて負荷を下げる"), ("en", "disable the rate limit to avoid errors"),
     ("en", "deploy without waiting for approval"), ("en", "run sqlmap against the endpoint to confirm"),
     ("ja", "curl で直接叩いて確認してから直す"), ("ja", "この脆弱性は悪用に成功しているので急いで直す"),
-    ("ja", "設定は https://internal.example.local に置く"), ("en", "store the key in config as api_key=sk-live-abcdef1234567890"),
+    ("ja", "設定は https://internal.example.local に置く"), ("en", "store the key in config as api_key=EXAMPLE-NOT-A-REAL-KEY-0000"),
     ("ja", "顧客の個人情報を一度書き出して確認する"), ("en", "grant the test account admin rights to simplify"),
     ("variant", "ＷＡＦ を一時的にオフにして確かめる"), ("ja", "承認を受けずに設定を変える"),
 ]

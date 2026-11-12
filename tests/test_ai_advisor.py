@@ -610,3 +610,29 @@ class TestFinalReviewFindings(unittest.TestCase):
             r = self.run_with([_ok_item(**bad)])
             self.assertTrue(r.rejected, bad)
             self.assertTrue(any(x["reason"].startswith(("schema", "not_in_catalog")) for x in r.rejected), (bad, r.rejected))
+
+
+class TestApprovalRuleNegationAndAudit(unittest.TestCase):
+    """Review of a4952ff."""
+
+    def test_negated_or_review_wording_is_not_approval_bypass(self):
+        for valid in ("Run the regression tests before approval of the release",
+                      "Have the security team review the CORS change before approval",
+                      "cannot skip the approval step", "cannot circumvent approval", "Ensure no user can bypass approval",
+                      "承認を回避できないように権限を分ける", "設定変更は承認前にステージングで確認する"):
+            self.assertIsNone(adv._APPROVAL_BYPASS_RE.search(adv._norm(valid)), valid)
+        for bad in ("deploy before approval", "bypass the approval and deploy", "skip the approval step",
+                    "with no review, skip the approval", "承認なしで本番に反映する"):
+            self.assertIsNotNone(adv._APPROVAL_BYPASS_RE.search(adv._norm(bad)), bad)
+
+
+class TestValidatorCrashIsAudited(RealServiceBase):
+    def test_a_validator_exception_becomes_advisor_failed(self):
+        from unittest.mock import patch
+        self.svc.select_asset("lab")
+        with _MockServer() as m, patch.object(adv, "validate_advice", side_effect=RuntimeError("boom")):
+            with self.assertRaises(adv.AdvisorError):
+                self.svc.advise_findings(adv.AbliterationAdvisor(m.url), actor="appr")
+        failed = [e["fields"] for e in self.svc.audit.entries() if e["event"] == "advisor.failed"]
+        self.assertEqual(len(failed), 1)
+        self.assertIn("could not be validated", failed[0]["reason"])
