@@ -3579,6 +3579,7 @@ class AssessmentService:
             stage = {"connect": "TCP接続", "tls": "TLSハンドシェイク", "send": "リクエスト送信",
                      "first_byte": "応答の最初のバイト待ち", "body": "応答本文の受信"}.get(str(err.get("stage")), "不明な段階")
             kind = {"timeout": "タイムアウト", "tls_verify_failed": "証明書の検証失敗", "tls_error": "TLSエラー",
+                    "egress_blocked": "許可外の宛先への接続を遮断",
                     "connection_refused": "接続拒否", "connection_reset": "接続リセット",
                     "bad_http_response": "不正なHTTP応答", "network_error": "ネットワークエラー"}.get(str(err.get("kind")), "エラー")
             limit = err.get("timeout_s")

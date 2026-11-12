@@ -26,7 +26,16 @@ def enforce_verdict(finding: dict) -> dict:
     `detected`. Demo fixtures are labelled as fixtures and left as they are."""
     if (finding.get("verdict") == "proven" and not finding.get("demo_fixture")
             and not l2_reproduction_recorded(finding)):
-        return {**finding, "verdict": "detected", "verdict_basis": "l1_observation"}
+        out = {**finding, "verdict": "detected", "verdict_basis": "l1_observation"}
+        if "risk_score" in finding or "risk_rationale" in finding:
+            # the stored score was computed with the "proven" factor: recompute it
+            from .service_diag import compute_finding_risk_score
+            target = next((str(e.get("target_url") or "") for e in reversed(finding.get("evidence") or [])
+                           if isinstance(e, dict) and e.get("target_url")), "")
+            out["risk_score"], out["risk_rationale"] = compute_finding_risk_score(
+                str(finding.get("severity") or "medium"), "detected", kev=bool(finding.get("kev")),
+                internet_facing=target.lower().startswith("https://"))
+        return out
     return finding
 
 

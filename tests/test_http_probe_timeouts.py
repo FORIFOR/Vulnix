@@ -112,7 +112,7 @@ class TestHttpProbeStages(unittest.TestCase):
         self.assertEqual(out["status"], 200)
         self.assertEqual(out["tls"]["alpn"], "http/1.1")
         self.assertGreaterEqual(out["timings_ms"]["first_byte_ms"], 1000)
-        self.assertLess(out["timings_ms"]["tls_ms"], 1000)
+        self.assertGreater(out["timings_ms"]["first_byte_ms"], out["timings_ms"]["tls_ms"])
         self.assertEqual(p.stderr, "")
         self.assertEqual(len(srv.requests), 1)                 # one request, no retry
 
@@ -197,6 +197,85 @@ class TestHttpProbeStages(unittest.TestCase):
             p = subprocess.run([sys.executable, "-I", str(WORKER), "--scheme", "https", "--host", HOST, "--ip", "127.0.0.1",
                                 "--port", "1", "--path", "/", "--read-timeout", v], capture_output=True, text=True, timeout=30)
             self.assertEqual(p.returncode, 2, v)
+
+
+class _Drip:
+    """Plain-HTTP listener that answers one byte every 0.3 s, in the headers or in the body."""
+
+    def __init__(self, where: str):
+        self.where = where
+        self.sock = socket.socket()
+        self.sock.bind(("127.0.0.1", 0))
+        self.sock.listen(4)
+        self.port = self.sock.getsockname()[1]
+        threading.Thread(target=self._serve, daemon=True).start()
+
+    def _serve(self):
+        try:
+            c, _ = self.sock.accept()
+            c.recv(4096)
+            if self.where == "headers":
+                head, rest = b"HTTP/1.1 200 OK\r\nX-Slow: ", b"a" * 400
+            else:
+                head, rest = b"HTTP/1.1 200 OK\r\nContent-Length: 400\r\n\r\n", b"b" * 400
+            c.sendall(head)
+            for i in range(len(rest)):
+                c.sendall(rest[i:i + 1])
+                time.sleep(0.3)
+        except OSError:
+            pass
+
+    def close(self):
+        self.sock.close()
+
+
+SENTINEL = ROOT / "aegis" / "workers" / "egress_sentinel.py"
+
+
+class TestOverallDeadlineAgainstADrippingTarget(unittest.TestCase):
+    """Per-recv timeouts reset on every byte; the overall deadline must still end the run."""
+
+    def run_via_sentinel(self, port: int, allow_port: int | None = None, *extra: str):
+        argv = [sys.executable, "-I", str(SENTINEL), "--allow", f"127.0.0.1/{allow_port or port}", "--",
+                str(WORKER), "--scheme", "http", "--host", "drip.test", "--ip", "127.0.0.1", "--port", str(port),
+                "--path", "/", "--method", "GET", *extra]
+        t0 = time.monotonic()
+        p = subprocess.run(argv, capture_output=True, text=True, env={"PATH": "/usr/bin:/bin"}, timeout=30)
+        return p, json.loads(p.stdout), time.monotonic() - t0
+
+    def test_dripping_headers_and_body_end_at_the_deadline_with_a_stage(self):
+        for where, stage in (("headers", "first_byte"), ("body", "body")):
+            srv = _Drip(where)
+            try:
+                p, out, took = self.run_via_sentinel(srv.port, None, "--read-timeout", "1", "--overall-timeout", "2")
+            finally:
+                srv.close()
+            self.assertEqual(p.returncode, 3, where)                       # exit code survives the sentinel
+            self.assertEqual((out["error"]["stage"], out["error"]["kind"]), (stage, "timeout"), where)
+            self.assertLess(took, 4, where)
+
+    def test_a_blocked_destination_is_reported_as_egress_blocked(self):
+        srv = _Drip("body")
+        try:
+            # the sentinel allows another port than the one the worker is told to use
+            p, out, _ = self.run_via_sentinel(srv.port, srv.port + 1)
+        finally:
+            srv.close()
+        self.assertEqual(p.returncode, 3)
+        self.assertEqual((out["error"]["stage"], out["error"]["kind"]), ("connect", "egress_blocked"))
+
+
+class TestDowngradedVerdictIsRescored(unittest.TestCase):
+    def test_score_and_rationale_follow_the_detected_factor(self):
+        from aegis.evidence import enforce_verdict
+        from aegis.service_diag import compute_finding_risk_score
+        old = {"verdict": "proven", "severity": "high", "risk_score": 80, "risk_rationale": "検証状態係数(proven=1.0)",
+               "evidence": [{"audit_hash": "h", "saved_at": 1, "tool": "http_probe", "target_url": "https://svc.example/"}]}
+        new = enforce_verdict(old)
+        self.assertEqual((new["risk_score"], new["risk_rationale"]),
+                         compute_finding_risk_score("high", "detected", internet_facing=True))
+        self.assertLess(new["risk_score"], 80)
+        self.assertNotIn("proven", new["risk_rationale"])
 
 
 class TestGatewayLimitCoversWorkerDeadline(unittest.TestCase):

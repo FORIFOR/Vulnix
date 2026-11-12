@@ -128,8 +128,7 @@ def build_remotion_export(
         ev_status = f.get("evidence_status") or f.get("verification_status") or "candidate"
         if ev_status == "fixture":
             continue
-        if ev_status == "proven" and not (l2_reproduction_recorded(f)
-                                          or (f.get("executor") or {}).get("tool") == "reproduction_probe"):
+        if ev_status == "proven" and not l2_reproduction_recorded(f):
             # whatever the snapshot says, an L1 observation is not published (or counted) as proven
             ev_status = "detected"
 

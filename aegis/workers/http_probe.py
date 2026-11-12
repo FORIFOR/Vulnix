@@ -22,6 +22,7 @@ import argparse
 import http.client
 import json
 import os
+import signal
 import socket
 import ssl
 import sys
@@ -52,6 +53,17 @@ def _extract_tls_info(sock: socket.socket, scheme: str) -> dict | None:
     }
 
 
+class DeadlineExceeded(Exception):
+    """Raised by SIGALRM when the overall deadline passes, whatever the worker is blocked in.
+
+    Per-recv socket timeouts alone do not bound a run: a target that sends one
+    byte at a time resets them on every byte."""
+
+
+def _on_alarm(signum, frame):  # noqa: ARG001
+    raise DeadlineExceeded("overall deadline reached")
+
+
 class StageError(Exception):
     def __init__(self, stage: str, kind: str, timeout_s: float | None, detail: str):
         super().__init__(detail)
@@ -59,7 +71,9 @@ class StageError(Exception):
 
 
 def _kind(e: BaseException) -> str:
-    if isinstance(e, (socket.timeout, TimeoutError)):
+    if type(e).__name__ == "EgressBlocked":
+        return "egress_blocked"          # the sentinel stopped a connection outside the pinned ip:port
+    if isinstance(e, (socket.timeout, TimeoutError, DeadlineExceeded)):
         return "timeout"
     if isinstance(e, ssl.SSLCertVerificationError):
         return "tls_verify_failed"
@@ -93,12 +107,19 @@ def probe(a: argparse.Namespace, clock=time.monotonic) -> dict:
         try:
             limit = budget(stage_timeout)
             return fn(limit)
+        except DeadlineExceeded:
+            raise StageError(name, "timeout", round(min(a.overall_timeout, MAX_STAGE_TIMEOUT_S), 3), "DeadlineExceeded") from None
         except Exception as e:  # noqa: BLE001 - every failure is reported with its stage
             raise StageError(name, _kind(e), None if limit is None else round(limit, 3), type(e).__name__) from None
         finally:
             timings[f"{name}_ms"] = round((clock() - start) * 1000)
 
     sock = None
+    overall = min(a.overall_timeout, MAX_STAGE_TIMEOUT_S)
+    use_alarm = hasattr(signal, "setitimer")
+    if use_alarm:
+        previous = signal.signal(signal.SIGALRM, _on_alarm)
+        signal.setitimer(signal.ITIMER_REAL, overall)
     try:
         sock = stage("connect", a.connect_timeout,
                      lambda lim: socket.create_connection((a.ip, a.port), timeout=lim))
@@ -112,9 +133,8 @@ def probe(a: argparse.Namespace, clock=time.monotonic) -> dict:
                 s = ctx.wrap_socket(sock, server_hostname=a.host, do_handshake_on_connect=False)
                 s.settimeout(lim)
                 s.do_handshake()
-                return s
-            sock = stage("tls", a.connect_timeout, handshake)
-            tls_info = _extract_tls_info(sock, a.scheme)
+                return s, _extract_tls_info(s, a.scheme)
+            sock, tls_info = stage("tls", a.connect_timeout, handshake)
         conn = http.client.HTTPConnection(a.host, a.port)
         conn.sock = sock
         req_headers = {
@@ -161,6 +181,9 @@ def probe(a: argparse.Namespace, clock=time.monotonic) -> dict:
             "timings_ms": timings,
         }
     finally:
+        if use_alarm:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous)
         if sock is not None:
             try:
                 sock.close()
