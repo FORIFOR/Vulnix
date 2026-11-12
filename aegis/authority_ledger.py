@@ -614,8 +614,11 @@ class AuthorityLedger:
             try:
                 if hasattr(os, "getuid") and os.lstat(path.parent).st_uid != os.getuid():
                     continue        # somebody else's directory (e.g. pre-created in /tmp): never ours
-            except OSError:
+            except FileNotFoundError:
                 continue
+            except OSError:
+                self.marker_pending = True
+                return "a revocation marker location cannot be checked"
             try:
                 st = os.lstat(path)
             except FileNotFoundError:

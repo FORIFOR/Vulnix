@@ -33,6 +33,7 @@ class WorkerPool:
         self._cpu = cpu_seconds
         self._procs: dict[int, subprocess.Popen] = {}
         self._sessions: dict[int, object] = {}
+        self._held: list = []        # confinement sessions from apply until their teardown has finished
         self._lock = threading.Lock()
         self._closed = False
 
@@ -95,7 +96,7 @@ class WorkerPool:
         with self._lock:
             self._closed = True
             pids = list(self._procs)
-            sessions = list(self._sessions.values())
+            sessions = list(self._sessions.values()) + [x for x in self._held if x not in self._sessions.values()]
         for sess in sessions:          # confined workers: kill the whole cgroup
             sess.kill()
         for pid in pids:
@@ -142,6 +143,21 @@ class WorkerPool:
                 return alive
             time.sleep(0.02)
 
+    def hold(self, session) -> None:
+        with self._lock:
+            self._held.append(session)
+
+    def release(self, session) -> None:
+        with self._lock:
+            self._held = [x for x in self._held if x is not session]
+
+    def busy_sessions(self) -> list:
+        """Held confinement sessions that still contain a process (e.g. between the
+        worker being reaped and the end of the cgroup's teardown)."""
+        with self._lock:
+            held = list(self._held)
+        return [x for x in held if not x.empty()]
+
     def sessions_for(self, pids: list[int]) -> list:
         with self._lock:
             return [self._sessions[p] for p in pids if p in self._sessions]
@@ -151,6 +167,8 @@ class WorkerPool:
         until they are confirmed dead, and return the ones that are not."""
         with self._lock:
             pids = list(self._procs)
+        for sess in self.busy_sessions():
+            sess.kill()
         return self.confirm_stopped(pids, confirm_timeout_s)
 
     @staticmethod

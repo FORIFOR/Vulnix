@@ -485,7 +485,8 @@ class ConfinementSession:
             for _ in range(30):
                 if removed:
                     break
-                removed = self._sh('rmdir "$1"', str(self.cgroup), timeout=10).returncode == 0
+                removed = (self._sh('rmdir "$1"', str(self.cgroup), timeout=10).returncode == 0
+                           or not self.cgroup.exists())      # already gone (e.g. re-attached after a restart)
                 if not removed:
                     self.kill()
                     time.sleep(0.1)

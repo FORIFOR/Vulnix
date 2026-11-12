@@ -330,6 +330,14 @@ class OperatorStore:
         try:
             self._write_private(tmp, data)
             os.replace(tmp, path)
+            try:                               # the rename itself survives a power loss
+                dfd = os.open(path.parent, os.O_RDONLY)
+                try:
+                    os.fsync(dfd)
+                finally:
+                    os.close(dfd)
+            except OSError:
+                pass
             return True
         except OSError:
             tmp.unlink(missing_ok=True)   # best-effort: a write failure must not break the request

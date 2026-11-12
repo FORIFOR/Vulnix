@@ -466,6 +466,9 @@ class _Session:
     def kill(self):
         return None
 
+    def empty(self):
+        return True
+
 
 class _Scripted:
     def __init__(self, enforced):
@@ -868,6 +871,7 @@ class TestKernelConfinementLogic(unittest.TestCase):
         with patch("aegis.confinement.time.sleep"):
             with conf.session("203.0.113.7", 443) as s:
                 s.on_leftover = called.append
+                s.cgroup.mkdir(parents=True, exist_ok=True)       # it exists, but cannot be removed
         self.assertTrue(s.leftover)
         self.assertEqual(called, [s])                              # the caller is told
         self.assertEqual(run.ran("delete", "table"), [])           # still confined

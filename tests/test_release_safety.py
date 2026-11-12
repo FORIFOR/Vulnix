@@ -1037,3 +1037,70 @@ class TestMarkersInDirectoriesOfOthersAreIgnored(ReleaseBase):
         self.assertEqual(again.ledger.rejected_reason, "")
         self.assertIsNotNone(again._external_entry(HOST))
         again.workers.kill_all()
+
+
+# ---- findings of the re-review of d6d5841 ------------------------------------
+class _EmptyButStuck(_StuckCgroup):
+    """Nothing runs in it any more, but its directory cannot be removed."""
+    def __init__(self):
+        super().__init__("aegis_l2_bbbbbbbbbbbb")
+        self.stuck = False
+        self.teardowns = 0
+        self.on_leftover = None
+
+    def _teardown(self):
+        self.teardowns += 1
+        if self.on_leftover is not None:            # what the real teardown does on failure
+            self.on_leftover(self)
+
+
+class TestNoEndlessLoopOnAnEmptyButStuckCgroup(ReleaseBase):
+    def test_the_recheck_returns_promptly_and_does_not_grow(self):
+        self.onboard()
+        x = _EmptyButStuck()
+        self.svc._note_leftover_session(x)
+        x.on_leftover = self.svc._note_leftover_session
+        t0 = time.monotonic()
+        status = self.svc.system_status()
+        self.assertLess(time.monotonic() - t0, 2.0)
+        self.assertIsNone(status["unstopped_workers"])               # empty: no longer blocking
+        self.assertEqual(self.svc._unstopped, [])
+        self.assertLessEqual(x.teardowns, 1)
+        for _ in range(20):
+            self.svc.system_status()
+        self.assertLessEqual(x.teardowns, 1)                         # cleanup retried at most every 30 s
+        self.assertIsNone(x.on_leftover)                             # a failed cleanup is not a new leftover
+
+
+class _Busy:
+    def __init__(self):
+        self.busy, self.kills = True, 0
+
+    def empty(self):
+        return not self.busy
+
+    def kill(self):
+        self.kills += 1
+
+
+class TestTeardownWindowIsTracked(ReleaseBase):
+    def test_stop_is_not_confirmed_and_launches_refused_while_a_session_tears_down(self):
+        self.onboard()
+        b = _Busy()
+        self.svc.workers.hold(b)
+        rep = self.svc.gateway.emergency_stop("appr", confirm_timeout_s=0.5)
+        self.assertFalse(rep.confirmed)
+        self.assertGreaterEqual(b.kills, 1)
+        self.svc.workers.release(b)
+
+    def test_launch_guard_refuses_while_a_session_is_busy(self):
+        from aegis.policy import PolicyError as PE
+        self.onboard()
+        b = _Busy()
+        self.svc.workers.hold(b)
+        dest = type("D", (), {"ip": "127.0.0.1", "port": self.fake.server_port})()
+        with self.assertRaises(PE):
+            self.svc._launch_guard("http_probe", {"url": self.url + "/"}, dest)
+        b.busy = False
+        self.svc._launch_guard("http_probe", {"url": self.url + "/"}, dest)
+        self.svc.workers.release(b)

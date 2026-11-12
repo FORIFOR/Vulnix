@@ -197,8 +197,11 @@ class Gateway:
             else:
                 # Applied and confirmed by the kernel BEFORE any secret is read for
                 # the worker; a failure here means nothing is launched.
+                held = []
                 try:
                     with confine as session:
+                        workers.hold(session)
+                        held.append(session)
                         self.audit.record("confinement.applied", jti=claims["jti"], tool=tool.name,
                                           **dict(getattr(session, "evidence", {}) or {}))
                         if not session.still_enforced():
@@ -213,6 +216,9 @@ class Gateway:
                         intact = session.still_enforced()
                 except ConfinementError as e:
                     raise PolicyError(f"kernel confinement not confirmed: {e}") from None
+                finally:
+                    for session_ in held:                # tracked until its teardown has finished
+                        workers.release(session_)
                 if getattr(session, "leftover", False):
                     # something in the cgroup could not be killed: its rules were
                     # left in place, and this run is not accepted
@@ -268,6 +274,12 @@ class Gateway:
         rep.killed_pids = self.workers.kill_all(); mark("4_kill_workers")
         # keeps killing until every worker is confirmed dead or the time is up
         rep.survivors = self.workers.confirm_stopped(rep.killed_pids, confirm_timeout_s)
+        busy = self.workers.busy_sessions()          # a confined run still tearing down
+        while busy and time.monotonic() - t0 < confirm_timeout_s:
+            for x in busy:
+                x.kill()
+            time.sleep(0.05)
+            busy = self.workers.busy_sessions()
         try:
             self.audit.record("emergency_stop", actor=actor, killed=rep.killed_pids,
                               survivors=rep.survivors)
@@ -277,7 +289,7 @@ class Gateway:
             # not undo it, but the stop is then not reported as confirmed
             audited = False
         mark("5_persist_audit")
-        rep.confirmed = not rep.survivors and audited and self.audit.verify()
+        rep.confirmed = not rep.survivors and not busy and audited and self.audit.verify()
         mark("6_confirmed" if rep.confirmed else "6_NOT_CONFIRMED")
         return rep
 

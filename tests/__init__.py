@@ -34,6 +34,9 @@ class _LoopbackSession:
     def kill(self):
         return None
 
+    def empty(self):
+        return True
+
 
 class LoopbackTestConfinement:
     def __init__(self):

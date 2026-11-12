@@ -285,6 +285,8 @@ class AssessmentService:
         # No service is registered on our behalf: real services enter only through
         # the ownership flow, and whatever was saved (including deletions) is kept.
         self._unstopped: list[dict] = []         # workers a withdrawal or stop could not confirm dead
+        self._cleanup_pending: list = []         # emptied cgroups whose rules/directory remain to remove
+        self._cleanup_at = -1e9
         self._state_had_ledger_flag = False
         self._closed = False
         self._session_written = False
@@ -623,6 +625,21 @@ class AssessmentService:
             except Exception:
                 pass        # the survivor is on record above; an audit failure must not undo that
 
+    def _retry_cleanup_locked(self) -> None:
+        now = time.monotonic()
+        if not self._cleanup_pending or now - self._cleanup_at < 30:
+            return
+        self._cleanup_at = now
+        pending, self._cleanup_pending = self._cleanup_pending, []
+        for x in pending:
+            x.on_leftover = None                 # a failed cleanup is not a new leftover
+            try:
+                x._teardown()
+            except Exception:
+                pass
+            if getattr(x, "leftover", False):
+                self._cleanup_pending.append(x)
+
     def _note_leftover_session(self, session) -> None:
         """A confined run whose cgroup could not be emptied: kept on record like any
         other worker that was not confirmed dead."""
@@ -647,7 +664,7 @@ class AssessmentService:
         """Workers that a withdrawal, reset or stop could not confirm dead and that
         are STILL not confirmed dead. While there are any, nothing new launches."""
         keep = []
-        for u in self._unstopped:
+        for u in list(self._unstopped):          # a copy: nothing below may extend this pass
             pool, sessions = u.get("pool"), u.get("sessions") or []
             # LOOK first. A process that is gone is never signalled again (its pid
             # may belong to something else by now).
@@ -662,10 +679,11 @@ class AssessmentService:
                 x.kill()
             for x in sessions:
                 if x not in not_empty and getattr(x, "leftover", False):
-                    try:
-                        x._teardown()                            # empty now: remove its rules and cgroup
-                    except Exception:
-                        pass
+                    # Empty now: nothing is running in it any more, so it no longer
+                    # blocks anything. Removing its rules and cgroup is cleanup, retried
+                    # at most every 30 s and never re-reported as a new leftover.
+                    self._cleanup_pending.append(x)
+                    x.on_leftover = None
             if alive or not_empty:
                 u["pids"] = alive or u["pids"]
                 u["sessions"] = not_empty
@@ -673,6 +691,7 @@ class AssessmentService:
             else:
                 self.audit.record("workers.stop_confirmed_late", host=u["host"], pids=u["pids"])
         self._unstopped = keep
+        self._retry_cleanup_locked()
         if not keep:
             return None
         return {"host": "、".join(sorted({u["host"] for u in keep})),
@@ -915,7 +934,7 @@ class AssessmentService:
         with self._lock:
             if self._stale_runner():
                 raise PolicyError("この要求を出したワークスペースは停止または切り替え済みです")
-            if self._unstopped_now_locked():
+            if self._unstopped_now_locked() or self.workers.busy_sessions():
                 raise PolicyError("停止を確認できていないWorkerが残っているため、新しいWorkerは起動しません")
             if not self._in_ownership_flow(host):
                 return
