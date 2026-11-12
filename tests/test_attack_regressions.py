@@ -332,7 +332,7 @@ class TestPlantedOrEditedProfile(RealServiceBase):
     make a rule runnable against a verified host."""
 
     def site_profile(self, host=HOST):
-        site = json.loads((BUILTIN_PROFILE_DIR / "deepnote.json").read_text(encoding="utf-8"))
+        site = json.loads((BUILTIN_PROFILE_DIR / "sample_api.json").read_text(encoding="utf-8"))
         site["applies_to"]["hosts"] = [host]
         site["paths"]["resource_b_path"]["default"] = NOTE_B
         site["paths"]["resource_a_path"]["default"] = "/api/notes/a1"
@@ -342,7 +342,7 @@ class TestPlantedOrEditedProfile(RealServiceBase):
     def write(self, site, mode=0o600, dir_mode=0o700):
         d = self.dir / "l2_profiles"
         d.mkdir(exist_ok=True)
-        f = d / "deepnote.json"
+        f = d / "sample_api.json"
         f.write_text(json.dumps(site), encoding="utf-8")
         f.chmod(mode)
         d.chmod(dir_mode)
@@ -364,17 +364,17 @@ class TestPlantedOrEditedProfile(RealServiceBase):
         self.run_l1()
         self.assertEqual(svc.l2.runnable_check_ids(), ())
         loaded = self.events("l2.profiles_loaded")[-1]["profiles"][0]
-        self.assertEqual((loaded["id"], loaded["site"], loaded["accepted"]), ("deepnote", True, False))
+        self.assertEqual((loaded["id"], loaded["site"], loaded["accepted"]), ("sample_api", True, False))
         with self.assertRaises(ValueError):                      # its tokens cannot even be stored
             svc.configure_asset_secrets(host=HOST, tokens={"user_a_token": TOKEN_A, "user_b_token": TOKEN_B},
                                         actor="appr")
-        f = self.finding("f_dn_idor")
+        f = self.finding("f_sample_idor")
         self.assertEqual((f["l2_ready"], f["l2_spec_status"]), (False, "unaccepted"))
         with self.assertRaises(ValueError):
-            svc.verify_finding("f_dn_idor", actor="appr")
+            svc.verify_finding("f_sample_idor", actor="appr")
         apr = svc.approval_store.approve("appr", "eng_demo", "lab", "safe_reproduction")
         self.assertEqual(svc._exec("reproduction_probe", "safe_reproduction",
-                                   {"url": svc.a.target_url, "check": "deepnote_idor_notes"}, approval_id=apr),
+                                   {"url": svc.a.target_url, "check": "sample_idor"}, approval_id=apr),
                          (None, None))                           # not in the Gateway schema either
         self.assertEqual({p for p, _ in self.fake.seen}, {"/"})
 
@@ -382,27 +382,27 @@ class TestPlantedOrEditedProfile(RealServiceBase):
         f = self.write(self.site_profile())
         svc = self.start()
         sha = svc.l2_profiles_status()["profiles"][0]["sha256"]
-        svc.accept_l2_profile("deepnote", sha, "root")
-        self.assertEqual(svc.l2.runnable_check_ids(), ("deepnote_idor_notes",))
+        svc.accept_l2_profile("sample_api", sha, "root")
+        self.assertEqual(svc.l2.runnable_check_ids(), ("sample_idor",))
         self.assertEqual(self.events("l2.profile_accepted")[-1]["sha256"], sha)
         # acceptance survives a restart only for the same bytes
-        self.assertEqual(self.start().l2.runnable_check_ids(), ("deepnote_idor_notes",))
+        self.assertEqual(self.start().l2.runnable_check_ids(), ("sample_idor",))
         edited = self.site_profile()
         edited["paths"]["resource_b_path"]["default"] = "/api/admin/export-everything"
         f.write_text(json.dumps(edited), encoding="utf-8")
         svc = self.start()
         self.assertEqual(svc.l2.runnable_check_ids(), ())
         changed = self.events("l2.profile_changed")[-1]
-        self.assertEqual((changed["profile"], changed["accepted_sha256"]), ("deepnote", sha))
+        self.assertEqual((changed["profile"], changed["accepted_sha256"]), ("sample_api", sha))
         status = svc.l2_profiles_status()["profiles"][0]
         self.assertTrue(status["changed_since_acceptance"])
         with self.assertRaises(ValueError):                      # the old approval does not cover the new bytes
-            svc.accept_l2_profile("deepnote", sha, "root")
+            svc.accept_l2_profile("sample_api", sha, "root")
         # swapping the file between "show" and "accept" does not get the swapped content accepted
         shown = status["sha256"]
         f.write_text(json.dumps(self.site_profile()).replace("planted.py:1", "other.py:2"), encoding="utf-8")
         with self.assertRaises(ValueError):
-            svc.accept_l2_profile("deepnote", shown, "root")
+            svc.accept_l2_profile("sample_api", shown, "root")
         self.assertEqual(svc.l2.runnable_check_ids(), ())
 
     def test_unsafe_file_permissions_symlinks_and_bad_content_are_not_loaded(self):
@@ -416,8 +416,8 @@ class TestPlantedOrEditedProfile(RealServiceBase):
             with self.subTest(case=name):
                 make()
                 svc = self.start()
-                self.assertEqual(svc.l2_profiles_status()["rejected"][0]["file"], "deepnote.json")
-                self.assertEqual(svc.l2.profiles["deepnote"]["hosts"], [])          # bundled template, not the site file
+                self.assertEqual(svc.l2_profiles_status()["rejected"][0]["file"], "sample_api.json")
+                self.assertEqual(svc.l2.profiles["sample_api"]["hosts"], [])          # bundled template, not the site file
                 self.assertTrue(self.events("l2.profile_rejected"))
         # symlink pointing at an attacker-controlled file elsewhere
         f = self.write(good)
@@ -448,7 +448,7 @@ class TestPlantedOrEditedProfile(RealServiceBase):
             return real(src, dst)
         with patch("aegis.authority_ledger.os.replace", side_effect=ledger_fails):
             with self.assertRaises(ValueError):
-                svc.accept_l2_profile("deepnote", sha, actor="root")
+                svc.accept_l2_profile("sample_api", sha, actor="root")
         self.assertEqual(svc._accepted_profiles, {})
         self.assertEqual(svc.l2.runnable_check_ids(), ())
         self.assertGreater((self.dir / "authority.epoch").stat().st_size, 0)     # nothing else was invalidated
@@ -460,7 +460,7 @@ class TestPlantedOrEditedProfile(RealServiceBase):
         sha = svc.l2_profiles_status()["profiles"][0]["sha256"]
         svc._save_state_locked()
         state = json.loads((self.dir / "state.json").read_text())
-        state["accepted_profiles"] = {"deepnote": sha}
+        state["accepted_profiles"] = {"sample_api": sha}
         (self.dir / "state.json").write_text(json.dumps(state))
         svc = self.start()
         self.assertEqual(svc._accepted_profiles, {})                # state.json is not where authority is read from
@@ -468,7 +468,7 @@ class TestPlantedOrEditedProfile(RealServiceBase):
         self.assertTrue(self.events("state.authority_fields_ignored"))
         # and written into the ledger itself, it does not verify
         ledger = json.loads((self.dir / "authority.ledger").read_text())
-        ledger["tables"]["accepted_profiles"] = {"deepnote": sha}
+        ledger["tables"]["accepted_profiles"] = {"sample_api": sha}
         (self.dir / "authority.ledger").write_text(json.dumps(ledger))
         svc = self.start()
         self.assertEqual(svc._accepted_profiles, {})
@@ -841,14 +841,14 @@ class TestCollidingSiteProfiles(TestPlantedOrEditedProfile):
     def test_one_bad_site_profile_does_not_disable_an_accepted_one(self):
         self.write(self.site_profile())
         svc = self.start()
-        svc.accept_l2_profile("deepnote", svc.l2_profiles_status()["profiles"][0]["sha256"], "root")
+        svc.accept_l2_profile("sample_api", svc.l2_profiles_status()["profiles"][0]["sha256"], "root")
         clash = self.site_profile()
         clash["id"] = "zz_clash"                                  # same host, same check ids -> collides
         f = self.dir / "l2_profiles" / "zz_clash.json"
         f.write_text(json.dumps(clash), encoding="utf-8")
         f.chmod(0o600)
         svc = self.start()
-        self.assertEqual(svc.l2.runnable_check_ids(), ("deepnote_idor_notes",))     # the accepted one still runs
+        self.assertEqual(svc.l2.runnable_check_ids(), ("sample_idor",))     # the accepted one still runs
         self.assertEqual([r["file"] for r in svc.l2_profiles_status()["rejected"]], ["zz_clash.json"])
         shown = svc.l2_profiles_status()["profiles"][0]
         self.assertEqual(shown["rules"][0]["request"]["path"], NOTE_B)             # the admin is shown what would be sent
