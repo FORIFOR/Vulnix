@@ -245,6 +245,7 @@ class KernelConfinement:
         sess.cgroup = self._root / name
         sess.ip, sess.port, sess.uid, sess.forbidden = "", 0, None, ()
         sess.protected_pid, sess.evidence, sess.on_leftover = os.getpid(), {}, None
+        sess._cancelled = False
         sess._table = sess._dir = True
         sess.leftover = True
         return sess
@@ -286,6 +287,7 @@ class ConfinementSession:
         self.ip, self.port = ip, port
         self.forbidden = tuple(forbidden_paths)
         self.on_leftover = None
+        self._cancelled = False      # killed before it existed: it may not come into existence
         self.protected_pid = int(protected_pid if protected_pid is not None else os.getpid())
         self.uid = owner.fresh_identity()           # this run's own uid
         self.name = "aegis_l2_" + secrets.token_hex(6)
@@ -339,11 +341,15 @@ class ConfinementSession:
 
     def _apply_and_verify(self) -> None:
         rules = ruleset(self.name, self.ip, self.port)
+        if self._cancelled:
+            raise ConfinementError("停止されたため、隔離を作成しません")
         try:
             p = self._sh('mkdir "$1"', str(self.cgroup))
             if p.returncode != 0:
                 raise ConfinementError(f"cgroup を作成できません: {p.stderr.strip()[:200]}")
             self._dir = True
+            if self._cancelled:              # stopped while the cgroup was being created
+                raise ConfinementError("停止されたため、隔離を作成しません")
             if self._sh('test -e "$1"', str(self.cgroup / "cgroup.kill")).returncode != 0:
                 raise ConfinementError("このカーネルには cgroup.kill がありません（Linux 5.14 以降が必要です）")
             p = self._nft("-f", "-", input=rules)
@@ -467,8 +473,10 @@ class ConfinementSession:
 
     def kill(self) -> bool:
         """Kill everything in the cgroup (the worker may have been started through
-        sudo, so signalling our own child is not enough)."""
+        sudo, so signalling our own child is not enough). A session killed before
+        its cgroup exists is cancelled: it will refuse to be applied."""
         if not self._dir:
+            self._cancelled = True
             return True
         try:
             return self._sh('echo 1 > "$1"', str(self.cgroup / "cgroup.kill"), timeout=10).returncode == 0

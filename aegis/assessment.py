@@ -623,7 +623,7 @@ class AssessmentService:
         # of this pool any more, or not yet) counts as a survivor as well
         busy = [x for x in pool.busy_sessions() if not self._session_on_record(x)]
         if survivors or busy:
-            sessions = pool.sessions_for(survivors)
+            sessions = [x for x in pool.sessions_for(survivors) if not self._session_on_record(x)]
             sessions += [x for x in busy if not any(x is y for y in sessions)]
             self._unstopped.append({"host": host, "pids": list(survivors), "at": time.time(), "pool": pool,
                                     # kept here: the pool forgets a session once its direct child is reaped
@@ -648,21 +648,28 @@ class AssessmentService:
         batch, self._cleanup_pending = self._cleanup_pending, []
 
         def run():
-            left = []
-            for x in batch:
-                x.on_leftover = None             # a failed cleanup is not a new leftover
-                try:
-                    x._teardown()
-                except Exception:
-                    pass
-                if getattr(x, "leftover", False):
-                    left.append(x)
-            with self._lock:
-                for x in left:
-                    if not any(x is y for y in self._cleanup_pending):
-                        self._cleanup_pending.append(x)
-                self._cleanup_running = False
-        threading.Thread(target=run, daemon=True, name="cgroup-cleanup").start()
+            left = list(batch)
+            try:
+                left = []
+                for x in batch:
+                    x.on_leftover = None         # a failed cleanup is not a new leftover
+                    try:
+                        x._teardown()
+                    except Exception:
+                        pass
+                    if getattr(x, "leftover", True):
+                        left.append(x)
+            finally:                             # whatever happened: nothing is lost, the next run can start
+                with self._lock:
+                    for x in left:
+                        if not any(x is y for y in self._cleanup_pending):
+                            self._cleanup_pending.append(x)
+                    self._cleanup_running = False
+        try:
+            threading.Thread(target=run, daemon=True, name="cgroup-cleanup").start()
+        except Exception:
+            self._cleanup_pending.extend(x for x in batch if not any(x is y for y in self._cleanup_pending))
+            self._cleanup_running = False
 
     def _note_leftover_session(self, session) -> None:
         """A confined run whose cgroup could not be emptied: kept on record like any

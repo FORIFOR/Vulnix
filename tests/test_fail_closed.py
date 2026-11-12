@@ -1273,3 +1273,42 @@ class TestKernelConfinementOnLinux(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestASessionStoppedBeforeItExistsIsNeverCreated(unittest.TestCase):
+    def make(self, run):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, True)
+        (root / "cgroup.controllers").write_text("cpu memory")
+        conf = KernelConfinement(runner=run, platform="linux", cgroup_root=root, euid=1000,
+                                 which=lambda t: f"/bin/{t}")
+        conf.interpreter_reachable_by_others = lambda: ""
+        return conf
+
+    def test_kill_before_apply_cancels(self):
+        run = _FakeRun()
+        s = self.make(run).session("203.0.113.7", 443)
+        self.assertTrue(s.empty())
+        s.kill()                                         # an emergency stop reaches it first
+        with self.assertRaises(ConfinementError):
+            with s:
+                self.fail("created after a stop")
+        self.assertEqual(run.ran("mkdir"), [])            # no cgroup was made
+        self.assertEqual(run.ran("nft", "-f"), [])         # and no rules
+
+    def test_kill_while_the_cgroup_is_being_created_cancels(self):
+        run = _FakeRun()
+        conf = self.make(run)
+        s = conf.session("203.0.113.7", 443)
+        real = run.__call__
+
+        def mkdir_then_stop(argv, **kw):
+            out = real(argv, **kw)
+            if any(str(a).startswith("mkdir") for a in argv):
+                s.kill()                                 # the stop lands right here
+            return out
+        s._o._run = mkdir_then_stop
+        with self.assertRaises(ConfinementError):
+            with s:
+                self.fail("probe ran after a stop")
+        self.assertEqual(run.ran("nft", "-f"), [])
