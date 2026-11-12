@@ -299,6 +299,45 @@ class TestOnLinuxWithTheRealKernelConfinement(ReleaseBase):
         self.assertEqual(len(self.fake.seen), self.seen_before)
         self.assertNotEqual(self.finding("f_ex_idor")["verdict"], "proven")
 
+    def test_the_gateway_deadline_stops_a_confined_worker_through_sudo_and_its_cgroup(self):
+        # external deadline (aegis/runtime.py): shorter than the L2 worker's own 10 s socket
+        # timeout, so it is the gateway's monotonic clock that ends this run
+        from dataclasses import replace as _replace
+        self.onboard()
+        self.set_secrets()
+        self.run_l1()
+        tool = self.svc.gateway.tools["reproduction_probe"]
+        self.svc.gateway.tools["reproduction_probe"] = _replace(tool, timeout_s=4)
+        self.fake.mode = "hang"
+        self.out = {}
+
+        def run():
+            try:
+                self.out["snap"] = self.svc.verify_finding("f_ex_idor", actor="appr", roles={"approver"})
+            except Exception as e:
+                self.out["err"] = e
+        t0 = time.monotonic()
+        self.th = threading.Thread(target=run)
+        self.th.start()
+        self.assertTrue(self.fake.hanging.wait(30), self.out)
+        applied = self.events("confinement.applied")
+        self.assertTrue(applied, "the L2 worker was not started inside kernel confinement")
+        self.cgroup = applied[-1]["fields"]["cgroup"]
+        procs = (Path("/sys/fs/cgroup") / self.cgroup / "cgroup.procs").read_text().split()
+        self.assertTrue(procs, "the worker is not in its cgroup")
+        self.seen_before = len(self.fake.seen)
+        self.th.join(30)
+        self.assertLess(time.monotonic() - t0, 25)
+        ev = self.events("worker.deadline_exceeded")
+        self.assertEqual(len(ev), 1, self.out)
+        self.assertEqual((ev[0]["fields"]["deadline_s"], ev[0]["fields"]["stop_confirmed"]), (4, True))
+        self.assertEqual(self.events("worker.stop_unconfirmed"), [])
+        for pid in procs:                                   # every process that was in the cgroup is gone
+            self.assertFalse(Path(f"/proc/{pid}").exists(), pid)
+        self.assert_confined_worker_gone()                  # cgroup and nft table removed, no further requests
+        print(f"\n[linux-e2e] gateway deadline: confined worker (cgroup {self.cgroup}, pids {procs}) "
+              f"killed after {ev[0]['fields']['elapsed']} s, stop confirmed")
+
     def test_tokens_go_only_from_inside_the_confinement(self):
         self.onboard()
         self.set_secrets()
