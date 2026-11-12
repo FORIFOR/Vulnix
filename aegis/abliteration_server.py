@@ -67,7 +67,7 @@ def _build_chat_content(user_content: str) -> str:
 
 
 # Advisor mode (aegis/ai_advisor.py): deterministic advice from the allow-listed payload only.
-ADVISOR_MARKER = "vulnix-advisor/v1"
+ADVISOR_MARKER = "vulnix-advisor/"          # any schema version
 MAX_RECORDED = 50
 _ADVICE_BY_RULE = {
     "f_headers": ("ブラウザ側の防御を指示するヘッダーが無いため、スクリプトの埋め込みやクリックジャッキングの被害が大きくなりやすい状態です。",
@@ -108,7 +108,13 @@ _GENERIC_ADVICE = ("この所見の影響は、提供の形態と運用によっ
                    [("修正後に同じ L1 プローブで状態を再確認する", "L1", "修正の反映を確かめるため")])
 
 
+_CLAIM_PREFERENCE = ("observed", "reproduced", "fixed_verified", "suspected", "inconclusive")
+
+
 def _build_advice_content(user_content: str) -> str:
+    """A fixed, rule-table answer in the v2 schema. It stands in for a model in tests; its
+    quality says nothing about any real model."""
+    from . import advisor_catalog as cat
     try:
         findings = json.loads(user_content).get("findings") or []
     except Exception:
@@ -117,11 +123,26 @@ def _build_advice_content(user_content: str) -> str:
     for f in findings:
         if not isinstance(f, dict) or not isinstance(f.get("ref"), str):
             continue
-        expl, rem, checks = _ADVICE_BY_RULE.get(f.get("rule"), _GENERIC_ADVICE)
-        if f.get("verdict") == "proven":
+        rule, verdict = f.get("rule"), f.get("verdict", "detected")
+        expl = _ADVICE_BY_RULE.get(rule, _GENERIC_ADVICE)[0]
+        allowed = cat.CLAIMS_BY_VERDICT.get(verdict, frozenset({"inconclusive"}))
+        claim = next(c for c in _CLAIM_PREFERENCE if c in allowed)
+        if claim == "reproduced":
             expl = "L2 の再現記録がある所見です。" + expl
-        advice.append({"ref": f["ref"], "risk_explanation": expl, "remediation": list(rem),
-                       "next_checks": [{"title": t, "level": lv, "reason": r} for t, lv, r in checks]})
+        elif claim == "fixed_verified":
+            expl = "修正後の再検証では再現しませんでした。再発しないよう確認を続けてください。"
+        fixed = verdict in ("fixed", "not_reproduced")
+        actions = [a for a, (_, rules) in cat.REMEDIATION_ACTIONS.items()
+                   if rule in rules and (a == "keep_regression_check") == fixed][:2] or ["keep_regression_check"]
+        if not fixed and not [a for a in actions if a != "keep_regression_check"]:
+            actions = []
+        ops = [o for o, (lv, _, rules) in cat.OPERATIONS.items() if rule in rules and lv != "manual"][:1] \
+            or ["manual_config_review"]
+        cites = ["rule", "verdict"] + (["cve"] if f.get("cve") else [])
+        advice.append({"ref": f["ref"], "claim_level": claim, "cites": cites, "risk_explanation": expl,
+                       "remediation": [{"fix": a, "detail": cat.REMEDIATION_ACTIONS[a][0]} for a in actions]
+                       or [{"fix": "keep_regression_check", "detail": "再発を防ぐ確認を続ける"}],
+                       "next_checks": [{"operation": o, "reason": "修正の反映を確かめるため"} for o in ops]})
     return "```json\n" + json.dumps({"advice": advice}, ensure_ascii=False) + "\n```"
 
 

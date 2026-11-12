@@ -39,10 +39,19 @@ def _advice_reply(items) -> callable:
     return lambda user: "```json\n" + json.dumps({"advice": items}, ensure_ascii=False) + "\n```"
 
 
+def _rem(detail, fix="restrict_cors_allowlist") -> dict:
+    return {"fix": fix, "detail": detail}
+
+
+def _chk(reason, operation="l1_recheck_cors_policy") -> dict:
+    return {"operation": operation, "reason": reason}
+
+
 def _ok_item(ref="F1", **over) -> dict:
-    item = {"ref": ref, "risk_explanation": "オリジンの許可が広く、ほかのサイトから応答を読まれる可能性があります。",
-            "remediation": ["許可するオリジンを明示的な一覧に限定する"],
-            "next_checks": [{"title": "信頼しないオリジンからの応答ヘッダーを再確認する", "level": "L1", "reason": "範囲が狭まったかを見るため"}]}
+    item = {"ref": ref, "claim_level": "observed", "cites": ["rule", "verdict"],
+            "risk_explanation": "オリジンの許可が広く、ほかのサイトから応答を読まれる可能性があります。",
+            "remediation": [_rem("許可するオリジンを明示的な一覧に限定する")],
+            "next_checks": [_chk("範囲が狭まったかを見るため")]}
     item.update(over)
     return item
 
@@ -149,7 +158,7 @@ class TestMockOutputQuality(unittest.TestCase):
         self.assertEqual(r.missing_refs, ())
         self.assertEqual([a.finding_id for a in r.advice], [f["id"] for f in self.LAB])
         by = {a.finding_id: a for a in r.advice}
-        self.assertIn("Content-Security-Policy", " ".join(by["f_headers"].remediation))
+        self.assertIn("Content-Security-Policy", " ".join(r.detail for r in by["f_headers"].remediation))
         for a in r.advice:
             self.assertTrue(a.remediation and a.risk_explanation)
             self.assertNotRegex(a.risk_explanation, adv._OVERCLAIM_RE)   # all are "detected"
@@ -172,29 +181,34 @@ class TestMisproposalsAreRejected(unittest.TestCase):
         return [x["reason"].split(":")[0] for x in r.rejected]
 
     def test_each_kind_of_bad_next_check_is_dropped_with_its_reason(self):
-        good = {"title": "妥当な確認", "level": "L1", "reason": "修正の反映を見るため"}
+        good = _chk("修正の反映を見るため", "manual_config_review")
         cases = [
-            ({"title": "本番データを使って確認する", "level": "L2", "reason": "x"}, "misproposal: production_or_other_users"),
-            ({"title": "大量送信して耐性を見る", "level": "L1", "reason": "x"}, "misproposal: load_or_dos"),
-            ({"title": "承認なしで L2 を実行する", "level": "L2", "reason": "x"}, "misproposal: approval_bypass"),
-            ({"title": "リダイレクト先の外部サービスも調べる", "level": "L1", "reason": "x"}, "misproposal: scope_expansion"),
-            ({"title": "管理画面のレコードを削除して確認する", "level": "L2", "reason": "x"}, "misproposal: destructive"),
-            ({"title": "sqlmap で注入を試す", "level": "L2", "reason": "x"}, "misproposal: tooling_or_commands"),
-            ({"title": "https://evil.example に送る", "level": "L1", "reason": "x"}, "leak"),
-            ({"title": "/api/admin を調べる", "level": "L1", "reason": "x"}, "leak"),
-            ({"title": "203.0.113.7 を確認する", "level": "L1", "reason": "x"}, "leak"),
-            ({"title": "応答を再確認する", "level": "L1", "reason": "x", "tool": "http_probe"}, "authority_key"),
-            ({"title": "レベル不正", "level": "L3", "reason": "x"}, "schema"),
+            # structural: the operation itself is not something the advisor can propose
+            ({"operation": "brute_force_login", "reason": "x"}, "not_in_catalog"),
+            ({"operation": "l2_input_boundary_check", "reason": "x"}, "not_allowed_for_rule"),   # an f_sqli operation
+            ({"operation": "l1_recheck_cors_policy", "reason": "x", "tool": "http_probe"}, "authority_key"),
+            ({"operation": "l1_recheck_cors_policy", "reason": "x", "level": "L1"}, "authority_key"),
+            ({"title": "応答を再確認する", "reason": "x"}, "unknown_key"),
+            # secondary: an allowed operation whose free text is not acceptable
+            (_chk("本番データを使って確認する"), "text_misproposal: production_or_other_users"),
+            (_chk("大量送信して耐性を見る"), "text_misproposal: load_or_dos"),
+            (_chk("承認なしで実行する"), "text_misproposal: approval_bypass"),
+            (_chk("リダイレクト先の外部サービスも調べる"), "text_misproposal: scope_expansion"),
+            (_chk("管理画面のレコードを削除して確認する"), "text_misproposal: destructive"),
+            (_chk("sqlmap で注入を試す"), "text: commands"),
+            (_chk("https://evil.example に送る"), "leak"),
+            (_chk("/api/admin を調べる"), "leak"),
+            (_chk("203.0.113.7 を確認する"), "leak"),
         ]
         for bad, expected in cases:
             r = self.run_with([_ok_item(next_checks=[bad, good])])
             self.assertEqual(len(r.advice), 1, bad)
-            self.assertEqual([c.title for c in r.advice[0].next_checks], ["妥当な確認"], bad)
+            self.assertEqual([c.operation for c in r.advice[0].next_checks], ["manual_config_review"], bad)
             self.assertEqual(len(r.rejected), 1, (bad, r.rejected))
             self.assertTrue(r.rejected[0]["reason"].startswith(expected), (bad, r.rejected))
 
     def test_too_many_next_checks_drop_the_item(self):
-        checks = [{"title": f"確認{i}", "level": "L1", "reason": "x"} for i in range(adv.MAX_CHECKS + 1)]
+        checks = [_chk(f"確認{i}") for i in range(adv.MAX_CHECKS + 1)]
         r = self.run_with([_ok_item(next_checks=checks)])
         self.assertEqual(r.advice, ())
         self.assertEqual(self.reasons(r), ["schema"])
@@ -212,15 +226,18 @@ class TestMisproposalsAreRejected(unittest.TestCase):
     def test_leaks_and_commands_in_explanations_or_remediation(self):
         r = self.run_with([
             _ok_item("F1", risk_explanation="https://evil.example から読まれます"),
-            _ok_item("F2", remediation=["curl で確認してから設定する"]),
+            _ok_item("F2", remediation=[_rem("curl で確認してから設定する", "set_csp")],   # F2 is f_headers
+                     next_checks=[_chk("再確認する", "l1_recheck_security_headers")]),
         ])
         self.assertEqual(r.advice, ())
-        self.assertEqual(sorted(self.reasons(r)), ["commands are not given as remediation text", "leak", "schema"])
+        self.assertEqual(sorted(self.reasons(r)), ["leak", "schema", "text"])
 
     def test_duplicates_and_proven_wording(self):
         proven = _leaky_finding("f_idor", verdict="proven")
-        r = self.run_with([_ok_item("F1", risk_explanation="L2 で実証済みの所見です。"),
-                           _ok_item("F1")], findings=[proven])
+        idor = dict(claim_level="reproduced", remediation=[_rem("所有者を照合する", "enforce_object_ownership")],
+                    next_checks=[_chk("修正後に再確認するため", "l2_authz_boundary_check")])
+        r = self.run_with([_ok_item("F1", risk_explanation="L2 で実証済みの所見です。", **idor),
+                           _ok_item("F1", **idor)], findings=[proven])
         self.assertEqual(len(r.advice), 1)                    # "proven" wording is fine for a proven finding
         self.assertEqual(self.reasons(r), ["duplicate_ref"])
 
@@ -252,7 +269,8 @@ class TestNoPathFromAdviceToAWorker(unittest.TestCase):
         self.assertNotIn("subprocess", names)
 
     def test_a_next_check_is_not_a_gateway_proposal(self):
-        self.assertFalse({"tool", "action", "args", "target_id"} & {f.name for f in dataclasses.fields(adv.NextCheck)})
+        for cls in (adv.NextCheck, adv.RemediationStep, adv.Advice):
+            self.assertFalse({"tool", "action", "args", "target_id"} & {f.name for f in dataclasses.fields(cls)}, cls)
         with _MockServer() as m:
             r = adv.AbliterationAdvisor(m.url).advise([{"id": "f_idor", "severity": "high"}])
         check = r.advice[0].next_checks[0]
@@ -271,7 +289,7 @@ class TestNoPathFromAdviceToAWorker(unittest.TestCase):
 
     def test_the_status_is_set_by_code_not_by_the_model(self):
         r = None
-        with _MockServer(_advice_reply([_ok_item(next_checks=[{"title": "確認", "level": "L2", "reason": "x",
+        with _MockServer(_advice_reply([_ok_item(next_checks=[{"operation": "l1_recheck_cors_policy", "reason": "x",
                                                                "status": "approved"}])])) as m:
             r = adv.AbliterationAdvisor(m.url).advise([_leaky_finding()])
         self.assertEqual(r.advice[0].next_checks, ())         # "status" from the model is an unknown key
@@ -351,9 +369,9 @@ class TestReviewFindingsStayFixed(unittest.TestCase):
 
     def test_overclaims_and_misproposals_in_remediation_and_next_checks(self):
         cases = [
-            (_ok_item(remediation=["この脆弱性は実証済みなので直ちに直す"]), "overclaim"),
-            (_ok_item(remediation=["承認なしで直ちに本番データを作り直す"]), "misproposal"),
-            (_ok_item(next_checks=[{"title": "実証済みの脆弱性を再確認", "level": "L1", "reason": "確定したため"}]), "overclaim"),
+            (_ok_item(remediation=[_rem("この脆弱性は実証済みなので直ちに直す")]), "overclaim"),
+            (_ok_item(remediation=[_rem("承認なしで直ちに本番データを作り直す")]), "text_misproposal"),
+            (_ok_item(next_checks=[_chk("実証済みの脆弱性を再確認する。確定したため")]), "overclaim"),
             (_ok_item(risk_explanation="確実に悪用可能です。"), "overclaim"),
             (_ok_item(risk_explanation="既に侵入されています。"), "overclaim"),
         ]
@@ -364,12 +382,12 @@ class TestReviewFindingsStayFixed(unittest.TestCase):
     def test_rephrased_and_full_width_misproposals(self):
         for title in ("テーブルを消去して初期化する", "古いデータを破棄して確かめる", "承認を待たずに高頻度でリクエストを繰り返す",
                       "ｂｕｒｐ で確認する", "ＤｏＳ 耐性を見る", "他の利用者のアカウントで試す", "サブドメインも対象に含める"):
-            r = self.run_with([_ok_item(next_checks=[{"title": title, "level": "L1", "reason": "x"}])])
+            r = self.run_with([_ok_item(next_checks=[_chk(title)])])
             self.assertEqual(r.advice[0].next_checks, (), title)
-            self.assertTrue(r.rejected[0]["reason"].startswith("misproposal"), (title, r.rejected))
+            self.assertTrue(r.rejected[0]["reason"].startswith(("text_misproposal", "text:")), (title, r.rejected))
 
     def test_remediation_may_still_say_remove(self):
-        r = self.run_with([_ok_item(remediation=["不要な Server ヘッダーを削除する"])])
+        r = self.run_with([_ok_item(remediation=[_rem("不要な Server ヘッダーを削除する")])])
         self.assertEqual(r.rejected, ())
 
     def test_more_address_forms_are_leaks(self):
@@ -440,22 +458,25 @@ class TestValidAdviceIsNotThrownAway(unittest.TestCase):
         with _MockServer(_advice_reply(items)) as m:
             return adv.AbliterationAdvisor(m.url).advise(findings or [_leaky_finding()])
 
+    FIXES = ("restrict_cors_allowlist", "disallow_credentials_for_untrusted", "confirm_intended_exposure")
+
     def test_realistic_remediation_passes(self):
-        for i in range(0, len(self.REMEDIATION), adv.MAX_REMEDIATION_ITEMS):
-            batch = self.REMEDIATION[i:i + adv.MAX_REMEDIATION_ITEMS]
-            r = self.run_with([_ok_item(remediation=batch)])
+        for i in range(0, len(self.REMEDIATION), len(self.FIXES)):
+            batch = self.REMEDIATION[i:i + len(self.FIXES)]
+            r = self.run_with([_ok_item(remediation=[_rem(t, f) for t, f in zip(batch, self.FIXES)])])
             self.assertEqual(r.rejected, (), (batch, r.rejected))
-            self.assertEqual(list(r.advice[0].remediation), batch)
+            self.assertEqual([x.detail for x in r.advice[0].remediation], batch)
 
     def test_realistic_next_checks_pass(self):
-        checks = [{"title": t, "level": "L1", "reason": "修正の反映を見るため"} for t in self.NEXT_CHECKS]
-        r = self.run_with([_ok_item(next_checks=checks)])
-        self.assertEqual(r.rejected, ())
-        self.assertEqual([c.title for c in r.advice[0].next_checks], self.NEXT_CHECKS)
+        for reason in self.NEXT_CHECKS:
+            r = self.run_with([_ok_item(next_checks=[_chk(reason)])])
+            self.assertEqual(r.rejected, (), reason)
+            self.assertEqual([c.reason for c in r.advice[0].next_checks], [reason])
 
     def test_one_bad_remediation_entry_does_not_drop_the_advice(self):
-        r = self.run_with([_ok_item(remediation=["許可するオリジンを一覧に限定する", "curl で確かめてから直す"])])
-        self.assertEqual(list(r.advice[0].remediation), ["許可するオリジンを一覧に限定する"])
+        r = self.run_with([_ok_item(remediation=[_rem("許可するオリジンを一覧に限定する"),
+                                                 _rem("curl で確かめてから直す", "disallow_credentials_for_untrusted")])])
+        self.assertEqual([x.detail for x in r.advice[0].remediation], ["許可するオリジンを一覧に限定する"])
         self.assertEqual([x["where"] for x in r.rejected], ["remediation"])
 
 
@@ -515,7 +536,7 @@ class TestHostnameFormsAndFileNames(unittest.TestCase):
 
     def test_detectors_stay_fast_on_the_longest_accepted_text(self):
         import time
-        worst = max(adv.MAX_EXPLANATION, adv.MAX_REMEDIATION_LEN, adv.MAX_CHECK_TITLE + adv.MAX_CHECK_REASON)
+        worst = max(adv.MAX_EXPLANATION, adv.MAX_REMEDIATION_LEN, adv.MAX_CHECK_REASON)
         for pattern in ("a." * (worst // 2), "a@" * (worst // 2), "a" * worst, "1." * (worst // 2)):
             t = time.perf_counter()
             adv.leak_reasons(pattern)

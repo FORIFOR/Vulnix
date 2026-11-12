@@ -11,11 +11,14 @@ What the model is given, and what comes back, are both narrow on purpose:
   still looks like it carries a URL, host, IP, e-mail, token or cookie.
 * A finding about a real service is not given to the advisor at all; the caller
   (`AssessmentService.advise_findings`) filters with the existing allow-list.
-* Output must be one JSON object of a fixed schema. Anything else is rejected item by
-  item with a reason: unknown keys (authority-shaped ones like "approved", "token",
-  "tool" included), references that were not sent, URLs or hosts in the text, claims
-  that a detected finding was proven, and next checks that are destructive, out of
-  scope or about skipping approval.
+* Output must be one JSON object of a fixed schema (v2), checked structurally first: a
+  claim level the verdict allows, citations of input fields that were actually given,
+  remediation *fix ids* and next-check *operation ids* from aegis/advisor_catalog.py that
+  are allowed for the finding's rule (and verdict). An id outside the catalog is a schema
+  error whatever words surround it, so a dangerous suggestion has no id to be expressed
+  with. Free text (explanation, details, reasons) is then checked, best effort, for leaks
+  (URL, host, IP, e-mail, credentials), overclaims and dangerous wording. Rejections are
+  kept item by item with a reason.
 * The result is inert data. Every next check is marked as a proposal that needs the
   normal gates (ownership, scope, L2 approval for L2 items). This module imports no
   gateway, token authority, approval store or worker runner, and a next check has no
@@ -35,19 +38,23 @@ from dataclasses import dataclass, field
 from functools import partial
 from typing import Callable, Iterable
 
+from . import advisor_catalog as catalog
 from .router import (DEFAULT_MODEL_TIMEOUT_SECONDS, MAX_MODEL_RESPONSE_BYTES, Transport,
                      _extract_json_from_text, _model_timeout, _NoRedirect)
 
-PROMPT_MARKER = "vulnix-advisor/v1"
+PROMPT_MARKER = "vulnix-advisor/v2"
 
 SYSTEM_ADVISOR_PROMPT = (
     f"[{PROMPT_MARKER}] あなたは Vulnix のセキュリティ診断アドバイザーです。"
-    "与えられた所見（参照ID、規則、分類、深刻度、判定）だけを根拠に、日本語で答えてください。"
-    "判定が detected のものを『実証済み』『確定』と書かないでください。"
+    "与えられた所見（参照ID、規則、分類、深刻度、判定）だけを根拠に答えてください。"
+    "claim_level は判定に合うものを選び、cites には根拠にした入力の項目名を入れてください。"
+    "remediation の fix と next_checks の operation は、次の一覧の id だけを使えます。"
+    "それ以外の操作は提案できません。実行は Vulnix の承認ゲートを通ります。"
     "URL、ホスト名、コマンド、攻撃手順は書かないでください。"
-    "次に調べる項目は提案であり、実行は Vulnix の承認ゲートを通ります。"
-    'JSON だけを返してください: {"advice": [{"ref": "F1", "risk_explanation": "...", '
-    '"remediation": ["..."], "next_checks": [{"title": "...", "level": "L1|L2", "reason": "..."}]}]}'
+    + catalog.catalog_for_prompt() +
+    ' JSON だけを返してください: {"advice": [{"ref": "F1", "claim_level": "observed", "cites": ["rule", "verdict"], '
+    '"risk_explanation": "...", "remediation": [{"fix": "<id>", "detail": "..."}], '
+    '"next_checks": [{"operation": "<id>", "reason": "..."}]}]}'
 )
 
 # ---- input allow-list -------------------------------------------------------------
@@ -148,12 +155,16 @@ _HOSTISH_IN_PATH = re.compile(r"/api/|/admin|/\.well-known")
 # A next check is something Vulnix itself might later be asked to do, so these describe
 # *actions*: "削除して確認する" is refused, "削除されたかを確認する" is not.
 _ACT = r"(?:し|す|さ|せ)"
+# "総当たり対策" / "DoS対策" / "brute-force protection" name a defence, not an attack to run
+_NOT_DEFENCE = r"(?!\s*(?:対策|への対策|防止|保護|protection|mitigation|defen[cs]e))"
 _FORBIDDEN_CHECK = [
     ("destructive", re.compile(r"(?:を|も)(?:削除|消去|破棄|初期化|改ざん|書き換え|上書き)" + _ACT
                                + r"|drop\s+table|truncate\s+table|rm\s+-rf|delete\s+from|update\s+\w+\s+set", re.I)),
     ("load_or_dos", re.compile(r"大量(?:に|の)?(?:送|リクエスト|要求|アクセス)|連続(?:で|して)?送|高頻度|繰り返し(?:送|実行|リクエスト)"
-                               r"|(?:リクエスト|要求)を繰り返|負荷(?:を(?:かけ|与え)|試験|テスト)|" + _B0 + r"D?DoS" + _B1 + r"|フラッド|flood|stress\s*test"
-                               r"|総当たり|ブルートフォース|brute", re.I)),
+                               r"|(?:リクエスト|要求)を繰り返|負荷(?:を(?:かけ|与え)|試験|テスト)|" + _B0 + r"D?DoS" + _B1 + _NOT_DEFENCE
+                               + r"|フラッド|flood|stress\s*test"
+                               r"|総当たり" + _NOT_DEFENCE + r"|ブルートフォース" + _NOT_DEFENCE
+                               + r"|brute(?:[\s-]*force)?(?![\s-]*(?:force\s+)?(?:protection|mitigation|defen[cs]e))", re.I)),
     ("production_or_other_users", re.compile(r"本番データ|実データ|顧客(?:データ|の個人情報)|実在の(?:利用者|アカウント)"
                                              r"|他(?:の)?(?:ユーザー|利用者|人)の(?:アカウント|データ|資源|情報)"
                                              r"|(?:他|別)(?:の)?(?:ユーザー|利用者)に影響", re.I)),
@@ -177,27 +188,37 @@ _REMEDIATION_FORBIDDEN = [
 ]
 
 
-# ---- output schema --------------------------------------------------------------
+# ---- output schema (v2: structured, catalog-checked) -----------------------------------
 
-ADVICE_KEYS = frozenset({"ref", "risk_explanation", "remediation", "next_checks"})
-CHECK_KEYS = frozenset({"title", "level", "reason"})
+ADVICE_KEYS = frozenset({"ref", "claim_level", "cites", "risk_explanation", "remediation", "next_checks"})
+REMEDIATION_KEYS = frozenset({"fix", "detail"})   # not "action": that is a gateway proposal key
+CHECK_KEYS = frozenset({"operation", "reason"})
 AUTHORITY_KEYS = frozenset({"approved", "approval", "token", "tool", "action", "args", "target_id",
-                            "execute", "run", "scope", "url", "command"})
+                            "execute", "run", "scope", "url", "command", "status", "level", "gates"})
 MAX_EXPLANATION = 800
 MAX_REMEDIATION_ITEMS, MAX_REMEDIATION_LEN = 6, 300
-MAX_CHECKS, MAX_CHECK_TITLE, MAX_CHECK_REASON = 5, 200, 300
+MAX_CHECKS, MAX_CHECK_REASON = 5, 300
 _CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
 @dataclass(frozen=True)
+class RemediationStep:
+    fix: str                       # a catalog id allowed for the finding's rule
+    label: str                     # from the catalog, not from the model
+    detail: str                    # the model's words, checked as untrusted text
+
+
+@dataclass(frozen=True)
 class NextCheck:
-    """A suggestion only. It carries no tool, action, target or arguments, so it cannot be
-    handed to the gateway; running anything still needs ownership, scope and (for L2) a
-    separate human L2 approval."""
-    title: str
-    level: str                     # "L1" | "L2"
+    """A suggestion only. An operation id from the catalog, never a gateway tool, action,
+    target or argument, so it cannot be handed to the gateway; running anything still needs
+    ownership, scope and (for L2) a separate human L2 approval. Level, label, status and
+    gates come from code."""
+    operation: str
+    level: str                     # "L1" | "L2" | "manual", from the catalog
+    label: str
     reason: str
-    status: str = "proposal_only"  # never "approved" / "running": set by this module, not the model
+    status: str = "proposal_only"
     required_gates: tuple[str, ...] = ()
 
 
@@ -205,8 +226,10 @@ class NextCheck:
 class Advice:
     ref: str                       # the opaque reference the model saw
     finding_id: str                # the caller's id, mapped back from the opaque ref
+    claim_level: str
+    cites: tuple[str, ...]
     risk_explanation: str
-    remediation: tuple[str, ...]
+    remediation: tuple[RemediationStep, ...]
     next_checks: tuple[NextCheck, ...]
 
 
@@ -230,10 +253,13 @@ class AdviceResult:
             "rejected": [dict(r) for r in self.rejected],
             "advice": [{
                 "finding_id": a.finding_id,
+                "claim_level": a.claim_level,
+                "cites": list(a.cites),
                 "risk_explanation": a.risk_explanation,
-                "remediation": list(a.remediation),
-                "next_checks": [{"title": c.title, "level": c.level, "reason": c.reason, "status": c.status,
-                                 "required_gates": list(c.required_gates)} for c in a.next_checks],
+                "remediation": [{"fix": r.fix, "label": r.label, "detail": r.detail} for r in a.remediation],
+                "next_checks": [{"operation": c.operation, "level": c.level, "label": c.label, "reason": c.reason,
+                                 "status": c.status, "required_gates": list(c.required_gates)}
+                                for c in a.next_checks],
             } for a in self.advice],
         }
 
@@ -251,13 +277,28 @@ def _clean_text(value: object, limit: int) -> str | None:
     return s
 
 
-def _gates_for(level: str) -> tuple[str, ...]:
-    base = ("ownership_verified", "scope_approved")
-    return base + ("l2_human_approval",) if level == "L2" else base
+def _text_problem(text: str, *, overclaim_ok: bool, rules) -> str | None:
+    """Secondary, best-effort checks on the model's free text (structure is checked first)."""
+    if leak_reasons(text):
+        return f"leak: {leak_reasons(text)}"
+    n = _norm(text)
+    if _TOOLING_RE.search(n):
+        return "text: commands or attack tools"
+    if not overclaim_ok and _OVERCLAIM_RE.search(n):
+        return "overclaim: a detected finding described as proven or exploited"
+    hit = next((name for name, rx in rules if rx.search(n)), None)
+    return f"text_misproposal: {hit}" if hit else None
+
+
+def _keys_problem(obj: dict, allowed: frozenset) -> str | None:
+    extra = set(obj) - allowed
+    if not extra:
+        return None
+    return f"{'authority_key' if extra & AUTHORITY_KEYS else 'unknown_key'}: {sorted(extra)}"
 
 
 def validate_advice(raw: object, ref_map: dict[str, dict]) -> tuple[list[Advice], list[dict]]:
-    """Check one model reply against the schema and the safety rules, item by item."""
+    """Check one model reply, item by item: schema and catalog first, free text second."""
     rejected: list[dict] = []
     if not isinstance(raw, dict) or set(raw) != {"advice"} or not isinstance(raw.get("advice"), list):
         return [], [{"ref": None, "where": "root", "reason": "schema: expected exactly {\"advice\": [...]}"}]
@@ -272,10 +313,8 @@ def validate_advice(raw: object, ref_map: dict[str, dict]) -> tuple[list[Advice]
         if not isinstance(item, dict):
             reject("item", "schema: item is not an object")
             continue
-        extra = set(item) - ADVICE_KEYS
-        if extra:
-            kind = "authority_key" if extra & AUTHORITY_KEYS else "unknown_key"
-            reject("item", f"{kind}: {sorted(extra)}")
+        if (p := _keys_problem(item, ADVICE_KEYS)):
+            reject("item", p)
             continue
         if not isinstance(ref, str) or ref not in ref_map:
             reject("item", "unknown_ref: not a finding that was sent")
@@ -284,78 +323,111 @@ def validate_advice(raw: object, ref_map: dict[str, dict]) -> tuple[list[Advice]
             reject("item", "duplicate_ref")
             continue
         finding = ref_map[ref]
+        sent = finding_to_payload_item(ref, finding)          # exactly what the model saw
+        rule, verdict = sent["rule"], sent["verdict"]
+        # claim and citations: structural faithfulness to the input
+        claim = item.get("claim_level")
+        if claim not in catalog.CLAIM_LEVELS:
+            reject("claim_level", "schema: claim_level is not a catalog value")
+            continue
+        if claim not in catalog.CLAIMS_BY_VERDICT.get(verdict, ()):
+            reject("claim_level", f"unfaithful_claim: {claim} is not allowed for verdict {verdict}")
+            continue
+        cites = item.get("cites")
+        if (not isinstance(cites, list) or not cites or len(cites) > len(catalog.CITABLE_FIELDS)
+                or not all(isinstance(c, str) for c in cites)):
+            reject("cites", "schema: cites must be a non-empty list of field names")
+            continue
+        bad_cite = next((c for c in cites if c not in catalog.CITABLE_FIELDS
+                         or (c == "cve" and not sent["cve"]) or (c == "kev" and not sent["kev"])
+                         or (c == "risk_score" and sent["risk_score"] is None)), None)
+        if bad_cite is not None:
+            reject("cites", f"unfaithful_cite: {bad_cite} was not in the input")
+            continue
+        overclaim_ok = claim == "reproduced"
         explanation = _clean_text(item.get("risk_explanation"), MAX_EXPLANATION)
         if explanation is None:
             reject("risk_explanation", "schema: missing, empty, too long or control characters")
             continue
-        if leak_reasons(explanation):
-            reject("risk_explanation", f"leak: {leak_reasons(explanation)}")
+        if (p := _text_problem(explanation, overclaim_ok=overclaim_ok, rules=())):
+            reject("risk_explanation", p)
             continue
-        overclaim_ok = finding.get("verdict") == "proven"
-        if not overclaim_ok and _OVERCLAIM_RE.search(_norm(explanation)):
-            reject("risk_explanation", "overclaim: a detected finding described as proven or exploited")
-            continue
+        # remediation: catalog actions allowed for this rule
         rem_raw = item.get("remediation")
         if not isinstance(rem_raw, list) or not 1 <= len(rem_raw) <= MAX_REMEDIATION_ITEMS:
-            reject("remediation", f"schema: 1..{MAX_REMEDIATION_ITEMS} strings expected")
+            reject("remediation", f"schema: 1..{MAX_REMEDIATION_ITEMS} steps expected")
             continue
-        remediation = []
-        for r in rem_raw:                      # a bad entry is dropped on its own, not the whole advice
-            s = _clean_text(r, MAX_REMEDIATION_LEN)
-            if s is None:
-                bad = "schema: remediation entry missing, too long or control characters"
-            elif leak_reasons(s):
-                bad = f"leak: {leak_reasons(s)}"
-            elif _TOOLING_RE.search(_norm(s)):
-                bad = "commands are not given as remediation text"
-            elif not overclaim_ok and _OVERCLAIM_RE.search(_norm(s)):
-                bad = "overclaim: a detected finding described as proven or exploited"
-            else:
-                hit = next((n for n, rx in _REMEDIATION_FORBIDDEN if rx.search(_norm(s))), None)
-                bad = f"misproposal: {hit}" if hit else None
-            if bad:
-                reject("remediation", bad)
-            else:
-                remediation.append(s)
+        remediation, actions = [], set()
+        for r in rem_raw:                      # a bad step is dropped on its own, not the whole advice
+            if not isinstance(r, dict):
+                reject("remediation", "schema: step is not an object")
+                continue
+            if (p := _keys_problem(r, REMEDIATION_KEYS)):
+                reject("remediation", p)
+                continue
+            action = r.get("fix")
+            if action not in catalog.REMEDIATION_ACTIONS:
+                reject("remediation", "not_in_catalog: unknown remediation action")
+                continue
+            if not catalog.action_allowed(action, rule):
+                reject("remediation", f"not_allowed_for_rule: {action} for {rule}")
+                continue
+            if (p := catalog.fix_verdict_problem(action, verdict)):
+                reject("remediation", p)
+                continue
+            if action in actions:
+                reject("remediation", "duplicate_action")
+                continue
+            detail = _clean_text(r.get("detail", "") or catalog.REMEDIATION_ACTIONS[action][0], MAX_REMEDIATION_LEN)
+            if detail is None:
+                reject("remediation", "schema: detail too long or control characters")
+                continue
+            if (p := _text_problem(detail, overclaim_ok=overclaim_ok, rules=_REMEDIATION_FORBIDDEN)):
+                reject("remediation", p)
+                continue
+            actions.add(action)
+            remediation.append(RemediationStep(action, catalog.REMEDIATION_ACTIONS[action][0], detail))
         if not remediation:
             reject("item", "schema: no usable remediation left")
             continue
+        # next checks: catalog operations allowed for this rule
         checks_raw = item.get("next_checks", [])
         if not isinstance(checks_raw, list) or len(checks_raw) > MAX_CHECKS:
             reject("next_checks", f"schema: up to {MAX_CHECKS} objects expected")
             continue
-        checks = []
+        checks, ops = [], set()
         for c in checks_raw:
             if not isinstance(c, dict):
                 reject("next_check", "schema: not an object")
                 continue
-            extra = set(c) - CHECK_KEYS
-            if extra:
-                kind = "authority_key" if extra & AUTHORITY_KEYS else "unknown_key"
-                reject("next_check", f"{kind}: {sorted(extra)}")
+            if (p := _keys_problem(c, CHECK_KEYS)):
+                reject("next_check", p)
                 continue
-            title = _clean_text(c.get("title"), MAX_CHECK_TITLE)
-            reason = _clean_text(c.get("reason"), MAX_CHECK_REASON) if c.get("reason") is not None else ""
-            level = c.get("level")
-            if title is None or reason is None or level not in ("L1", "L2"):
-                reject("next_check", "schema: title / reason / level (L1|L2) invalid")
+            op = c.get("operation")
+            if op not in catalog.OPERATIONS:
+                reject("next_check", "not_in_catalog: unknown operation")
                 continue
-            text = f"{title} {reason}"
-            leaks = leak_reasons(text)
-            if leaks or _HOSTISH_IN_PATH.search(_norm(text)) or _PATH_RE.search(_norm(text)):
-                reject("next_check", f"leak: {leaks or ['path']}")
+            if not catalog.operation_allowed(op, rule):
+                reject("next_check", f"not_allowed_for_rule: {op} for {rule}")
                 continue
-            hit = next((name for name, rx in _FORBIDDEN_CHECK if rx.search(_norm(text))), None)
-            if hit:
-                reject("next_check", f"misproposal: {hit}")
+            if op in ops:
+                reject("next_check", "duplicate_operation")
                 continue
-            if not overclaim_ok and _OVERCLAIM_RE.search(_norm(text)):
-                reject("next_check", "overclaim: a detected finding described as proven or exploited")
+            reason = _clean_text(c.get("reason", "") or "-", MAX_CHECK_REASON)
+            if reason is None:
+                reject("next_check", "schema: reason too long or control characters")
                 continue
-            checks.append(NextCheck(title=title, level=level, reason=reason, required_gates=_gates_for(level)))
+            if (p := _text_problem(reason, overclaim_ok=overclaim_ok, rules=_FORBIDDEN_CHECK)) or \
+                    _HOSTISH_IN_PATH.search(_norm(reason)) or _PATH_RE.search(_norm(reason)):
+                reject("next_check", p or "leak: ['path']")
+                continue
+            level, label, _ = catalog.OPERATIONS[op]
+            ops.add(op)
+            checks.append(NextCheck(operation=op, level=level, label=label, reason=reason,
+                                    required_gates=catalog.gates_for(level)))
         seen.add(ref)
-        out.append(Advice(ref=ref, finding_id=finding["id"], risk_explanation=explanation,
-                          remediation=tuple(remediation), next_checks=tuple(checks)))
+        out.append(Advice(ref=ref, finding_id=finding["id"], claim_level=claim, cites=tuple(dict.fromkeys(cites)),
+                          risk_explanation=explanation, remediation=tuple(remediation), next_checks=tuple(checks)))
     return out, rejected
 
 
