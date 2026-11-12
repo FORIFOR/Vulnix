@@ -1,0 +1,309 @@
+"""AI advisor (phase 1, mock only): allow-listed input, validated output, no path to a worker."""
+from __future__ import annotations
+
+import ast
+import dataclasses
+import json
+import unittest
+from pathlib import Path
+
+from aegis import ai_advisor as adv
+from aegis.abliteration_server import start_abliteration_server
+from aegis.router import sanitize_proposal
+from tests.test_real_service import HOST, RealServiceBase
+
+ROOT = Path(__file__).resolve().parents[1]
+
+SECRET_TOKEN = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyLWEifQ.c2lnbmF0dXJlLXZhbHVl"
+COOKIE = "sid=7f3a9c0d2b8e4f1a6c5d3e2f1a0b9c8d"
+
+
+def _leaky_finding(fid="f_l1_cors", **over) -> dict:
+    """A finding shaped like the analyzer's, carrying every kind of data that must stay local."""
+    f = {
+        "id": fid, "title": "CORS設定の過剰な許可（Access-Control-Allow-Origin: https://evil.example）",
+        "severity": "medium", "verdict": "detected", "verdict_basis": "l1_observation",
+        "category": "CORS・オリジン境界", "cve": ["CVE-2021-41773", "not-a-cve <script>"], "risk_score": 41.6,
+        "summary": f"https://{HOST}/api/me が Origin を反映しました", "why_detected": "user@example.com の応答",
+        "evidence": [{"origin": "real_service", "target_url": f"https://{HOST}/api/me", "tool": "http_probe",
+                      "headers": {"Set-Cookie": COOKIE, "Authorization": f"Bearer {SECRET_TOKEN}"},
+                      "body_prefix": '{"email":"user@example.com","ip":"203.0.113.7"}'}],
+        "remediation": {"steps": ["内部URL http://10.0.0.5:8080/admin を閉じる"]},
+        "asset": {"challenge": {"token": "vulnix-verify=abc"}},
+    }
+    f.update(over)
+    return f
+
+
+def _advice_reply(items) -> callable:
+    return lambda user: "```json\n" + json.dumps({"advice": items}, ensure_ascii=False) + "\n```"
+
+
+def _ok_item(ref="F1", **over) -> dict:
+    item = {"ref": ref, "risk_explanation": "オリジンの許可が広く、ほかのサイトから応答を読まれる可能性があります。",
+            "remediation": ["許可するオリジンを明示的な一覧に限定する"],
+            "next_checks": [{"title": "信頼しないオリジンからの応答ヘッダーを再確認する", "level": "L1", "reason": "範囲が狭まったかを見るため"}]}
+    item.update(over)
+    return item
+
+
+class _MockServer:
+    def __init__(self, reply=None):
+        self.srv = start_abliteration_server(advisor_reply=reply)
+        self.url = f"http://127.0.0.1:{self.srv.server_port}/v1/chat/completions"
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        self.srv.shutdown()
+        self.srv.server_close()
+
+
+class TestPayloadIsAnAllowList(unittest.TestCase):
+    def test_only_enumerations_and_an_opaque_ref_are_sent(self):
+        with _MockServer() as m:
+            adv.AbliterationAdvisor(m.url).advise([_leaky_finding()])
+            self.assertEqual(len(m.srv.received), 1)
+            raw = json.dumps(m.srv.received[0], ensure_ascii=False)
+        for secret in (HOST, "evil.example", SECRET_TOKEN, COOKIE, "user@example.com", "203.0.113.7",
+                       "10.0.0.5", "/api/me", "/admin", "vulnix-verify", "Bearer", "<script>", "CORS設定の過剰な許可"):
+            self.assertNotIn(secret, raw, secret)
+        user = json.loads(m.srv.received[0]["messages"][1]["content"])
+        self.assertEqual(user, {"findings": [{
+            "ref": "F1", "rule": "f_l1_cors", "category": "CORS・オリジン境界", "severity": "medium",
+            "verdict": "detected", "verdict_basis": "l1_observation", "cve": ["CVE-2021-41773"],
+            "risk_score": 42, "kev": False}]})
+
+    def test_unknown_values_fall_back_to_fixed_words(self):
+        item = adv.finding_to_payload_item("F1", {"id": "f_site_specific_rule", "category": "社内システムXの分類",
+                                                  "severity": "urgent", "verdict": "pwned", "risk_score": float("nan")})
+        self.assertEqual((item["rule"], item["category"], item["severity"], item["verdict"], item["risk_score"]),
+                         ("other", "その他", "medium", "detected", None))
+
+    def test_a_payload_that_still_leaks_is_refused_before_sending(self):
+        calls = []
+        a = adv.AbliterationAdvisor("http://127.0.0.1:9/v1/chat/completions",
+                                    transport=lambda *x: calls.append(x) or b"{}")
+        orig = adv.finding_to_payload_item
+        try:
+            adv.finding_to_payload_item = lambda ref, f: {**orig(ref, f), "rule": "https://evil.example/x"}
+            with self.assertRaises(adv.AdvisorError):
+                a.advise([_leaky_finding()])
+        finally:
+            adv.finding_to_payload_item = orig
+        self.assertEqual(calls, [])
+
+    def test_the_leak_detector_accepts_security_vocabulary(self):
+        for clean in ("Cookie に Secure 属性を付ける", "Content-Security-Policy-Report-Only を設定", "TLS 1.2 以上",
+                      "Node.js のバージョン表示を止める", "セッション・Cookie設定", "CVE-2021-41773"):
+            self.assertEqual(adv.leak_reasons(clean), [], clean)
+        for dirty in ("https://x.example", "api.example.com", "Bearer abcdefghijklmnop", "192.168.0.1",
+                      "a@b.co", "Set-Cookie: sid=abc", SECRET_TOKEN, "fe80::1:2:3"):
+            self.assertNotEqual(adv.leak_reasons(dirty), [], dirty)
+
+
+class TestPhaseOneIsMockOnly(unittest.TestCase):
+    def test_only_a_loopback_endpoint_is_accepted(self):
+        for url in ("https://api.abliteration.ai/v1/chat/completions", "http://10.0.0.1/v1/chat/completions",
+                    "https://127.0.0.1.example/v1", "file:///etc/passwd"):
+            with self.assertRaises(adv.AdvisorError, msg=url):
+                adv.AbliterationAdvisor(url)
+        adv.AbliterationAdvisor("http://127.0.0.1:1/v1/chat/completions")
+        adv.AbliterationAdvisor("http://localhost:1/v1/chat/completions")
+
+    def test_the_adapter_takes_no_api_key_and_sends_no_authorization(self):
+        fields = {f.name for f in dataclasses.fields(adv.AbliterationAdvisor)}
+        self.assertFalse({"api_key", "key", "token"} & fields)
+        seen = []
+        a = adv.AbliterationAdvisor("http://127.0.0.1:9/v1/chat/completions",
+                                    transport=lambda url, h, b: seen.append(h) or json.dumps(
+                                        {"choices": [{"message": {"content": '{"advice": []}'}}]}).encode())
+        a.advise([_leaky_finding()])
+        self.assertEqual(seen, [{"Content-Type": "application/json"}])
+
+    def test_a_dead_or_garbled_endpoint_is_one_error(self):
+        a = adv.AbliterationAdvisor("http://127.0.0.1:1/v1/chat/completions", timeout_s=1)
+        with self.assertRaises(adv.AdvisorError):
+            a.advise([_leaky_finding()])
+        b = adv.AbliterationAdvisor("http://127.0.0.1:9/x", transport=lambda *x: b"<html>")
+        with self.assertRaises(adv.AdvisorError):
+            b.advise([_leaky_finding()])
+
+
+class TestMockOutputQuality(unittest.TestCase):
+    LAB = [
+        {"id": "f_headers", "severity": "medium", "verdict": "detected", "category": "設定不備"},
+        {"id": "f_powered", "severity": "low", "verdict": "detected", "category": "情報露出"},
+        {"id": "f_idor", "severity": "high", "verdict": "detected", "category": "アクセス制御"},
+        {"id": "f_banner", "severity": "high", "verdict": "detected", "category": "既知の脆弱性（CVE）",
+         "cve": ["CVE-2021-41773"]},
+    ]
+
+    def test_every_finding_gets_valid_grounded_advice(self):
+        with _MockServer() as m:
+            r = adv.AbliterationAdvisor(m.url).advise([dict(f) for f in self.LAB])
+        self.assertEqual(r.rejected, ())
+        self.assertEqual(r.missing_refs, ())
+        self.assertEqual([a.finding_id for a in r.advice], [f["id"] for f in self.LAB])
+        by = {a.finding_id: a for a in r.advice}
+        self.assertIn("Content-Security-Policy", " ".join(by["f_headers"].remediation))
+        for a in r.advice:
+            self.assertTrue(a.remediation and a.risk_explanation)
+            self.assertNotRegex(a.risk_explanation, adv._OVERCLAIM_RE)   # all are "detected"
+            for c in a.next_checks:
+                self.assertEqual(c.status, "proposal_only")
+                self.assertIn("scope_approved", c.required_gates)
+        idor = by["f_idor"].next_checks[0]
+        self.assertEqual(idor.level, "L2")
+        self.assertIn("l2_human_approval", idor.required_gates)
+        self.assertEqual(r.status, "proposal_only")
+        self.assertEqual(r.endpoint_kind, "loopback_mock")
+
+
+class TestMisproposalsAreRejected(unittest.TestCase):
+    def run_with(self, items, findings=None):
+        with _MockServer(_advice_reply(items)) as m:
+            return adv.AbliterationAdvisor(m.url).advise(findings or [_leaky_finding(), _leaky_finding("f_headers")])
+
+    def reasons(self, r):
+        return [x["reason"].split(":")[0] for x in r.rejected]
+
+    def test_each_kind_of_bad_next_check_is_dropped_with_its_reason(self):
+        good = {"title": "妥当な確認", "level": "L1", "reason": "修正の反映を見るため"}
+        cases = [
+            ({"title": "本番データを使って確認する", "level": "L2", "reason": "x"}, "misproposal: production_or_other_users"),
+            ({"title": "大量送信して耐性を見る", "level": "L1", "reason": "x"}, "misproposal: load_or_dos"),
+            ({"title": "承認なしで L2 を実行する", "level": "L2", "reason": "x"}, "misproposal: approval_bypass"),
+            ({"title": "リダイレクト先の外部サービスも調べる", "level": "L1", "reason": "x"}, "misproposal: scope_expansion"),
+            ({"title": "管理画面のレコードを削除して確認する", "level": "L2", "reason": "x"}, "misproposal: destructive"),
+            ({"title": "sqlmap で注入を試す", "level": "L2", "reason": "x"}, "misproposal: tooling_or_commands"),
+            ({"title": "https://evil.example に送る", "level": "L1", "reason": "x"}, "leak"),
+            ({"title": "/api/admin を調べる", "level": "L1", "reason": "x"}, "leak"),
+            ({"title": "203.0.113.7 を確認する", "level": "L1", "reason": "x"}, "leak"),
+            ({"title": "応答を再確認する", "level": "L1", "reason": "x", "tool": "http_probe"}, "authority_key"),
+            ({"title": "レベル不正", "level": "L3", "reason": "x"}, "schema"),
+        ]
+        for bad, expected in cases:
+            r = self.run_with([_ok_item(next_checks=[bad, good])])
+            self.assertEqual(len(r.advice), 1, bad)
+            self.assertEqual([c.title for c in r.advice[0].next_checks], ["妥当な確認"], bad)
+            self.assertEqual(len(r.rejected), 1, (bad, r.rejected))
+            self.assertTrue(r.rejected[0]["reason"].startswith(expected), (bad, r.rejected))
+
+    def test_too_many_next_checks_drop_the_item(self):
+        checks = [{"title": f"確認{i}", "level": "L1", "reason": "x"} for i in range(adv.MAX_CHECKS + 1)]
+        r = self.run_with([_ok_item(next_checks=checks)])
+        self.assertEqual(r.advice, ())
+        self.assertEqual(self.reasons(r), ["schema"])
+
+    def test_whole_items_that_cannot_be_trusted_are_dropped(self):
+        r = self.run_with([
+            _ok_item("F1", approved=True, token="x"),                             # authority-shaped keys
+            _ok_item("F9"),                                                       # a ref that was never sent
+            _ok_item("F2", risk_explanation="この脆弱性は実証済みで、悪用に成功しました。"),  # overclaim on detected
+        ])
+        self.assertEqual(r.advice, ())
+        self.assertEqual(sorted(self.reasons(r)), ["authority_key", "overclaim", "unknown_ref"])
+        self.assertEqual(r.missing_refs, ("F1", "F2"))
+
+    def test_leaks_and_commands_in_explanations_or_remediation(self):
+        r = self.run_with([
+            _ok_item("F1", risk_explanation="https://evil.example から読まれます"),
+            _ok_item("F2", remediation=["curl で確認してから設定する"]),
+        ])
+        self.assertEqual(r.advice, ())
+        self.assertEqual(sorted(self.reasons(r)), ["commands are not given as remediation text", "leak"])
+
+    def test_duplicates_and_proven_wording(self):
+        proven = _leaky_finding("f_idor", verdict="proven")
+        r = self.run_with([_ok_item("F1", risk_explanation="L2 で実証済みの所見です。"),
+                           _ok_item("F1")], findings=[proven])
+        self.assertEqual(len(r.advice), 1)                    # "proven" wording is fine for a proven finding
+        self.assertEqual(self.reasons(r), ["duplicate_ref"])
+
+    def test_replies_that_are_not_the_schema(self):
+        for reply in ("not json at all", '{"proposals": [{"tool": "http_probe"}]}', '{"advice": "x"}',
+                      '{"advice": [], "approved": true}', "[1, 2]"):
+            with _MockServer(lambda u, reply=reply: reply) as m:
+                r = adv.AbliterationAdvisor(m.url).advise([_leaky_finding()])
+            self.assertEqual(r.advice, (), reply)
+            self.assertEqual(r.missing_refs, ("F1",), reply)
+            self.assertEqual(r.rejected[0]["where"], "root", reply)
+
+
+class TestNoPathFromAdviceToAWorker(unittest.TestCase):
+    FORBIDDEN_IMPORTS = ("gateway", "authz", "runtime", "workers", "assessment", "confinement", "netfilter",
+                         "authority_ledger", "secrets_store", "ownership")
+
+    def test_the_module_imports_nothing_that_can_authorize_or_run(self):
+        tree = ast.parse((ROOT / "aegis" / "ai_advisor.py").read_text())
+        names = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names += [a.name for a in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                names.append(node.module or "")
+        for n in names:
+            for bad in self.FORBIDDEN_IMPORTS:
+                self.assertNotIn(bad, n.split("."), n)
+        self.assertNotIn("subprocess", names)
+
+    def test_a_next_check_is_not_a_gateway_proposal(self):
+        self.assertFalse({"tool", "action", "args", "target_id"} & {f.name for f in dataclasses.fields(adv.NextCheck)})
+        with _MockServer() as m:
+            r = adv.AbliterationAdvisor(m.url).advise([{"id": "f_idor", "severity": "high"}])
+        check = r.advice[0].next_checks[0]
+        with self.assertRaises(ValueError):
+            sanitize_proposal(dataclasses.asdict(check))
+
+        def keys(o):
+            if isinstance(o, dict):
+                yield from o
+                for v in o.values():
+                    yield from keys(v)
+            elif isinstance(o, list):
+                for v in o:
+                    yield from keys(v)
+        self.assertFalse({"tool", "action", "args", "target_id", "token", "approved"} & set(keys(r.to_dict())))
+
+    def test_the_status_is_set_by_code_not_by_the_model(self):
+        r = None
+        with _MockServer(_advice_reply([_ok_item(next_checks=[{"title": "確認", "level": "L2", "reason": "x",
+                                                               "status": "approved"}])])) as m:
+            r = adv.AbliterationAdvisor(m.url).advise([_leaky_finding()])
+        self.assertEqual(r.advice[0].next_checks, ())         # "status" from the model is an unknown key
+        self.assertEqual(r.status, "proposal_only")
+
+
+class TestServiceIntegration(RealServiceBase):
+    def test_real_service_findings_never_reach_the_advisor_and_nothing_runs(self):
+        with _MockServer() as m:
+            advisor = adv.AbliterationAdvisor(m.url)
+            self.onboard()
+            self.run_l1()
+            executed = []
+            orig = self.svc.gateway.execute
+            self.svc.gateway.execute = lambda *a, **k: executed.append(a) or orig(*a, **k)
+            try:
+                out = self.svc.advise_findings(advisor, actor="appr")
+                self.assertEqual(out["sent_refs"], [])
+                self.assertGreater(out["excluded_real_service_findings"], 0)
+                self.assertEqual(m.srv.received, [])                     # no request at all
+                self.svc.select_asset("lab")
+                lab = self.svc.advise_findings(advisor, actor="appr")
+            finally:
+                self.svc.gateway.execute = orig
+            self.assertEqual(sorted(a["finding_id"] for a in lab["advice"]), ["f_banner", "f_idor", "f_sqli"])
+            self.assertEqual(lab["excluded_real_service_findings"], 0)
+            self.assertEqual(executed, [])                               # advice launched nothing
+            raw = json.dumps(m.srv.received, ensure_ascii=False)
+            for s in (HOST, "lab.test", "http://", "/api/search"):
+                self.assertNotIn(s, raw, s)
+        events = [e["fields"] for e in self.svc.audit.entries() if e["event"] == "advisor.asked"]
+        self.assertEqual([e["sent"] for e in events], [0, 3])
+        self.assertTrue(all(e["sent_to_external_model"] is False for e in events))
+
+
+if __name__ == "__main__":
+    unittest.main()

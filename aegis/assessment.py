@@ -3680,6 +3680,24 @@ class AssessmentService:
             self.bus.publish(self.a.id, "chat.message", messages=[user_msg, ai_msg])
             return {"message": ai_msg, "chat_messages": list(self.a.chat_messages), "planner": self.planner_status()}
 
+    def advise_findings(self, advisor, actor: str = "system") -> dict:
+        """Ask the AI advisor (aegis/ai_advisor.py) about the lab findings. Proposal only:
+        nothing is approved, queued or run. A finding about a real service, or of unknown
+        origin, is not given to the advisor at all (same allow-list as the chat)."""
+        with self._lock:
+            all_f = [copy.deepcopy(f) for f in self.a.findings.values()]
+            eligible = [f for f in all_f if not self._finding_touches_real_service(f)]
+        excluded = len(all_f) - len(eligible)
+        # the model call happens outside the service lock (a slow model must not block a stop)
+        result = advisor.advise(eligible).to_dict()
+        result["excluded_real_service_findings"] = excluded
+        with self._lock:
+            self.audit.record("advisor.asked", actor=actor, backend=result["backend"],
+                              endpoint_kind=result["endpoint_kind"], sent=len(result["sent_refs"]),
+                              excluded_real_service=excluded, rejected=len(result["rejected"]),
+                              sent_to_external_model=False)
+        return result
+
     def _finding_touches_real_service(self, finding: dict | None) -> bool:
         """Whether a finding may NOT be shown to an external model. Allow-list: only
         evidence that was recorded as taken from the local lab passes. Evidence
