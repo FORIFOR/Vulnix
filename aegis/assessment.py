@@ -3576,7 +3576,7 @@ class AssessmentService:
         except (ValueError, AttributeError):
             err = None
         if isinstance(err, dict):
-            stage = {"connect": "TCP接続", "tls": "TLSハンドシェイク", "send": "リクエスト送信",
+            stage = {"connect": "TCP接続", "tls": "TLSハンドシェイク", "send": "リクエスト送信", "between_stages": "処理の途中",
                      "first_byte": "応答の最初のバイト待ち", "body": "応答本文の受信"}.get(str(err.get("stage")), "不明な段階")
             kind = {"timeout": "タイムアウト", "tls_verify_failed": "証明書の検証失敗", "tls_error": "TLSエラー",
                     "egress_blocked": "許可外の宛先への接続を遮断",

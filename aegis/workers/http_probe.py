@@ -15,6 +15,12 @@ Engine, Functions...) may need tens of seconds to start an instance, while the
 TCP and TLS stages are answered by its front end at once. On failure the worker
 prints a JSON object naming the stage and the kind of error (exit code 3)
 instead of a traceback, so the control plane can record why it failed.
+
+The overall deadline is enforced with SIGALRM, because per-recv socket timeouts
+reset on every byte of a target that drips its answer. `probe()` therefore
+belongs to this worker process's main thread: it replaces any SIGALRM timer for
+its run. Where `signal.setitimer` does not exist (Windows), only the per-stage
+timeouts apply and the gateway's own limit is what ends a dripping target.
 """
 from __future__ import annotations
 
@@ -171,7 +177,10 @@ def probe(a: argparse.Namespace, clock=time.monotonic) -> dict:
             "scheme": a.scheme,
             "timings_ms": timings,
         }
-    except StageError as e:
+    except (StageError, DeadlineExceeded) as e:
+        # a deadline can also fall between two stages (building the connection object, the result)
+        if isinstance(e, DeadlineExceeded):
+            e = StageError("between_stages", "timeout", round(overall, 3), "DeadlineExceeded")
         timings["total_ms"] = round((clock() - t0) * 1000)
         return {
             "error": {"stage": e.stage, "kind": e.kind, "timeout_s": e.timeout_s, "exception": e.detail},

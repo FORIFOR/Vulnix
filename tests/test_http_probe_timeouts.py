@@ -265,6 +265,20 @@ class TestOverallDeadlineAgainstADrippingTarget(unittest.TestCase):
         self.assertEqual((out["error"]["stage"], out["error"]["kind"]), ("connect", "egress_blocked"))
 
 
+class TestDeadlineBetweenStages(unittest.TestCase):
+    def test_a_deadline_outside_any_stage_is_still_a_structured_timeout(self):
+        import argparse
+        from unittest.mock import patch
+        from aegis.workers import http_probe as hp
+        a = argparse.Namespace(scheme="http", host="x.test", ip="127.0.0.1", port=1, path="/", method="GET",
+                               origin="https://untrusted-origin.example", connect_timeout=1, read_timeout=1, overall_timeout=1)
+        sock = socket.socket()
+        with patch.object(hp.socket, "create_connection", return_value=sock), \
+                patch.object(hp.http.client, "HTTPConnection", side_effect=hp.DeadlineExceeded("x")):
+            out = hp.probe(a)
+        self.assertEqual((out["error"]["stage"], out["error"]["kind"]), ("between_stages", "timeout"))
+
+
 class TestDowngradedVerdictIsRescored(unittest.TestCase):
     def test_score_and_rationale_follow_the_detected_factor(self):
         from aegis.evidence import enforce_verdict
