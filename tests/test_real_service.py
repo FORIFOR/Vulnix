@@ -175,15 +175,17 @@ class TestRulesAreConfigurationNotCode(unittest.TestCase):
         builtin = L2RuleSet.load([BUILTIN_PROFILE_DIR])
         (profile,) = builtin.profiles.values()
         self.assertEqual(sorted(c["category"] for c in profile["checks"]),
-                         ["ai_chat_isolation", "billing_plan", "idor", "share_link", "storage_acl"])
+                         ["billing_plan", "idor", "share_link"])
         # The bundled profile is a public template: bound to no host, nothing confirmed,
         # nothing executable, and no detail of the (private) target API.
         self.assertEqual((profile["spec_status"], profile["hosts"]), ("placeholder", []))
         self.assertEqual(builtin.runnable_check_ids(), ())
         for c in profile["checks"]:
             self.assertEqual((c["spec_status"], c["spec_evidence"]), ("placeholder", []))
-        raw = (BUILTIN_PROFILE_DIR / "deepnote.json").read_text(encoding="utf-8")
-        self.assertIsNone(re.search(r"run\.app|\.py:\d+|mopita|classnote", raw))
+        raw = (BUILTIN_PROFILE_DIR / "sample_api.json").read_text(encoding="utf-8")
+        self.assertIsNone(re.search(r"run\.app|\.py:\d+|mopita|classnote|deepnote|議事録", raw, re.I))
+        # the shipped template names no real service at all, in its file name or anywhere in the directory
+        self.assertEqual(sorted(p.name for p in BUILTIN_PROFILE_DIR.glob("*.json")), ["sample_api.json"])
         for c in profile["checks"]:
             with self.subTest(check=c["id"]):
                 self.assertTrue(c["preconditions"])
@@ -644,11 +646,11 @@ class TestL2HumanApprovedChecks(RealServiceBase):
         self.assertFalse(self.svc.finding_requires_human_l2_approval("f_headers"))
         self.assertTrue(self.finding("f_ex_idor")["requires_l2_approval"])
         # a rule of another service's profile cannot be run against this asset
-        self.svc.a.findings["f_ex_idor"]["reproduce_check"] = "deepnote_idor_notes"
+        self.svc.a.findings["f_ex_idor"]["reproduce_check"] = "sample_idor"
         with self.assertRaises(ValueError):
             self.svc.verify_finding("f_ex_idor", actor="appr")
         self.assertEqual(self.fake.seen, [])
-        self.assertEqual(self.svc._ephemeral_worker_env("reproduction_probe", {"check": "deepnote_idor_notes"}), {})
+        self.assertEqual(self.svc._ephemeral_worker_env("reproduction_probe", {"check": "sample_idor"}), {})
         self.assertEqual(self.svc._ephemeral_worker_env("http_probe", {"check": "ex_idor_notes"}), {})
 
     def test_broken_boundary_is_proven_and_tokens_never_leak(self):
@@ -810,25 +812,25 @@ class TestUnconfirmedRulesCannotRun(RealServiceBase):
         host = "api.stg.example.org"
         # An installation's own profile (git-ignored data dir): same id as the bundled
         # template, bound to a host, with ONE rule confirmed and its mock paths not yet set.
-        site = json.loads((BUILTIN_PROFILE_DIR / "deepnote.json").read_text(encoding="utf-8"))
+        site = json.loads((BUILTIN_PROFILE_DIR / "sample_api.json").read_text(encoding="utf-8"))
         site["applies_to"]["hosts"] = [host]
         site["paths"]["resource_b_path"]["default"] = "/items/REPLACE_WITH_ID_OWNED_BY_B"
         site["paths"]["resource_a_path"]["default"] = "/items/REPLACE_WITH_ID_OWNED_BY_A"
         site["checks"][0].update(spec_status="confirmed", spec_evidence=["backend@abc123 app/routes/items.py:10-20"])
         (self.dir / "l2_profiles").mkdir()
-        (self.dir / "l2_profiles" / "deepnote.json").write_text(json.dumps(site), encoding="utf-8")
+        (self.dir / "l2_profiles" / "sample_api.json").write_text(json.dumps(site), encoding="utf-8")
         self.svc.workers.kill_all()
         (self.dir / "l2_profiles").chmod(0o700)
-        (self.dir / "l2_profiles" / "deepnote.json").chmod(0o600)
+        (self.dir / "l2_profiles" / "sample_api.json").chmod(0o600)
         self.svc = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT, verify_seconds=0.1)       # default profile dirs
         # a site profile is listed but nothing in it runs until an admin accepts its exact content
         self.assertEqual(self.svc.l2.runnable_check_ids(), ())
         status = self.svc.l2_profiles_status()["profiles"]
-        self.assertEqual([(p["id"], p["site"], p["accepted"]) for p in status], [("deepnote", True, False)])
+        self.assertEqual([(p["id"], p["site"], p["accepted"]) for p in status], [("sample_api", True, False)])
         with self.assertRaises(ValueError):
-            self.svc.accept_l2_profile("deepnote", "0" * 64, "root")              # not the content on disk
-        self.svc.accept_l2_profile("deepnote", status[0]["sha256"], "root")
-        self.assertEqual(self.svc.l2.runnable_check_ids(), ("deepnote_idor_notes",))
+            self.svc.accept_l2_profile("sample_api", "0" * 64, "root")              # not the content on disk
+        self.svc.accept_l2_profile("sample_api", status[0]["sha256"], "root")
+        self.assertEqual(self.svc.l2.runnable_check_ids(), ("sample_idor",))
         # the hostname is only a label here: the injected resolver pins it to loopback
         self.svc._custom_resolver = lambda h: ["127.0.0.1"] if h == host else []
         self.url = f"http://{host}:{self.fake.server_port}"
@@ -837,9 +839,9 @@ class TestUnconfirmedRulesCannotRun(RealServiceBase):
         self.assertEqual(snap["state"], "completed")
         self.assertEqual(snap["secrets_status"]["profile"]["spec_status"], "partial")
         l2 = {f["reproduce_check"]: f for f in snap["findings"] if f.get("requires_l2_approval")}
-        self.assertEqual(len(l2), 5)
+        self.assertEqual(len(l2), 3)                 # every rule of the template becomes an L2 candidate
         placeholders = [f for f in l2.values() if f["l2_spec_status"] == "placeholder"]
-        self.assertEqual(len(placeholders), 4)
+        self.assertEqual(len(placeholders), 2)
         with self.assertRaises(ValueError):          # tokens used only by placeholder rules are not stored
             self.svc.configure_asset_secrets(host=host, actor="appr", tokens={
                 "free_plan_token": TOKEN_FREE, "premium_plan_token": TOKEN_PREMIUM})
@@ -852,8 +854,8 @@ class TestUnconfirmedRulesCannotRun(RealServiceBase):
         self.assertEqual(self.fake.seen, [])
         # The confirmed rule runs, but its mock paths were not configured: the owner
         # control fails, so no cross-account request is sent and no defense is claimed.
-        self.svc.verify_finding("f_dn_idor", actor="appr")
-        f = self.finding("f_dn_idor")
+        self.svc.verify_finding("f_sample_idor", actor="appr")
+        f = self.finding("f_sample_idor")
         self.assertEqual(f["evidence_status"], "incomplete")
         content = json.loads(f["evidence"][-1]["content"])
         self.assertFalse(content["subject"]["performed"])

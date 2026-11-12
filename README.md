@@ -116,7 +116,7 @@ npm run dev                        # http://localhost:3000
 2. `<データディレクトリ>/l2_profiles/*.json` — 導入先ごとの確定済みルール（git管理外。非公開のホスト名やAPIの根拠はここに置く）
 3. 環境変数 `VULNIX_L2_PROFILE_DIR` のディレクトリ
 
-同梱の `aegis/l2_profiles/deepnote.json` は適用ホストが空で全項目が `placeholder` のひな形です。これだけでは何も実行されません。プロファイルの `applies_to.hosts` に一致しない対象は L1 のみです。
+同梱の `aegis/l2_profiles/sample_api.json` は、特定のサービスを表さない汎用のひな形で、適用ホストが空、全項目が `placeholder` です。これだけでは何も実行されません。プロファイルの `applies_to.hosts` に一致しない対象は L1 のみです。
 
 各チェック（IDOR／共有リンク／ストレージACL／AIチャット分離／課金プラン）は独立したルールで、次を必ず定義します。起動時に検証し、満たさないルールは読み込みを拒否します。
 
