@@ -3731,7 +3731,7 @@ class AssessmentService:
                 if tk.status != "unsupported":
                     tk.status = "awaiting_approval"
             ap_id = self._request_approval(
-                "safe_reproduction", "L2", "検出された脆弱性の侵入成立実証（CVE-2021-41773 / IDOR / SQLi）",
+                "safe_reproduction", "L2", "検出された問題（未実証）が成立するかのL2実証（CVE-2021-41773 / IDOR / SQLi）",
                 "検出したバージョン表示（CVE-2021-41773）、テストアカウント間の認可境界（IDOR）、および検索APIのSQLインジェクション境界が"
                 "実際に成立するかを、egress_sentinel 隔離Worker（reproduction_probe）で非破壊実証します。")
             if self.a.approvals[ap_id]["status"] != "approved":
@@ -4244,11 +4244,23 @@ class AssessmentService:
                 "finding_id": finding_id,
                 "ts": time.time(),
             }
+            if outcome.get("verdict_note"):
+                ai_msg["verdict_note"] = outcome["verdict_note"]
+            if outcome.get("cautions"):
+                from .chat_guard import caution_note
+                ai_msg["cautions"] = list(outcome["cautions"])
+                ai_msg["caution_note"] = caution_note(outcome["cautions"], mixed=bool(outcome.get("mixed")))
+            if outcome.get("withheld"):
+                from .chat_guard import GUARD_NOTES
+                ai_msg["withheld_reason"] = outcome["withheld"]
+                ai_msg["guard_note"] = GUARD_NOTES.get(outcome["withheld"], GUARD_NOTES["empty"])
             self.a.chat_messages.extend([user_msg, ai_msg])
             self._save_state_locked()
             self.audit.record("chat.asked", actor=actor, term=term or "", finding_id=finding_id or "",
                               answered_by=source, sent_to_external_model=model_attempted,
-                              model_error=outcome["model_error"] or "")
+                              model_error=outcome["model_error"] or "",
+                              answer_withheld=outcome.get("withheld") or "",
+                              answer_cautions=",".join(outcome.get("cautions") or []))
             planner = self.planner_status()
             # every open view learns the new connection state - and nothing else of the
             # planner status (no verification report, endpoint or model text in events)
@@ -4320,6 +4332,10 @@ class AssessmentService:
                 )
             elif real:
                 target_f = real[0]
+            # a term-only question may be about any finding sharing that term (also when the
+            # finding_id given was not found): taken from the same point-in-time state
+            by_term = bool(term) and not (finding_id and finding_id in self.a.findings)
+            term_proven = {f.get("verdict") == "proven" for f in all_f if f.get("help_term") == term} if by_term else set()
             # Ground each answer in one immutable, point-in-time context.
             context = copy.deepcopy({
                 "asset": self.a.asset,
@@ -4352,7 +4368,25 @@ class AssessmentService:
                 outcome["model_attempted"] = True
                 outcome["model_error"] = None if ans else str(err or "no_answer")[:60]
             if ans:
-                return "external_model", ans
+                # untrusted text (aegis/chat_guard.py): instructions to bypass approval, disable a
+                # defence, destroy data or run attack tools are withheld (not stored, not audited)
+                # and the built-in answer is used; otherwise the answer is shown, with a
+                # code-written verdict note for an unproven finding and cautions for overclaims
+                from .chat_guard import MIXED_VERDICT_NOTE, cautions, check_answer, verdict_note
+                proven = bool(target_f and target_f.get("verdict") == "proven")
+                # it counts as proven only when every finding sharing the term is
+                mixed = term_proven == {True, False}
+                proven = proven and not mixed
+                withheld = check_answer(ans, proven=proven)
+                if withheld is None:
+                    if outcome is not None:
+                        if target_f and not proven:
+                            outcome["verdict_note"] = MIXED_VERDICT_NOTE if mixed else verdict_note(target_f.get("verdict"))
+                        outcome["cautions"] = cautions(ans, proven=proven)
+                        outcome["mixed"] = mixed
+                    return "external_model", ans
+                if outcome is not None:
+                    outcome["withheld"] = withheld
 
         ql = q.lower()
         if target_f:

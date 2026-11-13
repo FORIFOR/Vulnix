@@ -229,6 +229,21 @@ export function AgentActivity({
 
       {(snap.chat_messages ?? []).map((m) => (
         <Bubble key={m.id} actor={m.actor} isUser={m.role === "user"}>
+          {m.guard_note && (
+            <p role="note" className="mb-1.5 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+              {m.guard_note}
+            </p>
+          )}
+          {m.verdict_note && (
+            <p role="note" className="mb-1.5 rounded border border-zinc-200 bg-zinc-50 px-2 py-1 text-xs text-zinc-700 dark:border-zinc-700 dark:bg-zinc-800/60 dark:text-zinc-300">
+              {m.verdict_note}
+            </p>
+          )}
+          {m.caution_note && (
+            <p role="note" className="mb-1.5 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+              {m.caution_note}
+            </p>
+          )}
           {m.source === "external_model" ? <SafeMarkdown text={m.text} /> : m.text}
         </Bubble>
       ))}
