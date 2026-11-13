@@ -900,7 +900,8 @@ class TestPlannerSeccompProfileAndNamespaceChain(unittest.TestCase):
         script = argv[argv.index("-c", i) + 1]
         self.assertIn("mount -n --make-rprivate /", script)
         self.assertNotIn("mount -t", script.replace("mount -n -t", ""))   # every mount without utab
-        for h in ("/home", "/root", "/tmp", "/var", "/dev/shm", "/run", "/opt", "/srv", "/srv/vulnix/data"):
+        for h in ("/home", "/root", "/tmp", "/var", "/dev/shm", "/run", "/opt", "/srv", "/Users", "/Volumes",
+                  "/srv/vulnix/data"):
             self.assertIn(f"vxhide {h}", script)
         # the stash (/mnt) is covered only after the bind-backs and its unmount
         self.assertLess(script.index("umount -n -l /mnt"), script.index("vxhide /mnt"))
