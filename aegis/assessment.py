@@ -44,6 +44,8 @@ from .remotion_export import build_remotion_export
 from .router import (AbliterationBackend, ArtexEngine, ArtexplannerBackend,
                      ArtexSubprocessBackend, HttpModelBackend, ProposalRouter,
                      verify_planner_connections)
+from .artex_bridge import (CATALOG_BY_ID, ArtexBridgeError, command_from_env, reconstruct,
+                           run_artex_planner)
 from .runtime import WorkerPool
 from .secrets_store import EncryptedSecretStore
 from .l2_rules import BUILTIN_PROFILE_DIR, L2RuleSet, site_profile_dirs
@@ -88,6 +90,18 @@ class Assessment:
 class StopNotConfirmed(RuntimeError):
     """Authority was withdrawn, but a worker that was running could not be
     confirmed dead. The operation is NOT reported as completed."""
+
+
+class _StaticProposals:
+    """Hands already-rebuilt proposals to a ProposalRouter (so they are sanitized
+    and audited like any backend's)."""
+
+    def __init__(self, name: str, proposals: list[dict]):
+        self.name = name
+        self._proposals = [dict(p) for p in proposals]
+
+    def propose(self, _context: dict) -> list[dict]:
+        return [dict(p) for p in self._proposals]
 
 
 class ApproverRequired(PermissionError):
@@ -260,6 +274,14 @@ class AssessmentService:
         # (URL, findings, evidence) is sent to an external model or CLI.
         self._local_router = ProposalRouter(self.gateway, self.audit, [ArtexplannerBackend()])
         self.cve_monitor = cve.FeedMonitor()
+        # The REAL ARTEX planner (planner-only overlay binary), when configured. It is
+        # verified against a local (loopback) mock LLM only.
+        self._artex_real_cmd = command_from_env()
+        self._artex_llm_url = os.environ.get("VULNIX_ARTEX_LLM_URL", "")
+        self._artex_llm_model = os.environ.get("VULNIX_ARTEX_LLM_MODEL", "mock")
+        self._artex_pg_dsn = os.environ.get("VULNIX_ARTEX_PG_DSN", "")
+        self._artex_plan: dict | None = None
+        self._artex_items: dict = {}
 
         self.a = Assessment(
             id="scan_001",
@@ -1427,6 +1449,165 @@ class AssessmentService:
         )
         return rep
 
+    # ---- ARTEX: the real planner, behind the Gateway --------------------------
+    def _artex_targets_locked(self) -> list[dict]:
+        """What ARTEX may see: the registered local lab only - never a real service."""
+        return [{"asset_id": 1, "target_id": "lab", "url": self.a.target_url}]
+
+    def _refuse_artex_on_real_service_locked(self) -> None:
+        if self._is_external_service_asset() or self._in_ownership_flow(self.a.asset.get("name")):
+            raise ValueError("ARTEX 計画は登録済みのローカル検証ラボでのみ使用できます"
+                             "（実サービスの情報は ARTEX に渡しません）")
+
+    def plan_with_artex(self, actor: str) -> dict:
+        """Ask the real ARTEX planner for a plan, then rebuild every item from Vulnix's
+        own registered targets and allowed catalog. Nothing is executed here."""
+        if not self._artex_real_cmd:
+            raise ValueError("ARTEX プランナーが設定されていません（VULNIX_ARTEX_REAL_CMD）")
+        with self._lock:
+            self._refuse_after_stop_locked()
+            self._refuse_artex_on_real_service_locked()
+            self._ensure_active_window_locked()
+            targets = self._artex_targets_locked()
+            observations = [{"title": clean_target_text(f["title"], 200), "detail": clean_target_text(f.get("summary", ""), 400)}
+                            for f in self.a.findings.values() if f.get("id") in ("f_banner", "f_idor", "f_sqli")]
+            gen = self._run_generation
+        request = {"goal": "登録済みの検証対象について、許可された非破壊の検証で確認すべき脆弱性の方向を計画する",
+                   "targets": targets, "observations": observations, "max_turns": 6}
+        self.audit.record("artex.plan_requested", actor=actor, targets=len(targets))
+        try:
+            run = run_artex_planner(self._artex_real_cmd, request, llm_url=self._artex_llm_url,
+                                    llm_model=self._artex_llm_model, pg_dsn=self._artex_pg_dsn)
+        except ArtexBridgeError as e:
+            self.audit.record("artex.plan_failed", actor=actor, reason=str(e)[:200])
+            raise ValueError(str(e)) from None
+        run_id = "ax" + secrets.token_hex(4)
+        rec = reconstruct(run.intents, targets, run_id)
+        # The rebuilt proposals still pass ProposalRouter (sanitized, audited) and appear
+        # as tasks in the existing plan view; the Gateway alone decides what may run.
+        router = ProposalRouter(self.gateway, self.audit, [_StaticProposals("artex-oss", [i.proposal for i in rec.items])])
+        with self._lock:
+            if gen != self._run_generation:
+                raise ValueError("停止またはリセットされたため、ARTEX 計画を破棄しました")
+            self._refuse_after_stop_locked()
+        tasks = self.artex.plan_phase("artex", {"target_id": "lab"}, router=router)
+        prov = run.provenance
+        with self._lock:
+            for item in rec.items:
+                tk = next((t for t in tasks if t.routed.proposal["tool"] == item.proposal["tool"]
+                           and t.routed.proposal["args"] == item.proposal["args"]), None)
+                if tk is not None:
+                    tk.status = item.status
+                    item_task_id = tk.id
+                else:
+                    item_task_id = None
+                self._artex_items[item.id] = {"item": item, "task_id": item_task_id}
+            self._artex_plan = {
+                "run_id": run_id, "requested_by": actor, "at": time.time(),
+                "engine": {"kind": prov.get("kind"), "sha256": prov.get("sha256"),
+                           "artex_module": prov.get("artex_module"), "artex_commit": prov.get("artex_commit"),
+                           "go_version": prov.get("go_version"),
+                           "label": "ARTEX 本体（overlay ビルド）" if prov.get("kind") == "artex-binary"
+                                    else "ARTEX 互換プロセス（本体と未確認）"},
+                "allowed_tools": run.allowed_tools, "tool_calls": run.tool_calls,
+                "denied_tool_calls": run.denied_tool_calls, "goal_met": run.goal_met,
+                "elapsed_ms": run.elapsed_ms, "intents": len(run.intents),
+                "advisories": [{"intent_id": a.intent_id, "summary": clean_target_text(a.intent_summary, 500),
+                                "reason": a.reason} for a in rec.advisories],
+            }
+        self.audit.record("artex.plan_received", actor=actor, run_id=run_id, engine_kind=prov.get("kind"),
+                          engine_sha256=prov.get("sha256"), artex_commit=prov.get("artex_commit"),
+                          intents=len(run.intents), items=len(rec.items), advisories=len(rec.advisories),
+                          denied_tool_calls=len(run.denied_tool_calls))
+        for a in rec.advisories:
+            self.audit.record("artex.intent_advisory", run_id=run_id, intent=a.intent_id, reason=a.reason)
+        self.bus.publish(self.a.id, "artex.plan", artex_plan=self.artex_plan_view())
+        return self.snapshot()
+
+    def artex_plan_view(self) -> dict | None:
+        with self._lock:
+            if self._artex_plan is None:
+                return {"configured": bool(self._artex_real_cmd), "plan": None}
+            items = []
+            for rec in self._artex_items.values():
+                it = rec["item"]
+                if not it.id.startswith(self._artex_plan["run_id"]):
+                    continue
+                items.append({"id": it.id, "intent_id": it.intent_id,
+                              "intent_summary": clean_target_text(it.intent_summary, 500),
+                              "catalog_id": it.catalog_id, "label": it.label, "level": it.level,
+                              "target_id": it.target_id, "tool": it.proposal["tool"], "status": it.status})
+            return {"configured": bool(self._artex_real_cmd), "plan": {**self._artex_plan, "items": items}}
+
+    def execute_artex_item(self, item_id: str, actor: str, *, roles=None) -> dict:
+        """Run ONE item of the ARTEX plan. The operation is rebuilt from Vulnix's catalog
+        (never from what ARTEX or the stored proposal says); L1 goes through the Gateway
+        under the L1 policy, L2 needs an approver and runs in the isolated worker."""
+        with self._lock:
+            rec = self._artex_items.get(item_id)
+            if rec is None:
+                raise ValueError("ARTEX 計画の項目が見つかりません")
+            item = rec["item"]
+            if item.status in ("running", "completed"):
+                raise ValueError("この項目は実行中または実行済みです")
+            self._refuse_after_stop_locked()
+            self._refuse_artex_on_real_service_locked()
+            requested_by = (self._artex_plan or {}).get("requested_by")
+        entry = CATALOG_BY_ID[item.catalog_id]
+        if entry.level == "L2":
+            if not actor or str(actor).startswith("policy:"):
+                raise ValueError("L2 検証には人間の個別承認が必要です（自動承認不可）")
+            if roles is not None and "approver" not in roles:
+                self.audit.record("artex.item_denied", item=item_id, actor=actor, reason="approver role required")
+                raise ApproverRequired("ARTEX 計画の L2 検証には承認責任者の権限が必要です")
+            if self.separate_l2_approver and actor == requested_by:
+                self.audit.record("artex.item_denied", item=item_id, actor=actor, reason="separation of duties")
+                raise ApproverRequired("計画を依頼した本人は、その L2 検証を承認できません")
+            self.audit.record("artex.item_approved", item=item_id, approver=actor, check=entry.check,
+                              requested_by=requested_by)
+            self._set_artex_item_status(item_id, "running")
+            try:
+                snap = self.verify_finding(entry.finding_id, actor, roles=roles)
+            except Exception:
+                self._set_artex_item_status(item_id, "failed")
+                raise
+            self._set_artex_item_status(item_id, "failed" if snap.get("state") == "failed" else "completed")
+            return self.snapshot()
+        # L1: one read-only GET of the registered URL, through the Gateway
+        self._begin_operation()
+        prev = getattr(self._tls, "gen", None)
+        try:
+            with self._lock:
+                self._refuse_after_stop_locked()
+                self._tls.gen = self._run_generation
+                self._ensure_active_window_locked()
+                url = self.a.target_url
+            self._set_artex_item_status(item_id, "running")
+            res, _ev = self._exec(entry.tool, entry.action, entry.args_for(url), approval_actor=f"artex-L1:{actor}")
+            if res is not None:
+                with self._lock:
+                    self._analyze(res, _ev)
+            self._set_artex_item_status(item_id, "completed" if res is not None else "failed")
+        except _Stopped:
+            self._set_artex_item_status(item_id, "failed")
+            raise ValueError("停止またはリセットされたため、検証を中止しました") from None
+        finally:
+            self._tls.gen = prev
+            self._end_operation()
+        return self.snapshot()
+
+    def _set_artex_item_status(self, item_id: str, status: str) -> None:
+        with self._lock:
+            rec = self._artex_items.get(item_id)
+            if rec is None:
+                return
+            rec["item"].status = status
+            for tk in self.artex.tasks:
+                if tk.id == rec["task_id"]:
+                    tk.status = status
+        self.audit.record("artex.item_status", item=item_id, status=status)
+        self.bus.publish(self.a.id, "artex.plan", artex_plan=self.artex_plan_view())
+
     @staticmethod
     def _default_phases() -> list[dict]:
         return [
@@ -2287,6 +2468,7 @@ class AssessmentService:
                 "lab_mode": get_lab_mode(),
                 "lab_endpoint": self.a.target_url if is_ext else f"127.0.0.1:{self.lab_port}",
                 "planner": self.planner_status(),
+                "artex_plan": self.artex_plan_view(),
                 "secrets_status": self.secrets_status(),
                 "prohibited_actions": PROHIBITED_ACTIONS_SUMMARY,
                 "evidence_summary": evidence_summary(list(self.a.findings.values())),

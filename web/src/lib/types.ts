@@ -230,6 +230,7 @@ export interface Snapshot {
   history?: AssessmentHistory | null;
   defense_comparison?: DefenseComparison | null;
   cve_status?: CveStatus;
+  artex_plan?: ArtexPlanView | null;
   artex_tasks?: {
     id: string;
     phase: string;
@@ -285,4 +286,26 @@ export interface AegisEvent {
   type: string;
   timestamp: string;
   [k: string]: unknown;
+}
+
+/** A plan from the real ARTEX planner, rebuilt by Vulnix (never ARTEX's own targets/args). */
+export interface ArtexPlanView {
+  configured: boolean;
+  plan: null | {
+    run_id: string;
+    requested_by: string;
+    at: number;
+    engine: { kind: string; label: string; sha256?: string; artex_commit?: string; go_version?: string };
+    allowed_tools: string[];
+    tool_calls: { name: string; allowed: boolean }[];
+    denied_tool_calls: string[];
+    goal_met: boolean;
+    elapsed_ms: number;
+    intents: number;
+    items: {
+      id: string; intent_id: number; intent_summary: string; catalog_id: string; label: string;
+      level: "L1" | "L2"; target_id: string; tool: string; status: string;
+    }[];
+    advisories: { intent_id: number; summary: string; reason: string }[];
+  };
 }

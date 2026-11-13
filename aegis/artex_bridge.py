@@ -1,0 +1,360 @@
+"""Bridge from the real ARTEX planner to Vulnix's Gateway.
+
+ARTEX (AGPL-3.0, github.com/Autumn-27/artex) plans by calling its `add_intent`
+tool: free-text exploration directions, optionally tagged with asset ids. This
+module runs ARTEX's planner through a planner-only overlay binary
+(integrations/artex/overlay: no Bash/Read/Write/Edit, no WebFetch/WebSearch, no
+scope-expansion or finding tools, no workers) and turns its intents into Vulnix
+proposals.
+
+Nothing ARTEX says is trusted:
+- the overlay's output is validated strictly; a run that reports any tool outside
+  the planner allowlist is rejected as a whole;
+- an intent never supplies the target, tool, action or arguments. The target comes
+  from Vulnix's own registered targets (by the asset id Vulnix handed out), and the
+  operation and its arguments come from Vulnix's fixed check catalog. An intent
+  only *selects* a catalog entry by what it is about;
+- an intent that does not select exactly one catalog entry, names an unregistered
+  target, or asks for something outside the catalog (command execution, upload,
+  brute force, ...) is kept as an advisory: shown, never executable.
+
+Every reconstructed proposal still goes through ProposalRouter (sanitizing) and
+the Gateway (scope, egress, token, emergency stop); L2 items additionally need an
+approver and run in the isolated worker.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import shlex
+import signal
+import subprocess
+import tempfile
+import time
+import urllib.parse
+from dataclasses import dataclass, field
+from pathlib import Path
+
+# The tools the overlay may give the ARTEX planner (exact ARTEX tool names). A run
+# whose overlay reports any other tool as available or as allowed is rejected.
+PLANNER_TOOL_ALLOWLIST = frozenset({
+    "graph_overview", "list_findings", "list_facts", "node_detail",
+    "list_goals", "add_intent", "prove_goal", "goal_met",
+})
+
+# Names that must never be available to the planner (documented; checked in tests).
+FORBIDDEN_TOOLS = frozenset({
+    "Bash", "Read", "Write", "Edit", "MultiEdit", "LS", "Glob", "Grep", "WebFetch", "WebSearch",
+    "add_company_scope", "add_task_scope", "add_finding", "report_finding", "list_assets",
+    "list_untested_assets", "kill_work", "steer_work",
+})
+
+ARTEX_MODULE = "github.com/Autumn-27/artex"
+OVERLAY_MAIN = f"{ARTEX_MODULE}/cmd/vulnix-planner"
+
+MAX_OUTPUT_BYTES = 1 << 20
+MAX_INTENTS = 50
+MAX_SUMMARY = 2000
+
+# Asked for something no catalog entry does: never mapped, whatever else it says.
+_OUT_OF_CATALOG = re.compile(
+    r"(rce|remote code|command exec|命令执行|コマンド実行|任意.?コード|getshell|webshell|reverse shell|反弹|"
+    r"upload|上传|アップロード|brute|爆破|総当たり|password spray|撞库|\bdos\b|denial of service|"
+    r"delete|删除|削除|drop table|truncate|写入|書き込み|exfil|外传|持出|lateral|横向|提权|privilege escalation|"
+    r"権限昇格|subdomain enum|子域名|port scan|端口扫描|ポートスキャン|nmap|masscan)",
+    re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class CatalogEntry:
+    id: str
+    tool: str
+    action: str
+    level: str
+    label: str
+    keywords: tuple[str, ...]
+    check: str | None = None
+    finding_id: str | None = None
+
+    def args_for(self, url: str) -> dict:
+        if self.tool == "http_probe":
+            return {"url": url, "method": "GET"}
+        return {"url": url, "check": self.check}
+
+
+# Vulnix's allowed verification catalog. The ONLY operations an ARTEX intent can lead to.
+CATALOG: tuple[CatalogEntry, ...] = (
+    CatalogEntry("l2_sqli", "reproduction_probe", "safe_reproduction", "L2",
+                 "SQLインジェクション境界の非破壊再現（隔離Worker）",
+                 ("sql injection", "sqli", "sql注入", "sqlインジェクション", "sql 注入", "注入点"),
+                 check="sqli", finding_id="f_sqli"),
+    CatalogEntry("l2_idor", "reproduction_probe", "safe_reproduction", "L2",
+                 "認可境界（IDOR）の非破壊再現（検証用アカウント・隔離Worker）",
+                 ("idor", "bola", "越权", "水平越权", "access control", "authorization", "アクセス制御", "認可"),
+                 check="idor", finding_id="f_idor"),
+    CatalogEntry("l2_cve_2021_41773", "reproduction_probe", "safe_reproduction", "L2",
+                 "CVE-2021-41773 成立の非破壊再現（隔離Worker）",
+                 ("cve-2021-41773", "41773", "path traversal", "路径穿越", "目录穿越", "パストラバーサル"),
+                 check="cve_2021_41773", finding_id="f_banner"),
+    CatalogEntry("l1_http_probe", "http_probe", "read_only_probe", "L1",
+                 "公開設定・応答ヘッダーの非破壊GET（1回）",
+                 ("header", "headers", "响应头", "ヘッダー", "banner", "バナー", "fingerprint", "指纹", "フィンガープリント",
+                  "server version", "服务器版本", "信息收集", "recon", "偵察", "公開設定", "security header")),
+)
+CATALOG_BY_ID = {c.id: c for c in CATALOG}
+
+
+class ArtexBridgeError(RuntimeError):
+    """The ARTEX run could not be used (not started, failed, or its output was refused)."""
+
+
+@dataclass
+class ArtexRun:
+    """A validated ARTEX planner run. `provenance` says what actually ran."""
+    intents: list[dict]
+    goal_met: bool
+    allowed_tools: list[str]
+    tool_calls: list[dict]
+    denied_tool_calls: list[str]
+    provenance: dict
+    elapsed_ms: float
+
+
+@dataclass
+class PlanItem:
+    id: str
+    intent_id: int
+    intent_summary: str
+    catalog_id: str
+    level: str
+    label: str
+    target_id: str
+    proposal: dict           # reconstructed from Vulnix's registry + catalog only
+    status: str = "planned"
+
+
+@dataclass
+class Advisory:
+    intent_id: int
+    intent_summary: str
+    reason: str
+
+
+@dataclass
+class Reconstruction:
+    items: list[PlanItem] = field(default_factory=list)
+    advisories: list[Advisory] = field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# provenance: is this really an ARTEX build?
+# ---------------------------------------------------------------------------
+def inspect_executable(path: str | os.PathLike) -> dict:
+    """What the configured command is. `kind` is "artex-binary" only for a native
+    executable carrying Go build info for the ARTEX overlay main package; anything
+    else (a script, a stand-in) is "unverified" and is never shown as ARTEX itself."""
+    p = Path(path)
+    try:
+        data = p.read_bytes()
+    except OSError as e:
+        return {"kind": "missing", "path": str(p), "error": type(e).__name__}
+    native = data[:4] in (b"\x7fELF", b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe", b"\xca\xfe\xba\xbe")
+    go_info = b"\xff Go buildinf:" in data
+    artex_main = OVERLAY_MAIN.encode() in data
+    m = re.search(rb"go1\.\d+(?:\.\d+)?", data)
+    return {
+        "kind": "artex-binary" if (native and go_info and artex_main) else "unverified",
+        "path": str(p),
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "size": len(data),
+        "native": native,
+        "go_buildinfo": go_info,
+        "artex_overlay_main": artex_main,
+        "go_toolchain": m.group(0).decode() if m else None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# running the planner
+# ---------------------------------------------------------------------------
+def require_loopback_llm(url: str) -> str:
+    """The ARTEX planner is verified against a local mock LLM only."""
+    u = urllib.parse.urlsplit(str(url or ""))
+    if u.scheme not in ("http", "https") or (u.hostname or "") not in ("127.0.0.1", "::1", "localhost"):
+        raise ArtexBridgeError("ARTEX の LLM はローカル（ループバック）のモデルのみ使用できます")
+    return url
+
+
+def require_loopback_dsn(dsn: str) -> str:
+    """ARTEX's store (PostgreSQL) must be a local, throw-away database."""
+    u = urllib.parse.urlsplit(str(dsn or ""))
+    if u.scheme not in ("postgres", "postgresql") or (u.hostname or "") not in ("127.0.0.1", "::1", "localhost"):
+        raise ArtexBridgeError("ARTEX のデータベースはローカル（ループバック）の PostgreSQL のみ使用できます")
+    return dsn
+
+
+def run_artex_planner(command: list[str], request: dict, *, llm_url: str, llm_model: str = "mock",
+                      llm_key: str = "", pg_dsn: str = "", timeout_s: float = 120.0) -> ArtexRun:
+    if not command:
+        raise ArtexBridgeError("ARTEX プランナーが設定されていません")
+    require_loopback_llm(llm_url)
+    if pg_dsn:
+        require_loopback_dsn(pg_dsn)
+    exe = command[0]
+    provenance = inspect_executable(exe)
+    started = time.monotonic()
+    with tempfile.TemporaryDirectory(prefix="vulnix-artex-") as work:
+        # A clean environment: no inherited keys, tokens or proxies reach ARTEX.
+        env = {"PATH": "/usr/bin:/bin", "HOME": work, "TMPDIR": work, "LANG": "C.UTF-8",
+               "ARTEX_LLM_BASE_URL": llm_url, "ARTEX_LLM_MODEL": llm_model,
+               "ARTEX_LLM_API_KEY": llm_key or "local-mock-no-key"}
+        if pg_dsn:
+            env["ARTEX_PG_DSN"] = pg_dsn
+        try:
+            proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, cwd=work, env=env, start_new_session=True)
+        except OSError as e:
+            raise ArtexBridgeError(f"ARTEX を起動できません: {type(e).__name__}") from None
+        try:
+            out, err = proc.communicate(json.dumps(request, ensure_ascii=False).encode(), timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            proc.communicate()
+            raise ArtexBridgeError("ARTEX プランナーが制限時間内に終了しませんでした") from None
+    elapsed = round((time.monotonic() - started) * 1000, 1)
+    if len(out) > MAX_OUTPUT_BYTES:
+        raise ArtexBridgeError("ARTEX の出力が大きすぎます")
+    try:
+        data = json.loads(out.decode("utf-8", "replace").strip() or "null")
+    except ValueError:
+        raise ArtexBridgeError("ARTEX の出力が JSON ではありません") from None
+    if proc.returncode != 0:
+        msg = data.get("error") if isinstance(data, dict) else None
+        raise ArtexBridgeError(f"ARTEX プランナーが失敗しました（exit {proc.returncode}）: {str(msg or '')[:200]}")
+    run = parse_planner_output(data, provenance, elapsed)
+    run.provenance["stderr_tail_sha256"] = hashlib.sha256(err[-4096:]).hexdigest()
+    return run
+
+
+def parse_planner_output(data: object, provenance: dict, elapsed_ms: float = 0.0) -> ArtexRun:
+    if not isinstance(data, dict) or data.get("engine") != "artex":
+        raise ArtexBridgeError("ARTEX の出力形式ではありません")
+    if data.get("error"):
+        raise ArtexBridgeError(f"ARTEX エラー: {str(data['error'])[:200]}")
+    allowed = data.get("allowed_tools")
+    if not isinstance(allowed, list) or not all(isinstance(t, str) for t in allowed):
+        raise ArtexBridgeError("ARTEX の出力に allowed_tools がありません")
+    extra = sorted(set(allowed) - PLANNER_TOOL_ALLOWLIST)
+    if extra:
+        raise ArtexBridgeError(f"許可外のツールが ARTEX に与えられていました: {', '.join(extra)[:200]}")
+    calls = data.get("tool_calls") or []
+    if not isinstance(calls, list):
+        raise ArtexBridgeError("tool_calls が不正です")
+    clean_calls = []
+    for c in calls[:500]:
+        if not isinstance(c, dict):
+            continue
+        name = str(c.get("name", ""))[:80]
+        ok = bool(c.get("allowed"))
+        if ok and name not in PLANNER_TOOL_ALLOWLIST:
+            raise ArtexBridgeError(f"許可外のツール {name} が実行されたと報告されました")
+        clean_calls.append({"name": name, "allowed": ok})
+    denied = [str(x)[:80] for x in (data.get("denied_tool_calls") or []) if isinstance(x, (str, int))][:500]
+    intents_raw = data.get("intents") or []
+    if not isinstance(intents_raw, list):
+        raise ArtexBridgeError("intents が不正です")
+    intents = []
+    for it in intents_raw[:MAX_INTENTS]:
+        if not isinstance(it, dict):
+            continue
+        summary = it.get("summary")
+        if not isinstance(summary, str) or not summary.strip():
+            continue
+        ids = it.get("asset_ids") or []
+        intents.append({
+            "id": int(it["id"]) if isinstance(it.get("id"), int) else 0,
+            "summary": summary.strip()[:MAX_SUMMARY],
+            "asset_ids": [i for i in ids if isinstance(i, int) and not isinstance(i, bool)][:20]
+            if isinstance(ids, list) else [],
+            "priority": it["priority"] if isinstance(it.get("priority"), int) else 5,
+        })
+    prov = dict(provenance)
+    prov.update({
+        "engine": "artex",
+        "artex_module": str(data.get("artex_module", ""))[:120],
+        "artex_commit": str(data.get("artex_commit", ""))[:64],
+        "go_version": str(data.get("go_version", ""))[:40],
+    })
+    return ArtexRun(intents=intents, goal_met=bool(data.get("goal_met")), allowed_tools=list(allowed),
+                    tool_calls=clean_calls, denied_tool_calls=denied, provenance=prov,
+                    elapsed_ms=elapsed_ms)
+
+
+# ---------------------------------------------------------------------------
+# reconstruction: intents -> Vulnix catalog proposals
+# ---------------------------------------------------------------------------
+def classify(summary: str) -> tuple[CatalogEntry | None, str]:
+    """Which catalog entry an intent is about - or why none."""
+    text = summary.lower()
+    if _OUT_OF_CATALOG.search(text):
+        return None, "許可済みの検証カタログ外の操作を含むため実行しません"
+    l2 = [c for c in CATALOG if c.level == "L2" and any(k in text for k in c.keywords)]
+    if len(l2) > 1:
+        return None, "複数の検証項目に該当し一意に決められないため実行しません"
+    if l2:
+        return l2[0], ""
+    l1 = [c for c in CATALOG if c.level == "L1" and any(k in text for k in c.keywords)]
+    if l1:
+        return l1[0], ""
+    return None, "許可済みの検証カタログに該当しないため実行しません"
+
+
+def reconstruct(intents: list[dict], targets: list[dict], run_id: str) -> Reconstruction:
+    """`targets`: Vulnix's registered, in-scope targets as handed to ARTEX
+    ({asset_id, target_id, url}). Only these can ever be a target."""
+    by_asset = {t["asset_id"]: t for t in targets}
+    out = Reconstruction()
+    seen: set[tuple[str, str]] = set()
+    for it in intents:
+        summary, iid = it["summary"], it["id"]
+        entry, why = classify(summary)
+        if entry is None:
+            out.advisories.append(Advisory(iid, summary, why))
+            continue
+        asset_ids = it.get("asset_ids") or []
+        if not asset_ids:
+            if len(targets) != 1:
+                out.advisories.append(Advisory(iid, summary, "対象が特定されていないため実行しません"))
+                continue
+            chosen = [targets[0]]
+        else:
+            unknown = [a for a in asset_ids if a not in by_asset]
+            if unknown:
+                out.advisories.append(Advisory(iid, summary, "登録されていない対象を含むため実行しません"))
+                continue
+            chosen = [by_asset[a] for a in asset_ids]
+        for tgt in chosen:
+            key = (entry.id, tgt["target_id"])
+            if key in seen:
+                continue
+            seen.add(key)
+            proposal = {
+                "tool": entry.tool, "target_id": tgt["target_id"], "action": entry.action,
+                "args": entry.args_for(tgt["url"]),
+                "rationale": f"ARTEX intent #{iid}: {summary[:300]}",
+            }
+            out.items.append(PlanItem(
+                id=f"{run_id}_{len(out.items) + 1}", intent_id=iid, intent_summary=summary[:MAX_SUMMARY],
+                catalog_id=entry.id, level=entry.level, label=entry.label, target_id=tgt["target_id"],
+                proposal=proposal, status="awaiting_approval" if entry.level == "L2" else "planned"))
+    return out
+
+
+def command_from_env() -> list[str]:
+    raw = os.environ.get("VULNIX_ARTEX_REAL_CMD", "").strip()
+    return shlex.split(raw) if raw else []

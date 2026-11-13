@@ -596,6 +596,12 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     # the service decides whether this needs an approver, under its own
                     # lock (a check here could be invalidated by a concurrent switch)
                     return self._json(200, svc.verify_finding(fid, actor, roles=tuple(sess.roles)))
+                elif p == base + "/artex/plan":
+                    # the REAL ARTEX planner (planner-only overlay) proposes; Vulnix rebuilds
+                    return self._json(200, svc.plan_with_artex(actor))
+                elif m := re.fullmatch(base + r"/artex/items/([A-Za-z0-9_]{1,80})/execute", p):
+                    # L2 needs an approver: decided by the service, with the caller's roles
+                    return self._json(200, svc.execute_artex_item(m.group(1), actor, roles=tuple(sess.roles)))
                 elif p == base + "/request-l2":
                     fid = str(body.get("finding_id", "")).strip()
                     if not fid:
