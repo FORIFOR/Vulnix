@@ -1656,6 +1656,13 @@ class AssessmentService:
         pending = list(live)
         while pending and time.monotonic() < deadline:
             pending = [x for x in pending if not _session_empty(x)]
+            for x in pending:
+                # cgroup.kill acts on the processes in the cgroup NOW: a process that was
+                # just launched and joins a moment later is killed by the next write
+                try:
+                    x.kill()
+                except Exception:  # noqa: BLE001 - still pending: on record below
+                    pass
             if pending:
                 time.sleep(0.1)
         for sess in pending:

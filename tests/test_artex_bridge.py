@@ -548,6 +548,28 @@ class TestArtexRunsOnlyUnderOsConfinement(ServiceBase):
         self.svc._artex_live.discard(stuck)
         self.svc._unstopped = [u for u in self.svc._unstopped if stuck not in (u.get("sessions") or [])]
 
+    def test_the_stop_kills_again_while_it_waits(self):
+        class Late:
+            name = "aegis_l2_late00000000"
+
+            def __init__(self):
+                self.kills = 0
+
+            def kill(self):
+                self.kills += 1
+                return True
+
+            def empty(self):
+                return self.kills >= 3           # a late joiner dies with a later write
+        late = Late()
+        self.svc._artex_live.add(late)
+        try:
+            self.svc.emergency_stop("op")
+            self.assertGreaterEqual(late.kills, 3)
+            self.assertFalse(self.svc._session_on_record(late))
+        finally:
+            self.svc._artex_live.discard(late)
+
     def test_a_survivor_on_record_blocks_a_new_planner(self):
         class Stuck:
             def empty(self):
@@ -919,7 +941,9 @@ class TestNamespaceConfinementStopsOnLinux(unittest.TestCase):
                 self.assertTrue(sess.evidence["netns_separate"], sess.evidence)
                 proc = sp.Popen(sess.wrap(self.SLEEPER, interpreter=sys.executable), stdin=sp.DEVNULL,
                                 stdout=sp.DEVNULL, stderr=sp.DEVNULL, cwd=work, start_new_session=True)
-                self.assertTrue(self.wait_until(lambda: not sess.empty(), 10))
+                procs = sess.cgroup / "cgroup.procs"
+                # the relay is always in the cgroup: wait for the planner chain to join too
+                self.assertTrue(self.wait_until(lambda: len(procs.read_text().split()) >= 2, 15))
                 self.assertTrue(sess.kill())                       # what emergency stop does
                 proc.wait(timeout=20)
                 self.assertTrue(self.wait_until(sess.empty), "cgroup not empty after kill")
