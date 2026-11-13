@@ -1012,3 +1012,49 @@ class TestNamespaceConfinementStopsOnLinux(unittest.TestCase):
             self.assertTrue(s.empty())
             self.assertFalse(s.leftover)
             self.assertFalse(os.path.exists(f"/run/netns/{s.name}"))
+
+
+@unittest.skipUnless(os.environ.get("VULNIX_ARTEX_REAL_BIN"), "real ARTEX overlay binary only in Linux CI")
+class TestRealArtexThroughThePlannerGateway(TestRealArtexPlanner):
+    """The real ARTEX, confined, with the Vulnix Planner LLM Gateway as its only model."""
+
+    def test_the_real_planner_plans_and_the_gateway_decides(self):      # replaced below
+        pass
+
+    def test_forward_mode_through_the_gateway_to_the_local_mock(self):
+        env = {"VULNIX_ARTEX_LLM_MODE": "gateway-forward",
+               "VULNIX_ARTEX_LLM_UPSTREAM_URL": self.mock.url + "/chat/completions",
+               "VULNIX_ARTEX_LLM_MODEL": "gateway-forced-model"}
+        with patch.dict(os.environ, env):
+            plan = self.plan()
+        gw = plan["llm_gateway"]
+        self.assertEqual((gw["mode"], gw["refused"]), ("forward", 0), gw)
+        self.assertGreaterEqual(gw["calls"], 2)
+        self.assertTrue(self.mock.requests)
+        self.assertTrue(all(r["body"].get("model") == "gateway-forced-model" for r in self.mock.requests))
+        self.assertEqual({i["catalog_id"] for i in plan["items"]}, {"l2_sqli", "l2_idor", "l1_http_probe"})
+        # the plan still goes through the Vulnix Gateway: L1 once, L2 approver only
+        self.svc.execute_artex_item(self.item(plan, "l1_http_probe")["id"], "op", roles=("operator",))
+        with self.assertRaises(ApproverRequired):
+            self.svc.execute_artex_item(self.item(plan, "l2_idor")["id"], "op", roles=("operator",))
+        out = os.environ.get("VULNIX_ARTEX_GATEWAY_EVIDENCE")
+        if out:
+            Path(out + ".forward.json").write_text(json.dumps(
+                {"llm_gateway": gw, "isolation_confined": plan["isolation"].get("confined"),
+                 "items": [(i["catalog_id"], i["status"]) for i in plan["items"]]}, ensure_ascii=False, indent=2))
+
+    def test_preview_mode_sends_nothing_and_shows_what_would_be_sent(self):
+        with patch.dict(os.environ, {"VULNIX_ARTEX_LLM_MODE": "gateway-preview",
+                                     "VULNIX_ARTEX_LLM_MODEL": "abliterated-model"}):
+            plan = self.plan()
+        gw = plan["llm_gateway"]
+        self.assertEqual((gw["mode"], gw["upstream"]), ("preview", None))
+        self.assertEqual(self.mock.requests, [])                       # not even the local mock
+        pv = self.svc.artex_llm_preview()
+        self.assertEqual(len(pv["requests"]), gw["calls"])
+        out = os.environ.get("VULNIX_ARTEX_GATEWAY_EVIDENCE")
+        if out:
+            first = pv["requests"][0] if pv["requests"] else {}
+            Path(out + ".preview.json").write_text(json.dumps(
+                {"llm_gateway": gw, "records": pv["report"]["records"], "first_request": first},
+                ensure_ascii=False, indent=2))
