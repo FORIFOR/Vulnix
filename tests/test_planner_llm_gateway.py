@@ -484,3 +484,26 @@ class TestReplayedModelTurns(unittest.TestCase):
         for b in sent:
             self.assertNotIn("hunter2", json.dumps(b, ensure_ascii=False))
             self.assertNotIn("10.0.0.5", json.dumps(b, ensure_ascii=False))
+
+
+class TestToolSchemas(unittest.TestCase):
+    def tool(self, desc="Add intents", default=None):
+        params = {"type": "object", "properties": {"summary": {"type": "string"}}}
+        if default is not None:
+            params["properties"]["summary"]["default"] = default
+        return {"type": "function", "function": {"name": "add_intent", "description": desc, "parameters": params}}
+
+    def test_strings_in_tool_schemas_get_the_full_checks(self):
+        for tool in (self.tool(desc="internal db at 10.0.0.5"), self.tool(default="password: hunter2hunter2"),
+                     self.tool(desc=f"see {KEY}")):
+            with self.assertRaises(GatewayRefused):
+                preview().inspect({"messages": [{"role": "user", "content": "lab.test"}], "tools": [tool]})
+
+    def test_tool_schemas_cannot_change_during_a_run(self):
+        with preview() as gw:
+            b1 = {"messages": [{"role": "user", "content": "lab.test"}], "tools": [self.tool()]}
+            b2 = {"messages": [{"role": "user", "content": "lab.test 2"}], "tools": [self.tool(desc="Add intents now")]}
+            self.assertEqual(post(gw, b1)[0], 200)
+            self.assertEqual(post(gw, b2)[0], 403)
+            self.assertEqual(post(gw, {**b2, "tools": [self.tool()]})[0], 200)
+        self.assertEqual(gw.report()["records"][1]["reason"], "tools_changed")

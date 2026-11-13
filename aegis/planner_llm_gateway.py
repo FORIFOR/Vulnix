@@ -277,6 +277,7 @@ class PlannerLLMGateway:
         # turns the model itself returned in this run: only these, resent, count as the
         # model's own (ARTEX writes the request - a role label alone proves nothing)
         self._model_turns: dict[str, dict] = {}       # digest -> the turn as the model returned it
+        self._tools_sha: str | None = None            # tool schemas fixed by the first passed request
         self._server = None
         self._key_forms = self._forms(api_key)
 
@@ -315,6 +316,12 @@ class PlannerLLMGateway:
         tools = self._tools(body.get("tools"))
         if tools:
             out["tools"] = tools
+            # the schemas are fixed for the run by the first request that passed (the one
+            # an approval's fingerprint covers): they cannot change on later calls
+            tools_sha = hashlib.sha256(json.dumps(tools, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+            with self._lock:
+                if self._tools_sha is not None and tools_sha != self._tools_sha:
+                    raise GatewayRefused("tools_changed", "the tool schemas changed during the run")
         tc = body.get("tool_choice")
         if tc in ("auto", "none", "required"):
             out["tool_choice"] = tc
@@ -342,6 +349,10 @@ class PlannerLLMGateway:
         strings, keyed = [], []
         _strings(out["messages"], strings, keyed)
         _strings(theirs, own, own_keyed)
+        # ARTEX writes the tool schemas too (descriptions, parameters, defaults, enums):
+        # every string in them gets the full checks
+        _strings(out.get("tools") or [], strings, keyed)
+        _strings(out.get("tools") or [], own, own_keyed)
         normed = [_norm(s) for s in strings]
         own_normed = [_norm(s) for s in own]
         whole = "\n".join(normed)
@@ -420,11 +431,15 @@ class PlannerLLMGateway:
                                  "", sha, len(payload), prompt_tokens, charged_tokens=worst_tokens,
                                  est_cost_usd=worst_cost)
                 self.calls.append(rec)
+            tools_sha = hashlib.sha256(json.dumps(clean.get("tools") or [], sort_keys=True,
+                                                  ensure_ascii=False).encode()).hexdigest()
             if self.mode == "preview":
                 self.preview_requests.append(clean)
                 resp = self._responder(clean)
                 with self._lock:
                     self._first_passed = True
+                    if self._tools_sha is None and clean.get("tools"):
+                        self._tools_sha = tools_sha
             else:
                 # no audit record, no forward
                 try:
@@ -450,6 +465,8 @@ class PlannerLLMGateway:
                     resp = json.loads(data)
                     with self._lock:
                         self._first_passed = True
+                        if self._tools_sha is None and clean.get("tools"):
+                            self._tools_sha = tools_sha
                 except Exception as e:  # noqa: BLE001 - sent (maybe): the reserve stays charged
                     with self._lock:
                         rec.decision, rec.reason = "failed", f"upstream_error:{type(e).__name__}"[:60]
@@ -578,7 +595,7 @@ class PlannerLLMGateway:
             # planner run (forwarding is already closed)
             t = threading.Thread(target=srv.server_close, daemon=True)
             t.start()
-            t.join(20)
+            t.join(45)                           # longer than the transport's own timeout
 
     @property
     def url(self) -> str:
