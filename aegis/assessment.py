@@ -296,6 +296,11 @@ class AssessmentService:
         if os.environ.get("VULNIX_ARTEX_CLI") or os.environ.get("AEGIS_ARTEX_CMD"):
             backends.append(self._artex_cli_backend)
         ext_model = HttpModelBackend.from_env()
+        if os.environ.get("VULNIX_EXTERNAL_PROPOSALS", "1") == "0":
+            # proposals from the built-in planner only: a configured model is used for the
+            # chat explanation (and, through the Planner LLM Gateway, for ARTEX) - never
+            # for proposals outside the gateway's budget and approval
+            ext_model = None
         if ext_model:
             backends.append(ext_model)
         self._external_model_configured = ext_model is not None

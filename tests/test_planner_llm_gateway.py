@@ -507,3 +507,16 @@ class TestToolSchemas(unittest.TestCase):
             self.assertEqual(post(gw, b2)[0], 403)
             self.assertEqual(post(gw, {**b2, "tools": [self.tool()]})[0], 200)
         self.assertEqual(gw.report()["records"][1]["reason"], "tools_changed")
+
+
+class TestExternalProposalsSwitch(unittest.TestCase):
+    def test_proposals_can_be_kept_off_the_external_model(self):
+        from aegis.assessment import AssessmentService
+        from tests import TEST_CONFINEMENT
+        env = {"VULNIX_ABLITERATION_URL": "https://api.example.test/v1/chat/completions"}
+        for flag, expected in (("1", True), ("0", False)):
+            with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {**env, "VULNIX_EXTERNAL_PROPOSALS": flag}):
+                svc = AssessmentService(Path(tmp), 18095, l2_confinement=TEST_CONFINEMENT)
+                self.assertEqual(svc._external_model_configured, expected)
+                self.assertIsNotNone(svc._chat_backend)          # the explanation keeps its model
+                svc.workers.kill_all()
