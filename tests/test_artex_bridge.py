@@ -987,15 +987,23 @@ class TestNamespaceConfinementStopsOnLinux(unittest.TestCase):
                 sess.own_directory(home)                 # the run's uid can write here
                 if stop_first:
                     self.assertTrue(sess.kill())         # the stop lands first
-                    events = (sess.cgroup / "cgroup.events").read_text()
-                    self.assertIn("frozen 1", events)
+                    self.assertEqual((sess.cgroup / "cgroup.freeze").read_text().strip(), "1")
+
+                def marker_exists() -> bool:
+                    # the directory is the run's (0700): look as root, like the teardown does
+                    return sp.run(["sudo", "-n", "test", "-e", str(marker)]).returncode == 0
                 late = [sys.executable, "-I", "-c", f"open({str(marker)!r}, 'w').write('x')"]
                 proc = sp.Popen(sess.wrap(late, interpreter=sys.executable), stdin=sp.DEVNULL,
                                 stdout=sp.DEVNULL, stderr=sp.DEVNULL, cwd=work, start_new_session=True)
                 end = time.monotonic() + 6
-                while time.monotonic() < end and not marker.exists():
+                while time.monotonic() < end and not marker_exists():
                     time.sleep(0.2)
-                ran = marker.exists()
+                ran = marker_exists()
+                if stop_first:
+                    # the kernel reports the cgroup frozen once every task in it is
+                    events = sess.cgroup / "cgroup.events"
+                    self.assertTrue(self.wait_until(lambda: "frozen 1" in events.read_text(), 10),
+                                    events.read_text())
             proc.wait(timeout=30)                        # finished, or killed by teardown
             return ran, sess
 
