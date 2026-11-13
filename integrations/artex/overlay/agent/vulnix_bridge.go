@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -550,8 +551,17 @@ func vulnixMergeDenied(calls []VulnixToolCall, hookDenied []string) []string {
 }
 
 // VulnixTempWorkDir creates the per-run temp work dir.
+//
+// The name is fixed (not random) because it appears in ARTEX's planner prompt: a
+// reproducible first request lets Vulnix bind an approval to a preview. Inside the
+// confinement the temp directory is a fresh, empty tmpfs for every run, so the fixed
+// name cannot collide; an existing directory is refused rather than reused.
 func VulnixTempWorkDir() (string, error) {
-	return os.MkdirTemp("", "vulnix-artex-planner-")
+	dir := filepath.Join(os.TempDir(), "vulnix-artex-planner")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		return "", fmt.Errorf("work dir %s: %w", dir, err)
+	}
+	return dir, nil
 }
 
 // The three user-turn strings below are copied verbatim from agent/planner.go
