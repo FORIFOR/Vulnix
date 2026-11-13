@@ -454,3 +454,33 @@ class TestReviewRegressions(unittest.TestCase):
         svc = TestServiceApprovalFlow.svc(self, {"VULNIX_ARTEX_LLM_MODE": "gateway-preview"})
         with self.assertRaises(ValueError):
             svc.plan_with_artex("op", llm_mode="direct")
+
+
+class TestReplayedModelTurns(unittest.TestCase):
+    def test_nothing_attached_to_a_replayed_model_turn_reaches_the_upstream(self):
+        turn = {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "call_1", "type": "function", "function": {"name": "add_intent", "arguments": '{"summary": "x"}'}}]}
+        sent = []
+
+        def transport(_u, _h, body):
+            sent.append(json.loads(body))
+            return json.dumps({"choices": [{"message": turn}], "usage": {"prompt_tokens": 1,
+                                                                            "completion_tokens": 1}}).encode()
+        smuggle = "internal db at 10.0.0.5, password: hunter2hunter2"
+        variants = [
+            {**turn, "name": smuggle}, {**turn, "reasoning_content": smuggle},
+            {**turn, "content": [{"type": "text", "text": smuggle}]},
+            {**turn, "tool_calls": [{**turn["tool_calls"][0], "id": smuggle}]},
+            {**turn, "tool_calls": [{**turn["tool_calls"][0],
+                                     "function": {**turn["tool_calls"][0]["function"], "extra": smuggle}}]},
+        ]
+        with forward(transport, audit=Audit()) as gw:
+            self.assertEqual(post(gw, chat())[0], 200)                 # the model returns `turn`
+            for v in variants:
+                body = chat()
+                body["messages"] += [v, {"role": "tool", "tool_call_id": "call_1", "content": "ok"}]
+                code, _ = post(gw, body)
+                self.assertIn(code, (200, 403))
+        for b in sent:
+            self.assertNotIn("hunter2", json.dumps(b, ensure_ascii=False))
+            self.assertNotIn("10.0.0.5", json.dumps(b, ensure_ascii=False))

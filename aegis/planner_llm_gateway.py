@@ -179,9 +179,33 @@ def host_candidates(text: str) -> set[str]:
     found = {m.group(1) for m in _URLISH.finditer(text)}
     found |= {m.group(1) for m in _BRACKET_V6.finditer(text)}
     found |= {m.group(1) for m in _BARE_IP.finditer(text)}
-    found |= {m.group(1) for m in _BARE_V6.finditer(text) if _ip(m.group(1)) is not None}
+    found |= {m.group(1) for m in _BARE_V6.finditer(text)
+              if re.search(r"[0-9a-f]", m.group(1), re.I) and _ip(m.group(1)) is not None}   # not a bare "::"
     found |= {m.group(0) for m in _INTERNAL_NAME.finditer(text)}
     return {h.lower().rstrip(".").strip("[]") for h in found if h}
+
+
+_MSG_FIELDS = ("role", "content", "tool_calls", "tool_call_id", "name")
+
+
+def _clean_message(m) -> dict:
+    """A message reduced to the chat fields; tool calls to id / type / function{name,
+    arguments}. Nothing else ARTEX might attach is forwarded."""
+    if not isinstance(m, dict):
+        raise GatewayRefused("bad_message", "a message is not an object")
+    out = {k: m[k] for k in _MSG_FIELDS if k in m and k != "tool_calls"}
+    if not isinstance(out.get("role"), str):
+        raise GatewayRefused("bad_message", "a message without a role")
+    calls = []
+    for tc in m.get("tool_calls") or []:
+        fn = tc.get("function") if isinstance(tc, dict) else None
+        if not isinstance(fn, dict):
+            raise GatewayRefused("bad_message", "a malformed tool call")
+        calls.append({"id": str(tc.get("id", ""))[:64], "type": "function",
+                      "function": {"name": str(fn.get("name", ""))[:80], "arguments": fn.get("arguments", "")}})
+    if calls:
+        out["tool_calls"] = calls
+    return out
 
 
 def _turn_digest(msg: dict) -> str:
@@ -252,7 +276,7 @@ class PlannerLLMGateway:
         self._closed = threading.Event()      # lock-free: close() never waits for a request
         # turns the model itself returned in this run: only these, resent, count as the
         # model's own (ARTEX writes the request - a role label alone proves nothing)
-        self._model_turns: set[str] = set()
+        self._model_turns: dict[str, dict] = {}       # digest -> the turn as the model returned it
         self._server = None
         self._key_forms = self._forms(api_key)
 
@@ -284,7 +308,7 @@ class PlannerLLMGateway:
             raise GatewayRefused("not_chat", "not a chat completions request")
         if body.get("stream"):
             raise GatewayRefused("stream", "streaming is not allowed")
-        out = {"model": self.model, "messages": body["messages"]}
+        out = {"model": self.model, "messages": [_clean_message(m) for m in body["messages"]]}
         for k in ("temperature", "top_p"):
             if isinstance(body.get(k), (int, float)):
                 out[k] = body[k]
@@ -301,14 +325,23 @@ class PlannerLLMGateway:
 
         # everything: strong checks; what ARTEX / Vulnix contribute (not the model's own
         # earlier turns): also the generic credential and internal-host checks
-        strings, keyed = [], []
-        _strings(out["messages"], strings, keyed)
         own, own_keyed = [], []
         with self._lock:
-            model_turns = set(self._model_turns)
-        _strings([m for m in out["messages"]
-                  if not (isinstance(m, dict) and m.get("role") == "assistant" and _turn_digest(m) in model_turns)],
-                 own, own_keyed)
+            model_turns = dict(self._model_turns)
+        rebuilt, theirs = [], []
+        for m in out["messages"]:
+            d = _turn_digest(m) if m.get("role") == "assistant" else None
+            if d in model_turns:
+                # a resent model turn: what is forwarded is the gateway's own copy of
+                # what the model returned - nothing ARTEX attached rides along
+                rebuilt.append(json.loads(json.dumps(model_turns[d])))
+            else:
+                rebuilt.append(m)
+                theirs.append(m)
+        out["messages"] = rebuilt
+        strings, keyed = [], []
+        _strings(out["messages"], strings, keyed)
+        _strings(theirs, own, own_keyed)
         normed = [_norm(s) for s in strings]
         own_normed = [_norm(s) for s in own]
         whole = "\n".join(normed)
@@ -427,7 +460,11 @@ class PlannerLLMGateway:
                 for ch in (resp.get("choices") or []) if isinstance(resp, dict) else []:
                     msg = ch.get("message") if isinstance(ch, dict) else None
                     if isinstance(msg, dict):
-                        self._model_turns.add(_turn_digest(msg))
+                        try:
+                            turn = _clean_message({**msg, "role": "assistant"})
+                        except GatewayRefused:
+                            continue
+                        self._model_turns[_turn_digest(turn)] = turn
                 if isinstance(usage, dict) and isinstance(usage.get("completion_tokens"), int):
                     completion = max(0, min(int(usage["completion_tokens"]), clean["max_tokens"]))
                     pt = usage.get("prompt_tokens")
@@ -533,11 +570,15 @@ class PlannerLLMGateway:
         return self
 
     def __exit__(self, *exc) -> None:
-        self.close()
+        self.close()                             # nothing more is forwarded, whatever follows
         if self._server is not None:
-            self._server.shutdown()
-            self._server.server_close()          # joins handler threads
-            self._server = None
+            srv, self._server = self._server, None
+            srv.shutdown()
+            # joins in-flight handlers, bounded: a client trickling bytes cannot hold the
+            # planner run (forwarding is already closed)
+            t = threading.Thread(target=srv.server_close, daemon=True)
+            t.start()
+            t.join(20)
 
     @property
     def url(self) -> str:
