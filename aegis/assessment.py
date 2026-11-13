@@ -1650,7 +1650,11 @@ class AssessmentService:
     def _planner_gateway(self, actor: str, approval: dict | None, roles, gen: int, mode: str | None):
         """The Planner LLM Gateway for this run. Mode: the request's `llm_mode`, else
         VULNIX_ARTEX_LLM_MODE: direct (none) | gateway-preview | gateway-forward."""
-        mode = (mode or os.environ.get("VULNIX_ARTEX_LLM_MODE", "direct")).strip()
+        configured = os.environ.get("VULNIX_ARTEX_LLM_MODE", "direct").strip()
+        mode = (mode or configured).strip()
+        if mode == "direct" and configured != "direct":
+            # a request may narrow the mode (to preview), never bypass the gateway
+            raise ValueError("Planner LLM Gateway が設定されているため、direct には切り替えられません")
         if mode == "direct":
             return None
         from .planner_llm_gateway import Budget, PlannerLLMGateway

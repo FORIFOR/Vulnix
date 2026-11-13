@@ -53,12 +53,19 @@ MAX_REQUEST_BYTES = 256 * 1024
 MAX_RESPONSE_BYTES = 1 << 20
 MAX_COMPLETION_TOKENS = 2048
 
-SECRET_PATTERNS = [re.compile(p) for p in (
+# Unmistakable key formats: checked in EVERY message (also the model's own turns).
+STRONG_SECRET_PATTERNS = [re.compile(p) for p in (
     r"sk-[A-Za-z0-9_\-]{16,}", r"ghp_[A-Za-z0-9]{20,}", r"github_pat_[A-Za-z0-9_]{20,}",
     r"AKIA[0-9A-Z]{16}", r"xox[abprs]-[A-Za-z0-9-]{10,}", r"AIza[0-9A-Za-z_\-]{30,}",
-    r"-----BEGIN [A-Z ]*PRIVATE KEY-----", r"(?i)\bbearer\s+[A-Za-z0-9._\-]{20,}",
+    r"-----BEGIN [A-Z ]*PRIVATE KEY-----",
+)]
+# Generic "credential-looking" text: checked in what ARTEX / Vulnix contribute (system,
+# user, tool messages); the model's own earlier turns came from the upstream itself.
+GENERIC_SECRET_PATTERNS = [re.compile(p) for p in (
+    r"(?i)\bbearer\s+[A-Za-z0-9._\-]{20,}",
     r"(?i)(password|passwd|secret|api[_-]?key|access[_-]?key|token)[\"']?\s*[:=]\s*[\"']?[^\s\"',}]{8,}",
 )]
+SECRET_PATTERNS = STRONG_SECRET_PATTERNS + GENERIC_SECRET_PATTERNS
 SECRET_KEY_NAMES = re.compile(r"(?i)^(password|passwd|secret|api[_-]?key|access[_-]?key|token|auth|authorization)$")
 
 # Host-like tokens: URLs of any scheme (userinfo allowed), bracketed IPv6, bare IPv4
@@ -67,7 +74,8 @@ _URLISH = re.compile(r"(?i)\b[a-z][a-z0-9+.\-]*://(?:[^\s/@'\"<>]*@)?(\[[0-9a-f:
 # bare IPv4 in text: the full dotted-quad only (short / octal / hex forms are checked
 # where they act as hosts - inside URLs - so "2.0" or "10.5" in prose is not an address)
 _BARE_IP = re.compile(r"(?<![\w.])(\d{1,3}(?:\.\d{1,3}){3})(?![\w.])")
-_BRACKET_V6 = re.compile(r"\[([0-9a-f:.]+)\]", re.I)
+_BRACKET_V6 = re.compile(r"\[([0-9a-f]*:[0-9a-f:.]*)\]", re.I)        # needs a colon: [1] is not an address
+_BARE_V6 = re.compile(r"(?<![\w:.])([0-9a-f]{0,4}(?::[0-9a-f]{0,4}){2,7})(?![\w:])", re.I)
 _INTERNAL_SUFFIXES = (".internal", ".local", ".lan", ".corp", ".intranet", ".home.arpa", ".localdomain")
 _INTERNAL_NAME = re.compile(r"(?i)\b[a-z0-9][a-z0-9\-]*(?:\.[a-z0-9\-]+)*(?:"
                             + "|".join(re.escape(s) for s in _INTERNAL_SUFFIXES) + r")\b")
@@ -171,8 +179,27 @@ def host_candidates(text: str) -> set[str]:
     found = {m.group(1) for m in _URLISH.finditer(text)}
     found |= {m.group(1) for m in _BRACKET_V6.finditer(text)}
     found |= {m.group(1) for m in _BARE_IP.finditer(text)}
+    found |= {m.group(1) for m in _BARE_V6.finditer(text) if _ip(m.group(1)) is not None}
     found |= {m.group(0) for m in _INTERNAL_NAME.finditer(text)}
     return {h.lower().rstrip(".").strip("[]") for h in found if h}
+
+
+def _turn_digest(msg: dict) -> str:
+    """A model turn, independent of formatting ARTEX may apply when resending it."""
+    content = msg.get("content")
+    text = _norm(content).strip() if isinstance(content, str) else ""
+    calls = []
+    for tc in msg.get("tool_calls") or []:
+        fn = tc.get("function") if isinstance(tc, dict) else None
+        if not isinstance(fn, dict):
+            continue
+        args = fn.get("arguments")
+        try:
+            args = json.dumps(json.loads(args), sort_keys=True, ensure_ascii=False) if isinstance(args, str) else ""
+        except ValueError:
+            args = _norm(args).strip()
+        calls.append([str(fn.get("name")), args])
+    return hashlib.sha256(json.dumps([text, calls], ensure_ascii=False).encode()).hexdigest()
 
 
 class PlannerLLMGateway:
@@ -222,7 +249,10 @@ class PlannerLLMGateway:
         self._tokens_used = 0
         self._cost_used = 0.0
         self._first_passed = False            # until one request passed, the fingerprint binds
-        self._closed = False
+        self._closed = threading.Event()      # lock-free: close() never waits for a request
+        # turns the model itself returned in this run: only these, resent, count as the
+        # model's own (ARTEX writes the request - a role label alone proves nothing)
+        self._model_turns: set[str] = set()
         self._server = None
         self._key_forms = self._forms(api_key)
 
@@ -269,19 +299,33 @@ class PlannerLLMGateway:
         mt = body.get("max_tokens")
         out["max_tokens"] = mt if isinstance(mt, int) and 0 < mt <= MAX_COMPLETION_TOKENS else MAX_COMPLETION_TOKENS
 
+        # everything: strong checks; what ARTEX / Vulnix contribute (not the model's own
+        # earlier turns): also the generic credential and internal-host checks
         strings, keyed = [], []
         _strings(out["messages"], strings, keyed)
+        own, own_keyed = [], []
+        with self._lock:
+            model_turns = set(self._model_turns)
+        _strings([m for m in out["messages"]
+                  if not (isinstance(m, dict) and m.get("role") == "assistant" and _turn_digest(m) in model_turns)],
+                 own, own_keyed)
         normed = [_norm(s) for s in strings]
+        own_normed = [_norm(s) for s in own]
         whole = "\n".join(normed)
         whole_joined = "".join(normed)                    # a secret split across strings
+        own_whole = "\n".join(own_normed)
         for text in (*normed, whole, whole_joined):
             for form in self._key_forms:
                 if form in text:
                     raise GatewayRefused("contains_key", "the request contains the API key")
-            for pat in SECRET_PATTERNS:
+            for pat in STRONG_SECRET_PATTERNS:
                 if pat.search(text):
                     raise GatewayRefused("contains_secret", "the request contains something that looks like a secret")
-        for k, v in keyed:
+        for text in (*own_normed, own_whole, "".join(own_normed)):
+            for pat in GENERIC_SECRET_PATTERNS:
+                if pat.search(text):
+                    raise GatewayRefused("contains_secret", "the request contains something that looks like a secret")
+        for k, v in own_keyed:
             if SECRET_KEY_NAMES.match(_norm(k).strip()) and len(_norm(v).strip()) >= 8:
                 raise GatewayRefused("contains_secret", "the request contains something that looks like a secret")
         denied = {d.lower() for d in self._denied() if d}
@@ -297,6 +341,7 @@ class PlannerLLMGateway:
         for host in host_candidates(whole):
             if host in denied:
                 raise GatewayRefused("real_service", "the request names a registered real service")
+        for host in host_candidates(own_whole):
             if host not in self.allowed_hosts and _internal(host):
                 raise GatewayRefused("internal_host", "the request names an internal host outside the local lab")
         return out
@@ -319,11 +364,13 @@ class PlannerLLMGateway:
             prompt_tokens = estimate_tokens(payload.decode())
             worst_tokens = prompt_tokens + clean["max_tokens"]
             worst_cost = self.budget.estimate(prompt_tokens, clean["max_tokens"])
+            # asked OUTSIDE the gateway lock (it takes the service lock; an emergency stop
+            # holds the service lock and closes gateways - opposite order would deadlock)
+            if self._closed.is_set():
+                raise GatewayRefused("closed", "the planner run is over")
+            if self.mode == "forward" and self._may_forward is not None and not self._may_forward():
+                raise GatewayRefused("stopped", "the planner run was stopped")
             with self._lock:
-                if self._closed:
-                    raise GatewayRefused("closed", "the planner run is over")
-                if self.mode == "forward" and self._may_forward is not None and not self._may_forward():
-                    raise GatewayRefused("stopped", "the planner run was stopped")
                 passed = [c for c in self.calls if c.decision in ("forwarded", "previewed", "failed")]
                 if len(passed) >= self.budget.max_calls:
                     raise GatewayRefused("call_budget", f"call budget exhausted ({self.budget.max_calls})")
@@ -340,13 +387,22 @@ class PlannerLLMGateway:
                                  "", sha, len(payload), prompt_tokens, charged_tokens=worst_tokens,
                                  est_cost_usd=worst_cost)
                 self.calls.append(rec)
-                self._first_passed = True
             if self.mode == "preview":
                 self.preview_requests.append(clean)
                 resp = self._responder(clean)
+                with self._lock:
+                    self._first_passed = True
             else:
                 # no audit record, no forward
-                self._record("planner_llm.forwarding", rec, required=True)
+                try:
+                    self._record("planner_llm.forwarding", rec, required=True)
+                except GatewayRefused:
+                    self._release(rec, "no_audit")
+                    raise
+                # once more right before sending: a stop may have landed meanwhile
+                if self._closed.is_set() or (self._may_forward is not None and not self._may_forward()):
+                    self._release(rec, "stopped")
+                    raise GatewayRefused("stopped", "the planner run was stopped")
                 headers = {"Content-Type": "application/json"}
                 if self._key:
                     headers["Authorization"] = f"Bearer {self._key}"
@@ -359,6 +415,8 @@ class PlannerLLMGateway:
                     if len(data) > MAX_RESPONSE_BYTES:
                         raise ValueError("upstream response too large")
                     resp = json.loads(data)
+                    with self._lock:
+                        self._first_passed = True
                 except Exception as e:  # noqa: BLE001 - sent (maybe): the reserve stays charged
                     with self._lock:
                         rec.decision, rec.reason = "failed", f"upstream_error:{type(e).__name__}"[:60]
@@ -366,9 +424,14 @@ class PlannerLLMGateway:
                     return 502, {"error": {"message": "upstream error"}}
             usage = resp.get("usage") if isinstance(resp, dict) else None
             with self._lock:
+                for ch in (resp.get("choices") or []) if isinstance(resp, dict) else []:
+                    msg = ch.get("message") if isinstance(ch, dict) else None
+                    if isinstance(msg, dict):
+                        self._model_turns.add(_turn_digest(msg))
                 if isinstance(usage, dict) and isinstance(usage.get("completion_tokens"), int):
                     completion = max(0, min(int(usage["completion_tokens"]), clean["max_tokens"]))
-                    prompt_real = max(0, int(usage.get("prompt_tokens") or 0))
+                    pt = usage.get("prompt_tokens")
+                    prompt_real = max(0, pt) if isinstance(pt, int) else 0
                     actual_tokens = max(prompt_real, prompt_tokens) + completion
                     actual_cost = self.budget.estimate(max(prompt_real, prompt_tokens), completion)
                     # settle: never below zero, never more than the reserve released
@@ -379,11 +442,21 @@ class PlannerLLMGateway:
             self._record("planner_llm.call", rec)
             return 200, resp
         except GatewayRefused as e:
+            if rec is not None and rec.decision == "refused":
+                self._record("planner_llm.refused", rec)
+                return 403, {"error": {"message": f"refused by the Vulnix planner gateway: {e}"}}
             r = CallRecord(len(self.calls) + 1, "refused", e.code, hashlib.sha256(raw).hexdigest(), len(raw), 0)
             with self._lock:
                 self.calls.append(r)
             self._record("planner_llm.refused", r)
             return 403, {"error": {"message": f"refused by the Vulnix planner gateway: {e}"}}
+
+    def _release(self, rec: CallRecord, code: str) -> None:
+        """A reserved call that was not sent after all: refused, reserve released."""
+        with self._lock:
+            self._tokens_used -= rec.charged_tokens
+            self._cost_used -= rec.est_cost_usd
+            rec.decision, rec.reason, rec.charged_tokens, rec.est_cost_usd = "refused", code, 0, 0.0
 
     def _record(self, event: str, rec: CallRecord, required: bool = False) -> None:
         if self._audit is None:
@@ -420,14 +493,15 @@ class PlannerLLMGateway:
 
     # ---- server ------------------------------------------------------------------
     def close(self) -> None:
-        """No further request is forwarded (emergency stop, end of the run)."""
-        with self._lock:
-            self._closed = True
+        """No further request is forwarded (emergency stop, end of the run). Lock-free."""
+        self._closed.set()
 
     def __enter__(self) -> "PlannerLLMGateway":
         gw = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
+            timeout = 10                       # an idle or slow client cannot hold shutdown
+
             def log_message(self, *_):
                 pass
 
