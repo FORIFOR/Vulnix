@@ -15,6 +15,7 @@ package agent
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -233,6 +234,28 @@ type VulnixPlannerRequest struct {
 	// tries ONE direct TCP connection there and reports the outcome - evidence that
 	// the OS confinement around THIS process drops non-pinned traffic.
 	EgressCanary string `json:"egress_canary"`
+}
+
+// VulnixCheckUnprivilegedRole refuses a database role that is a superuser or holds a
+// role that runs server programs or reads/writes server files (COPY ... PROGRAM,
+// pg_read_server_files, ...): from the database server such a role could act outside
+// the planner's OS confinement.
+func VulnixCheckUnprivilegedRole(ctx context.Context, q interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}) error {
+	var privileged bool
+	err := q.QueryRowContext(ctx, `SELECT r.rolsuper
+	   OR pg_has_role(current_user, 'pg_execute_server_program', 'MEMBER')
+	   OR pg_has_role(current_user, 'pg_read_server_files', 'MEMBER')
+	   OR pg_has_role(current_user, 'pg_write_server_files', 'MEMBER')
+	   FROM pg_roles r WHERE r.rolname = current_user`).Scan(&privileged)
+	if err != nil {
+		return fmt.Errorf("cannot check the database role: %w", err)
+	}
+	if privileged {
+		return fmt.Errorf("the database role is a superuser or may run server programs / access server files")
+	}
+	return nil
 }
 
 // VulnixEgressCanary tries one TCP connection (no data sent) to a loopback ip:port

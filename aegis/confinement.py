@@ -263,6 +263,7 @@ class KernelConfinement:
         sess._entering = False
         sess._table = sess._dir = True
         sess.leftover = True
+        sess.extra, sess._owned, sess.limits, sess.files_left = (), [], {}, False
         return sess
 
     def interpreter_reachable_by_others(self) -> str:
@@ -284,7 +285,7 @@ class KernelConfinement:
 
     # ---- one run -------------------------------------------------------------
     def session(self, ip: str, port: int, *, forbidden_paths=(), protected_pid: int | None = None,
-                extra_endpoints: tuple = ()) -> "ConfinementSession":
+                extra_endpoints: tuple = (), limits: dict | None = None) -> "ConfinementSession":
         """`forbidden_paths`: files the worker must not be able to read (verified
         by the probe before the worker starts); `protected_pid`: a process the
         worker must not be able to signal (the control plane)."""
@@ -293,15 +294,20 @@ class KernelConfinement:
             raise ConfinementError(st["reason"])
         return ConfinementSession(self, ip, int(port), forbidden_paths=tuple(str(p) for p in forbidden_paths),
                                   protected_pid=protected_pid if protected_pid is not None else os.getpid(),
-                                  extra_endpoints=tuple((str(i), int(p)) for i, p in extra_endpoints))
+                                  extra_endpoints=tuple((str(i), int(p)) for i, p in extra_endpoints),
+                                  limits=dict(limits or {}))
 
 
 class ConfinementSession:
     def __init__(self, owner: KernelConfinement, ip: str, port: int, *, forbidden_paths=(),
-                 protected_pid: int | None = None, extra_endpoints: tuple = ()):
+                 protected_pid: int | None = None, extra_endpoints: tuple = (), limits: dict | None = None):
         self._o = owner
         self.ip, self.port = ip, port
         self.extra = tuple(extra_endpoints)
+        # cgroup resource limits, e.g. {"pids.max": 256, "memory.max": 1 << 30}; applied
+        # before anything runs in the cgroup, or the session is not created
+        self.limits = {k: int(v) for k, v in (limits or {}).items() if k in ("pids.max", "memory.max")}
+        self.files_left = False
         self._owned: list[Path] = []          # directories given to this run's uid
         self.forbidden = tuple(forbidden_paths)
         self.on_leftover = None
@@ -368,6 +374,18 @@ class ConfinementSession:
     def __exit__(self, *exc) -> None:
         self._teardown()
 
+    def _apply_limits(self) -> None:
+        """Write the cgroup limits (enabling the controller in the parent if needed).
+        Any failure means no session (fail closed)."""
+        for key, value in self.limits.items():
+            ctrl = key.split(".", 1)[0]
+            f = self.cgroup / key
+            if self._sh('test -e "$1"', str(f), timeout=10).returncode != 0:
+                self._sh('echo "+$1" > "$2"', ctrl, str(self._o._root / "cgroup.subtree_control"), timeout=10)
+            r = self._sh('echo "$1" > "$2" && test "$(cat "$2")" = "$1"', str(value), str(f), timeout=10)
+            if r.returncode != 0:
+                raise ConfinementError(f"cgroup の制限（{key}）を設定できません: {r.stderr.strip()[:200]}")
+
     def own_directory(self, path: str | os.PathLike) -> None:
         """Give an (empty) directory to this run's uid, mode 0700: the only place the
         confined program can write. Nothing else of ours becomes writable to it."""
@@ -375,20 +393,45 @@ class ConfinementSession:
         if not p.is_dir() or p.is_symlink() or any(p.iterdir()):
             raise ConfinementError("隔離された実行用ディレクトリを準備できません")
         p = p.resolve()
-        r = self._sh('chown "$1:$1" "$2" && chmod 700 "$2"', str(self.uid), str(p), timeout=10)
+        # every ancestor must be root's or ours and not writable by others (sticky dirs
+        # such as /tmp allowed): the run's uid can never replace the path or a parent
+        me = os.geteuid() if hasattr(os, "geteuid") else -1
+        for anc in p.parents:
+            st = anc.lstat()
+            if st.st_uid not in (0, me) or (st.st_mode & 0o022 and not st.st_mode & 0o1000):
+                raise ConfinementError(f"実行用ディレクトリの親 {anc} が安全ではありません")
+        r = self._sh('chown -h "$1:$1" "$2" && chmod 700 "$2"', str(self.uid), str(p), timeout=10)
         if r.returncode != 0:
             raise ConfinementError(f"実行用ディレクトリの所有者を変更できません: {r.stderr.strip()[:200]}")
         self._owned.append(p)
 
-    def _remove_owned(self) -> None:
-        """After the cgroup is empty: remove exactly the directories this session gave
-        away (its uid's files cannot be removed by us otherwise). rm does not follow
-        symlinks inside them."""
-        for p in self._owned:
-            try:
-                self._sh('rm -rf --one-file-system -- "$1"', str(p), timeout=30)
-            except (OSError, subprocess.SubprocessError):
-                pass
+    def _as_run_uid(self) -> list[str]:
+        return [*self._o._priv(), self._o._which("setpriv") or "setpriv", f"--reuid={self.uid}",
+                f"--regid={self.uid}", "--clear-groups", "--inh-caps=-all", "--bounding-set=-all",
+                "--no-new-privs"]
+
+    def _remove_owned(self) -> bool:
+        """After the cgroup is empty: remove what this run's uid left - the directory it
+        was given and its own files in the shared temp directories. Deleting is done AS
+        that uid (no capabilities), so it can only ever delete what that uid could; only
+        the then-empty directory is removed by us. True when everything is gone."""
+        if not self._owned or self.uid is None:
+            return True
+        find = self._o._which("find") or "find"
+        ok = True
+        try:
+            for p in self._owned:
+                r = self._o._run([*self._as_run_uid(), find, str(p), "-xdev", "-mindepth", "1", "-delete"],
+                                 capture_output=True, text=True, timeout=60)
+                ok = ok and r.returncode == 0
+                r = self._sh('rmdir -- "$1"', str(p), timeout=10)
+                ok = ok and (r.returncode == 0 or not p.exists())
+            for shared in ("/tmp", "/var/tmp", "/dev/shm"):
+                self._o._run([*self._as_run_uid(), find, shared, "-xdev", "-mindepth", "1",
+                              "-user", str(self.uid), "-delete"], capture_output=True, text=True, timeout=60)
+        except (OSError, subprocess.SubprocessError):
+            ok = False
+        return ok
 
     def _apply_and_verify(self) -> None:
         rules = ruleset(self.name, self.ip, self.port, self.extra)
@@ -401,6 +444,7 @@ class ConfinementSession:
             self._check_cancelled()          # stopped while the cgroup was being created
             if self._sh('test -e "$1"', str(self.cgroup / "cgroup.kill"), timeout=10).returncode != 0:
                 raise ConfinementError("このカーネルには cgroup.kill がありません（Linux 5.14 以降が必要です）")
+            self._apply_limits()
             self._check_cancelled()
             p = self._nft("-f", "-", input=rules, timeout=10)
             if p.returncode != 0:
@@ -554,8 +598,8 @@ class ConfinementSession:
                 if not removed:
                     self.kill()
                     time.sleep(0.1)
-            if removed:
-                self._remove_owned()
+            if removed and not self._remove_owned():
+                self.files_left = True          # the cgroup is gone; files of the run remain
             if removed and self._table:
                 self._nft("delete", "table", "inet", self.name, timeout=10)
         except (OSError, subprocess.SubprocessError):

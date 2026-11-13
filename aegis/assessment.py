@@ -296,6 +296,7 @@ class AssessmentService:
         self._artex_expected_sha256 = os.environ.get("VULNIX_ARTEX_EXPECTED_SHA256", "")
         self._artex_plan: dict | None = None
         self._artex_items: dict = {}
+        self._artex_live: set = set()           # confinement sessions of running ARTEX planners
 
         self.a = Assessment(
             id="scan_001",
@@ -1494,11 +1495,17 @@ class AssessmentService:
         # ARTEX runs only under Vulnix's kernel confinement (the same per-run cgroup v2 +
         # nftables + own-uid + seccomp launcher as the L2 worker). Without it, it does not
         # run - except when an operator explicitly opts into an unconfined DEV run.
+        for url in (self._artex_llm_url, self._artex_pg_dsn):
+            port = urllib.parse.urlsplit(url or "").port if url else None
+            if port is not None and port == self.lab_port:
+                # a pinned port gives the planner whatever listens there
+                raise ValueError("ARTEX の LLM / DB の接続先に検証ラボのポートは使用できません")
         st = dict(self._l2_confinement.status())
         if st.get("ok"):
             confinement = self._l2_confinement
             protected = sorted(str(p) for p in self.data_dir.iterdir() if p.is_file())
-        elif os.environ.get("VULNIX_ARTEX_ALLOW_UNCONFINED") == "1":
+        elif (os.environ.get("VULNIX_ARTEX_ALLOW_UNCONFINED") == "1"
+              and os.environ.get("AEGIS_ENV", "").strip().lower() in ("development", "dev")):
             confinement, protected = None, ()
             self.audit.record("artex.unconfined_dev_run", actor=actor, reason=str(st.get("reason", ""))[:200])
         else:
@@ -1510,10 +1517,16 @@ class AssessmentService:
             run = run_artex_planner(self._artex_real_cmd, request, llm_url=self._artex_llm_url,
                                     llm_model=self._artex_llm_model, pg_dsn=self._artex_pg_dsn,
                                     expected_sha256=self._artex_expected_sha256,
-                                    confinement=confinement, forbidden_paths=protected)
+                                    confinement=confinement, forbidden_paths=protected,
+                                    on_leftover=self._note_leftover_session,
+                                    on_started=self._artex_session_started,
+                                    on_finished=self._artex_session_finished)
         except ArtexBridgeError as e:
             self.audit.record("artex.plan_failed", actor=actor, reason=str(e)[:200])
             raise ValueError(str(e)) from None
+        except Exception as e:  # noqa: BLE001 - recorded, and never a half-made plan
+            self.audit.record("artex.plan_failed", actor=actor, reason=type(e).__name__)
+            raise ValueError(f"ARTEX の計画に失敗しました（{type(e).__name__}）") from None
         run_id = "ax" + secrets.token_hex(4)
         rec = reconstruct(run.intents, targets, run_id)
         # The rebuilt proposals still pass ProposalRouter (sanitized, audited) and appear
@@ -1583,6 +1596,22 @@ class AssessmentService:
                               "catalog_id": it.catalog_id, "label": it.label, "level": it.level,
                               "target_id": it.target_id, "tool": it.proposal["tool"], "status": it.status})
             return {"configured": bool(self._artex_real_cmd), "plan": {**self._artex_plan, "items": items}}
+
+    def _artex_session_started(self, sess) -> None:
+        with self._lock:
+            self._artex_live.add(sess)
+
+    def _artex_session_finished(self, sess) -> None:
+        with self._lock:
+            self._artex_live.discard(sess)
+
+    def _kill_artex_planner_locked(self) -> None:
+        """Emergency stop: a running ARTEX planner is killed with its cgroup."""
+        for sess in list(self._artex_live):
+            try:
+                sess.kill()
+            except Exception:  # noqa: BLE001 - the session's own teardown reports a leftover
+                pass
 
     def _claim_artex_item_locked(self, item_id: str) -> dict:
         """Check and claim (set running) in ONE locked step: no second request can
@@ -2674,6 +2703,7 @@ class AssessmentService:
             except OSError:
                 pass
             rep = self.gateway.emergency_stop(actor)
+            self._kill_artex_planner_locked()       # a running ARTEX planner dies with its cgroup
             report = {"actor": actor, "confirmed": rep.confirmed, "killed_pids": rep.killed_pids,
                       "survivors": rep.survivors,
                       "steps": [{"name": n, "elapsed_ms": round(t * 1000, 2)} for n, t in rep.steps],

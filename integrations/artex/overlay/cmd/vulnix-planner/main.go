@@ -136,6 +136,12 @@ func run() error {
 		return fmt.Errorf("open store: %w", err)
 	}
 	defer d.Close()
+	// The database port is one of only two places the confined planner can reach: a
+	// role that can run server programs or read/write server files would turn it into
+	// a way out of the confinement. Such a role is refused before planning.
+	if err := agent.VulnixCheckUnprivilegedRole(context.Background(), d.DB); err != nil {
+		return fmt.Errorf("refusing to plan: %w", err)
+	}
 
 	workDir, err := agent.VulnixTempWorkDir()
 	if err != nil {
