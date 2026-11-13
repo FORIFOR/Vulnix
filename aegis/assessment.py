@@ -92,6 +92,19 @@ class StopNotConfirmed(RuntimeError):
     confirmed dead. The operation is NOT reported as completed."""
 
 
+def _artex_isolation_view(iso: dict) -> dict:
+    """What confined the ARTEX process (from the kernel probe evidence)."""
+    keys = ("mechanism", "cgroup", "worker_uid", "pinned", "pinned_extra", "probe_connect",
+            "probe_in_cgroup", "kernel_dropped_packets", "separate_uid", "no_capabilities",
+            "unix_sockets", "io_uring", "inherited_fds_clean", "control_plane_signal",
+            "protected_files_denied", "protected_files", "enforced_after_run")
+    view = {k: iso[k] for k in keys if k in iso}
+    view["confined"] = bool(iso.get("confined"))
+    view["label"] = (f"OS 隔離あり（{iso.get('mechanism', '')}）" if view["confined"]
+                     else "OS 隔離なし（開発用・本番利用不可）")
+    return view
+
+
 class _StaticProposals:
     """Hands already-rebuilt proposals to a ProposalRouter (so they are sanitized
     and audited like any backend's)."""
@@ -1475,11 +1488,29 @@ class AssessmentService:
             gen = self._run_generation
         request = {"goal": "登録済みの検証対象について、許可された非破壊の検証で確認すべき脆弱性の方向を計画する",
                    "targets": targets, "observations": observations, "max_turns": 6}
-        self.audit.record("artex.plan_requested", actor=actor, targets=len(targets))
+        canary = os.environ.get("VULNIX_ARTEX_EGRESS_CANARY", "")
+        if re.fullmatch(r"127\.0\.0\.1:\d{1,5}", canary):
+            request["egress_canary"] = canary      # proves the confinement around ARTEX itself
+        # ARTEX runs only under Vulnix's kernel confinement (the same per-run cgroup v2 +
+        # nftables + own-uid + seccomp launcher as the L2 worker). Without it, it does not
+        # run - except when an operator explicitly opts into an unconfined DEV run.
+        st = dict(self._l2_confinement.status())
+        if st.get("ok"):
+            confinement = self._l2_confinement
+            protected = sorted(str(p) for p in self.data_dir.iterdir() if p.is_file())
+        elif os.environ.get("VULNIX_ARTEX_ALLOW_UNCONFINED") == "1":
+            confinement, protected = None, ()
+            self.audit.record("artex.unconfined_dev_run", actor=actor, reason=str(st.get("reason", ""))[:200])
+        else:
+            self.audit.record("artex.plan_refused", actor=actor, reason="no OS-level confinement")
+            raise ValueError("ARTEX プランナーを OS レベルで隔離して起動できないため実行しません"
+                             f"（{str(st.get('reason', ''))[:200]}）")
+        self.audit.record("artex.plan_requested", actor=actor, targets=len(targets), confined=confinement is not None)
         try:
             run = run_artex_planner(self._artex_real_cmd, request, llm_url=self._artex_llm_url,
                                     llm_model=self._artex_llm_model, pg_dsn=self._artex_pg_dsn,
-                                    expected_sha256=self._artex_expected_sha256)
+                                    expected_sha256=self._artex_expected_sha256,
+                                    confinement=confinement, forbidden_paths=protected)
         except ArtexBridgeError as e:
             self.audit.record("artex.plan_failed", actor=actor, reason=str(e)[:200])
             raise ValueError(str(e)) from None
@@ -1523,6 +1554,8 @@ class AssessmentService:
                            "artex_module": prov.get("artex_module"), "artex_commit": prov.get("artex_commit"),
                            "go_version": prov.get("go_version"), "norma_version": prov.get("norma_version"),
                            "label": label},
+                "isolation": {**_artex_isolation_view(prov.get("isolation") or {}),
+                              "egress_canary": prov.get("egress_canary") or None},
                 "allowed_tools": run.allowed_tools, "tool_calls": run.tool_calls,
                 "denied_tool_calls": run.denied_tool_calls, "goal_met": run.goal_met,
                 "elapsed_ms": run.elapsed_ms, "intents": len(run.intents),

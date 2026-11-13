@@ -149,12 +149,20 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install nftables (kernel confinement of the ARTEX process)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nftables iproute2
+
       - name: Real ARTEX -> Vulnix ProposalRouter -> Gateway (end to end)
         env:
           VULNIX_ARTEX_REAL_BIN: ${{ runner.temp }}/artex-vulnix-planner
           VULNIX_ARTEX_EXPECTED_COMMIT: ${{ env.ARTEX_COMMIT }}
           VULNIX_ARTEX_EVIDENCE: ${{ runner.temp }}/artex-evidence.json
           VULNIX_ARTEX_PG_DSN: postgres://artex:artex-ci-only@127.0.0.1:5432/artex?sslmode=disable
+          # ARTEX runs inside Vulnix's kernel confinement (cgroup v2 + nftables + own uid +
+          # seccomp launcher); the test fails if it is not confined
+          VULNIX_ARTEX_CONFINE: "1"
         run: python3 -m unittest -v tests.test_artex_bridge
 
       - name: The real ARTEX test must have run (a skip is a failure)

@@ -68,6 +68,17 @@ export function ArtexPlanPanel({ snap, onUpdate }: {
               : "bg-amber-100 text-amber-900 dark:bg-amber-900/50 dark:text-amber-100"}>
               {plan.engine.label}
             </Pill>
+            {plan.isolation && (
+              <Pill className={plan.isolation.confined ? "bg-emerald-100 text-emerald-900 dark:bg-emerald-900/50 dark:text-emerald-100"
+                : "bg-red-100 text-red-900 dark:bg-red-900/50 dark:text-red-100"}>
+                {plan.isolation.label}
+              </Pill>
+            )}
+            {plan.isolation?.confined && (
+              <span className="text-zinc-500">
+                許可通信：{[plan.isolation.pinned, ...(plan.isolation.pinned_extra ?? [])].filter(Boolean).join(", ")}
+              </span>
+            )}
             {plan.engine.artex_commit && <span className="font-mono text-zinc-500">commit {plan.engine.artex_commit.slice(0, 12)}</span>}
             {plan.engine.sha256 && <span className="font-mono text-zinc-500">bin {plan.engine.sha256.slice(0, 12)}</span>}
             <span className="text-zinc-500">intent {plan.intents} 件 / {Math.round(plan.elapsed_ms)} ms</span>

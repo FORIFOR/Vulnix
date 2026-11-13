@@ -229,6 +229,29 @@ type VulnixPlannerRequest struct {
 	Targets      []VulnixTarget      `json:"targets"`
 	Observations []VulnixObservation `json:"observations"`
 	MaxTurns     int                 `json:"max_turns"`
+	// EgressCanary (optional, loopback ip:port only): before planning, this process
+	// tries ONE direct TCP connection there and reports the outcome - evidence that
+	// the OS confinement around THIS process drops non-pinned traffic.
+	EgressCanary string `json:"egress_canary"`
+}
+
+// VulnixEgressCanary tries one TCP connection (no data sent) to a loopback ip:port
+// and reports "connected" or "blocked: <error>". It bypasses the HTTP transport on
+// purpose: what is tested is the kernel, not Vulnix's own dialer.
+func VulnixEgressCanary(addr string) string {
+	if err := VulnixCheckLoopbackURL("http://" + addr); err != nil {
+		return "refused: not a loopback address"
+	}
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil || net.ParseIP(host) == nil {
+		return "refused: not an ip:port"
+	}
+	conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
+	if err != nil {
+		return "blocked: " + err.Error()
+	}
+	_ = conn.Close()
+	return "connected"
 }
 
 // VulnixToolCall is one tool call the model made.

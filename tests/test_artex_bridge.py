@@ -381,6 +381,55 @@ class TestThePlanThroughTheGateway(ServiceBase):
                 self.svc.plan_with_artex("op")
 
 
+class TestArtexRunsOnlyUnderOsConfinement(ServiceBase):
+    def test_ruleset_pins_each_extra_endpoint_and_nothing_else(self):
+        from aegis.confinement import ConfinementError, ruleset
+        rules = ruleset("aegis_l2_0123456789ab", "127.0.0.1", 18080, (("127.0.0.1", 5432),))
+        self.assertIn("tcp dport 18080 ct state new", rules)
+        self.assertIn("tcp dport 5432 ct state new", rules)
+        self.assertEqual(rules.count("ct state established"), 1)
+        self.assertTrue(rules.rstrip().splitlines()[-1].strip() == "}" and "counter drop" in rules)
+        self.assertEqual(ruleset("aegis_l2_0123456789ab", "127.0.0.1", 1),
+                         ruleset("aegis_l2_0123456789ab", "127.0.0.1", 1, ()))
+        for bad in ((("169.254.169.254", 80),), (("127.0.0.1", 0),), (("localhost", 5432),)):
+            with self.assertRaises(ConfinementError):
+                ruleset("aegis_l2_0123456789ab", "127.0.0.1", 1, bad)
+
+    def test_no_confinement_means_artex_does_not_run(self):
+        from aegis.confinement import KernelConfinement
+        unavailable = KernelConfinement(platform="darwin")
+        self.svc._l2_confinement = unavailable
+        with self.assertRaises(ValueError) as cm:
+            self.svc.plan_with_artex("op")
+        self.assertIn("隔離", str(cm.exception))
+        self.assertTrue(self.events("artex.plan_refused"))
+        self.assertFalse(self.events("artex.plan_received"))
+
+    def test_an_explicit_dev_opt_out_runs_unconfined_and_says_so(self):
+        from aegis.confinement import KernelConfinement
+        self.svc._l2_confinement = KernelConfinement(platform="darwin")
+        with patch.dict(os.environ, {"VULNIX_ARTEX_ALLOW_UNCONFINED": "1"}):
+            plan = self.plan()
+        self.assertFalse(plan["isolation"]["confined"])
+        self.assertIn("本番利用不可", plan["isolation"]["label"])
+        self.assertTrue(self.events("artex.unconfined_dev_run"))
+
+    def test_the_session_pins_llm_and_database_and_protects_the_data_dir(self):
+        with patch.object(self.svc, "_artex_pg_dsn", "postgres://a:b@127.0.0.1:5432/artex"):
+            plan = self.plan()
+        self.assertEqual(TEST_CONFINEMENT.sessions[-1], ("127.0.0.1", 9))
+        checks = TEST_CONFINEMENT.last_checks
+        self.assertEqual(checks["extra_endpoints"], (("127.0.0.1", 5432),))
+        data_files = {str(p) for p in Path(self.tmp.name).iterdir() if p.is_file()}
+        self.assertTrue(data_files and data_files <= set(checks["forbidden_paths"]))
+        self.assertTrue(plan["isolation"]["confined"])
+
+    def test_a_named_host_is_refused_for_a_confined_run(self):
+        with patch.object(self.svc, "_artex_llm_url", "http://localhost:9/v1"):
+            with self.assertRaises(ValueError):
+                self.svc.plan_with_artex("op")
+
+
 @unittest.skipUnless(os.environ.get("VULNIX_ARTEX_REAL_BIN"), "real ARTEX overlay binary not built here (Linux CI)")
 class TestRealArtexPlanner(ServiceBase):
     """The REAL ARTEX planner (overlay build of github.com/Autumn-27/artex), driven by the
@@ -394,6 +443,20 @@ class TestRealArtexPlanner(ServiceBase):
         self.addCleanup(self.mock.__exit__)
         self.llm_url = self.mock.url
         super().setUp()
+        self.confined = os.environ.get("VULNIX_ARTEX_CONFINE") == "1"
+        if self.confined:
+            from aegis.confinement import KernelConfinement
+            self.svc._l2_confinement = KernelConfinement()     # the real kernel confinement
+            # a loopback listener ARTEX is NOT allowed to reach
+            import socket
+            self.canary = socket.socket()
+            self.canary.bind(("127.0.0.1", 0))
+            self.canary.listen(8)
+            self.canary.settimeout(0.2)
+            self.addCleanup(self.canary.close)
+            env = patch.dict(os.environ, {"VULNIX_ARTEX_EGRESS_CANARY": f"127.0.0.1:{self.canary.getsockname()[1]}"})
+            env.start()
+            self.addCleanup(env.stop)
 
     def test_the_real_planner_plans_and_the_gateway_decides(self):
         plan = self.plan()
@@ -425,6 +488,23 @@ class TestRealArtexPlanner(ServiceBase):
         self.assertTrue({"Bash", "WebFetch", "add_task_scope"} <= set(plan["denied_tool_calls"]),
                         plan["denied_tool_calls"])
         self.assertFalse([c for c in plan["tool_calls"] if c["allowed"] and c["name"] not in ab.PLANNER_TOOL_ALLOWLIST])
+        iso = plan["isolation"]
+        if self.confined:
+            # ARTEX itself ran inside Vulnix's kernel confinement
+            self.assertTrue(iso["confined"], iso)
+            self.assertIn("cgroup v2", iso["mechanism"])
+            self.assertTrue(iso["probe_in_cgroup"] and iso["separate_uid"] and iso["no_capabilities"], iso)
+            self.assertTrue(str(iso["probe_connect"]).startswith("BLOCKED"), iso)
+            self.assertGreaterEqual(iso["kernel_dropped_packets"], 1, iso)
+            self.assertTrue(iso["protected_files_denied"], iso)
+            self.assertTrue(str(iso["unix_sockets"]).startswith("DENIED"), iso)
+            self.assertEqual(iso["pinned"], f"127.0.0.1:{self.mock.server.server_port}")
+            self.assertIn("127.0.0.1:5432", iso["pinned_extra"])
+            self.assertTrue(iso.get("enforced_after_run"), iso)
+            # the ARTEX process's own direct connection to a non-pinned loopback port
+            self.assertTrue(str(iso["egress_canary"]).startswith("blocked"), iso)
+            with self.assertRaises(OSError):
+                self.canary.accept()                 # nothing ever arrived
         # Gateway: L1 allowed, L2 refused without approver, L2 approved runs in the worker
         self.svc.execute_artex_item(self.item(plan, "l1_http_probe")["id"], "op", roles=("operator",))
         with self.assertRaises(ApproverRequired):
@@ -434,7 +514,8 @@ class TestRealArtexPlanner(ServiceBase):
         out = os.environ.get("VULNIX_ARTEX_EVIDENCE")
         if out:
             Path(out).write_text(json.dumps({
-                "engine": engine, "llm_requests": len(self.mock.requests), "offered_tools": sorted(offered),
+                "engine": engine, "isolation": plan["isolation"],
+                "llm_requests": len(self.mock.requests), "offered_tools": sorted(offered),
                 "allowed_tools": plan["allowed_tools"], "tool_calls": plan["tool_calls"],
                 "denied_tool_calls": plan["denied_tool_calls"], "intents": plan["intents"],
                 "items": final["items"], "advisories": final["advisories"],

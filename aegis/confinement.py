@@ -64,7 +64,7 @@ def _system_which(tool: str) -> str | None:
     return shutil.which(tool, path=SYSTEM_PATH)
 
 
-def ruleset(name: str, ip: str, port: int) -> str:
+def _pinned(ip: str, port: int) -> tuple[ipaddress._BaseAddress, int]:
     try:
         addr = ipaddress.ip_address(ip)
     except ValueError:
@@ -73,10 +73,25 @@ def ruleset(name: str, ip: str, port: int) -> str:
         raise ConfinementError("address must be a plain, canonical IP literal")
     if any(addr.version == n.version and addr in n for n in HARD_DENY):
         raise ConfinementError(f"address {addr} is hard-denied")
-    if not _NAME.fullmatch(name) or not 0 < int(port) < 65536:
+    if not 0 < int(port) < 65536:
         raise ConfinementError("invalid confinement parameters")
-    fam = "ip6" if addr.version == 6 else "ip"
+    return addr, int(port)
+
+
+def ruleset(name: str, ip: str, port: int, extra: tuple = ()) -> str:
+    """`extra`: further (ip, port) pairs this run may open a TCP connection to (each
+    pinned exactly like the first; e.g. a planner's local model and database)."""
+    if not _NAME.fullmatch(name):
+        raise ConfinementError("invalid confinement parameters")
+    endpoints = [_pinned(ip, port), *(_pinned(i, p) for i, p in extra)]
     mark = flow_mark(name)
+    allow = []
+    for addr, prt in endpoints:
+        fam = "ip6" if addr.version == 6 else "ip"
+        est = f"    ct state established ct direction original ct mark {mark:#x} {fam} daddr {addr} accept"
+        if est not in allow:
+            allow.append(est)
+        allow.append(f"    {fam} daddr {addr} tcp dport {prt} ct state new ct mark set {mark:#x} accept")
     return "\n".join([
         f"table inet {name} {{",
         "  chain confined {",
@@ -84,8 +99,7 @@ def ruleset(name: str, ip: str, port: int) -> str:
         # pinned rule accepted (it carries this run's conntrack mark) - not on a
         # flow somebody else opened (e.g. a UDP tuple a closed socket left in
         # conntrack), and not replies on a connection opened TO the worker.
-        f"    ct state established ct direction original ct mark {mark:#x} {fam} daddr {addr} accept",
-        f"    {fam} daddr {addr} tcp dport {int(port)} ct state new ct mark set {mark:#x} accept",
+        *allow,
         "    counter drop",
         "  }",
         "  chain output {",
@@ -269,8 +283,8 @@ class KernelConfinement:
         return [] if self._euid == 0 else [self._which("sudo") or "sudo", "-n"]
 
     # ---- one run -------------------------------------------------------------
-    def session(self, ip: str, port: int, *, forbidden_paths=(), protected_pid: int | None = None
-                ) -> "ConfinementSession":
+    def session(self, ip: str, port: int, *, forbidden_paths=(), protected_pid: int | None = None,
+                extra_endpoints: tuple = ()) -> "ConfinementSession":
         """`forbidden_paths`: files the worker must not be able to read (verified
         by the probe before the worker starts); `protected_pid`: a process the
         worker must not be able to signal (the control plane)."""
@@ -278,14 +292,16 @@ class KernelConfinement:
         if not st["ok"]:
             raise ConfinementError(st["reason"])
         return ConfinementSession(self, ip, int(port), forbidden_paths=tuple(str(p) for p in forbidden_paths),
-                                  protected_pid=protected_pid if protected_pid is not None else os.getpid())
+                                  protected_pid=protected_pid if protected_pid is not None else os.getpid(),
+                                  extra_endpoints=tuple((str(i), int(p)) for i, p in extra_endpoints))
 
 
 class ConfinementSession:
     def __init__(self, owner: KernelConfinement, ip: str, port: int, *, forbidden_paths=(),
-                 protected_pid: int | None = None):
+                 protected_pid: int | None = None, extra_endpoints: tuple = ()):
         self._o = owner
         self.ip, self.port = ip, port
+        self.extra = tuple(extra_endpoints)
         self.forbidden = tuple(forbidden_paths)
         self.on_leftover = None
         self._cancelled = False      # killed (stopped) at any point: it may not start anything
@@ -307,7 +323,8 @@ class ConfinementSession:
         return self._o._run([*self._o._priv(), self._o._which("nft") or "nft", *args],
                             capture_output=True, text=True, **kw)
 
-    def wrap(self, argv: list[str], env_keys=(), cpu_seconds: int = 60) -> list[str]:
+    def wrap(self, argv: list[str], env_keys=(), cpu_seconds: int = 60, interpreter: str | None = None
+             ) -> list[str]:
         """The command that starts `argv` inside the cgroup, as this run's own
         unprivileged uid, with no capabilities and no_new_privs, through the
         seccomp launcher (no UNIX-domain sockets). Secrets stay in the environment:
@@ -324,7 +341,8 @@ class ConfinementSession:
         # worker's uid; the worker itself never holds root, a capability, or our uid
         drop = [self._o._which("setpriv") or "setpriv", f"--reuid={self.uid}", f"--regid={self.uid}",
                 "--clear-groups", "--inh-caps=-all", "--bounding-set=-all", "--no-new-privs"]
-        launch = [mapped[0], "-I", str(staged / "_sandbox_launch.py"), *mapped]
+        # the seccomp launcher is Python; a non-Python program names the interpreter
+        launch = [interpreter or mapped[0], "-I", str(staged / "_sandbox_launch.py"), *mapped]
         if self._o._euid == 0:
             return [*enter, *drop, *launch]
         keep = [f"--preserve-env={','.join(keys)}"] if keys else []
@@ -349,8 +367,18 @@ class ConfinementSession:
     def __exit__(self, *exc) -> None:
         self._teardown()
 
+    def own_directory(self, path: str | os.PathLike) -> None:
+        """Give an (empty) directory to this run's uid, mode 0700: the only place the
+        confined program can write. Nothing else of ours becomes writable to it."""
+        p = Path(path)
+        if not p.is_dir() or p.is_symlink() or any(p.iterdir()):
+            raise ConfinementError("隔離された実行用ディレクトリを準備できません")
+        r = self._sh('chown "$1:$1" "$2" && chmod 700 "$2"', str(self.uid), str(p), timeout=10)
+        if r.returncode != 0:
+            raise ConfinementError(f"実行用ディレクトリの所有者を変更できません: {r.stderr.strip()[:200]}")
+
     def _apply_and_verify(self) -> None:
-        rules = ruleset(self.name, self.ip, self.port)
+        rules = ruleset(self.name, self.ip, self.port, self.extra)
         self._check_cancelled()
         try:
             p = self._sh('mkdir "$1"', str(self.cgroup), timeout=10)
@@ -439,6 +467,7 @@ class ConfinementSession:
             signal_ok = str(seen.get("signal", "")).startswith("DENIED:")
             self.evidence = {"mechanism": self._o.mechanism, "cgroup": self.name,
                              "worker_uid": self.uid, "pinned": f"{self.ip}:{self.port}",
+                             "pinned_extra": [f"{i}:{p}" for i, p in self.extra],
                              "probe_connect": seen.get("connect"), "probe_in_cgroup": in_cgroup,
                              "kernel_dropped_packets": counted,
                              "separate_uid": uid_ok, "no_capabilities": caps_ok,
