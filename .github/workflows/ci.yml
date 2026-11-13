@@ -12,6 +12,8 @@ jobs:
   backend-and-linux-isolation:
     name: Python Suite + Linux Kernel nftables & Emergency Stop Verification
     runs-on: ubuntu-latest
+    env:
+      VULNIX_NO_ENV_LOCAL: "1"   # tests never read a .env.local
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

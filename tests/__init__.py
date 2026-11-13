@@ -7,12 +7,16 @@
   refuses every non-loopback destination, and it can be handed to the service
   only through its constructor (there is no environment variable or API for it).
   The real confinement is tested in tests/test_fail_closed.py.
+* `VULNIX_NO_ENV_LOCAL=1`: the project's .env.local is never read during tests.
 """
 import ipaddress
 import os
 import tempfile
 
 os.environ.setdefault("VULNIX_REVOCATION_MARKER_DIR", tempfile.mkdtemp(prefix="vulnix-test-markers-"))
+# Never load the developer's git-ignored .env.local (it may hold a real API key) into a
+# test run or into a server a test starts.
+os.environ.setdefault("VULNIX_NO_ENV_LOCAL", "1")
 
 
 class _LoopbackSession:
