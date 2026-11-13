@@ -44,6 +44,8 @@ from .remotion_export import build_remotion_export
 from .router import (AbliterationBackend, ArtexEngine, ArtexplannerBackend,
                      ArtexSubprocessBackend, HttpModelBackend, ProposalRouter,
                      verify_planner_connections, redact_verification_report)
+from .artex_bridge import (CATALOG_BY_ID, ArtexBridgeError, command_from_env, reconstruct,
+                           run_artex_planner)
 from .runtime import WorkerPool
 from .secrets_store import EncryptedSecretStore
 from .l2_rules import BUILTIN_PROFILE_DIR, L2RuleSet, site_profile_dirs
@@ -88,6 +90,53 @@ class Assessment:
 class StopNotConfirmed(RuntimeError):
     """Authority was withdrawn, but a worker that was running could not be
     confirmed dead. The operation is NOT reported as completed."""
+
+
+def _artex_isolation_view(iso: dict) -> dict:
+    """What confined the ARTEX process (from the kernel probe evidence)."""
+    keys = ("mechanism", "cgroup", "worker_uid", "pinned", "pinned_extra", "probe_connect",
+            "probe_in_cgroup", "kernel_dropped_packets", "separate_uid", "no_capabilities",
+            "unix_sockets", "io_uring", "inherited_fds_clean", "control_plane_signal",
+            "protected_files_denied", "protected_files", "enforced_after_run",
+            "run_dropped_packets", "limits", "files_left",
+            "netns_separate", "netns_interfaces", "host_loopback_canary", "host_loopback_canary_arrived",
+            "relay_endpoints", "hidden_paths_ok", "netlink_socket", "vsock_socket", "bpf_syscall",
+            "procs_visible", "seccomp_mode", "netns_left")
+    view = {k: iso[k] for k in keys if k in iso}
+    view["confined"] = bool(iso.get("confined"))
+    view["label"] = (f"OS 隔離あり（{iso.get('mechanism', '')}）" if view["confined"]
+                     else "OS 隔離なし（開発用・本番利用不可）")
+    return view
+
+
+def _preview_responder(body: dict) -> dict:
+    """PREVIEW: answers in place of the real model - nothing is sent anywhere. A final
+    answer without tool calls: the planner ends its round; the request it made is
+    what the operator reviews."""
+    return {"id": "preview", "object": "chat.completion", "model": body.get("model", "preview"),
+            "choices": [{"index": 0, "finish_reason": "stop",
+                         "message": {"role": "assistant",
+                                     "content": "（preview：実際のモデルには送信していません）"}}],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}}
+
+
+def _session_empty(sess) -> bool:
+    try:
+        return bool(sess.empty())
+    except Exception:  # noqa: BLE001 - not confirmed empty
+        return False
+
+
+class _StaticProposals:
+    """Hands already-rebuilt proposals to a ProposalRouter (so they are sanitized
+    and audited like any backend's)."""
+
+    def __init__(self, name: str, proposals: list[dict]):
+        self.name = name
+        self._proposals = [dict(p) for p in proposals]
+
+    def propose(self, _context: dict) -> list[dict]:
+        return [dict(p) for p in self._proposals]
 
 
 class ApproverRequired(PermissionError):
@@ -248,6 +297,11 @@ class AssessmentService:
         if os.environ.get("VULNIX_ARTEX_CLI") or os.environ.get("AEGIS_ARTEX_CMD"):
             backends.append(self._artex_cli_backend)
         ext_model = HttpModelBackend.from_env()
+        if os.environ.get("VULNIX_EXTERNAL_PROPOSALS", "1") == "0":
+            # proposals from the built-in planner only: a configured model is used for the
+            # chat explanation (and, through the Planner LLM Gateway, for ARTEX) - never
+            # for proposals outside the gateway's budget and approval
+            ext_model = None
         if ext_model:
             backends.append(ext_model)
         self._external_model_configured = ext_model is not None
@@ -266,6 +320,18 @@ class AssessmentService:
         # (URL, findings, evidence) is sent to an external model or CLI.
         self._local_router = ProposalRouter(self.gateway, self.audit, [ArtexplannerBackend()])
         self.cve_monitor = cve.FeedMonitor()
+        # The REAL ARTEX planner (planner-only overlay binary), when configured. It is
+        # verified against a local (loopback) mock LLM only.
+        self._artex_real_cmd = command_from_env()
+        self._artex_llm_url = os.environ.get("VULNIX_ARTEX_LLM_URL", "")
+        self._artex_llm_model = os.environ.get("VULNIX_ARTEX_LLM_MODEL", "mock")
+        self._artex_pg_dsn = os.environ.get("VULNIX_ARTEX_PG_DSN", "")
+        self._artex_expected_sha256 = os.environ.get("VULNIX_ARTEX_EXPECTED_SHA256", "")
+        self._artex_plan: dict | None = None
+        self._artex_items: dict = {}
+        self._artex_live: set = set()           # confinement sessions of running ARTEX planners
+        self._artex_llm_last: dict | None = None
+        self._artex_gateways: set = set()       # gateways of running planner runs
 
         self.a = Assessment(
             id="scan_001",
@@ -1443,6 +1509,464 @@ class AssessmentService:
         )
         return rep
 
+    # ---- ARTEX: the real planner, behind the Gateway --------------------------
+    def _artex_targets_locked(self) -> list[dict]:
+        """What ARTEX may see: the registered local lab only - never a real service."""
+        return [{"asset_id": 1, "target_id": "lab", "url": self.a.target_url}]
+
+    def _refuse_artex_on_real_service_locked(self) -> None:
+        if self._is_external_service_asset() or self._in_ownership_flow(self.a.asset.get("name")):
+            raise ValueError("ARTEX 計画は登録済みのローカル検証ラボでのみ使用できます"
+                             "（実サービスの情報は ARTEX に渡しません）")
+
+    def plan_with_artex(self, actor: str, *, llm_approval: dict | None = None, roles=None,
+                        llm_mode: str | None = None) -> dict:
+        """Ask the real ARTEX planner for a plan, then rebuild every item from Vulnix's
+        own registered targets and allowed catalog. Nothing is executed here.
+
+        `llm_approval` ({"max_calls": N, "first_request_sha256": <from the preview>}) is
+        needed when the planner's model is a real (non-loopback) endpoint behind the
+        Planner LLM Gateway; only an approver can give it."""
+        if not self._artex_real_cmd:
+            raise ValueError("ARTEX プランナーが設定されていません（VULNIX_ARTEX_REAL_CMD）")
+        with self._lock:
+            self._refuse_after_stop_locked()
+            self._refuse_artex_on_real_service_locked()
+            if self._unstopped_now_locked():
+                # while anything is not confirmed stopped, nothing new launches
+                raise ValueError("停止を確認できていないプロセスがあるため、ARTEX を起動しません")
+            self._ensure_active_window_locked()
+            targets = self._artex_targets_locked()
+            observations = [{"title": clean_target_text(f["title"], 200), "detail": clean_target_text(f.get("summary", ""), 400)}
+                            for f in self.a.findings.values() if f.get("id") in ("f_banner", "f_idor", "f_sqli")]
+            gen = self._run_generation
+        request = {"goal": "登録済みの検証対象について、許可された非破壊の検証で確認すべき脆弱性の方向を計画する",
+                   "targets": targets, "observations": observations, "max_turns": 6}
+        canary = os.environ.get("VULNIX_ARTEX_EGRESS_CANARY", "")
+        if re.fullmatch(r"127\.0\.0\.1:\d{1,5}", canary):
+            request["egress_canary"] = canary      # proves the confinement around ARTEX itself
+        # ARTEX runs only under Vulnix's kernel confinement (the same per-run cgroup v2 +
+        # nftables + own-uid + seccomp launcher as the L2 worker). Without it, it does not
+        # run - except when an operator explicitly opts into an unconfined DEV run.
+        # Outside development the ARTEX binary must be pinned: its SHA-256 is compared with
+        # VULNIX_ARTEX_EXPECTED_SHA256 before it runs (a mismatch, or anything that is not
+        # the ARTEX overlay build, is refused by the bridge).
+        dev = os.environ.get("AEGIS_ENV", "").strip().lower() in ("development", "dev")
+        if not dev and not re.fullmatch(r"[0-9a-fA-F]{64}", self._artex_expected_sha256.strip()):
+            self.audit.record("artex.plan_refused", actor=actor, reason="binary sha256 not pinned")
+            raise ValueError("本番環境では ARTEX バイナリの SHA-256（VULNIX_ARTEX_EXPECTED_SHA256）の指定が必須です")
+        for url, default in ((self._artex_llm_url, None), (self._artex_pg_dsn, 5432)):
+            if not url:
+                continue
+            u = urllib.parse.urlsplit(url)
+            port = u.port or default or (443 if u.scheme == "https" else 80)
+            if port == self.lab_port:
+                # a pinned port gives the planner whatever listens there
+                raise ValueError("ARTEX の LLM / DB の接続先に検証ラボのポートは使用できません")
+        st = dict(self._l2_confinement.status())
+        if st.get("ok"):
+            confinement = self._l2_confinement
+            protected = sorted(str(p) for p in self.data_dir.iterdir() if p.is_file())
+        elif (os.environ.get("VULNIX_ARTEX_ALLOW_UNCONFINED") == "1"
+              and os.environ.get("AEGIS_ENV", "").strip().lower() in ("development", "dev")):
+            confinement, protected = None, ()
+            self.audit.record("artex.unconfined_dev_run", actor=actor, reason=str(st.get("reason", ""))[:200])
+        else:
+            self.audit.record("artex.plan_refused", actor=actor, reason="no OS-level confinement")
+            raise ValueError("ARTEX プランナーを OS レベルで隔離して起動できないため実行しません"
+                             f"（{str(st.get('reason', ''))[:200]}）")
+        self.audit.record("artex.plan_requested", actor=actor, targets=len(targets), confined=confinement is not None)
+        gateway = self._planner_gateway(actor, llm_approval, roles, gen, llm_mode)
+        llm_url, llm_key = self._artex_llm_url, ""
+        if gateway is not None:
+            try:
+                gateway.__enter__()                   # ARTEX's only model: on loopback
+            except Exception as e:  # noqa: BLE001
+                self.audit.record("artex.plan_failed", actor=actor, reason=f"gateway:{type(e).__name__}")
+                raise ValueError("Planner LLM Gateway を起動できません") from None
+            with self._lock:
+                self._artex_gateways.add(gateway)
+            llm_url, llm_key = gateway.url, gateway.token
+        try:
+            run = run_artex_planner(self._artex_real_cmd, request, llm_url=llm_url, llm_key=llm_key,
+                                    llm_model=self._artex_llm_model, pg_dsn=self._artex_pg_dsn,
+                                    expected_sha256=self._artex_expected_sha256,
+                                    confinement=confinement, forbidden_paths=protected,
+                                    on_leftover=self._note_leftover_session,
+                                    on_started=lambda sess: self._artex_session_started(sess, gen),
+                                    on_finished=self._artex_session_finished,
+                                    may_start=lambda: self._artex_may_start(gen),
+                                    data_dirs=(str(self.data_dir),))
+        except ArtexBridgeError as e:
+            self.audit.record("artex.plan_failed", actor=actor, reason=str(e)[:200])
+            raise ValueError(str(e)) from None
+        except Exception as e:  # noqa: BLE001 - recorded, and never a half-made plan
+            self.audit.record("artex.plan_failed", actor=actor, reason=type(e).__name__)
+            raise ValueError(f"ARTEX の計画に失敗しました（{type(e).__name__}）") from None
+        finally:
+            if gateway is not None:
+                gateway.__exit__(None, None, None)
+                self._note_gateway_run(gateway, actor)
+        if gateway is not None and gateway.failure:
+            # one upstream failure ends the run: whatever ARTEX made of it is not a plan
+            status = gateway.failure.get("http_status")
+            self.audit.record("artex.plan_failed", actor=actor,
+                              reason=f"upstream_http_{status}" if status else "upstream_failure")
+            raise ValueError(f"Planner LLM の上流 API がエラーを返したため、計画を破棄しました（HTTP {status}）")
+        run_id = "ax" + secrets.token_hex(4)
+        rec = reconstruct(run.intents, targets, run_id)
+        # The rebuilt proposals still pass ProposalRouter (sanitized, audited) and appear
+        # as tasks in the existing plan view; the Gateway alone decides what may run.
+        router = ProposalRouter(self.gateway, self.audit, [_StaticProposals("artex-oss", [i.proposal for i in rec.items])])
+        with self._lock:
+            if gen != self._run_generation:
+                raise ValueError("停止またはリセットされたため、ARTEX 計画を破棄しました")
+            self._refuse_after_stop_locked()
+            if any(r["item"].status == "running" for r in self._artex_items.values()):
+                raise ValueError("ARTEX 計画の項目を実行中です。完了してから再計画してください")
+            # the previous plan's tasks leave the plan view with it
+            self.artex.tasks = [t for t in self.artex.tasks if t.phase != "artex"]
+            tasks = self.artex.plan_phase("artex", {"target_id": "lab"}, router=router)
+        prov = run.provenance
+        with self._lock:
+            if gen != self._run_generation:
+                raise ValueError("停止またはリセットされたため、ARTEX 計画を破棄しました")
+            # a new plan replaces the previous one: its items can no longer run
+            self._artex_items = {}
+            for item in rec.items:
+                tk = next((t for t in tasks if t.routed.proposal["tool"] == item.proposal["tool"]
+                           and t.routed.proposal["args"] == item.proposal["args"]), None)
+                if tk is None or tk.status == "unsupported":
+                    item.status = "unsupported"      # the router or Gateway catalog refused it
+                if tk is not None:
+                    tk.id = item.id                  # unique across plans
+                    tk.status = item.status
+                self._artex_items[item.id] = {"item": item, "task_id": tk.id if tk else None,
+                                              "gen": gen, "run_id": run_id, "requested_by": actor}
+            kind = prov.get("kind")
+            label = ("ARTEX 本体（overlay ビルド・ハッシュ固定）" if kind == "artex-binary" and prov.get("pinned")
+                     else "ARTEX ビルド（ハッシュ未固定のため本体と未確認）" if kind == "artex-binary"
+                     else "ARTEX 互換プロセス（本体と未確認）")
+            self._artex_plan = {
+                "run_id": run_id, "requested_by": actor, "at": time.time(),
+                "engine": {"kind": kind, "pinned": bool(prov.get("pinned")), "sha256": prov.get("sha256"),
+                           "artex_module": prov.get("artex_module"), "artex_commit": prov.get("artex_commit"),
+                           "go_version": prov.get("go_version"), "norma_version": prov.get("norma_version"),
+                           "label": label},
+                "llm_gateway": ({k: v for k, v in (self._artex_llm_last or {}).get("report", {}).items()
+                                 if k not in ("records", "failed_upstream")} if gateway is not None else None),
+                "isolation": {**_artex_isolation_view(prov.get("isolation") or {}),
+                              "egress_canary": prov.get("egress_canary") or None},
+                "allowed_tools": run.allowed_tools, "tool_calls": run.tool_calls,
+                "denied_tool_calls": run.denied_tool_calls, "goal_met": run.goal_met,
+                "elapsed_ms": run.elapsed_ms, "intents": len(run.intents),
+                "advisories": [{"intent_id": a.intent_id, "summary": clean_target_text(a.intent_summary, 500),
+                                "reason": a.reason} for a in rec.advisories],
+            }
+        self.audit.record("artex.plan_received", actor=actor, run_id=run_id, engine_kind=prov.get("kind"),
+                          engine_pinned=bool(prov.get("pinned")), engine_sha256=prov.get("sha256"),
+                          artex_commit=prov.get("artex_commit"), intents=len(run.intents), items=len(rec.items),
+                          advisories=len(rec.advisories), denied_tool_calls=len(run.denied_tool_calls))
+        for a in rec.advisories:
+            self.audit.record("artex.intent_advisory", run_id=run_id, intent=a.intent_id, reason=a.reason)
+        self.bus.publish(self.a.id, "artex.plan", artex_plan=self.artex_plan_view())
+        return self.snapshot()
+
+    PREVIEW_TTL_S = 30 * 60
+
+    def _planner_gateway(self, actor: str, approval: dict | None, roles, gen: int, mode: str | None):
+        """The Planner LLM Gateway for this run. Mode: the request's `llm_mode`, else
+        VULNIX_ARTEX_LLM_MODE: direct (none) | gateway-preview | gateway-forward."""
+        configured = os.environ.get("VULNIX_ARTEX_LLM_MODE", "direct").strip()
+        mode = (mode or configured).strip()
+        if mode == "direct" and configured != "direct":
+            # a request may narrow the mode (to preview), never bypass the gateway
+            raise ValueError("Planner LLM Gateway が設定されているため、direct には切り替えられません")
+        if mode == "direct":
+            return None
+        from .planner_llm_gateway import Budget, PlannerLLMGateway
+
+        def num(name, default, cast=float):
+            try:
+                return cast(os.environ.get(name, default))
+            except ValueError:
+                return cast(default)
+        budget = Budget(max_calls=num("VULNIX_PLANNER_LLM_MAX_CALLS", 6, int),
+                        max_total_tokens=num("VULNIX_PLANNER_LLM_MAX_TOKENS", 60000, int),
+                        max_cost_usd=num("VULNIX_PLANNER_LLM_MAX_COST_USD", 0.50),
+                        usd_per_1k_input=num("VULNIX_PLANNER_LLM_USD_PER_1K_INPUT", 0.0),
+                        usd_per_1k_output=num("VULNIX_PLANNER_LLM_USD_PER_1K_OUTPUT", 0.0))
+
+        def denied():                                   # looked up on every request
+            with self._lock:
+                return set(self._real_service_hosts) | {
+                    str(x.get("name") or "").lower() for x in self._extra_assets if x.get("name")}
+        with self._lock:
+            allowed = set(self._allowed_hosts) | {"lab.test"}
+        model = os.environ.get("VULNIX_ARTEX_LLM_MODEL") or os.environ.get("VULNIX_ABLITERATION_MODEL") or "mock"
+        may_forward = (lambda: self._artex_may_start(gen))
+        common = dict(model=model, budget=budget, allowed_hosts=allowed, denied_hosts=denied, audit=self.audit,
+                      may_forward=may_forward)
+        if mode == "gateway-preview":
+            return PlannerLLMGateway(mode="preview", responder=_preview_responder,
+                                     api_key=os.environ.get("VULNIX_ABLITERATION_KEY", ""), **common)
+        if mode != "gateway-forward":
+            raise ValueError("llm_mode は direct / gateway-preview / gateway-forward のいずれかです")
+        upstream = os.environ.get("VULNIX_ARTEX_LLM_UPSTREAM_URL") or os.environ.get("VULNIX_ABLITERATION_URL", "")
+        host = (urllib.parse.urlsplit(upstream).hostname or "")
+        real = host not in ("127.0.0.1", "::1", "localhost")
+        bound = None
+        if real:
+            bound = self._take_preview_approval(actor, approval, roles)
+        return PlannerLLMGateway(mode="forward", upstream_url=upstream,
+                                 api_key=os.environ.get("VULNIX_ABLITERATION_KEY", "") if real else "",
+                                 approval=bound, **common)
+
+    def _previews_path(self) -> Path:
+        return self.data_dir / "planner_llm_previews.json"
+
+    def _load_previews_locked(self) -> dict:
+        try:
+            return json.loads(self._previews_path().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+
+    def _save_previews_locked(self, previews: dict) -> None:
+        path = self._previews_path()
+        tmp = path.with_suffix(".tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(previews, ensure_ascii=False))
+        os.replace(tmp, path)
+
+    def _take_preview_approval(self, actor: str, approval: dict | None, roles) -> dict:
+        """A real upstream: an approver approves ONE stored preview, once, within its
+        lifetime, and is not the person who ran it. The fingerprint comes from the
+        stored preview - not from the client."""
+        if roles is not None and "approver" not in roles:
+            raise ApproverRequired("実モデルへの送信の承認には承認責任者の権限が必要です")
+        if not isinstance(approval, dict) or not isinstance(approval.get("preview_id"), str) \
+                or not isinstance(approval.get("max_calls"), int) or approval["max_calls"] < 1:
+            raise ValueError("実モデルへの送信には、preview に基づく承認（preview_id と max_calls）が必要です")
+        with self._lock:
+            previews = self._load_previews_locked()
+            pv = previews.get(approval["preview_id"])
+            if not pv or pv.get("used"):
+                raise ValueError("この preview は存在しないか、すでに承認に使われています")
+            if time.time() - float(pv.get("at", 0)) > self.PREVIEW_TTL_S:
+                raise ValueError("preview の有効期限（30 分）が切れています。preview をやり直してください")
+            if pv.get("run_by") == actor:
+                self.audit.record("planner_llm.approval_denied", actor=actor, reason="separation of duties")
+                raise ApproverRequired("preview を実行した本人は、その送信を承認できません")
+            if not pv.get("first_request_sha256"):
+                raise ValueError("この preview には送信予定の要求がありません")
+            client_sha = approval.get("first_request_sha256")
+            if client_sha is not None and client_sha != pv["first_request_sha256"]:
+                raise ValueError("承認したフィンガープリントが preview と一致しません")
+            max_calls = min(int(approval["max_calls"]), int(pv.get("budget_max_calls", approval["max_calls"])))
+            pv.update(used=True, approved_by=actor, approved_at=time.time(), approved_max_calls=max_calls)
+            self._save_previews_locked(previews)          # single use, before anything is sent
+        self.audit.record("planner_llm.approved", actor=actor, preview_id=approval["preview_id"],
+                          max_calls=max_calls, first_request_sha256=pv["first_request_sha256"])
+        return {"max_calls": max_calls, "first_request_sha256": pv["first_request_sha256"]}
+
+    def _note_gateway_run(self, gateway, actor: str) -> None:
+        rep = gateway.report()
+        with self._lock:
+            self._artex_llm_last = {"report": rep, "at": time.time()}
+            if gateway.mode == "preview":
+                pid = "pv_" + secrets.token_hex(8)
+                record = {"id": pid, "run_by": actor, "at": time.time(), "model": gateway.model,
+                          "first_request_sha256": rep["first_request_sha256"], "calls": rep["calls"],
+                          "budget_max_calls": rep["budget"]["max_calls"], "used": False,
+                          # only the FIRST request is fixed by an approval; later ones depend on
+                          # the model's answers and are inspected and budgeted, not pre-approved
+                          "note": "承認で固定されるのは最初の要求のみです。2 回目以降は検査・上限の対象です。",
+                          "requests": list(gateway.preview_requests)}
+                previews = {k: v for k, v in self._load_previews_locked().items()
+                            if time.time() - float(v.get("at", 0)) <= self.PREVIEW_TTL_S}
+                previews[pid] = record
+                self._save_previews_locked(previews)
+                self._artex_llm_last["preview_id"] = pid
+                self._artex_llm_last["requests"] = record["requests"]
+                rep["preview_id"] = pid
+            self._artex_gateways.discard(gateway)
+
+    def artex_llm_preview(self) -> dict:
+        """What the last gateway run sent or would have sent (approver review)."""
+        with self._lock:
+            return dict(self._artex_llm_last or {"report": None})
+
+    def _close_planner_gateways_locked(self) -> None:
+        for gw in list(self._artex_gateways):
+            try:
+                gw.close()                               # nothing more is forwarded
+            except Exception:  # noqa: BLE001
+                pass
+
+    def artex_plan_view(self) -> dict | None:
+        with self._lock:
+            if self._artex_plan is None:
+                return {"configured": bool(self._artex_real_cmd), "plan": None}
+            items = []
+            for rec in self._artex_items.values():
+                it = rec["item"]
+                items.append({"id": it.id, "intent_id": it.intent_id,
+                              "intent_summary": clean_target_text(it.intent_summary, 500),
+                              "catalog_id": it.catalog_id, "label": it.label, "level": it.level,
+                              "target_id": it.target_id, "tool": it.proposal["tool"], "status": it.status})
+            return {"configured": bool(self._artex_real_cmd), "plan": {**self._artex_plan, "items": items}}
+
+    def _artex_session_started(self, sess, gen: int) -> None:
+        """Registered before anything runs in the session; refused after a stop."""
+        with self._lock:
+            if not self._artex_may_start_locked(gen):
+                raise ArtexBridgeError("緊急停止されたため ARTEX を起動しません")
+            self._artex_live.add(sess)
+
+    def _artex_may_start_locked(self, gen: int) -> bool:
+        return (gen == self._run_generation and self.gateway.state is not State.STOPPED
+                and self.a.state != "stopped" and not self._unstopped_now_locked())
+
+    def _artex_may_start(self, gen: int) -> bool:
+        with self._lock:
+            return self._artex_may_start_locked(gen)
+
+    def _artex_session_finished(self, sess) -> None:
+        with self._lock:
+            self._artex_live.discard(sess)
+
+    def _kill_artex_planner_locked(self) -> None:
+        """Emergency stop: a running ARTEX planner is killed with its cgroup, and only a
+        planner CONFIRMED gone leaves the record - one that is not goes on the same
+        unstopped record as an L2 worker (the stop is then reported unconfirmed)."""
+        live = list(self._artex_live)
+        for sess in live:
+            try:
+                sess.kill()
+            except Exception:  # noqa: BLE001 - confirmed (or not) below
+                pass
+        deadline = time.monotonic() + 3.0
+        pending = list(live)
+        while pending and time.monotonic() < deadline:
+            pending = [x for x in pending if not _session_empty(x)]
+            for x in pending:
+                # cgroup.kill acts on the processes in the cgroup NOW: a process that was
+                # just launched and joins a moment later is killed by the next write
+                try:
+                    x.kill()
+                except Exception:  # noqa: BLE001 - still pending: on record below
+                    pass
+            if pending:
+                time.sleep(0.1)
+        for sess in pending:
+            if not self._session_on_record(sess):
+                self._unstopped.append({"host": (self.a.asset.get("name") or "").lower(), "pids": [],
+                                        "at": time.time(), "pool": None, "sessions": [sess]})
+                self.audit.record("artex.stop_unconfirmed", cgroup=getattr(sess, "name", ""))
+
+    def _claim_artex_item_locked(self, item_id: str) -> dict:
+        """Check and claim (set running) in ONE locked step: no second request can
+        claim the same item, and an item of an old plan or workspace never runs."""
+        rec = self._artex_items.get(item_id)
+        if rec is None or (self._artex_plan or {}).get("run_id") != rec["run_id"]:
+            raise ValueError("ARTEX 計画の項目が見つからないか、新しい計画で置き換えられました")
+        if rec["gen"] != self._run_generation:
+            raise ValueError("停止またはリセット前の ARTEX 計画は実行できません。計画を作り直してください")
+        item = rec["item"]
+        if item.status not in ("planned", "awaiting_approval"):
+            raise ValueError("この項目は実行できません（実行中・実行済み・未対応）")
+        self._refuse_after_stop_locked()
+        self._refuse_artex_on_real_service_locked()
+        if self.gateway.state is State.PAUSED:
+            raise ValueError("診断を一時停止中です。再開または停止してから実行してください")
+        return rec
+
+    def execute_artex_item(self, item_id: str, actor: str, *, roles=None) -> dict:
+        """Run ONE item of the ARTEX plan. The operation is rebuilt from Vulnix's catalog
+        (never from what ARTEX or the stored proposal says); L1 goes through the Gateway
+        under the L1 policy, L2 needs an approver and runs in the isolated worker."""
+        self._begin_operation()          # from here the active asset cannot be switched
+        prev = getattr(self._tls, "gen", None)
+        claimed = False
+        try:
+            with self._lock:
+                rec = self._claim_artex_item_locked(item_id)
+                item = rec["item"]
+                entry = CATALOG_BY_ID[item.catalog_id]
+                if entry.level == "L2":
+                    if not actor or str(actor).startswith("policy:"):
+                        raise ValueError("L2 検証には人間の個別承認が必要です（自動承認不可）")
+                    if roles is not None and "approver" not in roles:
+                        self.audit.record("artex.item_denied", item=item_id, actor=actor,
+                                          reason="approver role required")
+                        raise ApproverRequired("ARTEX 計画の L2 検証には承認責任者の権限が必要です")
+                    if self.separate_l2_approver and actor == rec["requested_by"]:
+                        self.audit.record("artex.item_denied", item=item_id, actor=actor,
+                                          reason="separation of duties")
+                        raise ApproverRequired("計画を依頼した本人は、その L2 検証を承認できません")
+                item.status = "running"
+                claimed = True
+                self._tls.gen = self._run_generation
+                url = self.a.target_url
+            self._sync_artex_item(item_id)
+            if entry.level == "L2":
+                self.audit.record("artex.item_approved", item=item_id, approver=actor, check=entry.check,
+                                  requested_by=rec["requested_by"])
+                def _proofs():
+                    with self._lock:
+                        f = self.a.findings.get(entry.finding_id) or {}
+                        return sum(1 for e in f.get("evidence") or [] if e.get("audit_hash"))
+                before = _proofs()
+                self.verify_finding(entry.finding_id, actor, roles=roles)
+                ok = _proofs() > before          # this run recorded evidence for this finding
+            else:
+                with self._lock:
+                    self._ensure_active_window_locked()
+                res, ev = self._exec(entry.tool, entry.action, entry.args_for(url),
+                                     approval_actor=f"artex-L1:{actor}")
+                if res is not None:
+                    with self._lock:
+                        self._analyze(res, ev)
+                ok = res is not None
+            self._set_artex_item_status(item_id, "completed" if ok else "failed")
+            claimed = False
+            return self.snapshot()
+        except _Stopped:
+            if claimed:
+                self._set_artex_item_status(item_id, "failed")
+            raise ValueError("停止またはリセットされたため、検証を中止しました") from None
+        except (ApproverRequired, ValueError):
+            if claimed:
+                self._set_artex_item_status(item_id, "failed")
+            raise
+        except Exception:
+            if claimed:
+                self._set_artex_item_status(item_id, "failed")
+            raise
+        finally:
+            self._tls.gen = prev
+            self._end_operation()
+
+    def _sync_artex_item(self, item_id: str) -> None:
+        with self._lock:
+            rec = self._artex_items.get(item_id)
+            if rec is None:
+                return
+            for tk in self.artex.tasks:
+                if tk.id == rec["task_id"]:
+                    tk.status = rec["item"].status
+        self.bus.publish(self.a.id, "artex.plan", artex_plan=self.artex_plan_view())
+
+    def _set_artex_item_status(self, item_id: str, status: str) -> None:
+        with self._lock:
+            rec = self._artex_items.get(item_id)
+            if rec is None:
+                return
+            rec["item"].status = status
+        self.audit.record("artex.item_status", item=item_id, status=status)
+        self._sync_artex_item(item_id)
+
     @staticmethod
     def _default_phases() -> list[dict]:
         return [
@@ -2267,6 +2791,9 @@ class AssessmentService:
             self.a.stop_report = None
         self.a.defense_comparison = None
         self.artex.tasks = []
+        # an ARTEX plan belongs to the workspace it was made in
+        self._artex_items = {}
+        self._artex_plan = None
         self._set_state("stopped" if stays_stopped else "idle")
 
     def planner_status(self) -> dict:
@@ -2319,6 +2846,7 @@ class AssessmentService:
                 "lab_mode": get_lab_mode(),
                 "lab_endpoint": self.a.target_url if is_ext else f"127.0.0.1:{self.lab_port}",
                 "planner": self.planner_status(),
+                "artex_plan": self.artex_plan_view(),
                 "secrets_status": self.secrets_status(),
                 "prohibited_actions": PROHIBITED_ACTIONS_SUMMARY,
                 "evidence_summary": evidence_summary(list(self.a.findings.values())),
@@ -2443,6 +2971,8 @@ class AssessmentService:
             except OSError:
                 pass
             rep = self.gateway.emergency_stop(actor)
+            self._kill_artex_planner_locked()       # a running ARTEX planner dies with its cgroup
+            self._close_planner_gateways_locked()   # and its model gateway forwards nothing more
             report = {"actor": actor, "confirmed": rep.confirmed, "killed_pids": rep.killed_pids,
                       "survivors": rep.survivors,
                       "steps": [{"name": n, "elapsed_ms": round(t * 1000, 2)} for n, t in rep.steps],
