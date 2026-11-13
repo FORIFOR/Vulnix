@@ -104,7 +104,8 @@ class TestInspection(unittest.TestCase):
         body = chat()
         body["messages"] += [{"role": "assistant", "content": "", "tool_calls": [
             {"id": "c", "type": "function", "function": {"name": "add_intent",
-                                                         "arguments": json.dumps({"password": "hunter2hunter2"})}}]}]
+                                                         "arguments": json.dumps({"password": "hunter2hunter2"})}}]},
+                             {"role": "tool", "tool_call_id": "c", "content": "ok"}]
         self.refused(body, "contains_secret")
         split = chat()
         split["messages"] = [{"role": "user", "content": "sk-abcdefgh"}, {"role": "user", "content": "ijklmnopqrstuv"}]
@@ -202,7 +203,7 @@ class TestBudgets(unittest.TestCase):
         with forward(broken, audit=Audit()) as gw:
             code, _ = post(gw, chat())
         rep = gw.report()
-        self.assertEqual(code, 502)
+        self.assertEqual(code, 409)                                     # a final answer, not "retry"
         self.assertEqual((rep["calls"], rep["refused"], rep["failed"]), (1, 0, 1))
         self.assertGreater(rep["est_tokens"], 2048)                     # the reserve stays charged
 
@@ -529,3 +530,88 @@ class TestPreviewRoute(unittest.TestCase):
         self.assertIn("/artex/llm-preview", get_part)
         post_part = src[src.index("def do_POST"):]
         self.assertNotIn("/artex/llm-preview", post_part)
+
+
+class TestUpstreamFailureEndsTheRun(unittest.TestCase):
+    def test_after_the_first_upstream_error_nothing_more_is_sent(self):
+        with MockLLM(fail_at=2, fail_status=402) as mock, \
+                PlannerLLMGateway(mode="forward", model="m", upstream_url=mock.url + "/chat/completions",
+                                  allowed_hosts={"lab.test"}, audit=(audit := Audit())) as gw:
+            self.assertEqual(post(gw, chat())[0], 200)
+            code, body = post(gw, chat("2 lab.test"))
+            self.assertEqual(code, 409)
+            for _ in range(3):                                   # ARTEX's internal client retrying
+                self.assertEqual(post(gw, chat("2 lab.test"))[0], 403)
+        self.assertEqual(len(mock.requests), 2)                  # 0 extra sends after the error
+        rep = gw.report()
+        self.assertEqual(rep["failed_upstream"]["http_status"], 402)
+        self.assertIn("insufficient credits", rep["failed_upstream"]["error_summary"])
+        self.assertNotIn("sk-mockSECRET", rep["failed_upstream"]["error_summary"])
+        self.assertLessEqual(len(rep["failed_upstream"]["error_summary"]), 200)
+        blob = json.dumps(audit.entries, ensure_ascii=False)
+        self.assertIn('"http_status": 402', blob)
+        self.assertNotIn("insufficient credits", blob)           # no error body in the audit
+        self.assertNotIn("sk-mockSECRET", blob)
+        self.assertEqual(sum(1 for c in rep["records"] if c["reason"] == "run_failed"), 3)
+
+    def test_a_racing_request_waits_and_is_refused_after_the_failure(self):
+        gate, sent = threading.Event(), []
+
+        def transport(_u, _h, _b):
+            sent.append(1)
+            if len(sent) == 1:
+                gate.wait(5)
+                raise urllib.error.HTTPError("https://api.example.test", 500, "boom", {}, None)
+            return ok_transport()
+        gw = PlannerLLMGateway(mode="forward", model="m", upstream_url="http://127.0.0.1:9/v1",
+                               allowed_hosts={"lab.test"}, transport=transport, audit=Audit())
+        with gw:
+            results = []
+            a = threading.Thread(target=lambda: results.append(post(gw, chat())[0]))
+            a.start()
+            time.sleep(0.3)
+            b = threading.Thread(target=lambda: results.append(post(gw, chat("b lab.test"))[0]))
+            b.start()
+            time.sleep(0.3)
+            gate.set()
+            a.join(10)
+            b.join(10)
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sorted(results), [403, 409])
+
+    def test_an_error_body_without_status_or_body_is_handled(self):
+        with forward(lambda *a: (_ for _ in ()).throw(TimeoutError()), audit=Audit()) as gw:
+            self.assertEqual(post(gw, chat())[0], 409)
+            self.assertEqual(post(gw, chat())[0], 403)
+        self.assertEqual(gw.report()["failed_upstream"]["http_status"], None)
+
+
+class TestCompatibility(unittest.TestCase):
+    def conv(self, tool_content="ok", assistant_content=""):
+        return [{"role": "user", "content": "lab.test"},
+                {"role": "assistant", "content": assistant_content, "tool_calls": [
+                    {"id": "c1", "type": "function", "function": {"name": "add_intent", "arguments": "{}"}}]},
+                {"role": "tool", "tool_call_id": "c1", "content": tool_content}]
+
+    def test_shape_is_normalised_without_changing_meaning(self):
+        out = preview().inspect({"messages": self.conv(tool_content={"ids": [1]}), "tools": chat()["tools"]})
+        self.assertIsNone(out["messages"][1]["content"])                      # "" -> null
+        self.assertEqual(out["messages"][1]["tool_calls"][0]["function"]["name"], "add_intent")
+        self.assertEqual(json.loads(out["messages"][2]["content"]), {"ids": [1]})   # string, same data
+        from tests.artex_mock_llm import spec_violation
+        self.assertIsNone(spec_violation(out))
+
+    def test_sequences_the_api_would_reject_are_not_sent(self):
+        bad = [
+            self.conv()[:2],                                                  # unanswered tool call
+            [self.conv()[0], {"role": "tool", "tool_call_id": "zz", "content": "x"}],   # orphan tool result
+            self.conv()[:2] + [{"role": "user", "content": "x"}],              # turn before the answer
+        ]
+        for msgs in bad:
+            with self.assertRaises(GatewayRefused) as cm:
+                preview().inspect({"messages": msgs, "tools": chat()["tools"]})
+            self.assertEqual(cm.exception.code, "bad_sequence")
+
+    def test_tool_choice_is_dropped_without_tools(self):
+        out = preview().inspect({"messages": [{"role": "user", "content": "lab.test"}], "tool_choice": "auto"})
+        self.assertNotIn("tool_choice", out)
