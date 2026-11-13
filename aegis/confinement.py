@@ -302,6 +302,7 @@ class ConfinementSession:
         self._o = owner
         self.ip, self.port = ip, port
         self.extra = tuple(extra_endpoints)
+        self._owned: list[Path] = []          # directories given to this run's uid
         self.forbidden = tuple(forbidden_paths)
         self.on_leftover = None
         self._cancelled = False      # killed (stopped) at any point: it may not start anything
@@ -373,9 +374,21 @@ class ConfinementSession:
         p = Path(path)
         if not p.is_dir() or p.is_symlink() or any(p.iterdir()):
             raise ConfinementError("隔離された実行用ディレクトリを準備できません")
+        p = p.resolve()
         r = self._sh('chown "$1:$1" "$2" && chmod 700 "$2"', str(self.uid), str(p), timeout=10)
         if r.returncode != 0:
             raise ConfinementError(f"実行用ディレクトリの所有者を変更できません: {r.stderr.strip()[:200]}")
+        self._owned.append(p)
+
+    def _remove_owned(self) -> None:
+        """After the cgroup is empty: remove exactly the directories this session gave
+        away (its uid's files cannot be removed by us otherwise). rm does not follow
+        symlinks inside them."""
+        for p in self._owned:
+            try:
+                self._sh('rm -rf --one-file-system -- "$1"', str(p), timeout=30)
+            except (OSError, subprocess.SubprocessError):
+                pass
 
     def _apply_and_verify(self) -> None:
         rules = ruleset(self.name, self.ip, self.port, self.extra)
@@ -541,6 +554,8 @@ class ConfinementSession:
                 if not removed:
                     self.kill()
                     time.sleep(0.1)
+            if removed:
+                self._remove_owned()
             if removed and self._table:
                 self._nft("delete", "table", "inet", self.name, timeout=10)
         except (OSError, subprocess.SubprocessError):

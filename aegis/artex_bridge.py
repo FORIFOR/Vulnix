@@ -298,7 +298,7 @@ def run_artex_planner(command: list[str], request: dict, *, llm_url: str, llm_mo
                              cpu_seconds=int(timeout_s) + 5, interpreter=sys.executable)
         try:
             proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                    stderr=subprocess.PIPE, cwd=str(home), env=env,
+                                    stderr=subprocess.PIPE, cwd=work, env=env,
                                     start_new_session=True, close_fds=True)
         except OSError as e:
             raise ArtexBridgeError(f"ARTEX を起動できません: {type(e).__name__}") from None
