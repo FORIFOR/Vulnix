@@ -50,7 +50,7 @@ _NAME = re.compile(r"aegis_l2_[0-9a-f]{12}")
 # moves itself into the cgroup, then becomes the worker: `sh -c SCRIPT sh <procs-file> <cpu> argv...`
 # after joining: a frozen cgroup (killed by a stop) is never run in - a process that
 # joins a moment after the stop is frozen on arrival and refuses here once thawed
-_ENTER = ('echo $$ > "$1" || exit 97; [ "$(cat "${1%/*}/cgroup.freeze" 2>/dev/null)" = 0 ] || exit 97; '
+_ENTER = ('echo $$ > "$1" || exit 97; read f < "${1%/*}/cgroup.freeze" || exit 97; [ "$f" = 0 ] || exit 97; '
           'ulimit -t "$2" 2>/dev/null; shift 2; exec "$@"')
 
 
@@ -801,7 +801,8 @@ class ConfinementSession:
             # freeze first: anything that joins after this write is stopped on arrival
             # (cgroup.kill acts only on the processes present at that moment); a frozen
             # process still dies from the kill, now and on every later write
-            return self._sh('echo 1 > "$1"; echo 1 > "$2"', str(self.cgroup / "cgroup.freeze"),
+            # the kill is always attempted; "killed" means both writes succeeded
+            return self._sh('echo 1 > "$1"; f=$?; echo 1 > "$2" && [ "$f" = 0 ]', str(self.cgroup / "cgroup.freeze"),
                             str(self.cgroup / "cgroup.kill"), timeout=10).returncode == 0
         except (OSError, subprocess.SubprocessError):
             return False

@@ -792,7 +792,7 @@ class TestConfinementExtensionsKeepTheL2Path(unittest.TestCase):
         sess._dir = True
         sess.kill()
         script, *args = self.calls[-1][2:]
-        self.assertEqual(script, 'echo 1 > "$1"; echo 1 > "$2"')
+        self.assertEqual(script, 'echo 1 > "$1"; f=$?; echo 1 > "$2" && [ "$f" = 0 ]')
         self.assertTrue(args[1].endswith("cgroup.freeze") and args[2].endswith("cgroup.kill"), args)
         self.assertIn("cgroup.freeze", cf._ENTER)
         self.assertLess(cf._ENTER.index('echo $$ > "$1"'), cf._ENTER.index("cgroup.freeze"))  # join, then check
@@ -966,7 +966,9 @@ class TestNamespaceConfinementStopsOnLinux(unittest.TestCase):
             self.assertFalse(sess.netns_left)
             self.assertFalse(os.path.exists(f"/run/netns/{sess.name}"))
 
-    def test_a_process_that_joins_after_the_stop_never_runs(self):
+    def _late_writer(self, stop_first: bool) -> tuple[bool, object]:
+        """Start a process that writes a marker into a directory THE RUN'S UID owns
+        (so it can write there) - after a stop (`stop_first`) or without one."""
         import subprocess as sp
         import urllib.parse
 
@@ -976,20 +978,38 @@ class TestNamespaceConfinementStopsOnLinux(unittest.TestCase):
             work = tempfile.mkdtemp(prefix="vulnix-artex-")
             os.chmod(work, 0o755)
             self.addCleanup(lambda: __import__("shutil").rmtree(work, True))
+            home = Path(work) / "home"
+            home.mkdir()
             sess = KernelConfinement().session("127.0.0.1", port, limits=ab.ARTEX_LIMITS,
                                                namespaces={"hide": ab.planner_hidden_paths(), "keep": [work]})
-            marker = Path(work) / "ran"
+            marker = home / "ran"
             with sess:
-                self.assertTrue(sess.kill())                   # the stop lands first
+                sess.own_directory(home)                 # the run's uid can write here
+                if stop_first:
+                    self.assertTrue(sess.kill())         # the stop lands first
+                    events = (sess.cgroup / "cgroup.events").read_text()
+                    self.assertIn("frozen 1", events)
                 late = [sys.executable, "-I", "-c", f"open({str(marker)!r}, 'w').write('x')"]
                 proc = sp.Popen(sess.wrap(late, interpreter=sys.executable), stdin=sp.DEVNULL,
                                 stdout=sp.DEVNULL, stderr=sp.DEVNULL, cwd=work, start_new_session=True)
-                time.sleep(4)
-                self.assertFalse(marker.exists(), "a process that joined after the stop ran")
-            proc.wait(timeout=30)                              # teardown killed it
-            self.assertFalse(marker.exists())
-            self.assertFalse(sess.leftover)
-            self.assertFalse(os.path.exists(f"/run/netns/{sess.name}"))
+                end = time.monotonic() + 6
+                while time.monotonic() < end and not marker.exists():
+                    time.sleep(0.2)
+                ran = marker.exists()
+            proc.wait(timeout=30)                        # finished, or killed by teardown
+            return ran, sess
+
+    def test_without_a_stop_the_marker_is_written(self):
+        # positive control: the late-writer test below can fail
+        ran, sess = self._late_writer(stop_first=False)
+        self.assertTrue(ran, "the control process could not write its marker")
+        self.assertFalse(sess.leftover)
+
+    def test_a_process_that_joins_after_the_stop_never_runs(self):
+        ran, sess = self._late_writer(stop_first=True)
+        self.assertFalse(ran, "a process that joined after the stop ran")
+        self.assertFalse(sess.leftover)
+        self.assertFalse(os.path.exists(f"/run/netns/{sess.name}"))
 
     def test_the_deadline_kills_a_planner_that_never_ends(self):
         from aegis.confinement import KernelConfinement
