@@ -48,7 +48,10 @@ _ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}")
 _NAME = re.compile(r"aegis_l2_[0-9a-f]{12}")
 
 # moves itself into the cgroup, then becomes the worker: `sh -c SCRIPT sh <procs-file> <cpu> argv...`
-_ENTER = 'echo $$ > "$1" || exit 97; ulimit -t "$2" 2>/dev/null; shift 2; exec "$@"'
+# after joining: a frozen cgroup (killed by a stop) is never run in - a process that
+# joins a moment after the stop is frozen on arrival and refuses here once thawed
+_ENTER = ('echo $$ > "$1" || exit 97; [ "$(cat "${1%/*}/cgroup.freeze" 2>/dev/null)" = 0 ] || exit 97; '
+          'ulimit -t "$2" 2>/dev/null; shift 2; exec "$@"')
 
 
 class ConfinementError(Exception):
@@ -266,8 +269,10 @@ class KernelConfinement:
         sess._table = sess._dir = True
         sess.leftover = True
         sess.extra, sess._owned, sess.limits, sess.files_left = (), [], {}, False
-        # a namespace of a run left behind is deleted with it (a no-op when there is none)
-        sess.ns, sess._netns, sess._relay, sess.netns_left = None, True, None, False
+        # a namespace of a run left behind is deleted with it - only when there is one
+        # (an L2-only host may have no iproute2 at all)
+        sess.ns, sess._relay, sess.netns_left = None, None, False
+        sess._netns = Path(f"/run/netns/{name}").exists()
         return sess
 
     def interpreter_reachable_by_others(self) -> str:
@@ -544,8 +549,9 @@ class ConfinementSession:
                 raise ConfinementError(f"cgroup を作成できません: {p.stderr.strip()[:200]}")
             self._dir = True
             self._check_cancelled()          # stopped while the cgroup was being created
-            if self._sh('test -e "$1"', str(self.cgroup / "cgroup.kill"), timeout=10).returncode != 0:
-                raise ConfinementError("このカーネルには cgroup.kill がありません（Linux 5.14 以降が必要です）")
+            if (self._sh('test -e "$1" && test -e "$2"', str(self.cgroup / "cgroup.kill"),
+                         str(self.cgroup / "cgroup.freeze"), timeout=10).returncode != 0):
+                raise ConfinementError("このカーネルには cgroup.kill / cgroup.freeze がありません（Linux 5.14 以降が必要です）")
             self._apply_limits()
             self._check_cancelled()
             p = self._nft("-f", "-", input=rules, timeout=10)
@@ -792,7 +798,11 @@ class ConfinementSession:
         if not self._dir:
             return True
         try:
-            return self._sh('echo 1 > "$1"', str(self.cgroup / "cgroup.kill"), timeout=10).returncode == 0
+            # freeze first: anything that joins after this write is stopped on arrival
+            # (cgroup.kill acts only on the processes present at that moment); a frozen
+            # process still dies from the kill, now and on every later write
+            return self._sh('echo 1 > "$1"; echo 1 > "$2"', str(self.cgroup / "cgroup.freeze"),
+                            str(self.cgroup / "cgroup.kill"), timeout=10).returncode == 0
         except (OSError, subprocess.SubprocessError):
             return False
 

@@ -230,8 +230,8 @@ def require_loopback_dsn(dsn: str) -> str:
 
 # Host directories a planner never needs: covered by empty tmpfs in its mount view
 # (what it needs from them - its work dir, the launcher, the interpreter - is bound back).
-PLANNER_HIDDEN = ("/home", "/root", "/tmp", "/var", "/dev/shm", "/run", "/mnt", "/media", "/srv",
-                  "/opt", "/boot", "/lost+found", "/snap")
+PLANNER_HIDDEN = ("/home", "/root", "/tmp", "/var", "/dev/shm", "/dev/mqueue", "/run", "/mnt", "/media",
+                  "/srv", "/opt", "/boot", "/lost+found", "/snap")
 
 
 def planner_hidden_paths(forbidden_paths=(), data_dirs=()) -> list[str]:

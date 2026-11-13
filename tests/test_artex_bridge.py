@@ -783,6 +783,20 @@ class TestConfinementExtensionsKeepTheL2Path(unittest.TestCase):
         self.assertFalse(sess.leftover)
         self.assertTrue(any(c[-4:] == ["delete", "table", "inet", "aegis_l2_0123456789ab"] for c in self.calls))
 
+    def test_a_kill_freezes_the_cgroup_before_killing_and_entry_refuses_a_frozen_one(self):
+        from aegis import confinement as cf
+        from aegis.confinement import ConfinementSession
+        o = self.owner()
+        o.fresh_identity = lambda: 4242
+        sess = ConfinementSession(o, "127.0.0.1", 1)
+        sess._dir = True
+        sess.kill()
+        script, *args = self.calls[-1][2:]
+        self.assertEqual(script, 'echo 1 > "$1"; echo 1 > "$2"')
+        self.assertTrue(args[1].endswith("cgroup.freeze") and args[2].endswith("cgroup.kill"), args)
+        self.assertIn("cgroup.freeze", cf._ENTER)
+        self.assertLess(cf._ENTER.index('echo $$ > "$1"'), cf._ENTER.index("cgroup.freeze"))  # join, then check
+
     def test_wrap_names_the_interpreter_only_when_asked(self):
         from aegis.confinement import ConfinementSession
         o = self.owner()
@@ -950,6 +964,31 @@ class TestNamespaceConfinementStopsOnLinux(unittest.TestCase):
                 self.assertIsNotNone(sess._relay.wait(timeout=10))  # the relay died with it
             self.assertFalse(sess.leftover)
             self.assertFalse(sess.netns_left)
+            self.assertFalse(os.path.exists(f"/run/netns/{sess.name}"))
+
+    def test_a_process_that_joins_after_the_stop_never_runs(self):
+        import subprocess as sp
+        import urllib.parse
+
+        from aegis.confinement import KernelConfinement
+        with MockLLM() as mock:
+            port = urllib.parse.urlsplit(mock.url).port
+            work = tempfile.mkdtemp(prefix="vulnix-artex-")
+            os.chmod(work, 0o755)
+            self.addCleanup(lambda: __import__("shutil").rmtree(work, True))
+            sess = KernelConfinement().session("127.0.0.1", port, limits=ab.ARTEX_LIMITS,
+                                               namespaces={"hide": ab.planner_hidden_paths(), "keep": [work]})
+            marker = Path(work) / "ran"
+            with sess:
+                self.assertTrue(sess.kill())                   # the stop lands first
+                late = [sys.executable, "-I", "-c", f"open({str(marker)!r}, 'w').write('x')"]
+                proc = sp.Popen(sess.wrap(late, interpreter=sys.executable), stdin=sp.DEVNULL,
+                                stdout=sp.DEVNULL, stderr=sp.DEVNULL, cwd=work, start_new_session=True)
+                time.sleep(4)
+                self.assertFalse(marker.exists(), "a process that joined after the stop ran")
+            proc.wait(timeout=30)                              # teardown killed it
+            self.assertFalse(marker.exists())
+            self.assertFalse(sess.leftover)
             self.assertFalse(os.path.exists(f"/run/netns/{sess.name}"))
 
     def test_the_deadline_kills_a_planner_that_never_ends(self):
