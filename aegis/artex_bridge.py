@@ -228,6 +228,15 @@ def require_loopback_dsn(dsn: str) -> str:
     return dsn
 
 
+def planner_hidden_paths(forbidden_paths=()) -> list[str]:
+    """What the ARTEX planner must not see at all (covered by empty tmpfs in its mount
+    view): users' homes, shared temp directories, the Vulnix installation, and the
+    directories holding Vulnix's protected files (the data directory)."""
+    repo = str(Path(__file__).resolve().parents[1])
+    dirs = {str(Path(f).resolve().parent) for f in forbidden_paths}
+    return sorted({"/home", "/root", "/tmp", "/var/tmp", "/dev/shm", repo, *dirs})
+
+
 def _endpoint(url: str, default_port: int) -> tuple[str, int]:
     """(ip, port) of a loopback URL/DSN for pinning in the kernel ruleset. Confined runs
     need an IP literal: a name would need resolving inside the confinement."""
@@ -277,7 +286,8 @@ def run_artex_planner(command: list[str], request: dict, *, llm_url: str, llm_mo
             try:
                 created = confinement.session(
                     llm_ep[0], llm_ep[1], forbidden_paths=tuple(forbidden_paths),
-                    protected_pid=os.getpid(), extra_endpoints=extra, limits=ARTEX_LIMITS)
+                    protected_pid=os.getpid(), extra_endpoints=extra, limits=ARTEX_LIMITS,
+                    namespaces={"hide": planner_hidden_paths(forbidden_paths), "keep": [work]})
                 # on record BEFORE anything runs in it (the probe included): a probe that
                 # cannot be killed is recorded, and an emergency stop during set-up sees it
                 if on_leftover is not None:

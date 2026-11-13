@@ -134,8 +134,10 @@ class KernelConfinement:
     mechanism = "linux cgroup v2 + nftables (host namespace)"
 
     def __init__(self, *, runner=subprocess.run, platform: str | None = None,
-                 cgroup_root: Path = CGROUP_ROOT, euid: int | None = None, which=_system_which):
+                 cgroup_root: Path = CGROUP_ROOT, euid: int | None = None, which=_system_which,
+                 popen=subprocess.Popen):
         self._run = runner
+        self._popen = popen
         self._platform = platform or sys.platform
         self._root = Path(cgroup_root)
         self._euid = (os.geteuid() if hasattr(os, "geteuid") else -1) if euid is None else euid
@@ -264,6 +266,7 @@ class KernelConfinement:
         sess._table = sess._dir = True
         sess.leftover = True
         sess.extra, sess._owned, sess.limits, sess.files_left = (), [], {}, False
+        sess.ns, sess._netns, sess._relay, sess.netns_left = None, False, None, False
         return sess
 
     def interpreter_reachable_by_others(self) -> str:
@@ -285,7 +288,8 @@ class KernelConfinement:
 
     # ---- one run -------------------------------------------------------------
     def session(self, ip: str, port: int, *, forbidden_paths=(), protected_pid: int | None = None,
-                extra_endpoints: tuple = (), limits: dict | None = None) -> "ConfinementSession":
+                extra_endpoints: tuple = (), limits: dict | None = None,
+                namespaces: dict | None = None) -> "ConfinementSession":
         """`forbidden_paths`: files the worker must not be able to read (verified
         by the probe before the worker starts); `protected_pid`: a process the
         worker must not be able to signal (the control plane)."""
@@ -295,12 +299,13 @@ class KernelConfinement:
         return ConfinementSession(self, ip, int(port), forbidden_paths=tuple(str(p) for p in forbidden_paths),
                                   protected_pid=protected_pid if protected_pid is not None else os.getpid(),
                                   extra_endpoints=tuple((str(i), int(p)) for i, p in extra_endpoints),
-                                  limits=dict(limits or {}))
+                                  limits=dict(limits or {}), namespaces=namespaces)
 
 
 class ConfinementSession:
     def __init__(self, owner: KernelConfinement, ip: str, port: int, *, forbidden_paths=(),
-                 protected_pid: int | None = None, extra_endpoints: tuple = (), limits: dict | None = None):
+                 protected_pid: int | None = None, extra_endpoints: tuple = (), limits: dict | None = None,
+                 namespaces: dict | None = None):
         self._o = owner
         self.ip, self.port = ip, port
         self.extra = tuple(extra_endpoints)
@@ -309,6 +314,21 @@ class ConfinementSession:
         self.limits = {k: int(v) for k, v in (limits or {}).items() if k in ("pids.max", "memory.max")}
         self.files_left = False
         self._owned: list[Path] = []          # directories given to this run's uid
+        # namespaces={"hide": [...], "keep": [...]}: the program runs in a network
+        # namespace of its own (only `lo`; the pinned endpoints reachable through a relay
+        # in this cgroup) and a private mount view (`hide` covered by empty tmpfs, `keep`
+        # bound back), with fresh /proc (hidepid) and the planner seccomp profile.
+        self.ns = None
+        if namespaces is not None:
+            eps = [(self.ip, int(self.port)), *self.extra]
+            if any(i != "127.0.0.1" for i, _ in eps):
+                raise ConfinementError("名前空間隔離の接続先は 127.0.0.1 のみ指定できます")
+            self.ns = {"hide": [str(Path(h)) for h in namespaces.get("hide", ())],
+                       "keep": [str(Path(k)) for k in namespaces.get("keep", ())],
+                       "ports": sorted({int(pt) for _, pt in eps})}
+        self._netns = False
+        self._relay = None
+        self.netns_left = False
         self.forbidden = tuple(forbidden_paths)
         self.on_leftover = None
         self._cancelled = False      # killed (stopped) at any point: it may not start anything
@@ -349,11 +369,73 @@ class ConfinementSession:
         drop = [self._o._which("setpriv") or "setpriv", f"--reuid={self.uid}", f"--regid={self.uid}",
                 "--clear-groups", "--inh-caps=-all", "--bounding-set=-all", "--no-new-privs"]
         # the seccomp launcher is Python; a non-Python program names the interpreter
-        launch = [interpreter or mapped[0], "-I", str(staged / "_sandbox_launch.py"), *mapped]
+        profile = ["--profile=planner"] if self.ns is not None else []
+        launch = [interpreter or mapped[0], "-I", str(staged / "_sandbox_launch.py"), *profile, *mapped]
+        # in namespace mode: into the run's network namespace and a private mount view
+        # (still root: the mounts are made there), and only then dropped to the uid
+        ns = self._ns_chain(staged) if self.ns is not None else []
         if self._o._euid == 0:
-            return [*enter, *drop, *launch]
+            return [*enter, *ns, *drop, *launch]
         keep = [f"--preserve-env={','.join(keys)}"] if keys else []
-        return [*self._o._priv(), *keep, *enter, *drop, *launch]
+        return [*self._o._priv(), *keep, *enter, *ns, *drop, *launch]
+
+    def _keep_paths(self, staged: Path) -> list[str]:
+        """What must stay visible under a hidden directory: given paths, the staged
+        launcher and the interpreter's installation."""
+        cands = [*self.ns["keep"], str(staged), sys.base_prefix, str(Path(os.path.realpath(sys.executable)).parent)]
+        hide = self.ns["hide"]
+        out = []
+        for c in cands:
+            c = str(Path(c))
+            if any(c == h or c.startswith(h.rstrip("/") + "/") for h in hide) and c not in out:
+                out.append(c)
+        return out
+
+    def _ns_chain(self, staged: Path) -> list[str]:
+        import shlex
+        q = shlex.quote
+        keep = self._keep_paths(staged)
+        hide = sorted({h for h in self.ns["hide"]}, key=lambda h: -h.count("/"))
+        lines = ["set -eu", "mount --make-rprivate /",
+                 "mount -t tmpfs -o size=1m,mode=0700 vxstash /mnt"]
+        for i, k in enumerate(keep):
+            lines += [f"mkdir /mnt/k{i}", f"mount --bind {q(k)} /mnt/k{i}"]
+        for h in hide:
+            mode = "1777" if h in ("/tmp", "/var/tmp", "/dev/shm") else "0755"
+            lines.append(f"if [ -d {q(h)} ]; then mount -t tmpfs -o mode={mode},nosuid,nodev,size=64m vxhide {q(h)}; fi")
+        for i, k in enumerate(keep):
+            lines += [f"mkdir -p {q(k)}", f"mount --bind /mnt/k{i} {q(k)}"]
+        lines += ["umount -l /mnt",
+                  # a fresh /proc: other users' processes invisible, no /proc/sys etc.
+                  "mount -t proc -o hidepid=invisible,subset=pid vxproc /proc",
+                  'exec "$@"']
+        ip = self._o._which("ip") or "ip"
+        return [ip, "netns", "exec", self.name, self._o._which("sh") or "sh", "-c", "\n".join(lines), "sh"]
+
+    def _setup_netns(self) -> None:
+        """The run's network namespace (only `lo`, up) and the relay into it, started
+        inside this run's cgroup (so the pinned rules apply to its upstream side)."""
+        ip = self._o._which("ip") or "ip"
+        r = self._o._run([*self._o._priv(), ip, "netns", "add", self.name], capture_output=True, text=True,
+                         timeout=10)
+        if r.returncode != 0:
+            raise ConfinementError(f"ネットワーク名前空間を作成できません: {r.stderr.strip()[:200]}")
+        self._netns = True
+        r = self._o._run([*self._o._priv(), ip, "netns", "exec", self.name, ip, "link", "set", "lo", "up"],
+                         capture_output=True, text=True, timeout=10)
+        if r.returncode != 0:
+            raise ConfinementError("名前空間の lo を有効にできません")
+        staged = self._o.staged_workers()
+        enter = [self._o._which("sh") or "sh", "-c", _ENTER, "sh", str(self.cgroup / "cgroup.procs"), "100000"]
+        argv = [*self._o._priv(), *enter, sys.executable, "-I", str(staged / "_ns_relay.py"),
+                self.name, str(self.uid), *[str(pt) for pt in self.ns["ports"]]]
+        self._relay = self._o._popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                     stderr=subprocess.DEVNULL, close_fds=True, text=True)
+        import select
+        ready, _, _ = select.select([self._relay.stdout], [], [], 10)
+        line = self._relay.stdout.readline().strip() if ready else ""
+        if line != "READY":
+            raise ConfinementError("名前空間への中継を起動できません")
 
     def _check_cancelled(self) -> None:
         if self._cancelled:
@@ -453,6 +535,16 @@ class ConfinementSession:
             before = self._listing()
             if not _table_is_live(before, self.name):
                 raise ConfinementError("適用した nftables ルールをカーネルから確認できません")
+            canary = None
+            if self.ns is not None:
+                self._check_cancelled()
+                self._setup_netns()
+                import socket as _socket
+                canary = _socket.socket()
+                canary.bind(("127.0.0.1", 0))
+                canary.listen(4)
+                canary.setblocking(False)
+                self._canary_port = canary.getsockname()[1]
             probe = (
                 "import json,os,socket\n"
                 "out={}\n"
@@ -492,7 +584,8 @@ class ConfinementSession:
                 f"    os.kill({self.protected_pid},0); out['signal']='ALLOWED'\n"
                 "except OSError as e:\n"
                 "    out['signal']='DENIED:'+type(e).__name__\n"
-                "print(json.dumps(out))\n"
+                + (self._ns_probe_code() if self.ns is not None else "")
+                + "print(json.dumps(out))\n"
             )
             self._check_cancelled()          # last point before anything runs in the cgroup
             pr = self._o._run(self.wrap([sys.executable, "-I", "-c", probe]), stdin=subprocess.DEVNULL,
@@ -522,7 +615,12 @@ class ConfinementSession:
                               for t in fds.values())
                       and all(k in ("0", "1", "2") or str(t).startswith("/proc/") for k, t in fds.items()))
             signal_ok = str(seen.get("signal", "")).startswith("DENIED:")
-            self.evidence = {"mechanism": self._o.mechanism, "cgroup": self.name,
+            ns_ok, ns_ev = True, {}
+            if self.ns is not None:
+                ns_ok, ns_ev = self._ns_verdict(seen, canary)
+            self.evidence = {"mechanism": self._o.mechanism + (" + netns/mountns + planner seccomp"
+                                                               if self.ns is not None else ""),
+                             "cgroup": self.name, **ns_ev,
                              "worker_uid": self.uid, "pinned": f"{self.ip}:{self.port}",
                              "pinned_extra": [f"{i}:{p}" for i, p in self.extra],
                              "probe_connect": seen.get("connect"), "probe_in_cgroup": in_cgroup,
@@ -532,7 +630,12 @@ class ConfinementSession:
                              "inherited_fds_clean": fds_ok,
                              "control_plane_signal": seen.get("signal"),
                              "protected_files_denied": files_ok, "protected_files": len(self.forbidden)}
-            if not (in_cgroup and str(seen.get("connect", "")).startswith("BLOCKED:") and counted >= 1):
+            if not ns_ok:
+                raise ConfinementError(f"名前空間隔離を確認できませんでした（{ns_ev}）")
+            # in its own network namespace the host's rules never see the probe's packet
+            # (there is no route at all): there the proof is the namespace verdict above
+            dropped_ok = counted >= 1 if self.ns is None else True
+            if not (in_cgroup and str(seen.get("connect", "")).startswith("BLOCKED:") and dropped_ok):
                 raise ConfinementError(
                     "カーネル隔離が実際に適用されていることを確認できませんでした"
                     f"（cgroup内={in_cgroup}, 接続={seen.get('connect')}, 遮断数={counted}）")
@@ -546,6 +649,89 @@ class ConfinementSession:
             raise
         except (OSError, subprocess.SubprocessError) as e:
             raise ConfinementError(f"カーネル隔離を適用できません（{type(e).__name__}）") from None
+
+    def _ns_probe_code(self) -> str:
+        import platform as _pf
+        bpf = {"x86_64": 321, "aarch64": 280}.get(_pf.machine(), -1)
+        hidden = [h for h in self.ns["hide"]]
+        return (
+            "out['netns']=os.readlink('/proc/self/ns/net')\n"
+            "out['ifaces']=sorted(l.split(':')[0].strip() for l in open('/proc/self/net/dev').read().splitlines()[2:])\n"
+            "c=socket.socket(); c.settimeout(0.6)\n"
+            "try:\n"
+            f"    c.connect(('127.0.0.1',{int(getattr(self, '_canary_port', 1))})); out['canary']='CONNECTED'\n"
+            "except OSError as e:\n"
+            "    out['canary']='BLOCKED:'+type(e).__name__\n"
+            "out['relay']={}\n"
+            f"for p in {self.ns['ports']!r}:\n"
+            "    r=socket.socket(); r.settimeout(3)\n"
+            "    try:\n"
+            "        r.connect(('127.0.0.1',p)); out['relay'][str(p)]='OK'\n"
+            "    except OSError as e:\n"
+            "        out['relay'][str(p)]='FAILED:'+type(e).__name__\n"
+            "    finally:\n"
+            "        r.close()\n"
+            "out['hidden']={}\n"
+            f"for d in {hidden!r}:\n"
+            "    try:\n"
+            "        out['hidden'][d]=sorted(os.listdir(d))\n"
+            "    except OSError as e:\n"
+            "        out['hidden'][d]='GONE:'+type(e).__name__\n"
+            "try:\n"
+            "    socket.socket(16, socket.SOCK_RAW, 0); out['netlink']='CREATED'\n"
+            "except OSError as e:\n"
+            "    out['netlink']='DENIED:'+type(e).__name__\n"
+            "try:\n"
+            "    socket.socket(40, socket.SOCK_STREAM, 0); out['vsock']='CREATED'\n"
+            "except OSError as e:\n"
+            "    out['vsock']='DENIED:'+type(e).__name__\n"
+            f"r=libc.syscall({bpf},0,0,0)\n"
+            "out['bpf']='ALLOWED' if r>=0 else 'DENIED:%d' % ctypes.get_errno()\n"
+            "out['procs_visible']=len([d for d in os.listdir('/proc') if d.isdigit()])\n"
+        )
+
+    def _ns_verdict(self, seen: dict, canary) -> tuple[bool, dict]:
+        host_netns = os.readlink("/proc/self/ns/net") if os.path.exists("/proc/self/ns/net") else ""
+        arrived = False
+        if canary is not None:
+            try:
+                conn, _ = canary.accept()
+                conn.close()
+                arrived = True
+            except (BlockingIOError, OSError):
+                pass
+            canary.close()
+        keep = set(self._keep_paths(self._o.staged_workers()))
+        hidden = seen.get("hidden") if isinstance(seen.get("hidden"), dict) else {}
+
+        def hidden_ok(d, v):
+            if isinstance(v, str):
+                return v.startswith("GONE:")
+            # an empty tmpfs; under it only the bound-back paths' first components
+            allowed = {Path(k).relative_to(d).parts[0] for k in keep
+                       if k.startswith(d.rstrip("/") + "/")}
+            return isinstance(v, list) and set(v) <= allowed
+        relay = seen.get("relay") if isinstance(seen.get("relay"), dict) else {}
+        ev = {
+            "netns_separate": bool(seen.get("netns")) and seen.get("netns") != host_netns,
+            "netns_interfaces": seen.get("ifaces"),
+            "host_loopback_canary": seen.get("canary"),
+            "host_loopback_canary_arrived": arrived,
+            "relay_endpoints": relay,
+            "hidden_paths_ok": bool(hidden) and set(hidden) == set(self.ns["hide"])
+                               and all(hidden_ok(d, v) for d, v in hidden.items()),
+            "netlink_socket": seen.get("netlink"), "vsock_socket": seen.get("vsock"),
+            "bpf_syscall": seen.get("bpf"), "procs_visible": seen.get("procs_visible"),
+        }
+        ok = (ev["netns_separate"] and ev["netns_interfaces"] == ["lo"]
+              and str(ev["host_loopback_canary"]).startswith("BLOCKED:") and not arrived
+              and relay and all(v == "OK" for v in relay.values())
+              and set(relay) == {str(pt) for pt in self.ns["ports"]}
+              and ev["hidden_paths_ok"]
+              and str(ev["netlink_socket"]).startswith("DENIED:") and str(ev["vsock_socket"]).startswith("DENIED:")
+              and str(ev["bpf_syscall"]).startswith("DENIED:")
+              and isinstance(ev["procs_visible"], int) and ev["procs_visible"] <= 8)
+        return bool(ok), ev
 
     def _listing(self) -> str:
         p = self._nft("list", "table", "inet", self.name, timeout=10)
@@ -602,6 +788,20 @@ class ConfinementSession:
                 self.files_left = True          # the cgroup is gone; files of the run remain
             if removed and self._table:
                 self._nft("delete", "table", "inet", self.name, timeout=10)
+            relay = getattr(self, "_relay", None)
+            if relay is not None:
+                try:
+                    relay.wait(timeout=5)       # killed with the cgroup; reaped here
+                except (subprocess.TimeoutExpired, OSError):
+                    pass
+            if removed and getattr(self, "_netns", False):
+                ip = self._o._which("ip") or "ip"
+                r = self._o._run([*self._o._priv(), ip, "netns", "delete", self.name],
+                                 capture_output=True, text=True, timeout=10)
+                if r.returncode == 0:
+                    self._netns = False
+                else:
+                    self.netns_left = True          # empty namespace: nothing runs in it
         except (OSError, subprocess.SubprocessError):
             removed = False
         self.leftover = not removed

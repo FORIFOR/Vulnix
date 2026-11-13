@@ -679,7 +679,8 @@ class TestRealArtexPlanner(ServiceBase):
             self.assertIn("cgroup v2", iso["mechanism"])
             self.assertTrue(iso["probe_in_cgroup"] and iso["separate_uid"] and iso["no_capabilities"], iso)
             self.assertTrue(str(iso["probe_connect"]).startswith("BLOCKED"), iso)
-            self.assertGreaterEqual(iso["kernel_dropped_packets"], 1, iso)
+            # (in its own network namespace there is no route out at all: the probe's
+            # packet never reaches the host's rules, so no host drop count is expected)
             self.assertTrue(iso["protected_files_denied"], iso)
             self.assertTrue(str(iso["unix_sockets"]).startswith("DENIED"), iso)
             self.assertEqual(iso["pinned"], f"127.0.0.1:{self.mock.server.server_port}")
@@ -687,8 +688,17 @@ class TestRealArtexPlanner(ServiceBase):
             self.assertTrue(iso.get("enforced_after_run"), iso)
             # the ARTEX process's own direct connection to a non-pinned loopback port
             self.assertTrue(str(iso["egress_canary"]).startswith("self-reported: blocked"), iso)
-            # the kernel's own count for THIS run: ARTEX's canary packets were dropped
-            self.assertGreaterEqual(iso.get("run_dropped_packets", 0), 1, iso)
+            # its own network namespace (only lo; host loopback unreachable, the canary
+            # listener got nothing), a private mount view, the planner seccomp profile
+            self.assertTrue(iso["netns_separate"], iso)
+            self.assertEqual(iso["netns_interfaces"], ["lo"], iso)
+            self.assertTrue(str(iso["host_loopback_canary"]).startswith("BLOCKED"), iso)
+            self.assertFalse(iso["host_loopback_canary_arrived"], iso)
+            self.assertEqual(set(iso["relay_endpoints"].values()), {"OK"}, iso)
+            self.assertTrue(iso["hidden_paths_ok"], iso)
+            for k in ("netlink_socket", "vsock_socket", "bpf_syscall"):
+                self.assertTrue(str(iso[k]).startswith("DENIED"), (k, iso))
+            self.assertLessEqual(iso["procs_visible"], 8, iso)
             self.assertEqual(iso.get("limits"), {"pids.max": 512, "memory.max": 2 << 30}, iso)
             self.assertFalse(iso.get("files_left"), iso)
             with self.assertRaises(OSError):
@@ -794,3 +804,76 @@ class TestConfinementExtensionsKeepTheL2Path(unittest.TestCase):
 def shutil_rmtree(p):
     import shutil
     shutil.rmtree(p, ignore_errors=True)
+
+
+
+class TestPlannerSeccompProfileAndNamespaceChain(unittest.TestCase):
+    def launcher(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "_launch", Path(ab.__file__).with_name("workers") / "_sandbox_launch.py")
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        return m
+
+    def test_the_l2_filter_is_unchanged_and_the_planner_profile_is_opt_in(self):
+        m = self.launcher()
+        for arch, cfg in m.ARCHES.items():
+            l2 = m.filter_program(cfg)
+            self.assertEqual(l2, m.filter_program(cfg, False, ()))
+            planner = m.filter_program(cfg, True, m.PLANNER_DENY[arch])
+            self.assertNotEqual(l2, planner)
+            self.assertLess(len(planner) // 8, 256)          # BPF jumps are 8-bit
+
+    def test_planner_profile_denies_the_listed_syscalls_and_non_ip_sockets(self):
+        import struct
+        m = self.launcher()
+        cfg = m.ARCHES["x86_64"]
+        prog = m.filter_program(cfg, True, m.PLANNER_DENY["x86_64"])
+        ins = [struct.unpack("HBBI", prog[i:i + 8]) for i in range(0, len(prog), 8)]
+        consts = {k for code, _, _, k in ins if code == m.JEQ}
+        for nr in (321, 323, 298, 101, 165, 175, 313):      # bpf userfaultfd perf ptrace mount modules
+            self.assertIn(nr, consts)
+        self.assertIn(m.AF_INET, consts)
+        self.assertIn(m.AF_INET6, consts)
+        self.assertNotIn(m.AF_UNIX, consts)                  # allow-list now, not a deny of AF_UNIX
+
+    def test_the_profile_flag_must_be_followed_by_a_program(self):
+        import subprocess as sp
+        launcher = Path(ab.__file__).with_name("workers") / "_sandbox_launch.py"
+        r = sp.run([sys.executable, "-I", str(launcher), "--profile=planner"], capture_output=True)
+        self.assertEqual(r.returncode, 97)
+
+    def test_the_namespace_chain_hides_and_binds_back_and_is_root_until_the_drop(self):
+        import subprocess as sp
+
+        from aegis.confinement import ConfinementSession, KernelConfinement
+        o = KernelConfinement(runner=lambda a, **k: sp.CompletedProcess(a, 0, "", ""), platform="linux",
+                              euid=0, which=lambda t: f"/usr/bin/{t}")
+        o.fresh_identity = lambda: 4242
+        work = "/tmp/vulnix-artex-abc"
+        with patch.object(type(o), "staged_workers", lambda self: Path("/tmp/vulnix-worker-xyz")):
+            sess = ConfinementSession(o, "127.0.0.1", 18080, extra_endpoints=(("127.0.0.1", 5432),),
+                                      namespaces={"hide": ab.planner_hidden_paths(["/srv/vulnix/data/state.json"]),
+                                                  "keep": [work]})
+            argv = sess.wrap(["/tmp/vulnix-artex-abc/artex-vulnix-planner"], interpreter="/usr/bin/python3")
+        i = argv.index("netns")
+        self.assertEqual(argv[i:i + 3], ["netns", "exec", sess.name])
+        script = argv[argv.index("-c", i) + 1]
+        self.assertIn("mount --make-rprivate /", script)
+        for h in ("/home", "/root", "/tmp", "/var/tmp", "/dev/shm", "/srv/vulnix/data"):
+            self.assertIn(f"vxhide {h}", script)
+        self.assertIn(f"mount --bind /mnt/k0 {work}", script.replace("'", ""))
+        self.assertIn("hidepid=invisible", script)
+        self.assertLess(argv.index("netns"), argv.index("/usr/bin/setpriv"))   # mounts before the drop
+        self.assertIn("--profile=planner", argv)
+        self.assertEqual(sess.ns["ports"], [5432, 18080])
+
+    def test_namespace_mode_accepts_only_127_0_0_1_endpoints(self):
+        import subprocess as sp
+
+        from aegis.confinement import ConfinementError, ConfinementSession, KernelConfinement
+        o = KernelConfinement(runner=lambda a, **k: sp.CompletedProcess(a, 0, "", ""), platform="linux", euid=0)
+        o.fresh_identity = lambda: 4242
+        with self.assertRaises(ConfinementError):
+            ConfinementSession(o, "10.0.0.5", 80, namespaces={"hide": [], "keep": []})
