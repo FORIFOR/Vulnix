@@ -527,6 +527,86 @@ class TestArtexRunsOnlyUnderOsConfinement(ServiceBase):
             self.svc.plan_with_artex("op")
         self.assertTrue(self.events("artex.plan_failed"))
 
+    def test_a_planner_not_confirmed_dead_makes_the_stop_unconfirmed_and_blocks_new_runs(self):
+        class Stuck:
+            name = "aegis_l2_stuck0000000"
+
+            def kill(self):
+                return False
+
+            def empty(self):
+                return False
+
+            def still_enforced(self):
+                return True
+        stuck = Stuck()
+        self.svc._artex_live.add(stuck)
+        report = self.svc.emergency_stop("op")
+        self.assertFalse(report["stop_report"]["confirmed"] if "stop_report" in report else report["confirmed"])
+        self.assertTrue(self.svc._session_on_record(stuck))
+        self.assertTrue(self.events("artex.stop_unconfirmed"))
+        self.svc._artex_live.discard(stuck)
+        self.svc._unstopped = [u for u in self.svc._unstopped if stuck not in (u.get("sessions") or [])]
+
+    def test_a_survivor_on_record_blocks_a_new_planner(self):
+        class Stuck:
+            def empty(self):
+                return False
+
+            def still_enforced(self):
+                return True
+
+            def kill(self):
+                return False
+        self.svc._unstopped.append({"host": "lab.test", "pids": [], "at": 0, "pool": None, "sessions": [Stuck()]})
+        try:
+            with self.assertRaises(ValueError):
+                self.svc.plan_with_artex("op")
+        finally:
+            self.svc._unstopped.clear()
+
+    def test_a_stop_during_set_up_means_artex_never_starts(self):
+        svc = self.svc
+        started = []
+
+        class Sess:
+            evidence = {}
+            _cancelled = False
+
+            def __enter__(self):
+                svc.emergency_stop("op")           # pressed while the probe runs
+                return self
+
+            def __exit__(self, *exc):
+                return None
+
+            def wrap(self, argv, **kw):
+                return list(argv)
+
+            def still_enforced(self):
+                return True
+
+            def kill(self):
+                self._cancelled = True
+                return True
+
+            def empty(self):
+                return True
+
+        class Prov:
+            def status(self):
+                return {"ok": True}
+
+            def session(self, ip, port, **kw):
+                return Sess()
+        svc._l2_confinement = Prov()
+        real_popen = ab.subprocess.Popen
+        with patch.object(ab.subprocess, "Popen", side_effect=lambda *a, **k: started.append(a) or real_popen(*a, **k)):
+            with self.assertRaises(ValueError):
+                svc.plan_with_artex("op")
+        self.assertEqual(started, [])
+        self.assertFalse(svc._artex_live)
+
     def test_a_named_host_is_refused_for_a_confined_run(self):
         with patch.object(self.svc, "_artex_llm_url", "http://localhost:9/v1"):
             with self.assertRaises(ValueError):

@@ -106,6 +106,13 @@ def _artex_isolation_view(iso: dict) -> dict:
     return view
 
 
+def _session_empty(sess) -> bool:
+    try:
+        return bool(sess.empty())
+    except Exception:  # noqa: BLE001 - not confirmed empty
+        return False
+
+
 class _StaticProposals:
     """Hands already-rebuilt proposals to a ProposalRouter (so they are sanitized
     and audited like any backend's)."""
@@ -1483,6 +1490,9 @@ class AssessmentService:
         with self._lock:
             self._refuse_after_stop_locked()
             self._refuse_artex_on_real_service_locked()
+            if self._unstopped_now_locked():
+                # while anything is not confirmed stopped, nothing new launches
+                raise ValueError("停止を確認できていないプロセスがあるため、ARTEX を起動しません")
             self._ensure_active_window_locked()
             targets = self._artex_targets_locked()
             observations = [{"title": clean_target_text(f["title"], 200), "detail": clean_target_text(f.get("summary", ""), 400)}
@@ -1503,9 +1513,12 @@ class AssessmentService:
         if not dev and not re.fullmatch(r"[0-9a-fA-F]{64}", self._artex_expected_sha256.strip()):
             self.audit.record("artex.plan_refused", actor=actor, reason="binary sha256 not pinned")
             raise ValueError("本番環境では ARTEX バイナリの SHA-256（VULNIX_ARTEX_EXPECTED_SHA256）の指定が必須です")
-        for url in (self._artex_llm_url, self._artex_pg_dsn):
-            port = urllib.parse.urlsplit(url or "").port if url else None
-            if port is not None and port == self.lab_port:
+        for url, default in ((self._artex_llm_url, None), (self._artex_pg_dsn, 5432)):
+            if not url:
+                continue
+            u = urllib.parse.urlsplit(url)
+            port = u.port or default or (443 if u.scheme == "https" else 80)
+            if port == self.lab_port:
                 # a pinned port gives the planner whatever listens there
                 raise ValueError("ARTEX の LLM / DB の接続先に検証ラボのポートは使用できません")
         st = dict(self._l2_confinement.status())
@@ -1527,8 +1540,9 @@ class AssessmentService:
                                     expected_sha256=self._artex_expected_sha256,
                                     confinement=confinement, forbidden_paths=protected,
                                     on_leftover=self._note_leftover_session,
-                                    on_started=self._artex_session_started,
-                                    on_finished=self._artex_session_finished)
+                                    on_started=lambda sess: self._artex_session_started(sess, gen),
+                                    on_finished=self._artex_session_finished,
+                                    may_start=lambda: self._artex_may_start(gen))
         except ArtexBridgeError as e:
             self.audit.record("artex.plan_failed", actor=actor, reason=str(e)[:200])
             raise ValueError(str(e)) from None
@@ -1605,21 +1619,46 @@ class AssessmentService:
                               "target_id": it.target_id, "tool": it.proposal["tool"], "status": it.status})
             return {"configured": bool(self._artex_real_cmd), "plan": {**self._artex_plan, "items": items}}
 
-    def _artex_session_started(self, sess) -> None:
+    def _artex_session_started(self, sess, gen: int) -> None:
+        """Registered before anything runs in the session; refused after a stop."""
         with self._lock:
+            if not self._artex_may_start_locked(gen):
+                raise ArtexBridgeError("緊急停止されたため ARTEX を起動しません")
             self._artex_live.add(sess)
+
+    def _artex_may_start_locked(self, gen: int) -> bool:
+        return (gen == self._run_generation and self.gateway.state is not State.STOPPED
+                and self.a.state != "stopped" and not self._unstopped_now_locked())
+
+    def _artex_may_start(self, gen: int) -> bool:
+        with self._lock:
+            return self._artex_may_start_locked(gen)
 
     def _artex_session_finished(self, sess) -> None:
         with self._lock:
             self._artex_live.discard(sess)
 
     def _kill_artex_planner_locked(self) -> None:
-        """Emergency stop: a running ARTEX planner is killed with its cgroup."""
-        for sess in list(self._artex_live):
+        """Emergency stop: a running ARTEX planner is killed with its cgroup, and only a
+        planner CONFIRMED gone leaves the record - one that is not goes on the same
+        unstopped record as an L2 worker (the stop is then reported unconfirmed)."""
+        live = list(self._artex_live)
+        for sess in live:
             try:
                 sess.kill()
-            except Exception:  # noqa: BLE001 - the session's own teardown reports a leftover
+            except Exception:  # noqa: BLE001 - confirmed (or not) below
                 pass
+        deadline = time.monotonic() + 3.0
+        pending = list(live)
+        while pending and time.monotonic() < deadline:
+            pending = [x for x in pending if not _session_empty(x)]
+            if pending:
+                time.sleep(0.1)
+        for sess in pending:
+            if not self._session_on_record(sess):
+                self._unstopped.append({"host": (self.a.asset.get("name") or "").lower(), "pids": [],
+                                        "at": time.time(), "pool": None, "sessions": [sess]})
+                self.audit.record("artex.stop_unconfirmed", cgroup=getattr(sess, "name", ""))
 
     def _claim_artex_item_locked(self, item_id: str) -> dict:
         """Check and claim (set running) in ONE locked step: no second request can

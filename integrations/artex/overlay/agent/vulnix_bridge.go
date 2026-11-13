@@ -244,16 +244,27 @@ func VulnixCheckUnprivilegedRole(ctx context.Context, q interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }) error {
 	var privileged bool
-	err := q.QueryRowContext(ctx, `SELECT r.rolsuper
-	   OR pg_has_role(current_user, 'pg_execute_server_program', 'MEMBER')
-	   OR pg_has_role(current_user, 'pg_read_server_files', 'MEMBER')
-	   OR pg_has_role(current_user, 'pg_write_server_files', 'MEMBER')
-	   FROM pg_roles r WHERE r.rolname = current_user`).Scan(&privileged)
+	// Any role the session user is a member of (itself included, transitively): a
+	// superuser (SET ROLE would reach it), CREATEROLE (on PG <= 15 it can grant itself
+	// the server roles), or one of the server-program / server-file roles. Also refused:
+	// dblink / postgres_fdw in this database (the DB server is not confined and could
+	// open connections anywhere), and direct EXECUTE grants on server-side file access.
+	err := q.QueryRowContext(ctx, `SELECT
+	   EXISTS (SELECT 1 FROM pg_roles r
+	           WHERE pg_has_role(current_user, r.oid, 'MEMBER')
+	             AND (r.rolsuper OR r.rolcreaterole
+	                  OR r.rolname IN ('pg_execute_server_program', 'pg_read_server_files',
+	                                   'pg_write_server_files')))
+	   OR EXISTS (SELECT 1 FROM pg_extension WHERE extname IN ('dblink', 'postgres_fdw'))
+	   OR has_function_privilege(current_user, 'lo_import(text)', 'EXECUTE')
+	   OR has_function_privilege(current_user, 'lo_export(oid, text)', 'EXECUTE')
+	   OR has_function_privilege(current_user, 'pg_read_file(text)', 'EXECUTE')
+	   OR has_function_privilege(current_user, 'pg_read_binary_file(text)', 'EXECUTE')`).Scan(&privileged)
 	if err != nil {
 		return fmt.Errorf("cannot check the database role: %w", err)
 	}
 	if privileged {
-		return fmt.Errorf("the database role is a superuser or may run server programs / access server files")
+		return fmt.Errorf("the database role is (or can become) privileged: superuser / CREATEROLE / server programs or files, or dblink/postgres_fdw is installed")
 	}
 	return nil
 }

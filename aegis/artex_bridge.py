@@ -241,7 +241,7 @@ def _endpoint(url: str, default_port: int) -> tuple[str, int]:
 def run_artex_planner(command: list[str], request: dict, *, llm_url: str, llm_model: str = "mock",
                       llm_key: str = "", pg_dsn: str = "", timeout_s: float = 120.0,
                       expected_sha256: str = "", confinement=None, forbidden_paths=(),
-                      on_leftover=None, on_started=None, on_finished=None) -> ArtexRun:
+                      on_leftover=None, on_started=None, on_finished=None, may_start=None) -> ArtexRun:
     """`confinement`: a Vulnix confinement provider (aegis.confinement.KernelConfinement).
     When given, ARTEX runs inside a per-run cgroup v2 + nftables confinement under its
     own unprivileged uid, with no capabilities, no_new_privs and the seccomp launcher;
@@ -275,14 +275,21 @@ def run_artex_planner(command: list[str], request: dict, *, llm_url: str, llm_mo
             llm_ep = _endpoint(llm_url, 443 if llm_url.startswith("https") else 80)
             extra = (_endpoint(pg_dsn, 5432),) if pg_dsn else ()
             try:
-                sess = stack.enter_context(confinement.session(
+                created = confinement.session(
                     llm_ep[0], llm_ep[1], forbidden_paths=tuple(forbidden_paths),
-                    protected_pid=os.getpid(), extra_endpoints=extra, limits=ARTEX_LIMITS))
+                    protected_pid=os.getpid(), extra_endpoints=extra, limits=ARTEX_LIMITS)
+                # on record BEFORE anything runs in it (the probe included): a probe that
+                # cannot be killed is recorded, and an emergency stop during set-up sees it
                 if on_leftover is not None:
                     try:
-                        sess.on_leftover = on_leftover
+                        created.on_leftover = on_leftover
                     except AttributeError:
                         pass
+                if on_started is not None:
+                    on_started(created)          # raises when a stop already happened
+                if on_finished is not None:
+                    stack.callback(on_finished, created)
+                sess = stack.enter_context(created)
                 own = getattr(sess, "own_directory", None)
                 if own is not None:
                     own(home)                    # the run's own writable directory
@@ -320,14 +327,19 @@ def run_artex_planner(command: list[str], request: dict, *, llm_url: str, llm_mo
                 raise
             except Exception as e:  # noqa: BLE001 - nothing has started
                 raise ArtexBridgeError(f"ARTEX を隔離して起動できません: {str(e)[:200]}") from None
+        def stopped() -> bool:
+            return bool(getattr(sess, "_cancelled", False)) or (may_start is not None and not may_start())
+        if sess is not None and stopped():
+            raise ArtexBridgeError("緊急停止されたため ARTEX を起動しません")
         try:
             proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                     stderr=subprocess.PIPE, cwd=work, env=env,
                                     start_new_session=True, close_fds=True)
         except OSError as e:
             raise ArtexBridgeError(f"ARTEX を起動できません: {type(e).__name__}") from None
-        if on_started is not None and sess is not None:
-            on_started(sess)                     # an emergency stop can now kill it
+        if sess is not None and stopped():
+            # a stop landed between the check and the start: it dies right away
+            sess.kill()
         try:
             out, err = proc.communicate(json.dumps(request, ensure_ascii=False).encode(), timeout=timeout_s)
         except subprocess.TimeoutExpired:
@@ -342,9 +354,6 @@ def run_artex_planner(command: list[str], request: dict, *, llm_url: str, llm_mo
             except subprocess.TimeoutExpired:
                 raise ArtexBridgeError("ARTEX プランナーの停止を確認できません（隔離は維持されています）") from None
             raise ArtexBridgeError("ARTEX プランナーが制限時間内に終了しませんでした") from None
-        finally:
-            if on_finished is not None and sess is not None:
-                on_finished(sess)
         if sess is not None:
             enforced = bool(sess.still_enforced()) if hasattr(sess, "still_enforced") else True
             isolation["enforced_after_run"] = enforced
