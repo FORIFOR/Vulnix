@@ -63,7 +63,7 @@ class TestEnvLocalLoader(unittest.TestCase):
 class TestEnvLocalStaysOutOfGit(unittest.TestCase):
     def test_env_local_is_git_ignored(self):
         root = Path(server.__file__).resolve().parents[1]
-        r = subprocess.run(["git", "check-ignore", "-q", ".env.local"], cwd=root)
+        r = subprocess.run(["git", "check-ignore", "-q", ".env.local"], cwd=root, check=False)
         if r.returncode == 128:
             self.skipTest("not a git checkout")
         self.assertEqual(r.returncode, 0, ".env.local must stay git-ignored")
