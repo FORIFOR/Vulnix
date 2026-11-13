@@ -1078,6 +1078,7 @@ class TestRealArtexThroughThePlannerGateway(TestRealArtexPlanner):
             plan = self.plan()
         gw = plan["llm_gateway"]
         self.assertEqual((gw["mode"], gw["upstream"]), ("preview", None))
+        self.assertGreaterEqual(gw["calls"], 1)                        # the real ARTEX did ask
         self.assertEqual(self.mock.requests, [])                       # not even the local mock
         pv = self.svc.artex_llm_preview()
         self.assertEqual(len(pv["requests"]), gw["calls"])

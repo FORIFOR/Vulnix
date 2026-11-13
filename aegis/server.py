@@ -599,8 +599,9 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 elif p == base + "/artex/plan":
                     # the REAL ARTEX planner (planner-only overlay) proposes; Vulnix rebuilds
                     approval = body.get("llm_approval") if isinstance(body.get("llm_approval"), dict) else None
+                    llm_mode = body.get("llm_mode") if isinstance(body.get("llm_mode"), str) else None
                     return self._json(200, svc.plan_with_artex(actor, llm_approval=approval,
-                                                               roles=tuple(sess.roles)))
+                                                               roles=tuple(sess.roles), llm_mode=llm_mode))
                 elif p == base + "/artex/llm-preview":
                     if "approver" not in sess.roles:
                         return self._json(403, {"error": "preview の内容確認には承認責任者の権限が必要です"})
