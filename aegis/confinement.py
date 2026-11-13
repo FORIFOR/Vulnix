@@ -741,6 +741,9 @@ class ConfinementSession:
             "relay_endpoints": relay,
             "hidden_paths_ok": bool(hidden) and set(hidden) == set(self.ns["hide"])
                                and all(hidden_ok(d, v) for d, v in hidden.items()),
+            # which hidden path failed, and the first names visible there (names only)
+            "hidden_paths_failed": {d: (v[:8] if isinstance(v, list) else v)
+                                    for d, v in hidden.items() if not hidden_ok(d, v)},
             "netlink_socket": seen.get("netlink"), "vsock_socket": seen.get("vsock"),
             "bpf_syscall": seen.get("bpf"), "procs_visible": seen.get("procs_visible"),
             "seccomp_mode": seen.get("seccomp"),
