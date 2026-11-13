@@ -140,10 +140,11 @@ class WorkerPool:
                     self._sessions[proc.pid] = session
             out, err = _Capture(), _Capture()
             stages: list = []
-            readers = [threading.Thread(target=_drain, args=(proc.stdout, out, None), daemon=True),
+            readers = [threading.Thread(target=_drain, args=(proc.stdout, out, None), daemon=True,
+                                        name=f"worker-drain-{proc.pid}-out"),
                        threading.Thread(target=_drain, args=(proc.stderr, err,
                                                              (stages, self._clock, t0) if progress else None),
-                                        daemon=True)]
+                                        daemon=True, name=f"worker-drain-{proc.pid}-err")]
             for r in readers:
                 r.start()
             timed_out = False
@@ -173,12 +174,6 @@ class WorkerPool:
             # The readers of held pipes are left to end on their own (daemon threads): closing an
             # fd another thread is blocked reading could let that thread read a reused fd.
             pipes_held = any(r.is_alive() for r in readers)
-            if not pipes_held:
-                for f in (proc.stdout, proc.stderr):    # both readers are done: release the pipes
-                    try:
-                        f.close()
-                    except (OSError, ValueError):
-                        pass
             returncode = proc.poll()
             if returncode is None:                      # not reaped (survivor): reported, not waited for
                 returncode = -signal.SIGKILL
@@ -359,6 +354,14 @@ def _drain(stream, cap: _Capture, markers) -> None:
             cap.add(pending)
     except (OSError, ValueError):
         pass
+    finally:
+        # Closed by the thread that reads it, after EOF: never by another thread while a read
+        # may be blocked on the fd (a reused fd number could then be read). A pipe held by an
+        # escaped descendant is therefore released when that descendant exits, not before.
+        try:
+            stream.close()
+        except (OSError, ValueError):
+            pass
 
 
 def _line(line: bytes, cap: _Capture, markers) -> None:

@@ -124,6 +124,10 @@ class Gateway:
         # Optional callable(pids, pool): a worker the runtime could not confirm stopped at
         # its deadline is handed to the control plane's record of unstopped workers.
         self.on_unstopped = on_unstopped
+        # Survivors the control plane could not be told about (on_unstopped failed or is not
+        # set): the gateway itself refuses every launch while any of them is still alive.
+        self._unrecorded_survivors: list[tuple[int, object]] = []
+        self._survivor_lock = threading.Lock()
         self.tokens = tokens
         self.approvals = approvals
         self.egress = egress
@@ -181,6 +185,9 @@ class Gateway:
     def _execute(self, proposal: object, token: str) -> Decision:
         if self._state is not State.RUNNING:
             raise AuthzError(f"gateway {self._state.value}")
+        if self._unrecorded_survivors_alive():
+            raise PolicyError("a worker that passed its deadline could not be confirmed stopped; "
+                              "no new worker is started")
         # Both are fixed NOW. A stop or reset closes this pool and moves the epoch
         # on, so a request that outlives it can only fail.
         epoch, workers = self._launch_epoch, self.workers
@@ -256,16 +263,27 @@ class Gateway:
             unconfirmed = result.timed_out and result.stop_confirmed is not True
             if unconfirmed:
                 # the deadline passed and the worker could not be confirmed dead: fail closed,
-                # no result of any kind, and the worker goes on the unstopped record
-                self.audit.record("worker.stop_unconfirmed", jti=claims["jti"], tool=tool.name,
-                                  deadline_s=result.deadline_s, pid=result.pid)
-                if self.on_unstopped and result.pid:
-                    self.on_unstopped([result.pid], workers)
+                # no result of any kind, and the worker goes on the unstopped record. Neither a
+                # failing audit log nor a failing record may change that outcome.
+                self._try_audit("worker.stop_unconfirmed", jti=claims["jti"], tool=tool.name,
+                                deadline_s=result.deadline_s, pid=result.pid)
+                if result.pid:
+                    recorded = False
+                    if self.on_unstopped:
+                        try:
+                            self.on_unstopped([result.pid], workers)
+                            recorded = True
+                        except Exception as e:  # noqa: BLE001 - the refusal below must still happen
+                            self._try_audit("worker.unstopped_record_failed", jti=claims["jti"],
+                                            tool=tool.name, pid=result.pid, error=type(e).__name__)
+                    if not recorded:
+                        with self._survivor_lock:
+                            self._unrecorded_survivors.append((result.pid, workers))
             if result.pipes_held:
                 # something outside the worker's (dead) process group kept its output open: an
                 # escaped descendant could have written anything there; nothing of this run counts
-                self.audit.record("worker.pipes_held", jti=claims["jti"], tool=tool.name,
-                                  timed_out=result.timed_out, elapsed=round(result.elapsed_s, 3))
+                self._try_audit("worker.pipes_held", jti=claims["jti"], tool=tool.name,
+                                timed_out=result.timed_out, elapsed=round(result.elapsed_s, 3))
                 raise PolicyError("a process outside the worker's process group kept its output open; "
                                   "this run is not accepted")
             if unconfirmed:
@@ -289,6 +307,27 @@ class Gateway:
         finally:
             with self._inflight_lock:
                 self._inflight.discard(key)
+
+    def _try_audit(self, event: str, **fields) -> None:
+        """An audit write on a refusal path: attempted, never allowed to turn the refusal into
+        anything else (the caller raises PolicyError right after)."""
+        try:
+            self.audit.record(event, **fields)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _unrecorded_survivors_alive(self) -> bool:
+        with self._survivor_lock:
+            keep = []
+            for pid, pool in self._unrecorded_survivors:
+                try:
+                    alive = bool(pool.still_running([pid]))
+                except Exception:  # noqa: BLE001 - cannot tell: still a survivor
+                    alive = True
+                if alive:
+                    keep.append((pid, pool))
+            self._unrecorded_survivors = keep
+            return bool(keep)
 
     # ---- pause / resume ---------------------------------------------------
     def pause(self, actor: str) -> None:

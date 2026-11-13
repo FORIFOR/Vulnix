@@ -246,6 +246,48 @@ class TestScopeExpiryStopsRunningWorkers(ReleaseBase):
         t.join(10)
 
 
+class TestAWorkerNotConfirmedStoppedAtItsDeadlineBlocksTheService(ReleaseBase):
+    """Through the service: the gateway's deadline kills an L1 worker, the stop cannot be
+    confirmed (stood in for a process SIGKILL cannot end, e.g. in D state), and from then on
+    the service starts no worker until that one is seen dead."""
+
+    def test_no_result_and_no_new_worker_until_the_survivor_is_gone(self):
+        from dataclasses import replace as _replace
+        self.onboard()
+        pool = self.svc.workers
+        self.svc.gateway.tools["http_probe"] = _replace(self.svc.gateway.tools["http_probe"], timeout_s=1.5)
+        real_confirm, real_running = pool.confirm_stopped, pool.still_running
+        stuck: list[int] = []
+
+        def confirm(pids, confirm_timeout_s=5.0):
+            real_confirm(pids, confirm_timeout_s)          # really killed ...
+            stuck.extend(pids)
+            return list(pids)                              # ... but not confirmed
+        pool.confirm_stopped = confirm
+        pool.still_running = lambda pids: [p for p in pids if p in stuck] or real_running(pids)
+        try:
+            self.fake.mode = "hang_all"
+            snap = self.run_l1()
+            self.assertEqual(len(self.events("worker.stop_unconfirmed")), 1, snap.get("activity"))
+            self.assertEqual(self.events("result"), [])                  # nothing recorded as a result
+            status = self.svc.system_status()["unstopped_workers"]
+            self.assertTrue(status, "the survivor is not on the unstopped record")
+            seen = len(self.fake.seen)
+            self.fake.mode = "ok"
+            with self.assertRaises(ValueError) as cm:                    # the service refuses a new run
+                self.svc.restart("appr")
+            self.assertIn("停止を確認できていないWorker", str(cm.exception))
+            from aegis.policy import PolicyError
+            with self.assertRaises(PolicyError):                         # and the gateway's last check too
+                self.svc._launch_guard("http_probe", {"url": self.svc.a.target_url}, None)
+            time.sleep(0.3)
+            self.assertEqual(len(self.fake.seen), seen)                  # nothing reached the target
+        finally:
+            pool.confirm_stopped, pool.still_running = real_confirm, real_running
+        stuck.clear()
+        self.assertIsNone(self.svc.system_status()["unstopped_workers"])   # seen dead: the block lifts
+
+
 def _linux_confinement() -> bool:
     return sys.platform.startswith("linux") and KernelConfinement().status()["ok"]
 

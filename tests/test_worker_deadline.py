@@ -314,6 +314,102 @@ class TestUnconfirmedStopFailsClosed(GatewayBase):
         self.assertNotEqual(deadline_report("http_probe", r).returncode, 0)
 
 
+class TestFailClosedWhenRecordingOrAuditFails(GatewayBase):
+    """PR #7 final LOWs: the refusal holds whatever else fails, and a survivor that could not be
+    put on the control plane's record still blocks launches through the gateway itself."""
+
+    # forks a child that leaves the group and keeps the pipes, then hangs past the deadline
+    BOTH = ("import os, sys, time\n"
+            "if os.fork() == 0:\n"
+            "    os.setsid(); time.sleep(4); os._exit(0)\n"
+            "time.sleep(30)\n")
+
+    def unconfirmed(self):
+        real = self.workers.confirm_stopped
+        self.workers.confirm_stopped = lambda pids, confirm_timeout_s=5.0: (real(pids, confirm_timeout_s), list(pids))[1]
+        self.addCleanup(setattr, self.workers, "confirm_stopped", real)
+
+    def test_unconfirmed_and_pipes_held_together_are_both_audited_and_refused(self):
+        srv = _FiniteDrip(n=1, gap=0.01)
+        seen = []
+        try:
+            self.make(srv.port, {"both": _script_tool("both", self.BOTH, 1.0)})
+            self.gw.on_unstopped = lambda pids, pool: seen.append(list(pids))
+            self.unconfirmed()
+            d = self.execute("both")
+        finally:
+            srv.close()
+        self.assertFalse(d.allowed)
+        self.assertEqual(len(self.events("worker.stop_unconfirmed")), 1)
+        self.assertEqual(len(self.events("worker.pipes_held")), 1)
+        self.assertEqual(len(seen), 1)                       # on the unstopped record as well
+        self.assertEqual(self.events("result"), [])
+
+    def test_a_failing_unstopped_record_still_refuses_and_blocks_new_launches(self):
+        srv = _Drip("headers")
+        try:
+            self.make(srv.port, {"http_probe": replace(http_probe_tool(), timeout_s=1.5)})
+
+            def broken(pids, pool):
+                raise RuntimeError("record unavailable")
+            self.gw.on_unstopped = broken
+            self.unconfirmed()
+            real_running = self.workers.still_running
+            self.workers.still_running = lambda pids: list(pids)       # the survivor looks alive (e.g. D state)
+            d = self.execute("http_probe", "GET")
+            self.assertFalse(d.allowed)
+            self.assertIn("could not be confirmed stopped", d.reason)
+            self.assertEqual(self.events("worker.unstopped_record_failed")[-1]["error"], "RuntimeError")
+            again = self.execute("http_probe", "GET")                    # the gateway itself refuses
+            self.assertFalse(again.allowed)
+            self.assertIn("no new worker is started", again.reason)
+            self.workers.still_running = real_running                   # now it is seen dead
+            self.assertFalse(self.gw._unrecorded_survivors_alive())
+        finally:
+            srv.close()
+        self.assertEqual(self.events("result"), [])
+
+    def test_a_failing_audit_log_does_not_turn_the_refusal_into_a_result(self):
+        srv = _Drip("headers")
+        try:
+            self.make(srv.port, {"http_probe": replace(http_probe_tool(), timeout_s=1.5)})
+            self.gw.on_unstopped = lambda pids, pool: None
+            self.unconfirmed()
+            real_record = self.audit.record
+
+            def record(event, **fields):
+                if event.startswith("worker."):
+                    raise OSError("audit log unavailable")
+                return real_record(event, **fields)
+            self.audit.record = record
+            d = self.execute("http_probe", "GET")
+        finally:
+            srv.close()
+        self.assertFalse(d.allowed)
+        self.assertIn("could not be confirmed stopped", d.reason)
+        self.assertEqual(self.events("result"), [])
+        self.assertTrue(self.events("deny"))
+
+
+class TestPipesHeldResources(unittest.TestCase):
+    """What a descendant that keeps the pipes costs: one reader thread and one fd per pipe,
+    released when the descendant exits (the reader closes its own pipe after EOF; no fd is
+    closed from another thread)."""
+
+    def test_reader_threads_end_once_the_descendant_exits(self):
+        pool = WorkerPool(max_concurrent=1)
+        self.addCleanup(pool.kill_all)
+        code = "import os, time\nif os.fork() == 0:\n    os.setsid(); time.sleep(1.5); os._exit(0)\n"
+        r = pool.run([sys.executable, "-I", "-c", code], timeout_s=5)
+        self.assertTrue(r.pipes_held)
+        drains = lambda: [t for t in threading.enumerate() if t.name.startswith(f"worker-drain-{r.pid}-")]  # noqa: E731
+        self.assertEqual(len(drains()), 2)                   # held while the descendant lives
+        end = time.monotonic() + 5
+        while drains() and time.monotonic() < end:
+            time.sleep(0.05)
+        self.assertEqual(drains(), [])                       # and released after it exits
+
+
 class TestPipesHeldByAnEscapedDescendant(GatewayBase):
     """A descendant that leaves the process group (setsid) is not reached by killpg; without
     confinement it can outlive the worker. If it still holds the worker's output, nothing read
