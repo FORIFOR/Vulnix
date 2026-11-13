@@ -520,3 +520,12 @@ class TestExternalProposalsSwitch(unittest.TestCase):
                 self.assertEqual(svc._external_model_configured, expected)
                 self.assertIsNotNone(svc._chat_backend)          # the explanation keeps its model
                 svc.workers.kill_all()
+
+
+class TestPreviewRoute(unittest.TestCase):
+    def test_the_preview_route_is_a_get_for_approvers_only(self):
+        src = Path(__file__).resolve().parents[1].joinpath("aegis", "server.py").read_text()
+        get_part = src[src.index("def do_GET"):src.index("def do_POST")]
+        self.assertIn("/artex/llm-preview", get_part)
+        post_part = src[src.index("def do_POST"):]
+        self.assertNotIn("/artex/llm-preview", post_part)
