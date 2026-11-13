@@ -426,6 +426,7 @@ class TestArtexRunsOnlyUnderOsConfinement(ServiceBase):
         data_files = {str(p) for p in Path(self.tmp.name).iterdir() if p.is_file()}
         self.assertTrue(data_files and data_files <= set(checks["forbidden_paths"]))
         self.assertTrue(plan["isolation"]["confined"])
+        self.assertIn("limits", plan["isolation"])          # evidence keys reach the view
 
     def test_the_lab_port_is_never_a_planner_endpoint(self):
         with patch.object(self.svc, "_artex_llm_url", f"http://127.0.0.1:{LAB_PORT}/v1"):
