@@ -83,6 +83,21 @@ class GatewayRefused(Exception):
     pass
 
 
+_INTERNAL_SUFFIXES = (".internal", ".local", ".lan", ".corp", ".intranet", ".home.arpa", ".localdomain")
+
+
+def _internal(host: str) -> bool:
+    """A private / loopback / link-local / metadata address, or an internal-only name.
+    Public names a model mentions (documentation, references) are not Vulnix data;
+    internal ones would describe someone's network."""
+    import ipaddress
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return host.endswith(_INTERNAL_SUFFIXES) or "." not in host
+    return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast
+
+
 class PlannerLLMGateway:
     """One gateway per planner run. `mode`: "preview" (never forwards) or "forward"
     (forwards to `upstream_url`). `responder(body) -> dict` answers in preview mode
@@ -151,11 +166,12 @@ class PlannerLLMGateway:
         for pat in SECRET_PATTERNS:
             if pat.search(text):
                 raise GatewayRefused("the request contains something that looks like a secret")
-        for host in {h.lower().rstrip(".") for h in _URL_HOST.findall(text)}:
+        for host in {h.lower().rstrip(".").strip("[]") for h in _URL_HOST.findall(text)}:
             if host in self.denied_hosts:
                 raise GatewayRefused("the request names a registered real service")
-            if host not in self.allowed_hosts:
-                raise GatewayRefused(f"the request names a host outside the local lab: {host[:60]}")
+            if host not in self.allowed_hosts and _internal(host):
+                # an internal address or name outside the lab: someone's network, never sent
+                raise GatewayRefused(f"the request names an internal host outside the local lab: {host[:60]}")
         for host in self.denied_hosts:
             if host and host in text.lower():
                 raise GatewayRefused("the request names a registered real service")

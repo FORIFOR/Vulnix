@@ -56,11 +56,15 @@ class TestInspection(unittest.TestCase):
             with self.assertRaises(GatewayRefused, msg=text):
                 preview().inspect(chat(text))
 
-    def test_hosts_outside_the_lab_and_real_services_are_refused(self):
-        for text in ("http://evil.example/x を調べる", "https://real.example.com/api", "real.example.com のログイン"):
+    def test_real_services_and_internal_hosts_outside_the_lab_are_refused(self):
+        for text in ("https://real.example.com/api", "real.example.com のログイン",
+                     "http://10.1.2.3/admin", "http://192.168.0.10/", "http://169.254.169.254/latest/meta-data",
+                     "http://db.corp/", "https://wiki.internal/x", "http://intranet/", "http://[fd00::1]/"):
             with self.assertRaises(GatewayRefused, msg=text):
                 preview().inspect(chat(text))
+        # the lab itself, and public references a model may mention, are not Vulnix data
         preview().inspect(chat("http://lab.test:18081/ と http://127.0.0.1:18081/ を計画"))
+        preview().inspect(chat("参考: https://owasp.org/www-community/attacks/SQL_Injection"))
 
     def test_tools_outside_the_planner_allowlist_and_streaming_are_refused(self):
         for body in (chat(tools=("add_intent", "Bash")), chat(tools=("WebFetch",)), chat(stream=True), {"x": 1}):
