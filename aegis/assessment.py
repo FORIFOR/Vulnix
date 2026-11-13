@@ -1496,6 +1496,13 @@ class AssessmentService:
         # ARTEX runs only under Vulnix's kernel confinement (the same per-run cgroup v2 +
         # nftables + own-uid + seccomp launcher as the L2 worker). Without it, it does not
         # run - except when an operator explicitly opts into an unconfined DEV run.
+        # Outside development the ARTEX binary must be pinned: its SHA-256 is compared with
+        # VULNIX_ARTEX_EXPECTED_SHA256 before it runs (a mismatch, or anything that is not
+        # the ARTEX overlay build, is refused by the bridge).
+        dev = os.environ.get("AEGIS_ENV", "").strip().lower() in ("development", "dev")
+        if not dev and not re.fullmatch(r"[0-9a-fA-F]{64}", self._artex_expected_sha256.strip()):
+            self.audit.record("artex.plan_refused", actor=actor, reason="binary sha256 not pinned")
+            raise ValueError("本番環境では ARTEX バイナリの SHA-256（VULNIX_ARTEX_EXPECTED_SHA256）の指定が必須です")
         for url in (self._artex_llm_url, self._artex_pg_dsn):
             port = urllib.parse.urlsplit(url or "").port if url else None
             if port is not None and port == self.lab_port:

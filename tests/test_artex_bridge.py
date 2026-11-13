@@ -204,6 +204,9 @@ class ServiceBase(unittest.TestCase):
     command = FAKE
     llm_url = LOOPBACK_LLM
     expected_sha256 = ""
+    # the stand-in cannot be pinned, so the service tests run as development; the
+    # real ARTEX test runs as production (pin required)
+    aegis_env = "development"
 
     @classmethod
     def setUpClass(cls):
@@ -221,6 +224,9 @@ class ServiceBase(unittest.TestCase):
         env = {"VULNIX_ARTEX_REAL_CMD": shlex.join(self.command), "VULNIX_ARTEX_LLM_URL": self.llm_url,
                "VULNIX_ARTEX_PG_DSN": os.environ.get("VULNIX_ARTEX_PG_DSN", ""),
                "VULNIX_ARTEX_EXPECTED_SHA256": self.expected_sha256}
+        self._env = patch.dict(os.environ, {"AEGIS_ENV": self.aegis_env})
+        self._env.start()
+        self.addCleanup(self._env.stop)
         with patch.dict(os.environ, env):
             self.svc = AssessmentService(Path(self.tmp.name), LAB_PORT, l2_confinement=TEST_CONFINEMENT,
                                          verify_seconds=0.1)
@@ -428,6 +434,23 @@ class TestArtexRunsOnlyUnderOsConfinement(ServiceBase):
         self.assertTrue(plan["isolation"]["confined"])
         self.assertIn("limits", plan["isolation"])          # evidence keys reach the view
 
+    def test_production_requires_the_binary_sha256(self):
+        with patch.dict(os.environ, {"AEGIS_ENV": "production"}):
+            for pin in ("", "not-a-hash"):
+                with patch.object(self.svc, "_artex_expected_sha256", pin):
+                    with self.assertRaises(ValueError) as cm:
+                        self.svc.plan_with_artex("op")
+                    self.assertIn("SHA-256", str(cm.exception))
+            # a well-formed pin that the binary does not match: refused before it runs
+            with patch.object(self.svc, "_artex_expected_sha256", "0" * 64):
+                with self.assertRaises(ValueError):
+                    self.svc.plan_with_artex("op")
+        with patch.dict(os.environ, {"AEGIS_ENV": ""}):     # unmarked = production
+            with self.assertRaises(ValueError):
+                self.svc.plan_with_artex("op")
+        self.assertTrue([e for e in self.events("artex.plan_refused")
+                         if e["fields"].get("reason") == "binary sha256 not pinned"])
+
     def test_the_lab_port_is_never_a_planner_endpoint(self):
         with patch.object(self.svc, "_artex_llm_url", f"http://127.0.0.1:{LAB_PORT}/v1"):
             with self.assertRaises(ValueError):
@@ -517,6 +540,7 @@ class TestRealArtexPlanner(ServiceBase):
 
     command = [os.environ.get("VULNIX_ARTEX_REAL_BIN", "")]
     expected_sha256 = os.environ.get("VULNIX_ARTEX_CI_BINARY_SHA256", "")
+    aegis_env = "production"
 
     def setUp(self):
         self.mock = MockLLM().__enter__()
