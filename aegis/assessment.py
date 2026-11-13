@@ -1591,6 +1591,12 @@ class AssessmentService:
             if gateway is not None:
                 gateway.__exit__(None, None, None)
                 self._note_gateway_run(gateway, actor)
+        if gateway is not None and gateway.failure:
+            # one upstream failure ends the run: whatever ARTEX made of it is not a plan
+            status = gateway.failure.get("http_status")
+            self.audit.record("artex.plan_failed", actor=actor,
+                              reason=f"upstream_http_{status}" if status else "upstream_failure")
+            raise ValueError(f"Planner LLM の上流 API がエラーを返したため、計画を破棄しました（HTTP {status}）")
         run_id = "ax" + secrets.token_hex(4)
         rec = reconstruct(run.intents, targets, run_id)
         # The rebuilt proposals still pass ProposalRouter (sanitized, audited) and appear
@@ -1632,7 +1638,7 @@ class AssessmentService:
                            "go_version": prov.get("go_version"), "norma_version": prov.get("norma_version"),
                            "label": label},
                 "llm_gateway": ({k: v for k, v in (self._artex_llm_last or {}).get("report", {}).items()
-                                 if k != "records"} if gateway is not None else None),
+                                 if k not in ("records", "failed_upstream")} if gateway is not None else None),
                 "isolation": {**_artex_isolation_view(prov.get("isolation") or {}),
                               "egress_canary": prov.get("egress_canary") or None},
                 "allowed_tools": run.allowed_tools, "tool_calls": run.tool_calls,

@@ -615,3 +615,125 @@ class TestCompatibility(unittest.TestCase):
     def test_tool_choice_is_dropped_without_tools(self):
         out = preview().inspect({"messages": [{"role": "user", "content": "lab.test"}], "tool_choice": "auto"})
         self.assertNotIn("tool_choice", out)
+
+
+class TestReviewRoundFive(unittest.TestCase):
+    KEY = "abcd/efgh+ijkl=mnop1234QRST"
+
+    def gw(self, transport, **kw):
+        return PlannerLLMGateway(mode="forward", model="m", upstream_url="http://127.0.0.1:9/v1", api_key=self.KEY,
+                                 allowed_hosts={"lab.test"}, transport=transport, audit=kw.pop("audit", Audit()), **kw)
+
+    def test_a_malformed_or_error_carrying_200_ends_the_run(self):
+        for body in ({"choices": [{"message": {"tool_calls": 5}}]}, {"choices": 1}, {"error": {"message": "x"}},
+                     [], {"choices": []}):
+            sent = []
+
+            def t(*_a, b=body):
+                sent.append(1)
+                return json.dumps(b).encode()
+            with self.gw(t) as gw:
+                self.assertEqual(post(gw, chat())[0], 409, body)
+                self.assertEqual(post(gw, chat())[0], 403, body)          # the retry is not sent
+            self.assertEqual(len(sent), 1, body)
+            self.assertEqual(gw.report()["records"][0]["reason"], "upstream_bad_response")
+
+    def test_the_key_is_redacted_from_the_error_summary_in_every_form(self):
+        k = self.KEY
+        forms = [k, k.replace("/", "\\/"), k.upper(), k.encode().hex().upper(),
+                 "Basic " + base64.b64encode(("user:" + k).encode()).decode(), k[3:15]]
+        for f in forms:
+            body = json.dumps({"error": {"message": f"bad key {f} for account", "type": "auth"}}).encode()
+
+            def t(*_a, b=body):
+                raise urllib.error.HTTPError("https://x", 401, "x", {}, __import__("io").BytesIO(b))
+            with self.gw(t) as gw:
+                post(gw, chat())
+            summary = gw.report()["failed_upstream"]["error_summary"]
+            for piece in (k, k.lower(), k[3:15], k[3:15].lower()):
+                self.assertNotIn(piece, summary)
+                self.assertNotIn(piece, summary.lower())
+            self.assertIn("auth", summary)
+
+    def test_a_racer_waits_at_the_send_lock_and_is_never_audited_as_forwarding(self):
+        gate, sent, audit = threading.Event(), [], Audit()
+
+        def transport(_u, _h, _b):
+            sent.append(1)
+            gate.wait(5)
+            raise urllib.error.HTTPError("https://x", 500, "boom", {}, None)
+        with self.gw(transport, audit=audit) as gw:
+            out = []
+            a = threading.Thread(target=lambda: out.append(post(gw, chat())[0]))
+            a.start()
+            time.sleep(0.3)
+            b = threading.Thread(target=lambda: out.append(post(gw, chat("b lab.test"))[0]))
+            b.start()
+            time.sleep(0.5)                                 # b has passed the reserve and waits
+            gate.set()
+            a.join(10)
+            b.join(10)
+        self.assertEqual(len(sent), 1)
+        reasons = [c["reason"] for c in gw.report()["records"]]
+        self.assertIn("run_failed", reasons)
+        self.assertEqual(sum(1 for e in audit.entries if e["event"] == "planner_llm.forwarding"), 1)
+
+    def test_same_call_in_two_rounds_replays_each_with_its_own_ids(self):
+        turns = [{"role": "assistant", "content": None, "tool_calls": [
+            {"id": cid, "type": "function", "function": {"name": "add_intent", "arguments": "{}"}}]} for cid in ("c1", "c2")]
+        replies = iter(turns)
+
+        def t(*_a):
+            return json.dumps({"choices": [{"message": next(replies)}],
+                               "usage": {"prompt_tokens": 1, "completion_tokens": 1}}).encode()
+        with self.gw(t) as gw:
+            self.assertEqual(post(gw, chat())[0], 200)
+            b = chat()
+            b["messages"] += [turns[0], {"role": "tool", "tool_call_id": "c1", "content": "ok"}]
+            self.assertEqual(post(gw, b)[0], 200)
+            b["messages"] += [turns[1], {"role": "tool", "tool_call_id": "c2", "content": "ok"}]
+            self.assertNotEqual(post(gw, b)[0], 403)
+
+    def test_long_ids_are_refused_not_truncated(self):
+        long_id = "x" * 200
+        msgs = [{"role": "user", "content": "lab.test"},
+                {"role": "assistant", "content": None, "tool_calls": [
+                    {"id": long_id, "type": "function", "function": {"name": "add_intent", "arguments": "{}"}}]},
+                {"role": "tool", "tool_call_id": long_id, "content": "ok"}]
+        with self.assertRaises(GatewayRefused):
+            preview().inspect({"messages": msgs, "tools": chat()["tools"]})
+
+    def test_tool_text_parts_keep_their_text_and_dict_arguments_become_json(self):
+        msgs = [{"role": "user", "content": "lab.test"},
+                {"role": "assistant", "content": None, "tool_calls": [
+                    {"id": "c1", "type": "function", "function": {"name": "add_intent", "arguments": {"a": 1}}}]},
+                {"role": "tool", "tool_call_id": "c1", "content": [{"type": "text", "text": "done"}]}]
+        out = preview().inspect({"messages": msgs, "tools": chat()["tools"]})
+        self.assertEqual(out["messages"][2]["content"], "done")
+        self.assertEqual(json.loads(out["messages"][1]["tool_calls"][0]["function"]["arguments"]), {"a": 1})
+
+
+class TestServiceRejectsAPlanAfterAGatewayFailure(unittest.TestCase):
+    def test_a_failed_gateway_run_never_becomes_a_plan(self):
+        from aegis.assessment import AssessmentService
+        from tests import TEST_CONFINEMENT
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        fake = [sys.executable, str(Path(__file__).with_name("fake_artex_planner.py"))]
+        with MockLLM() as mock, patch.dict(os.environ, {
+                "VULNIX_ARTEX_REAL_CMD": " ".join(fake), "VULNIX_ARTEX_LLM_URL": "http://127.0.0.1:9/v1",
+                "AEGIS_ENV": "development", "VULNIX_ARTEX_LLM_MODE": "gateway-forward",
+                "VULNIX_ARTEX_LLM_UPSTREAM_URL": mock.url + "/chat/completions"}):
+            svc = AssessmentService(Path(tmp.name), 18097, l2_confinement=TEST_CONFINEMENT)
+            self.addCleanup(svc.workers.kill_all)
+            original = PlannerLLMGateway.__exit__
+
+            def failing_exit(gw, *a):
+                gw.failure = {"http_status": 402}         # as if one call had failed upstream
+                return original(gw, *a)
+            with patch.object(PlannerLLMGateway, "__exit__", failing_exit):
+                with self.assertRaises(ValueError):
+                    svc.plan_with_artex("op")
+        self.assertIsNone(svc.artex_plan_view()["plan"])
+        self.assertTrue([e for e in svc.audit.entries() if e["event"] == "artex.plan_failed"
+                         and e["fields"].get("reason") == "upstream_http_402"])
