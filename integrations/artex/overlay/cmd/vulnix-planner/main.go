@@ -62,6 +62,7 @@ type output struct {
 	DeniedToolCalls []string      `json:"denied_tool_calls"`
 	Intents         []intentOut   `json:"intents"`
 	GoalMet         bool          `json:"goal_met"`
+	EgressCanary    string        `json:"egress_canary,omitempty"`
 }
 
 func logf(format string, args ...any) {
@@ -111,6 +112,11 @@ func run() error {
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return fmt.Errorf("parse request JSON: %w", err)
 	}
+	canary := ""
+	if req.EgressCanary != "" {
+		canary = agent.VulnixEgressCanary(req.EgressCanary)
+		logf("egress canary %s: %s", req.EgressCanary, canary)
+	}
 
 	// ARTEX's own provider construction (agent/provider.go). Proxy "" = direct
 	// (it does not fall back to *_PROXY). Stream=false selects the non-streaming
@@ -130,6 +136,12 @@ func run() error {
 		return fmt.Errorf("open store: %w", err)
 	}
 	defer d.Close()
+	// The database port is one of only two places the confined planner can reach: a
+	// role that can run server programs or read/write server files would turn it into
+	// a way out of the confinement. Such a role is refused before planning.
+	if err := agent.VulnixCheckUnprivilegedRole(context.Background(), d.DB); err != nil {
+		return fmt.Errorf("refusing to plan: %w", err)
+	}
 
 	workDir, err := agent.VulnixTempWorkDir()
 	if err != nil {
@@ -148,6 +160,7 @@ func run() error {
 	logf("terminal_reason=%s tool_calls=%d intents=%d goal_met=%v", res.TerminalReason, len(res.ToolCalls), len(res.Intents), res.GoalMet)
 
 	out := output{
+		EgressCanary:    canary,
 		Engine:          "artex",
 		ArtexModule:     artexModule,
 		ArtexCommit:     artexCommit,

@@ -204,6 +204,9 @@ class ServiceBase(unittest.TestCase):
     command = FAKE
     llm_url = LOOPBACK_LLM
     expected_sha256 = ""
+    # the stand-in cannot be pinned, so the service tests run as development; the
+    # real ARTEX test runs as production (pin required)
+    aegis_env = "development"
 
     @classmethod
     def setUpClass(cls):
@@ -221,6 +224,9 @@ class ServiceBase(unittest.TestCase):
         env = {"VULNIX_ARTEX_REAL_CMD": shlex.join(self.command), "VULNIX_ARTEX_LLM_URL": self.llm_url,
                "VULNIX_ARTEX_PG_DSN": os.environ.get("VULNIX_ARTEX_PG_DSN", ""),
                "VULNIX_ARTEX_EXPECTED_SHA256": self.expected_sha256}
+        self._env = patch.dict(os.environ, {"AEGIS_ENV": self.aegis_env})
+        self._env.start()
+        self.addCleanup(self._env.stop)
         with patch.dict(os.environ, env):
             self.svc = AssessmentService(Path(self.tmp.name), LAB_PORT, l2_confinement=TEST_CONFINEMENT,
                                          verify_seconds=0.1)
@@ -381,6 +387,254 @@ class TestThePlanThroughTheGateway(ServiceBase):
                 self.svc.plan_with_artex("op")
 
 
+class TestArtexRunsOnlyUnderOsConfinement(ServiceBase):
+    def test_ruleset_pins_each_extra_endpoint_and_nothing_else(self):
+        from aegis.confinement import ConfinementError, ruleset
+        rules = ruleset("aegis_l2_0123456789ab", "127.0.0.1", 18080, (("127.0.0.1", 5432),))
+        self.assertIn("tcp dport 18080 ct state new", rules)
+        self.assertIn("tcp dport 5432 ct state new", rules)
+        self.assertEqual(rules.count("ct state established"), 1)
+        self.assertTrue(rules.rstrip().splitlines()[-1].strip() == "}" and "counter drop" in rules)
+        self.assertEqual(ruleset("aegis_l2_0123456789ab", "127.0.0.1", 1),
+                         ruleset("aegis_l2_0123456789ab", "127.0.0.1", 1, ()))
+        for bad in ((("169.254.169.254", 80),), (("127.0.0.1", 0),), (("localhost", 5432),)):
+            with self.assertRaises(ConfinementError):
+                ruleset("aegis_l2_0123456789ab", "127.0.0.1", 1, bad)
+
+    def test_no_confinement_means_artex_does_not_run(self):
+        from aegis.confinement import KernelConfinement
+        unavailable = KernelConfinement(platform="darwin")
+        self.svc._l2_confinement = unavailable
+        with self.assertRaises(ValueError) as cm:
+            self.svc.plan_with_artex("op")
+        self.assertIn("隔離", str(cm.exception))
+        self.assertTrue(self.events("artex.plan_refused"))
+        self.assertFalse(self.events("artex.plan_received"))
+
+    def test_an_explicit_dev_opt_out_runs_unconfined_and_says_so(self):
+        from aegis.confinement import KernelConfinement
+        self.svc._l2_confinement = KernelConfinement(platform="darwin")
+        with patch.dict(os.environ, {"VULNIX_ARTEX_ALLOW_UNCONFINED": "1", "AEGIS_ENV": "production"}):
+            with self.assertRaises(ValueError):           # never outside development
+                self.svc.plan_with_artex("op")
+        with patch.dict(os.environ, {"VULNIX_ARTEX_ALLOW_UNCONFINED": "1", "AEGIS_ENV": "development"}):
+            plan = self.plan()
+        self.assertFalse(plan["isolation"]["confined"])
+        self.assertIn("本番利用不可", plan["isolation"]["label"])
+        self.assertTrue(self.events("artex.unconfined_dev_run"))
+
+    def test_the_session_pins_llm_and_database_and_protects_the_data_dir(self):
+        with patch.object(self.svc, "_artex_pg_dsn", "postgres://a:b@127.0.0.1:5432/artex"):
+            plan = self.plan()
+        self.assertEqual(TEST_CONFINEMENT.sessions[-1], ("127.0.0.1", 9))
+        checks = TEST_CONFINEMENT.last_checks
+        self.assertEqual(checks["extra_endpoints"], (("127.0.0.1", 5432),))
+        data_files = {str(p) for p in Path(self.tmp.name).iterdir() if p.is_file()}
+        self.assertTrue(data_files and data_files <= set(checks["forbidden_paths"]))
+        self.assertTrue(plan["isolation"]["confined"])
+        self.assertIn("limits", plan["isolation"])          # evidence keys reach the view
+
+    def test_production_requires_the_binary_sha256(self):
+        with patch.dict(os.environ, {"AEGIS_ENV": "production"}):
+            for pin in ("", "not-a-hash"):
+                with patch.object(self.svc, "_artex_expected_sha256", pin):
+                    with self.assertRaises(ValueError) as cm:
+                        self.svc.plan_with_artex("op")
+                    self.assertIn("SHA-256", str(cm.exception))
+            # a well-formed pin that the binary does not match: refused before it runs
+            with patch.object(self.svc, "_artex_expected_sha256", "0" * 64):
+                with self.assertRaises(ValueError):
+                    self.svc.plan_with_artex("op")
+        with patch.dict(os.environ, {"AEGIS_ENV": ""}):     # unmarked = production
+            with self.assertRaises(ValueError):
+                self.svc.plan_with_artex("op")
+        self.assertTrue([e for e in self.events("artex.plan_refused")
+                         if e["fields"].get("reason") == "binary sha256 not pinned"])
+
+    def test_the_lab_port_is_never_a_planner_endpoint(self):
+        with patch.object(self.svc, "_artex_llm_url", f"http://127.0.0.1:{LAB_PORT}/v1"):
+            with self.assertRaises(ValueError):
+                self.svc.plan_with_artex("op")
+
+    def test_limits_and_the_leftover_hook_reach_the_session(self):
+        captured = {}
+
+        class Sess:
+            evidence = {"mechanism": "fake"}
+            on_leftover = None
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                captured["on_leftover"] = self.on_leftover
+                return None
+
+            def wrap(self, argv, **kw):
+                captured["interpreter"] = kw.get("interpreter")
+                return list(argv)
+
+            def still_enforced(self):
+                return True
+
+            def kill(self):
+                return True
+
+        class Prov:
+            def status(self):
+                return {"ok": True}
+
+            def session(self, ip, port, **kw):
+                captured.update(kw)
+                return Sess()
+        self.svc._l2_confinement = Prov()
+        self.plan()
+        self.assertEqual(captured["limits"], ab.ARTEX_LIMITS)
+        self.assertEqual(captured["on_leftover"], self.svc._note_leftover_session)
+        self.assertEqual(captured["interpreter"], sys.executable)
+
+    def test_a_lost_confinement_after_the_run_discards_the_result(self):
+        class Sess:
+            evidence = {}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return None
+
+            def wrap(self, argv, **kw):
+                return list(argv)
+
+            def __init__(self):
+                self.calls = 0
+
+            def still_enforced(self):
+                self.calls += 1
+                return self.calls == 1            # true before, false after the run
+
+            def kill(self):
+                return True
+
+        class Prov:
+            def status(self):
+                return {"ok": True}
+
+            def session(self, ip, port, **kw):
+                return Sess()
+        self.svc._l2_confinement = Prov()
+        with self.assertRaises(ValueError):
+            self.svc.plan_with_artex("op")
+        self.assertTrue(self.events("artex.plan_failed"))
+
+    def test_a_planner_not_confirmed_dead_makes_the_stop_unconfirmed_and_blocks_new_runs(self):
+        class Stuck:
+            name = "aegis_l2_stuck0000000"
+
+            def kill(self):
+                return False
+
+            def empty(self):
+                return False
+
+            def still_enforced(self):
+                return True
+        stuck = Stuck()
+        self.svc._artex_live.add(stuck)
+        report = self.svc.emergency_stop("op")
+        self.assertFalse(report["stop_report"]["confirmed"] if "stop_report" in report else report["confirmed"])
+        self.assertTrue(self.svc._session_on_record(stuck))
+        self.assertTrue(self.events("artex.stop_unconfirmed"))
+        self.svc._artex_live.discard(stuck)
+        self.svc._unstopped = [u for u in self.svc._unstopped if stuck not in (u.get("sessions") or [])]
+
+    def test_the_stop_kills_again_while_it_waits(self):
+        class Late:
+            name = "aegis_l2_late00000000"
+
+            def __init__(self):
+                self.kills = 0
+
+            def kill(self):
+                self.kills += 1
+                return True
+
+            def empty(self):
+                return self.kills >= 3           # a late joiner dies with a later write
+        late = Late()
+        self.svc._artex_live.add(late)
+        try:
+            self.svc.emergency_stop("op")
+            self.assertGreaterEqual(late.kills, 3)
+            self.assertFalse(self.svc._session_on_record(late))
+        finally:
+            self.svc._artex_live.discard(late)
+
+    def test_a_survivor_on_record_blocks_a_new_planner(self):
+        class Stuck:
+            def empty(self):
+                return False
+
+            def still_enforced(self):
+                return True
+
+            def kill(self):
+                return False
+        self.svc._unstopped.append({"host": "lab.test", "pids": [], "at": 0, "pool": None, "sessions": [Stuck()]})
+        try:
+            with self.assertRaises(ValueError):
+                self.svc.plan_with_artex("op")
+        finally:
+            self.svc._unstopped.clear()
+
+    def test_a_stop_during_set_up_means_artex_never_starts(self):
+        svc = self.svc
+        started = []
+
+        class Sess:
+            evidence = {}
+            _cancelled = False
+
+            def __enter__(self):
+                svc.emergency_stop("op")           # pressed while the probe runs
+                return self
+
+            def __exit__(self, *exc):
+                return None
+
+            def wrap(self, argv, **kw):
+                return list(argv)
+
+            def still_enforced(self):
+                return True
+
+            def kill(self):
+                self._cancelled = True
+                return True
+
+            def empty(self):
+                return True
+
+        class Prov:
+            def status(self):
+                return {"ok": True}
+
+            def session(self, ip, port, **kw):
+                return Sess()
+        svc._l2_confinement = Prov()
+        real_popen = ab.subprocess.Popen
+        with patch.object(ab.subprocess, "Popen", side_effect=lambda *a, **k: started.append(a) or real_popen(*a, **k)):
+            with self.assertRaises(ValueError):
+                svc.plan_with_artex("op")
+        self.assertEqual(started, [])
+        self.assertFalse(svc._artex_live)
+
+    def test_a_named_host_is_refused_for_a_confined_run(self):
+        with patch.object(self.svc, "_artex_llm_url", "http://localhost:9/v1"):
+            with self.assertRaises(ValueError):
+                self.svc.plan_with_artex("op")
+
+
 @unittest.skipUnless(os.environ.get("VULNIX_ARTEX_REAL_BIN"), "real ARTEX overlay binary not built here (Linux CI)")
 class TestRealArtexPlanner(ServiceBase):
     """The REAL ARTEX planner (overlay build of github.com/Autumn-27/artex), driven by the
@@ -388,12 +642,27 @@ class TestRealArtexPlanner(ServiceBase):
 
     command = [os.environ.get("VULNIX_ARTEX_REAL_BIN", "")]
     expected_sha256 = os.environ.get("VULNIX_ARTEX_CI_BINARY_SHA256", "")
+    aegis_env = "production"
 
     def setUp(self):
         self.mock = MockLLM().__enter__()
         self.addCleanup(self.mock.__exit__)
         self.llm_url = self.mock.url
         super().setUp()
+        self.confined = os.environ.get("VULNIX_ARTEX_CONFINE") == "1"
+        if self.confined:
+            from aegis.confinement import KernelConfinement
+            self.svc._l2_confinement = KernelConfinement()     # the real kernel confinement
+            # a loopback listener ARTEX is NOT allowed to reach
+            import socket
+            self.canary = socket.socket()
+            self.canary.bind(("127.0.0.1", 0))
+            self.canary.listen(8)
+            self.canary.settimeout(0.2)
+            self.addCleanup(self.canary.close)
+            env = patch.dict(os.environ, {"VULNIX_ARTEX_EGRESS_CANARY": f"127.0.0.1:{self.canary.getsockname()[1]}"})
+            env.start()
+            self.addCleanup(env.stop)
 
     def test_the_real_planner_plans_and_the_gateway_decides(self):
         plan = self.plan()
@@ -425,6 +694,39 @@ class TestRealArtexPlanner(ServiceBase):
         self.assertTrue({"Bash", "WebFetch", "add_task_scope"} <= set(plan["denied_tool_calls"]),
                         plan["denied_tool_calls"])
         self.assertFalse([c for c in plan["tool_calls"] if c["allowed"] and c["name"] not in ab.PLANNER_TOOL_ALLOWLIST])
+        iso = plan["isolation"]
+        if self.confined:
+            # ARTEX itself ran inside Vulnix's kernel confinement
+            self.assertTrue(iso["confined"], iso)
+            self.assertIn("cgroup v2", iso["mechanism"])
+            self.assertTrue(iso["probe_in_cgroup"] and iso["separate_uid"] and iso["no_capabilities"], iso)
+            self.assertTrue(str(iso["probe_connect"]).startswith("BLOCKED"), iso)
+            # (in its own network namespace there is no route out at all: the probe's
+            # packet never reaches the host's rules, so no host drop count is expected)
+            self.assertTrue(iso["protected_files_denied"], iso)
+            self.assertTrue(str(iso["unix_sockets"]).startswith("DENIED"), iso)
+            self.assertEqual(iso["pinned"], f"127.0.0.1:{self.mock.server.server_port}")
+            self.assertIn("127.0.0.1:5432", iso["pinned_extra"])
+            self.assertTrue(iso.get("enforced_after_run"), iso)
+            # the ARTEX process's own direct connection to a non-pinned loopback port
+            self.assertTrue(str(iso["egress_canary"]).startswith("self-reported: blocked"), iso)
+            # its own network namespace (only lo; host loopback unreachable, the canary
+            # listener got nothing), a private mount view, the planner seccomp profile
+            self.assertTrue(iso["netns_separate"], iso)
+            self.assertEqual(iso["netns_interfaces"], ["lo"], iso)
+            self.assertTrue(str(iso["host_loopback_canary"]).startswith("BLOCKED"), iso)
+            self.assertFalse(iso["host_loopback_canary_arrived"], iso)
+            self.assertEqual(set(iso["relay_endpoints"].values()), {"OK"}, iso)
+            self.assertTrue(iso["hidden_paths_ok"], iso)
+            for k in ("netlink_socket", "vsock_socket", "bpf_syscall"):
+                self.assertTrue(str(iso[k]).startswith("DENIED"), (k, iso))
+            self.assertLessEqual(iso["procs_visible"], 2, iso)       # own PID namespace
+            self.assertEqual(iso["seccomp_mode"], ["2"], iso)
+            self.assertFalse(iso.get("netns_left"), iso)
+            self.assertEqual(iso.get("limits"), {"pids.max": 512, "memory.max": 2 << 30}, iso)
+            self.assertFalse(iso.get("files_left"), iso)
+            with self.assertRaises(OSError):
+                self.canary.accept()                 # nothing ever arrived
         # Gateway: L1 allowed, L2 refused without approver, L2 approved runs in the worker
         self.svc.execute_artex_item(self.item(plan, "l1_http_probe")["id"], "op", roles=("operator",))
         with self.assertRaises(ApproverRequired):
@@ -434,7 +736,8 @@ class TestRealArtexPlanner(ServiceBase):
         out = os.environ.get("VULNIX_ARTEX_EVIDENCE")
         if out:
             Path(out).write_text(json.dumps({
-                "engine": engine, "llm_requests": len(self.mock.requests), "offered_tools": sorted(offered),
+                "engine": engine, "isolation": plan["isolation"],
+                "llm_requests": len(self.mock.requests), "offered_tools": sorted(offered),
                 "allowed_tools": plan["allowed_tools"], "tool_calls": plan["tool_calls"],
                 "denied_tool_calls": plan["denied_tool_calls"], "intents": plan["intents"],
                 "items": final["items"], "advisories": final["advisories"],
@@ -445,3 +748,295 @@ class TestRealArtexPlanner(ServiceBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(os.environ.get("VULNIX_ARTEX_REAL_BIN") and os.environ.get("VULNIX_ARTEX_SUPERUSER_DSN"),
+                     "real ARTEX overlay binary / superuser DSN only in Linux CI")
+class TestRealArtexRefusesAPrivilegedDatabaseRole(unittest.TestCase):
+    def test_a_superuser_dsn_is_refused_before_planning(self):
+        with MockLLM() as mock:
+            with self.assertRaises(ab.ArtexBridgeError) as cm:
+                ab.run_artex_planner([os.environ["VULNIX_ARTEX_REAL_BIN"]], {"targets": TARGETS, "goal": "x"},
+                                     llm_url=mock.url, pg_dsn=os.environ["VULNIX_ARTEX_SUPERUSER_DSN"],
+                                     timeout_s=60)
+            self.assertIn("refusing to plan", str(cm.exception))
+            self.assertEqual(mock.requests, [])          # it never reached the model
+
+
+class TestConfinementExtensionsKeepTheL2Path(unittest.TestCase):
+    """The ARTEX extensions to aegis/confinement.py, exercised with a fake command runner."""
+
+    def owner(self):
+        import subprocess as sp
+
+        from aegis.confinement import KernelConfinement
+        self.calls = []
+
+        def runner(argv, **kw):
+            self.calls.append(list(argv))
+            return sp.CompletedProcess(argv, 0, "", "")
+        return KernelConfinement(runner=runner, platform="linux", euid=0, which=lambda t: f"/usr/bin/{t}")
+
+    def test_a_reattached_session_tears_down_again(self):
+        sess = self.owner().reattach("aegis_l2_0123456789ab")
+        sess._teardown()                                   # raised AttributeError before
+        self.assertFalse(sess.leftover)
+        self.assertTrue(any(c[-4:] == ["delete", "table", "inet", "aegis_l2_0123456789ab"] for c in self.calls))
+
+    def test_a_kill_freezes_the_cgroup_before_killing_and_entry_refuses_a_frozen_one(self):
+        from aegis import confinement as cf
+        from aegis.confinement import ConfinementSession
+        o = self.owner()
+        o.fresh_identity = lambda: 4242
+        sess = ConfinementSession(o, "127.0.0.1", 1)
+        sess._dir = True
+        sess.kill()
+        script, *args = self.calls[-1][2:]
+        self.assertEqual(script, 'echo 1 > "$1"; f=$?; echo 1 > "$2" && [ "$f" = 0 ]')
+        self.assertTrue(args[1].endswith("cgroup.freeze") and args[2].endswith("cgroup.kill"), args)
+        self.assertIn("cgroup.freeze", cf._ENTER)
+        self.assertLess(cf._ENTER.index('echo $$ > "$1"'), cf._ENTER.index("cgroup.freeze"))  # join, then check
+
+    def test_wrap_names_the_interpreter_only_when_asked(self):
+        from aegis.confinement import ConfinementSession
+        o = self.owner()
+        o.fresh_identity = lambda: 4242
+        with patch.object(type(o), "staged_workers", lambda self: Path("/staged")):
+            sess = ConfinementSession(o, "127.0.0.1", 1)
+            plain = sess.wrap(["/usr/bin/python3", "worker.py"])
+            go = sess.wrap(["/work/artex-vulnix-planner"], interpreter="/usr/bin/python3")
+        self.assertEqual(plain[plain.index("-I") - 1], "/usr/bin/python3")
+        self.assertEqual(go[go.index("-I") - 1:], ["/usr/bin/python3", "-I", "/staged/_sandbox_launch.py",
+                                                   "/work/artex-vulnix-planner"])
+
+    def test_the_owned_directory_is_cleared_as_the_run_uid_then_removed(self):
+        from aegis.confinement import ConfinementSession
+        o = self.owner()
+        o.fresh_identity = lambda: 4242
+        sess = ConfinementSession(o, "127.0.0.1", 1)
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: d.exists() and d.rmdir())
+        sess.own_directory(d)
+        self.assertIn("chown -h", " ".join(self.calls[-1]))
+        self.assertTrue(sess._remove_owned())
+        deletes = [c for c in self.calls if "-delete" in c]
+        self.assertTrue(deletes and all("--reuid=4242" in c for c in deletes), deletes)
+
+    def test_a_symlink_or_non_empty_directory_is_never_given_away(self):
+        from aegis.confinement import ConfinementError, ConfinementSession
+        o = self.owner()
+        o.fresh_identity = lambda: 4242
+        sess = ConfinementSession(o, "127.0.0.1", 1)
+        base = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil_rmtree, base)
+        full = base / "full"
+        full.mkdir()
+        (full / "x").write_text("x")
+        link = base / "link"
+        link.symlink_to(full)
+        for bad in (full, link):
+            with self.assertRaises(ConfinementError):
+                sess.own_directory(bad)
+
+
+def shutil_rmtree(p):
+    import shutil
+    shutil.rmtree(p, ignore_errors=True)
+
+
+
+class TestPlannerSeccompProfileAndNamespaceChain(unittest.TestCase):
+    def launcher(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "_launch", Path(ab.__file__).with_name("workers") / "_sandbox_launch.py")
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        return m
+
+    def test_the_l2_filter_is_unchanged_and_the_planner_profile_is_opt_in(self):
+        m = self.launcher()
+        for arch, cfg in m.ARCHES.items():
+            l2 = m.filter_program(cfg)
+            self.assertEqual(l2, m.filter_program(cfg, False, ()))
+            planner = m.filter_program(cfg, True, m.PLANNER_DENY[arch])
+            self.assertNotEqual(l2, planner)
+            self.assertLess(len(planner) // 8, 256)          # BPF jumps are 8-bit
+
+    def test_planner_profile_denies_the_listed_syscalls_and_non_ip_sockets(self):
+        import struct
+        m = self.launcher()
+        cfg = m.ARCHES["x86_64"]
+        prog = m.filter_program(cfg, True, m.PLANNER_DENY["x86_64"])
+        ins = [struct.unpack("HBBI", prog[i:i + 8]) for i in range(0, len(prog), 8)]
+        consts = {k for code, _, _, k in ins if code == m.JEQ}
+        for nr in (321, 323, 298, 101, 165, 175, 313):      # bpf userfaultfd perf ptrace mount modules
+            self.assertIn(nr, consts)
+        self.assertIn(m.AF_INET, consts)
+        self.assertIn(m.AF_INET6, consts)
+        self.assertNotIn(m.AF_UNIX, consts)                  # allow-list now, not a deny of AF_UNIX
+
+    def test_the_profile_flag_must_be_followed_by_a_program(self):
+        import subprocess as sp
+        launcher = Path(ab.__file__).with_name("workers") / "_sandbox_launch.py"
+        r = sp.run([sys.executable, "-I", str(launcher), "--profile=planner"], capture_output=True)
+        self.assertEqual(r.returncode, 97)
+
+    def test_the_namespace_chain_hides_and_binds_back_and_is_root_until_the_drop(self):
+        import subprocess as sp
+
+        from aegis.confinement import ConfinementSession, KernelConfinement
+        o = KernelConfinement(runner=lambda a, **k: sp.CompletedProcess(a, 0, "", ""), platform="linux",
+                              euid=0, which=lambda t: f"/usr/bin/{t}")
+        o.fresh_identity = lambda: 4242
+        work = "/tmp/vulnix-artex-abc"
+        with patch.object(type(o), "staged_workers", lambda self: Path("/tmp/vulnix-worker-xyz")):
+            sess = ConfinementSession(o, "127.0.0.1", 18080, extra_endpoints=(("127.0.0.1", 5432),),
+                                      namespaces={"hide": ab.planner_hidden_paths(["/srv/vulnix/data/state.json"]),
+                                                  "keep": [work]})
+            argv = sess.wrap(["/tmp/vulnix-artex-abc/artex-vulnix-planner"], interpreter="/usr/bin/python3")
+        i = argv.index("netns")
+        self.assertEqual(argv[i:i + 3], ["netns", "exec", sess.name])
+        script = argv[argv.index("-c", i) + 1]
+        self.assertIn("mount -n --make-rprivate /", script)
+        self.assertNotIn("mount -t", script.replace("mount -n -t", ""))   # every mount without utab
+        for h in ("/home", "/root", "/tmp", "/var", "/dev/shm", "/run", "/opt", "/srv", "/srv/vulnix/data"):
+            self.assertIn(f"vxhide {h}", script)
+        # the stash (/mnt) is covered only after the bind-backs and its unmount
+        self.assertLess(script.index("umount -n -l /mnt"), script.index("vxhide /mnt"))
+        self.assertLess(script.rindex("mount -n --bind /mnt/k0"), script.index("umount -n -l /mnt"))
+        self.assertIn("--ipc", argv)
+        self.assertIn("--pid", argv)
+        self.assertIn("cd /", script)
+        self.assertIn(f"mount -n --bind /mnt/k0 {work}", script.replace("'", ""))
+        self.assertIn("hidepid=invisible", script)
+        self.assertLess(argv.index("netns"), argv.index("/usr/bin/setpriv"))   # mounts before the drop
+        self.assertIn("--profile=planner", argv)
+        self.assertEqual(sess.ns["ports"], [5432, 18080])
+
+    def test_namespace_mode_accepts_only_127_0_0_1_endpoints(self):
+        import subprocess as sp
+
+        from aegis.confinement import ConfinementError, ConfinementSession, KernelConfinement
+        o = KernelConfinement(runner=lambda a, **k: sp.CompletedProcess(a, 0, "", ""), platform="linux", euid=0)
+        o.fresh_identity = lambda: 4242
+        with self.assertRaises(ConfinementError):
+            ConfinementSession(o, "10.0.0.5", 80, namespaces={"hide": [], "keep": []})
+
+
+@unittest.skipUnless(os.environ.get("VULNIX_ARTEX_CONFINE") == "1" and sys.platform.startswith("linux"),
+                     "real kernel namespace confinement only in Linux CI")
+class TestNamespaceConfinementStopsOnLinux(unittest.TestCase):
+    """Emergency stop and the deadline kill, on the real kernel, in namespace mode."""
+
+    SLEEPER = [sys.executable, "-I", "-c", "import time; time.sleep(120)"]
+
+    def wait_until(self, cond, seconds=15):
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            if cond():
+                return True
+            time.sleep(0.2)
+        return cond()
+
+    def test_a_kill_ends_the_planner_and_its_relay_and_the_namespace_goes(self):
+        import subprocess as sp
+        import urllib.parse
+
+        from aegis.confinement import KernelConfinement
+        with MockLLM() as mock:
+            port = urllib.parse.urlsplit(mock.url).port
+            work = tempfile.mkdtemp(prefix="vulnix-artex-")
+            os.chmod(work, 0o755)
+            self.addCleanup(lambda: __import__("shutil").rmtree(work, True))
+            sess = KernelConfinement().session("127.0.0.1", port, limits=ab.ARTEX_LIMITS,
+                                               namespaces={"hide": ab.planner_hidden_paths(), "keep": [work]})
+            with sess:
+                self.assertTrue(sess.evidence["netns_separate"], sess.evidence)
+                proc = sp.Popen(sess.wrap(self.SLEEPER, interpreter=sys.executable), stdin=sp.DEVNULL,
+                                stdout=sp.DEVNULL, stderr=sp.DEVNULL, cwd=work, start_new_session=True)
+                procs = sess.cgroup / "cgroup.procs"
+                # the relay is always in the cgroup: wait for the planner chain to join too
+                self.assertTrue(self.wait_until(lambda: len(procs.read_text().split()) >= 2, 15))
+                self.assertTrue(sess.kill())                       # what emergency stop does
+                proc.wait(timeout=20)
+                self.assertTrue(self.wait_until(sess.empty), "cgroup not empty after kill")
+                self.assertIsNotNone(sess._relay.wait(timeout=10))  # the relay died with it
+            self.assertFalse(sess.leftover)
+            self.assertFalse(sess.netns_left)
+            self.assertFalse(os.path.exists(f"/run/netns/{sess.name}"))
+
+    def _late_writer(self, stop_first: bool) -> tuple[bool, object]:
+        """Start a process that writes a marker into a directory THE RUN'S UID owns
+        (so it can write there) - after a stop (`stop_first`) or without one."""
+        import subprocess as sp
+        import urllib.parse
+
+        from aegis.confinement import KernelConfinement
+        with MockLLM() as mock:
+            port = urllib.parse.urlsplit(mock.url).port
+            work = tempfile.mkdtemp(prefix="vulnix-artex-")
+            os.chmod(work, 0o755)
+            self.addCleanup(lambda: __import__("shutil").rmtree(work, True))
+            home = Path(work) / "home"
+            home.mkdir()
+            sess = KernelConfinement().session("127.0.0.1", port, limits=ab.ARTEX_LIMITS,
+                                               namespaces={"hide": ab.planner_hidden_paths(), "keep": [work]})
+            marker = home / "ran"
+            with sess:
+                sess.own_directory(home)                 # the run's uid can write here
+                if stop_first:
+                    self.assertTrue(sess.kill())         # the stop lands first
+                    self.assertEqual((sess.cgroup / "cgroup.freeze").read_text().strip(), "1")
+
+                def marker_exists() -> bool:
+                    # the directory is the run's (0700): look as root, like the teardown does
+                    return sp.run(["sudo", "-n", "test", "-e", str(marker)]).returncode == 0
+                late = [sys.executable, "-I", "-c", f"open({str(marker)!r}, 'w').write('x')"]
+                proc = sp.Popen(sess.wrap(late, interpreter=sys.executable), stdin=sp.DEVNULL,
+                                stdout=sp.DEVNULL, stderr=sp.DEVNULL, cwd=work, start_new_session=True)
+                end = time.monotonic() + 6
+                while time.monotonic() < end and not marker_exists():
+                    time.sleep(0.2)
+                ran = marker_exists()
+                if stop_first:
+                    # the kernel reports the cgroup frozen once every task in it is
+                    events = sess.cgroup / "cgroup.events"
+                    self.assertTrue(self.wait_until(lambda: "frozen 1" in events.read_text(), 10),
+                                    events.read_text())
+            proc.wait(timeout=30)                        # finished, or killed by teardown
+            return ran, sess
+
+    def test_without_a_stop_the_marker_is_written(self):
+        # positive control: the late-writer test below can fail
+        ran, sess = self._late_writer(stop_first=False)
+        self.assertTrue(ran, "the control process could not write its marker")
+        self.assertFalse(sess.leftover)
+
+    def test_a_process_that_joins_after_the_stop_never_runs(self):
+        ran, sess = self._late_writer(stop_first=True)
+        self.assertFalse(ran, "a process that joined after the stop ran")
+        self.assertFalse(sess.leftover)
+        self.assertFalse(os.path.exists(f"/run/netns/{sess.name}"))
+
+    def test_the_deadline_kills_a_planner_that_never_ends(self):
+        from aegis.confinement import KernelConfinement
+        with MockLLM() as mock:
+            kc = KernelConfinement()
+            made = []
+            original = kc.session
+
+            def spy(*a, **k):
+                s = original(*a, **k)
+                made.append(s)
+                return s
+            kc.session = spy
+            t0 = time.monotonic()
+            with self.assertRaises(ab.ArtexBridgeError) as cm:
+                ab.run_artex_planner(self.SLEEPER, {}, llm_url=mock.url, timeout_s=3, confinement=kc)
+            self.assertIn("制限時間", str(cm.exception))
+            self.assertLess(time.monotonic() - t0, 60)
+            (s,) = made
+            self.assertTrue(s.empty())
+            self.assertFalse(s.leftover)
+            self.assertFalse(os.path.exists(f"/run/netns/{s.name}"))

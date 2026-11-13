@@ -295,7 +295,11 @@ export interface ArtexPlanView {
     run_id: string;
     requested_by: string;
     at: number;
-    engine: { kind: string; label: string; sha256?: string; artex_commit?: string; go_version?: string };
+    engine: { kind: string; label: string; pinned?: boolean; sha256?: string; artex_commit?: string; go_version?: string };
+    isolation?: {
+      confined: boolean; label: string; mechanism?: string; kernel_dropped_packets?: number;
+      pinned?: string; pinned_extra?: string[]; egress_canary?: string | null;
+    };
     allowed_tools: string[];
     tool_calls: { name: string; allowed: boolean }[];
     denied_tool_calls: string[];

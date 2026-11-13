@@ -24,17 +24,22 @@ approver and run in the isolated worker.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
 import re
 import shlex
+import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.parse
 from dataclasses import dataclass, field
+
+from .confinement import dropped_packets
 from pathlib import Path
 
 # The tools the overlay may give the ARTEX planner (exact ARTEX tool names). A run
@@ -55,6 +60,8 @@ ARTEX_MODULE = "github.com/Autumn-27/artex"
 OVERLAY_MAIN = f"{ARTEX_MODULE}/cmd/vulnix-planner"
 
 MAX_OUTPUT_BYTES = 1 << 20
+# cgroup limits for the ARTEX process: no fork bomb or runaway memory can starve the host
+ARTEX_LIMITS = {"pids.max": 512, "memory.max": 2 << 30}
 MAX_INTENTS = 50
 MAX_SUMMARY = 2000
 
@@ -221,9 +228,42 @@ def require_loopback_dsn(dsn: str) -> str:
     return dsn
 
 
+# Host directories a planner never needs: covered by empty tmpfs in its mount view
+# (what it needs from them - its work dir, the launcher, the interpreter - is bound back).
+PLANNER_HIDDEN = ("/home", "/root", "/tmp", "/var", "/dev/shm", "/dev/mqueue", "/run", "/mnt", "/media",
+                  "/srv", "/opt", "/boot", "/lost+found", "/snap")
+
+
+def planner_hidden_paths(forbidden_paths=(), data_dirs=()) -> list[str]:
+    """What the ARTEX planner must not see at all: users' homes, temp and state
+    directories, /run (secrets, sockets), mounts, the Vulnix installation, and
+    Vulnix's data directory (given explicitly, and every directory of a protected file)."""
+    repo = str(Path(__file__).resolve().parents[1])
+    dirs = {str(Path(f).resolve().parent) for f in forbidden_paths}
+    dirs |= {str(Path(d).resolve()) for d in data_dirs}
+    return sorted({*PLANNER_HIDDEN, repo, *dirs})
+
+
+def _endpoint(url: str, default_port: int) -> tuple[str, int]:
+    """(ip, port) of a loopback URL/DSN for pinning in the kernel ruleset. Confined runs
+    need an IP literal: a name would need resolving inside the confinement."""
+    u = urllib.parse.urlsplit(url)
+    host = u.hostname or ""
+    if host == "localhost":
+        raise ArtexBridgeError("隔離して実行する場合、LLM・DB の接続先は 127.0.0.1 などの IP で指定してください")
+    return host, int(u.port or default_port)
+
+
 def run_artex_planner(command: list[str], request: dict, *, llm_url: str, llm_model: str = "mock",
                       llm_key: str = "", pg_dsn: str = "", timeout_s: float = 120.0,
-                      expected_sha256: str = "") -> ArtexRun:
+                      expected_sha256: str = "", confinement=None, forbidden_paths=(),
+                      on_leftover=None, on_started=None, on_finished=None, may_start=None,
+                      data_dirs=()) -> ArtexRun:
+    """`confinement`: a Vulnix confinement provider (aegis.confinement.KernelConfinement).
+    When given, ARTEX runs inside a per-run cgroup v2 + nftables confinement under its
+    own unprivileged uid, with no capabilities, no_new_privs and the seccomp launcher;
+    it can open TCP connections ONLY to the LLM and database endpoints, and cannot
+    read `forbidden_paths` (verified by the kernel probe before ARTEX starts)."""
     if not command:
         raise ArtexBridgeError("ARTEX プランナーが設定されていません")
     require_loopback_llm(llm_url)
@@ -238,35 +278,116 @@ def run_artex_planner(command: list[str], request: dict, *, llm_url: str, llm_mo
     if expected_sha256 and not provenance["pinned"]:
         raise ArtexBridgeError("ARTEX のバイナリが固定済みのハッシュ（VULNIX_ARTEX_EXPECTED_SHA256）と一致しません")
     started = time.monotonic()
-    with tempfile.TemporaryDirectory(prefix="vulnix-artex-") as work:
+    isolation: dict = {"confined": False}
+    sess = None
+    with contextlib.ExitStack() as stack:
+        # ignore_errors: a directory the confined uid still owns must not mask the real
+        # outcome (the session removes it; if it cannot, that is reported below)
+        work = tempfile.mkdtemp(prefix="vulnix-artex-")
+        stack.callback(shutil.rmtree, work, True)
+        home = Path(work) / "home"
+        home.mkdir(mode=0o700)
+        if confinement is not None:
+            os.chmod(work, 0o755)            # the confined uid must reach the binary
+            llm_ep = _endpoint(llm_url, 443 if llm_url.startswith("https") else 80)
+            extra = (_endpoint(pg_dsn, 5432),) if pg_dsn else ()
+            try:
+                created = confinement.session(
+                    llm_ep[0], llm_ep[1], forbidden_paths=tuple(forbidden_paths),
+                    protected_pid=os.getpid(), extra_endpoints=extra, limits=ARTEX_LIMITS,
+                    namespaces={"hide": planner_hidden_paths(forbidden_paths, data_dirs), "keep": [work]})
+                # on record BEFORE anything runs in it (the probe included): a probe that
+                # cannot be killed is recorded, and an emergency stop during set-up sees it
+                if on_leftover is not None:
+                    try:
+                        created.on_leftover = on_leftover
+                    except AttributeError:
+                        pass
+                if on_started is not None:
+                    on_started(created)          # raises when a stop already happened
+                if on_finished is not None:
+                    stack.callback(on_finished, created)
+                sess = stack.enter_context(created)
+                own = getattr(sess, "own_directory", None)
+                if own is not None:
+                    own(home)                    # the run's own writable directory
+            except ArtexBridgeError:
+                raise
+            except Exception as e:  # noqa: BLE001 - any confinement failure: nothing starts
+                raise ArtexBridgeError(f"ARTEX を隔離して起動できません: {str(e)[:200]}") from None
+            isolation = {"confined": True, **dict(getattr(sess, "evidence", {}) or {}),
+                         "limits": dict(ARTEX_LIMITS)}
         if provenance["kind"] == "artex-binary":
             # run exactly the bytes that were inspected (and hashed): a swap of the file
             # on disk between inspection and execution changes nothing
             copy = Path(work) / "artex-vulnix-planner"
             copy.write_bytes(exe_bytes)
-            copy.chmod(0o700)
+            copy.chmod(0o755 if sess is not None else 0o700)
             command = [str(copy), *command[1:]]
         # A clean environment: no inherited keys, tokens or proxies reach ARTEX.
-        env = {"PATH": "/usr/bin:/bin", "HOME": work, "TMPDIR": work, "LANG": "C.UTF-8",
+        env = {"PATH": "/usr/bin:/bin", "HOME": str(home), "TMPDIR": str(home), "LANG": "C.UTF-8",
                "ARTEX_LLM_BASE_URL": llm_url, "ARTEX_LLM_MODEL": llm_model,
                "ARTEX_LLM_API_KEY": llm_key or "local-mock-no-key"}
         if pg_dsn:
             env["ARTEX_PG_DSN"] = pg_dsn
+        argv = command
+        listing = getattr(sess, "_listing", None)
+        drops_before = 0
+        if sess is not None:
+            try:
+                if hasattr(sess, "still_enforced") and not sess.still_enforced():
+                    raise ArtexBridgeError("ARTEX の隔離が起動前に確認できなくなりました")
+                argv = sess.wrap(list(command), env_keys=tuple(k for k in env if k != "PATH"),
+                                 cpu_seconds=int(timeout_s) + 5, interpreter=sys.executable)
+                if listing is not None:
+                    drops_before = dropped_packets(listing())
+            except ArtexBridgeError:
+                raise
+            except Exception as e:  # noqa: BLE001 - nothing has started
+                raise ArtexBridgeError(f"ARTEX を隔離して起動できません: {str(e)[:200]}") from None
+        def stopped() -> bool:
+            return bool(getattr(sess, "_cancelled", False)) or (may_start is not None and not may_start())
+        if sess is not None and stopped():
+            raise ArtexBridgeError("緊急停止されたため ARTEX を起動しません")
         try:
-            proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                    stderr=subprocess.PIPE, cwd=work, env=env, start_new_session=True)
+            proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, cwd=work, env=env,
+                                    start_new_session=True, close_fds=True)
         except OSError as e:
             raise ArtexBridgeError(f"ARTEX を起動できません: {type(e).__name__}") from None
+        if sess is not None and stopped():
+            # a stop landed between the check and the start: it dies right away
+            sess.kill()
         try:
             out, err = proc.communicate(json.dumps(request, ensure_ascii=False).encode(), timeout=timeout_s)
         except subprocess.TimeoutExpired:
+            if sess is not None:
+                sess.kill()                      # it runs as another uid: kill the cgroup
             try:
                 os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
+            except (ProcessLookupError, PermissionError):
                 pass
-            proc.communicate()
+            try:
+                proc.communicate(timeout=15)
+            except subprocess.TimeoutExpired:
+                raise ArtexBridgeError("ARTEX プランナーの停止を確認できません（隔離は維持されています）") from None
             raise ArtexBridgeError("ARTEX プランナーが制限時間内に終了しませんでした") from None
+        if sess is not None:
+            enforced = bool(sess.still_enforced()) if hasattr(sess, "still_enforced") else True
+            isolation["enforced_after_run"] = enforced
+            if listing is not None:
+                # packets of THIS run (ARTEX's own) that the kernel dropped: independent
+                # of anything ARTEX reports about itself
+                isolation["run_dropped_packets"] = dropped_packets(listing()) - drops_before
+            if not enforced:
+                raise ArtexBridgeError("ARTEX の実行中に隔離が確認できなくなったため、結果を使用しません")
     elapsed = round((time.monotonic() - started) * 1000, 1)
+    if sess is not None and getattr(sess, "leftover", False):
+        # something of the run could not be removed: it stays confined, and we say so
+        raise ArtexBridgeError("ARTEX の隔離を解除できない残存プロセスがあります（隔離は維持されています）")
+    if sess is not None:
+        isolation["files_left"] = bool(getattr(sess, "files_left", False))
+        isolation["netns_left"] = bool(getattr(sess, "netns_left", False))
     if len(out) > MAX_OUTPUT_BYTES:
         raise ArtexBridgeError("ARTEX の出力が大きすぎます")
     try:
@@ -278,6 +399,11 @@ def run_artex_planner(command: list[str], request: dict, *, llm_url: str, llm_mo
         raise ArtexBridgeError(f"ARTEX プランナーが失敗しました（exit {proc.returncode}）: {str(msg or '')[:200]}")
     run = parse_planner_output(data, provenance, elapsed)
     run.provenance["stderr_tail_sha256"] = hashlib.sha256(err[-4096:]).hexdigest()
+    run.provenance["isolation"] = isolation
+    if run.provenance.get("egress_canary"):
+        # what ARTEX reports about its own canary connection: shown as self-reported;
+        # the kernel's own count is run_dropped_packets
+        run.provenance["egress_canary"] = "self-reported: " + run.provenance["egress_canary"]
     return run
 
 
@@ -335,6 +461,7 @@ def parse_planner_output(data: object, provenance: dict, elapsed_ms: float = 0.0
         "artex_module": str(data.get("artex_module", ""))[:120],
         "artex_commit": str(data.get("artex_commit", ""))[:64],
         "go_version": str(data.get("go_version", ""))[:40],
+        "egress_canary": str(data.get("egress_canary", ""))[:200],
     })
     return ArtexRun(intents=intents, goal_met=bool(data.get("goal_met")), allowed_tools=list(allowed),
                     tool_calls=clean_calls, denied_tool_calls=denied, provenance=prov,

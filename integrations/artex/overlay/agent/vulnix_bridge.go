@@ -15,6 +15,7 @@ package agent
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -229,6 +230,62 @@ type VulnixPlannerRequest struct {
 	Targets      []VulnixTarget      `json:"targets"`
 	Observations []VulnixObservation `json:"observations"`
 	MaxTurns     int                 `json:"max_turns"`
+	// EgressCanary (optional, loopback ip:port only): before planning, this process
+	// tries ONE direct TCP connection there and reports the outcome - evidence that
+	// the OS confinement around THIS process drops non-pinned traffic.
+	EgressCanary string `json:"egress_canary"`
+}
+
+// VulnixCheckUnprivilegedRole refuses a database role that is a superuser or holds a
+// role that runs server programs or reads/writes server files (COPY ... PROGRAM,
+// pg_read_server_files, ...): from the database server such a role could act outside
+// the planner's OS confinement.
+func VulnixCheckUnprivilegedRole(ctx context.Context, q interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}) error {
+	var privileged bool
+	// Any role the session user is a member of (itself included, transitively): a
+	// superuser (SET ROLE would reach it), CREATEROLE (on PG <= 15 it can grant itself
+	// the server roles), or one of the server-program / server-file roles. Also refused:
+	// dblink / postgres_fdw in this database (the DB server is not confined and could
+	// open connections anywhere), and direct EXECUTE grants on server-side file access.
+	err := q.QueryRowContext(ctx, `SELECT
+	   EXISTS (SELECT 1 FROM pg_roles r
+	           WHERE pg_has_role(current_user, r.oid, 'MEMBER')
+	             AND (r.rolsuper OR r.rolcreaterole
+	                  OR r.rolname IN ('pg_execute_server_program', 'pg_read_server_files',
+	                                   'pg_write_server_files')))
+	   OR EXISTS (SELECT 1 FROM pg_extension WHERE extname IN ('dblink', 'postgres_fdw'))
+	   OR has_function_privilege(current_user, 'lo_import(text)', 'EXECUTE')
+	   OR has_function_privilege(current_user, 'lo_export(oid, text)', 'EXECUTE')
+	   OR has_function_privilege(current_user, 'pg_read_file(text)', 'EXECUTE')
+	   OR has_function_privilege(current_user, 'pg_read_binary_file(text)', 'EXECUTE')`).Scan(&privileged)
+	if err != nil {
+		return fmt.Errorf("cannot check the database role: %w", err)
+	}
+	if privileged {
+		return fmt.Errorf("the database role is (or can become) privileged: superuser / CREATEROLE / server programs or files, or dblink/postgres_fdw is installed")
+	}
+	return nil
+}
+
+// VulnixEgressCanary tries one TCP connection (no data sent) to a loopback ip:port
+// and reports "connected" or "blocked: <error>". It bypasses the HTTP transport on
+// purpose: what is tested is the kernel, not Vulnix's own dialer.
+func VulnixEgressCanary(addr string) string {
+	if err := VulnixCheckLoopbackURL("http://" + addr); err != nil {
+		return "refused: not a loopback address"
+	}
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil || net.ParseIP(host) == nil {
+		return "refused: not an ip:port"
+	}
+	conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
+	if err != nil {
+		return "blocked: " + err.Error()
+	}
+	_ = conn.Close()
+	return "connected"
 }
 
 // VulnixToolCall is one tool call the model made.

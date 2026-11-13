@@ -92,6 +92,30 @@ class StopNotConfirmed(RuntimeError):
     confirmed dead. The operation is NOT reported as completed."""
 
 
+def _artex_isolation_view(iso: dict) -> dict:
+    """What confined the ARTEX process (from the kernel probe evidence)."""
+    keys = ("mechanism", "cgroup", "worker_uid", "pinned", "pinned_extra", "probe_connect",
+            "probe_in_cgroup", "kernel_dropped_packets", "separate_uid", "no_capabilities",
+            "unix_sockets", "io_uring", "inherited_fds_clean", "control_plane_signal",
+            "protected_files_denied", "protected_files", "enforced_after_run",
+            "run_dropped_packets", "limits", "files_left",
+            "netns_separate", "netns_interfaces", "host_loopback_canary", "host_loopback_canary_arrived",
+            "relay_endpoints", "hidden_paths_ok", "netlink_socket", "vsock_socket", "bpf_syscall",
+            "procs_visible", "seccomp_mode", "netns_left")
+    view = {k: iso[k] for k in keys if k in iso}
+    view["confined"] = bool(iso.get("confined"))
+    view["label"] = (f"OS 隔離あり（{iso.get('mechanism', '')}）" if view["confined"]
+                     else "OS 隔離なし（開発用・本番利用不可）")
+    return view
+
+
+def _session_empty(sess) -> bool:
+    try:
+        return bool(sess.empty())
+    except Exception:  # noqa: BLE001 - not confirmed empty
+        return False
+
+
 class _StaticProposals:
     """Hands already-rebuilt proposals to a ProposalRouter (so they are sanitized
     and audited like any backend's)."""
@@ -283,6 +307,7 @@ class AssessmentService:
         self._artex_expected_sha256 = os.environ.get("VULNIX_ARTEX_EXPECTED_SHA256", "")
         self._artex_plan: dict | None = None
         self._artex_items: dict = {}
+        self._artex_live: set = set()           # confinement sessions of running ARTEX planners
 
         self.a = Assessment(
             id="scan_001",
@@ -1468,6 +1493,9 @@ class AssessmentService:
         with self._lock:
             self._refuse_after_stop_locked()
             self._refuse_artex_on_real_service_locked()
+            if self._unstopped_now_locked():
+                # while anything is not confirmed stopped, nothing new launches
+                raise ValueError("停止を確認できていないプロセスがあるため、ARTEX を起動しません")
             self._ensure_active_window_locked()
             targets = self._artex_targets_locked()
             observations = [{"title": clean_target_text(f["title"], 200), "detail": clean_target_text(f.get("summary", ""), 400)}
@@ -1475,14 +1503,56 @@ class AssessmentService:
             gen = self._run_generation
         request = {"goal": "登録済みの検証対象について、許可された非破壊の検証で確認すべき脆弱性の方向を計画する",
                    "targets": targets, "observations": observations, "max_turns": 6}
-        self.audit.record("artex.plan_requested", actor=actor, targets=len(targets))
+        canary = os.environ.get("VULNIX_ARTEX_EGRESS_CANARY", "")
+        if re.fullmatch(r"127\.0\.0\.1:\d{1,5}", canary):
+            request["egress_canary"] = canary      # proves the confinement around ARTEX itself
+        # ARTEX runs only under Vulnix's kernel confinement (the same per-run cgroup v2 +
+        # nftables + own-uid + seccomp launcher as the L2 worker). Without it, it does not
+        # run - except when an operator explicitly opts into an unconfined DEV run.
+        # Outside development the ARTEX binary must be pinned: its SHA-256 is compared with
+        # VULNIX_ARTEX_EXPECTED_SHA256 before it runs (a mismatch, or anything that is not
+        # the ARTEX overlay build, is refused by the bridge).
+        dev = os.environ.get("AEGIS_ENV", "").strip().lower() in ("development", "dev")
+        if not dev and not re.fullmatch(r"[0-9a-fA-F]{64}", self._artex_expected_sha256.strip()):
+            self.audit.record("artex.plan_refused", actor=actor, reason="binary sha256 not pinned")
+            raise ValueError("本番環境では ARTEX バイナリの SHA-256（VULNIX_ARTEX_EXPECTED_SHA256）の指定が必須です")
+        for url, default in ((self._artex_llm_url, None), (self._artex_pg_dsn, 5432)):
+            if not url:
+                continue
+            u = urllib.parse.urlsplit(url)
+            port = u.port or default or (443 if u.scheme == "https" else 80)
+            if port == self.lab_port:
+                # a pinned port gives the planner whatever listens there
+                raise ValueError("ARTEX の LLM / DB の接続先に検証ラボのポートは使用できません")
+        st = dict(self._l2_confinement.status())
+        if st.get("ok"):
+            confinement = self._l2_confinement
+            protected = sorted(str(p) for p in self.data_dir.iterdir() if p.is_file())
+        elif (os.environ.get("VULNIX_ARTEX_ALLOW_UNCONFINED") == "1"
+              and os.environ.get("AEGIS_ENV", "").strip().lower() in ("development", "dev")):
+            confinement, protected = None, ()
+            self.audit.record("artex.unconfined_dev_run", actor=actor, reason=str(st.get("reason", ""))[:200])
+        else:
+            self.audit.record("artex.plan_refused", actor=actor, reason="no OS-level confinement")
+            raise ValueError("ARTEX プランナーを OS レベルで隔離して起動できないため実行しません"
+                             f"（{str(st.get('reason', ''))[:200]}）")
+        self.audit.record("artex.plan_requested", actor=actor, targets=len(targets), confined=confinement is not None)
         try:
             run = run_artex_planner(self._artex_real_cmd, request, llm_url=self._artex_llm_url,
                                     llm_model=self._artex_llm_model, pg_dsn=self._artex_pg_dsn,
-                                    expected_sha256=self._artex_expected_sha256)
+                                    expected_sha256=self._artex_expected_sha256,
+                                    confinement=confinement, forbidden_paths=protected,
+                                    on_leftover=self._note_leftover_session,
+                                    on_started=lambda sess: self._artex_session_started(sess, gen),
+                                    on_finished=self._artex_session_finished,
+                                    may_start=lambda: self._artex_may_start(gen),
+                                    data_dirs=(str(self.data_dir),))
         except ArtexBridgeError as e:
             self.audit.record("artex.plan_failed", actor=actor, reason=str(e)[:200])
             raise ValueError(str(e)) from None
+        except Exception as e:  # noqa: BLE001 - recorded, and never a half-made plan
+            self.audit.record("artex.plan_failed", actor=actor, reason=type(e).__name__)
+            raise ValueError(f"ARTEX の計画に失敗しました（{type(e).__name__}）") from None
         run_id = "ax" + secrets.token_hex(4)
         rec = reconstruct(run.intents, targets, run_id)
         # The rebuilt proposals still pass ProposalRouter (sanitized, audited) and appear
@@ -1523,6 +1593,8 @@ class AssessmentService:
                            "artex_module": prov.get("artex_module"), "artex_commit": prov.get("artex_commit"),
                            "go_version": prov.get("go_version"), "norma_version": prov.get("norma_version"),
                            "label": label},
+                "isolation": {**_artex_isolation_view(prov.get("isolation") or {}),
+                              "egress_canary": prov.get("egress_canary") or None},
                 "allowed_tools": run.allowed_tools, "tool_calls": run.tool_calls,
                 "denied_tool_calls": run.denied_tool_calls, "goal_met": run.goal_met,
                 "elapsed_ms": run.elapsed_ms, "intents": len(run.intents),
@@ -1550,6 +1622,54 @@ class AssessmentService:
                               "catalog_id": it.catalog_id, "label": it.label, "level": it.level,
                               "target_id": it.target_id, "tool": it.proposal["tool"], "status": it.status})
             return {"configured": bool(self._artex_real_cmd), "plan": {**self._artex_plan, "items": items}}
+
+    def _artex_session_started(self, sess, gen: int) -> None:
+        """Registered before anything runs in the session; refused after a stop."""
+        with self._lock:
+            if not self._artex_may_start_locked(gen):
+                raise ArtexBridgeError("緊急停止されたため ARTEX を起動しません")
+            self._artex_live.add(sess)
+
+    def _artex_may_start_locked(self, gen: int) -> bool:
+        return (gen == self._run_generation and self.gateway.state is not State.STOPPED
+                and self.a.state != "stopped" and not self._unstopped_now_locked())
+
+    def _artex_may_start(self, gen: int) -> bool:
+        with self._lock:
+            return self._artex_may_start_locked(gen)
+
+    def _artex_session_finished(self, sess) -> None:
+        with self._lock:
+            self._artex_live.discard(sess)
+
+    def _kill_artex_planner_locked(self) -> None:
+        """Emergency stop: a running ARTEX planner is killed with its cgroup, and only a
+        planner CONFIRMED gone leaves the record - one that is not goes on the same
+        unstopped record as an L2 worker (the stop is then reported unconfirmed)."""
+        live = list(self._artex_live)
+        for sess in live:
+            try:
+                sess.kill()
+            except Exception:  # noqa: BLE001 - confirmed (or not) below
+                pass
+        deadline = time.monotonic() + 3.0
+        pending = list(live)
+        while pending and time.monotonic() < deadline:
+            pending = [x for x in pending if not _session_empty(x)]
+            for x in pending:
+                # cgroup.kill acts on the processes in the cgroup NOW: a process that was
+                # just launched and joins a moment later is killed by the next write
+                try:
+                    x.kill()
+                except Exception:  # noqa: BLE001 - still pending: on record below
+                    pass
+            if pending:
+                time.sleep(0.1)
+        for sess in pending:
+            if not self._session_on_record(sess):
+                self._unstopped.append({"host": (self.a.asset.get("name") or "").lower(), "pids": [],
+                                        "at": time.time(), "pool": None, "sessions": [sess]})
+                self.audit.record("artex.stop_unconfirmed", cgroup=getattr(sess, "name", ""))
 
     def _claim_artex_item_locked(self, item_id: str) -> dict:
         """Check and claim (set running) in ONE locked step: no second request can
@@ -2641,6 +2761,7 @@ class AssessmentService:
             except OSError:
                 pass
             rep = self.gateway.emergency_stop(actor)
+            self._kill_artex_planner_locked()       # a running ARTEX planner dies with its cgroup
             report = {"actor": actor, "confirmed": rep.confirmed, "killed_pids": rep.killed_pids,
                       "survivors": rep.survivors,
                       "steps": [{"name": n, "elapsed_ms": round(t * 1000, 2)} for n, t in rep.steps],

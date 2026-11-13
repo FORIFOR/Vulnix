@@ -178,3 +178,11 @@ func TestVulnixBridgeBackgroundAndExecToolsAreDisallowed(t *testing.T) {
 		}
 	}
 }
+
+func TestVulnixBridgeEgressCanaryIsLoopbackOnly(t *testing.T) {
+	for _, addr := range []string{"93.184.216.34:80", "example.com:80", "10.0.0.1:5432"} {
+		if got := VulnixEgressCanary(addr); !strings.HasPrefix(got, "refused:") {
+			t.Fatalf("canary to %s was attempted: %s", addr, got)
+		}
+	}
+}
