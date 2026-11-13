@@ -3,15 +3,19 @@
 // Snapshot + SSE sync. Events are applied only if their server `seq` is newer
 // than what we have; duplicates are dropped and a gap triggers a full refetch,
 // so the screen always converges on server state.
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type SetStateAction } from "react";
 import { getJSON } from "./api";
-import { applyEvent } from "./assessmentEvents";
+import { applyEvent, withNewerPlanner } from "./assessmentEvents";
 import type { AegisEvent, AuditEntry, Snapshot } from "./types";
 
 export type Conn = "connecting" | "live" | "reconnecting" | "offline";
 
 export function useAssessment(id: string) {
-  const [snap, setSnap] = useState<Snapshot | null>(null);
+  const [snap, setRawSnap] = useState<Snapshot | null>(null);
+  // Every whole-snapshot replacement keeps the newest model connection state.
+  const setSnap = useCallback((next: SetStateAction<Snapshot | null>) => {
+    setRawSnap((prev) => withNewerPlanner(prev, typeof next === "function" ? next(prev) : next));
+  }, []);
   const [error, setError] = useState<string | null>(null);
   const [conn, setConn] = useState<Conn>("connecting");
   const [audit, setAudit] = useState<AuditEntry[]>([]);
@@ -40,7 +44,7 @@ export function useAssessment(id: string) {
       setError((e as Error).message);
       return null;
     }
-  }, [id]);
+  }, [id, setSnap]);
 
   // Authoritative re-verification against the server, debounced so a burst of
   // new audit entries triggers a single check rather than one per entry.
@@ -102,7 +106,7 @@ export function useAssessment(id: string) {
       es?.close();
       if (verifyTimer.current) clearTimeout(verifyTimer.current);
     };
-  }, [id, refetch, scheduleVerify]);
+  }, [id, refetch, scheduleVerify, setSnap]);
 
   return { snap, setSnap, error, conn, audit, chainValid, notes, refetch };
 }

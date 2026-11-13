@@ -226,6 +226,15 @@ class HttpModelBackend:
         return extract_proposals_from_payload(data)
 
 
+def _error_kind(e: BaseException) -> str:
+    """A failure as a short, secret-free label: the exception class, plus the HTTP
+    status when there is one. Never the message, URL, headers or response body,
+    which may carry the API key or text the model returned."""
+    code = getattr(e, "code", None)
+    kind = type(e).__name__[:40]
+    return f"{kind} {code}" if isinstance(code, int) else kind
+
+
 class AbliterationBackend(HttpModelBackend):
     """Dedicated adapter for Abliteration AI / OpenAI-compatible Chat Completions API.
 
@@ -261,6 +270,11 @@ class AbliterationBackend(HttpModelBackend):
     def chat(self, question: str, context: dict) -> str | None:
         """Ask the OpenAI-compatible endpoint a natural-language question grounded
         in the assessment context. Output is plain text only (never executed)."""
+        return self.chat_with_status(question, context)[0]
+
+    def chat_with_status(self, question: str, context: dict) -> tuple[str | None, str | None]:
+        """`chat()` plus this call's own failure kind (None when it answered). Returned,
+        not stored on the shared instance, so concurrent questions cannot mix them up."""
         payload = {
             "model": self._model or "abliteration-sec-1",
             "messages": [
@@ -285,10 +299,10 @@ class AbliterationBackend(HttpModelBackend):
             if isinstance(choices, list) and choices:
                 content = choices[0].get("message", {}).get("content")
                 if isinstance(content, str) and content.strip():
-                    return content.strip()
-        except Exception:
-            return None
-        return None
+                    return content.strip(), None
+        except Exception as e:   # noqa: BLE001 - any failure falls back to the built-in answer
+            return None, _error_kind(e)
+        return None, "empty_response"
 
 
 @dataclass(frozen=True)
@@ -616,7 +630,7 @@ def verify_planner_connections(*, abliteration_url: str | None = None,
     }, sort_keys=True, ensure_ascii=False)
     proof_hash = hashlib.sha256(proof_payload.encode("utf-8")).hexdigest()
 
-    return {
+    return redact_verification_report({
         "verified_at": time.time(),
         "elapsed_ms": round((time.monotonic() - t0) * 1000, 2),
         "all_verified": bool(artex_ok and ab_ok),
@@ -637,5 +651,35 @@ def verify_planner_connections(*, abliteration_url: str | None = None,
             "chat_verified": bool(chat_reply),
             "chat_preview": (chat_reply or "")[:120],
         },
-    }
+    })
+
+
+def _safe_endpoint(url: object) -> str:
+    """scheme://host[:port] only: never userinfo, path, query or fragment, any of which
+    may carry an API key or token."""
+    try:
+        u = urllib.parse.urlsplit(str(url or ""))
+        host = u.hostname or ""
+        if not u.scheme or not host:
+            return ""
+        if ":" in host:
+            host = f"[{host}]"
+        port = f":{u.port}" if u.port else ""
+        return f"{u.scheme}://{host}{port}"[:200]
+    except ValueError:
+        return ""
+
+
+def redact_verification_report(rep: dict) -> dict:
+    """A verification report as it may be stored, returned, shown or published:
+    the endpoint without credentials, and none of the model's own text."""
+    if not isinstance(rep, dict):
+        return {}
+    out = dict(rep)
+    api = dict(out.get("abliteration_api") or {})
+    if api:
+        api["url"] = _safe_endpoint(api.get("url"))
+        api.pop("chat_preview", None)
+        out["abliteration_api"] = api
+    return out
 

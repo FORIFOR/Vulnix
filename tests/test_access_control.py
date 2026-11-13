@@ -217,7 +217,7 @@ class TestOpenReadsAreDevelopmentOnly(ApiBase):
                           (["aegis", "--no-read-auth"], {"AEGIS_ENV": ""}),
                           (["aegis"], {"AEGIS_ENV": "", "AEGIS_REQUIRE_READ_AUTH": "0"})):
             with self.subTest(argv=argv, env=env):
-                with patch("sys.argv", argv), patch.dict("os.environ", env), \
+                with patch("sys.argv", argv), patch.dict("os.environ", {**env, "VULNIX_NO_ENV_LOCAL": "1"}), \
                         patch("aegis.server.start_lab") as lab, patch("aegis.server.ThreadingHTTPServer") as http_srv:
                     with self.assertRaises(SystemExit) as cm:
                         server.main()
