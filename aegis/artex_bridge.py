@@ -151,29 +151,45 @@ class Reconstruction:
 # ---------------------------------------------------------------------------
 # provenance: is this really an ARTEX build?
 # ---------------------------------------------------------------------------
-def inspect_executable(path: str | os.PathLike) -> dict:
-    """What the configured command is. `kind` is "artex-binary" only for a native
-    executable carrying Go build info for the ARTEX overlay main package; anything
-    else (a script, a stand-in) is "unverified" and is never shown as ARTEX itself."""
+# Go module info embedded in every module-aware Go binary ("go version -m" prints it):
+#   path\t<main package>\n  mod\t<main module>\t<version>...\n  dep\t<module>\t<version>...
+_MODINFO_PATH = re.compile(rb"path\t" + re.escape(OVERLAY_MAIN.encode()) + rb"\n")
+_MODINFO_MOD = re.compile(rb"\nmod\t" + re.escape(ARTEX_MODULE.encode()) + rb"\t")
+_MODINFO_NORMA = re.compile(rb"\ndep\tgithub\.com/Autumn-27/norma\t(v[0-9][^\t\n]{0,40})")
+
+
+def inspect_bytes(data: bytes, path: str = "", expected_sha256: str = "") -> dict:
+    """What an executable is. `kind` is "artex-binary" only for a native executable
+    whose embedded Go module info names the ARTEX overlay main package in the ARTEX
+    module; anything else (a script, a stand-in) is "unverified" and is never shown
+    as ARTEX. `pinned` is True only when its SHA-256 equals the operator's pin."""
+    native = data[:4] in (b"\x7fELF", b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe", b"\xca\xfe\xba\xbe")
+    go_info = b"\xff Go buildinf:" in data
+    main_path = bool(_MODINFO_PATH.search(data))
+    main_mod = bool(_MODINFO_MOD.search(data))
+    norma = _MODINFO_NORMA.search(data)
+    sha = hashlib.sha256(data).hexdigest()
+    kind = "artex-binary" if (native and go_info and main_path and main_mod) else "unverified"
+    return {
+        "kind": kind,
+        "path": str(path),
+        "sha256": sha,
+        "size": len(data),
+        "native": native,
+        "go_buildinfo": go_info,
+        "artex_overlay_main": main_path and main_mod,
+        "norma_version": norma.group(1).decode(errors="replace") if norma else None,
+        "pinned": bool(expected_sha256) and kind == "artex-binary" and sha == expected_sha256.strip().lower(),
+    }
+
+
+def inspect_executable(path: str | os.PathLike, expected_sha256: str = "") -> dict:
     p = Path(path)
     try:
         data = p.read_bytes()
     except OSError as e:
-        return {"kind": "missing", "path": str(p), "error": type(e).__name__}
-    native = data[:4] in (b"\x7fELF", b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe", b"\xca\xfe\xba\xbe")
-    go_info = b"\xff Go buildinf:" in data
-    artex_main = OVERLAY_MAIN.encode() in data
-    m = re.search(rb"go1\.\d+(?:\.\d+)?", data)
-    return {
-        "kind": "artex-binary" if (native and go_info and artex_main) else "unverified",
-        "path": str(p),
-        "sha256": hashlib.sha256(data).hexdigest(),
-        "size": len(data),
-        "native": native,
-        "go_buildinfo": go_info,
-        "artex_overlay_main": artex_main,
-        "go_toolchain": m.group(0).decode() if m else None,
-    }
+        return {"kind": "missing", "path": str(p), "error": type(e).__name__, "pinned": False}
+    return inspect_bytes(data, str(p), expected_sha256)
 
 
 # ---------------------------------------------------------------------------
@@ -188,24 +204,42 @@ def require_loopback_llm(url: str) -> str:
 
 
 def require_loopback_dsn(dsn: str) -> str:
-    """ARTEX's store (PostgreSQL) must be a local, throw-away database."""
+    """ARTEX's store (PostgreSQL) must be a local database. Query parameters that
+    can redirect the connection (host, hostaddr, service) are refused."""
     u = urllib.parse.urlsplit(str(dsn or ""))
     if u.scheme not in ("postgres", "postgresql") or (u.hostname or "") not in ("127.0.0.1", "::1", "localhost"):
         raise ArtexBridgeError("ARTEX のデータベースはローカル（ループバック）の PostgreSQL のみ使用できます")
+    q = urllib.parse.parse_qs(u.query)
+    if any(k in q for k in ("host", "hostaddr", "service", "servicefile")):
+        raise ArtexBridgeError("ARTEX のデータベース接続先を変更するパラメータは使用できません")
     return dsn
 
 
 def run_artex_planner(command: list[str], request: dict, *, llm_url: str, llm_model: str = "mock",
-                      llm_key: str = "", pg_dsn: str = "", timeout_s: float = 120.0) -> ArtexRun:
+                      llm_key: str = "", pg_dsn: str = "", timeout_s: float = 120.0,
+                      expected_sha256: str = "") -> ArtexRun:
     if not command:
         raise ArtexBridgeError("ARTEX プランナーが設定されていません")
     require_loopback_llm(llm_url)
     if pg_dsn:
         require_loopback_dsn(pg_dsn)
     exe = command[0]
-    provenance = inspect_executable(exe)
+    try:
+        exe_bytes = Path(exe).read_bytes()
+    except OSError as e:
+        raise ArtexBridgeError(f"ARTEX を読み込めません: {type(e).__name__}") from None
+    provenance = inspect_bytes(exe_bytes, exe, expected_sha256)
+    if expected_sha256 and not provenance["pinned"]:
+        raise ArtexBridgeError("ARTEX のバイナリが固定済みのハッシュ（VULNIX_ARTEX_EXPECTED_SHA256）と一致しません")
     started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="vulnix-artex-") as work:
+        if provenance["kind"] == "artex-binary":
+            # run exactly the bytes that were inspected (and hashed): a swap of the file
+            # on disk between inspection and execution changes nothing
+            copy = Path(work) / "artex-vulnix-planner"
+            copy.write_bytes(exe_bytes)
+            copy.chmod(0o700)
+            command = [str(copy), *command[1:]]
         # A clean environment: no inherited keys, tokens or proxies reach ARTEX.
         env = {"PATH": "/usr/bin:/bin", "HOME": work, "TMPDIR": work, "LANG": "C.UTF-8",
                "ARTEX_LLM_BASE_URL": llm_url, "ARTEX_LLM_MODEL": llm_model,
@@ -276,12 +310,14 @@ def parse_planner_output(data: object, provenance: dict, elapsed_ms: float = 0.0
         if not isinstance(summary, str) or not summary.strip():
             continue
         ids = it.get("asset_ids") or []
+        unmapped = it.get("unmapped_asset_ids") or []
         intents.append({
             "id": int(it["id"]) if isinstance(it.get("id"), int) else 0,
             "summary": summary.strip()[:MAX_SUMMARY],
             "asset_ids": [i for i in ids if isinstance(i, int) and not isinstance(i, bool)][:20]
             if isinstance(ids, list) else [],
             "priority": it["priority"] if isinstance(it.get("priority"), int) else 5,
+            "unmapped": bool(unmapped) if isinstance(unmapped, list) else True,
         })
     prov = dict(provenance)
     prov.update({
@@ -325,6 +361,9 @@ def reconstruct(intents: list[dict], targets: list[dict], run_id: str) -> Recons
         entry, why = classify(summary)
         if entry is None:
             out.advisories.append(Advisory(iid, summary, why))
+            continue
+        if it.get("unmapped"):
+            out.advisories.append(Advisory(iid, summary, "登録されていない対象を含むため実行しません"))
             continue
         asset_ids = it.get("asset_ids") or []
         if not asset_ids:

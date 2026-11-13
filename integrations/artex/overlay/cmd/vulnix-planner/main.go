@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"runtime"
 	"strings"
@@ -112,6 +113,9 @@ func run() error {
 	// ARTEX's own provider construction (agent/provider.go). Proxy "" = direct
 	// (it does not fall back to *_PROXY). Stream=false selects the non-streaming
 	// path; the run also sets agentcore.Options.NonStreaming=true.
+	// Before ARTEX builds its LLM client (a clone of the default transport): every
+	// connection is loopback only, so a redirect cannot carry the request elsewhere.
+	http.DefaultTransport = agent.VulnixLoopbackOnlyTransport()
 	cfg := agent.ConfigFrom("openai", model, baseURL, apiKey, "")
 	cfg.Stream = false
 	prov, err := cfg.NewProvider()

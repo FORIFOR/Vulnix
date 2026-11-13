@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -19,7 +21,7 @@ from unittest.mock import patch
 from aegis import artex_bridge as ab
 from aegis.assessment import ApproverRequired, AssessmentService
 from aegis.lab import set_lab_mode, start_lab
-from aegis.router import ProposalRouter, sanitize_proposal
+from aegis.router import sanitize_proposal
 from tests import TEST_CONFINEMENT
 from tests.artex_mock_llm import MockLLM
 
@@ -68,6 +70,15 @@ class TestIntentsAreRebuiltFromVulnixOnly(unittest.TestCase):
         self.assertEqual(rec.items, [])
         for adv, want in zip(rec.advisories, cases.values()):
             self.assertIn(want, adv.reason)
+
+    def test_an_intent_naming_an_unseeded_artex_asset_is_advisory(self):
+        rec = ab.reconstruct([{"id": 1, "summary": "SQL 注入", "asset_ids": [], "priority": 5, "unmapped": True}],
+                             TARGETS, "ax")
+        self.assertEqual(rec.items, [])
+        self.assertIn("登録されていない", rec.advisories[0].reason)
+        run = ab.parse_planner_output({"engine": "artex", "allowed_tools": ["add_intent"], "intents": [
+            {"id": 1, "summary": "SQL 注入", "asset_ids": [], "unmapped_asset_ids": [3]}]}, {})
+        self.assertTrue(run.intents[0]["unmapped"])
 
     def test_an_unregistered_asset_id_is_never_a_target(self):
         rec = ab.reconstruct([{"id": 1, "summary": "SQL 注入", "asset_ids": [99], "priority": 5}], TARGETS, "ax")
@@ -120,11 +131,25 @@ class TestTheStandInIsNeverMistakenForArtex(unittest.TestCase):
         self.assertEqual(info["kind"], "unverified")
         self.assertEqual(len(info["sha256"]), 64)
 
-    def test_a_native_go_binary_of_the_overlay_is_recognised(self):
-        with tempfile.NamedTemporaryFile(delete=False) as fh:
-            fh.write(b"\x7fELF" + b"\0" * 64 + b"\xff Go buildinf:" + b"go1.26.3 " + ab.OVERLAY_MAIN.encode())
-        self.addCleanup(os.unlink, fh.name)
-        self.assertEqual(ab.inspect_executable(fh.name)["kind"], "artex-binary")
+    MODINFO = (b"\x7fELF" + b"\0" * 64 + b"\xff Go buildinf:" + b"\0" * 16 +
+               b"path\t" + ab.OVERLAY_MAIN.encode() + b"\nmod\t" + ab.ARTEX_MODULE.encode() +
+               b"\t(devel)\t\ndep\tgithub.com/Autumn-27/norma\tv0.4.3\th1:x\n")
+
+    def test_the_overlay_build_info_is_recognised_and_pinning_is_checked(self):
+        info = ab.inspect_bytes(self.MODINFO)
+        self.assertEqual(info["kind"], "artex-binary")
+        self.assertEqual(info["norma_version"], "v0.4.3")
+        self.assertFalse(info["pinned"])
+        self.assertTrue(ab.inspect_bytes(self.MODINFO, expected_sha256=info["sha256"])["pinned"])
+        self.assertFalse(ab.inspect_bytes(self.MODINFO, expected_sha256="0" * 64)["pinned"])
+
+    def test_the_package_path_as_a_mere_string_is_not_enough(self):
+        forged = b"\x7fELF" + b"\0" * 64 + b"\xff Go buildinf:" + b" " + ab.OVERLAY_MAIN.encode()
+        self.assertEqual(ab.inspect_bytes(forged)["kind"], "unverified")
+
+    def test_a_pin_mismatch_refuses_to_run(self):
+        with self.assertRaises(ab.ArtexBridgeError):
+            ab.run_artex_planner(FAKE, {}, llm_url=LOOPBACK_LLM, expected_sha256="0" * 64)
 
 
 class TestRunningThePlanner(unittest.TestCase):
@@ -157,7 +182,8 @@ class TestRunningThePlanner(unittest.TestCase):
                 self.run_fake(fake_mode=mode)
 
     def test_only_a_local_database_is_accepted(self):
-        for dsn in ("postgres://u:p@db.example.com/x", "mysql://127.0.0.1/x", "postgres://10.0.0.2/x"):
+        for dsn in ("postgres://u:p@db.example.com/x", "mysql://127.0.0.1/x", "postgres://10.0.0.2/x",
+                    "postgres://u:p@127.0.0.1/x?host=db.example.com", "postgres://127.0.0.1/x?hostaddr=10.0.0.1"):
             with self.assertRaises(ab.ArtexBridgeError):
                 ab.run_artex_planner(FAKE, {}, llm_url=LOOPBACK_LLM, pg_dsn=dsn)
         ab.require_loopback_dsn("postgres://artex:artex@127.0.0.1:5432/artex?sslmode=disable")
@@ -170,6 +196,7 @@ class TestRunningThePlanner(unittest.TestCase):
 class ServiceBase(unittest.TestCase):
     command = FAKE
     llm_url = LOOPBACK_LLM
+    expected_sha256 = ""
 
     @classmethod
     def setUpClass(cls):
@@ -184,8 +211,9 @@ class ServiceBase(unittest.TestCase):
         set_lab_mode("vulnerable")
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        env = {"VULNIX_ARTEX_REAL_CMD": " ".join(self.command), "VULNIX_ARTEX_LLM_URL": self.llm_url,
-               "VULNIX_ARTEX_PG_DSN": os.environ.get("VULNIX_ARTEX_PG_DSN", "")}
+        env = {"VULNIX_ARTEX_REAL_CMD": shlex.join(self.command), "VULNIX_ARTEX_LLM_URL": self.llm_url,
+               "VULNIX_ARTEX_PG_DSN": os.environ.get("VULNIX_ARTEX_PG_DSN", ""),
+               "VULNIX_ARTEX_EXPECTED_SHA256": self.expected_sha256}
         with patch.dict(os.environ, env):
             self.svc = AssessmentService(Path(self.tmp.name), LAB_PORT, l2_confinement=TEST_CONFINEMENT,
                                          verify_seconds=0.1)
@@ -253,10 +281,69 @@ class TestThePlanThroughTheGateway(ServiceBase):
         with self.assertRaises(ValueError):
             self.svc.plan_with_artex("op")
 
+    def test_a_valid_token_still_cannot_reach_outside_the_scope(self):
+        apr = self.svc.approval_store.approve("appr", "eng_demo", "lab", "read_only_probe")
+        tok = self.svc.tokens.issue(self.svc.a.engagement, "lab", "read_only_probe", "http_probe", apr,
+                                    self.svc.approval_store, ttl=60)
+        d = self.svc.gateway.execute({"tool": "http_probe", "target_id": "lab", "action": "read_only_probe",
+                                      "args": {"url": "http://evil.example/", "method": "GET"}}, tok)
+        self.assertFalse(d.allowed)
+
+    def test_a_tampered_stored_proposal_is_ignored(self):
+        plan = self.plan()
+        l1 = self.item(plan, "l1_http_probe")["id"]
+        self.svc._artex_items[l1]["item"].proposal["args"]["url"] = "http://evil.example/"
+        self.svc._artex_items[l1]["item"].proposal["tool"] = "bash"
+        self.svc.execute_artex_item(l1, "op", roles=("operator",))
+        urls = [e["fields"].get("url") or "" for e in self.svc.audit.entries() if e["event"] == "allow"]
+        self.assertFalse(any("evil" in u for u in urls))
+
+    def test_items_of_an_old_plan_or_workspace_never_run(self):
+        plan = self.plan()
+        old_l1 = self.item(plan, "l1_http_probe")["id"]
+        newer = self.plan()                       # a new plan replaces the old one
+        with self.assertRaises(ValueError):
+            self.svc.execute_artex_item(old_l1, "op", roles=("operator",))
+        l1 = self.item(newer, "l1_http_probe")["id"]
+        self.svc.emergency_stop("op")
+        self.svc.restart("op")                    # starts a new run in a new workspace
+        try:
+            with self.assertRaises(ValueError):
+                self.svc.execute_artex_item(l1, "op", roles=("operator",))
+            self.assertIsNone(self.svc.artex_plan_view()["plan"])
+        finally:
+            self.svc.emergency_stop("op")
+            if self.svc._thread is not None:
+                self.svc._thread.join(timeout=30)
+
+    def test_the_planner_cannot_approve_its_own_l2_even_across_plans(self):
+        self.svc.separate_l2_approver = True
+        plan = self.plan()                        # requested by "op"
+        with self.assertRaises(ApproverRequired):
+            self.svc.execute_artex_item(self.item(plan, "l2_idor")["id"], "op", roles=("operator", "approver"))
+
+    def test_one_item_cannot_be_claimed_twice_concurrently(self):
+        plan = self.plan()
+        l1 = self.item(plan, "l1_http_probe")["id"]
+        results, gate = [], threading.Barrier(2)
+
+        def go():
+            gate.wait()
+            try:
+                self.svc.execute_artex_item(l1, "op", roles=("operator",))
+                results.append("ran")
+            except ValueError:
+                results.append("refused")
+        threads = [threading.Thread(target=go) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=30)
+        self.assertEqual(sorted(results), ["ran", "refused"])
+
     def test_the_gateway_refuses_what_artex_might_ask_for_directly(self):
         # Even if ARTEX output reached the Gateway untouched, without a token issued
         # from a human-approved control plane it is refused.
-        router = ProposalRouter(self.svc.gateway, self.svc.audit, [])
         for raw in ({"tool": "bash", "target_id": "lab", "action": "exec", "args": {"command": "id"}},
                     {"tool": "http_probe", "target_id": "prod", "action": "read_only_probe",
                      "args": {"url": "http://evil.example/"}},
@@ -264,7 +351,6 @@ class TestThePlanThroughTheGateway(ServiceBase):
                      "args": {"url": self.svc.a.target_url, "check": "sqli"}}):
             d = self.svc.gateway.execute(sanitize_proposal(raw), "forged-token")
             self.assertFalse(d.allowed, raw)
-        self.assertIsNotNone(router)
 
     def test_not_configured_and_real_service_are_refused(self):
         with patch.dict(os.environ, {"VULNIX_ARTEX_REAL_CMD": ""}):
@@ -283,6 +369,7 @@ class TestRealArtexPlanner(ServiceBase):
     local mock LLM. Writes an evidence file for the CI artifact."""
 
     command = [os.environ.get("VULNIX_ARTEX_REAL_BIN", "")]
+    expected_sha256 = os.environ.get("VULNIX_ARTEX_CI_BINARY_SHA256", "")
 
     def setUp(self):
         self.mock = MockLLM().__enter__()
@@ -294,6 +381,9 @@ class TestRealArtexPlanner(ServiceBase):
         plan = self.plan()
         engine = plan["engine"]
         self.assertEqual(engine["kind"], "artex-binary", engine)
+        if self.expected_sha256:
+            self.assertTrue(engine["pinned"], engine)
+            self.assertEqual(engine["sha256"], self.expected_sha256)
         expected = os.environ.get("VULNIX_ARTEX_EXPECTED_COMMIT")
         if expected:
             self.assertEqual(engine["artex_commit"], expected)
@@ -305,7 +395,10 @@ class TestRealArtexPlanner(ServiceBase):
         self.assertFalse(offered & ab.FORBIDDEN_TOOLS, offered)
         # its intents became exactly the catalog items Vulnix can rebuild
         self.assertEqual({i["catalog_id"] for i in plan["items"]}, {"l2_sqli", "l2_idor", "l1_http_probe"})
-        self.assertGreaterEqual(len(plan["advisories"]), 2)
+        # webshell/RCE and the target-less recon intent are advisories; the asset-99
+        # intent is refused by ARTEX itself (no such asset), so it never reaches Vulnix
+        self.assertEqual(len(plan["advisories"]), 2, plan["advisories"])
+        self.assertFalse(any("99" in a["summary"] for a in plan["advisories"]))
         # Gateway: L1 allowed, L2 refused without approver, L2 approved runs in the worker
         self.svc.execute_artex_item(self.item(plan, "l1_http_probe")["id"], "op", roles=("operator",))
         with self.assertRaises(ApproverRequired):

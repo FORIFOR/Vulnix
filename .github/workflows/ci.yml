@@ -137,6 +137,7 @@ jobs:
           go build -trimpath -ldflags "-X main.artexCommit=${ARTEX_COMMIT}" \
             -o "$RUNNER_TEMP/artex-vulnix-planner" ./cmd/vulnix-planner
           sha256sum "$RUNNER_TEMP/artex-vulnix-planner" | tee "$RUNNER_TEMP/artex-binary.sha256"
+          echo "VULNIX_ARTEX_CI_BINARY_SHA256=$(cut -d' ' -f1 "$RUNNER_TEMP/artex-binary.sha256")" >> "$GITHUB_ENV"
           go version -m "$RUNNER_TEMP/artex-vulnix-planner" | head -8
 
       - name: Overlay Go tests (tool allowlist, loopback-only LLM, deny hook)

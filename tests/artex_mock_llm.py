@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import http.server
 import json
+import re
 import threading
 
 INTENTS = [
@@ -21,7 +22,9 @@ INTENTS = [
     {"summary": "使用两个测试账号验证 /api/accounts 的 IDOR 越权访问控制", "asset_ids": [1], "priority": 7},
     {"summary": "收集首页的响应头与服务器 banner 指纹", "asset_ids": [1], "priority": 5},
     {"summary": "尝试上传 webshell 以获取 RCE", "asset_ids": [1], "priority": 9},
+    # asset 99 does not exist: real ARTEX refuses to store it (foreign key)
     {"summary": "对 asset 99 的登录接口进行 SQL 注入", "asset_ids": [99], "priority": 6},
+    {"summary": "研究业务逻辑，寻找可能的攻击面", "asset_ids": [], "priority": 3},
     {"summary": "对 http://evil.example/ 的 search 接口做 SQL 注入验证", "asset_ids": [1], "priority": 6},
 ]
 
@@ -32,9 +35,29 @@ FORBIDDEN_CALLS = [
 ]
 
 
-def _tool_calls() -> list[dict]:
+SEEDED = re.compile(r"In-scope target: asset_id=(\d+)")
+
+
+def _seeded_asset_id(messages: list) -> int:
+    """The ARTEX asset id the overlay seeded for the target (read from the prompt,
+    as a model would); 1 if none is found."""
+    for m in messages:
+        content = m.get("content") if isinstance(m, dict) else None
+        text = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
+        found = SEEDED.search(text or "")
+        if found:
+            return int(found.group(1))
+    return 1
+
+
+def intents_for(asset_id: int) -> list[dict]:
+    return [{**it, "asset_ids": [asset_id if a == 1 else a for a in it["asset_ids"]]} for it in INTENTS]
+
+
+def _tool_calls(asset_id: int = 1) -> list[dict]:
     calls = [{"id": "call_add_intent", "type": "function",
-              "function": {"name": "add_intent", "arguments": json.dumps({"intents": INTENTS}, ensure_ascii=False)}}]
+              "function": {"name": "add_intent",
+                           "arguments": json.dumps({"intents": intents_for(asset_id)}, ensure_ascii=False)}}]
     for i, (name, args) in enumerate(FORBIDDEN_CALLS):
         calls.append({"id": f"call_forbidden_{i}", "type": "function",
                       "function": {"name": name, "arguments": json.dumps(args)}})
@@ -67,7 +90,8 @@ class MockLLM:
                     message = {"role": "assistant", "content": "规划完成：已提交探索方向。"}
                     finish = "stop"
                 else:
-                    message = {"role": "assistant", "content": "", "tool_calls": _tool_calls()}
+                    message = {"role": "assistant", "content": "",
+                               "tool_calls": _tool_calls(_seeded_asset_id(msgs))}
                     finish = "tool_calls"
                 if req.get("stream"):
                     self._stream(message, finish)

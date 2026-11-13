@@ -5,6 +5,7 @@ package agent
 import (
 	"context"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/Autumn-27/norma/hook"
@@ -130,5 +131,50 @@ func TestVulnixBridgeMergeDenied(t *testing.T) {
 	got := vulnixMergeDenied(calls, []string{"Bash", "WebFetch"})
 	if len(got) != 2 || got[0] != "Bash" || got[1] != "WebFetch" {
 		t.Fatalf("vulnixMergeDenied = %v, want [Bash WebFetch]", got)
+	}
+}
+
+func TestVulnixBridgeDSNHostOverridesAreRefused(t *testing.T) {
+	for _, dsn := range []string{
+		"postgres://u:p@127.0.0.1/db?host=db.example.com",
+		"postgres://127.0.0.1/db?hostaddr=10.0.0.1",
+		"postgresql://localhost/db?service=prod",
+	} {
+		if err := VulnixCheckLoopbackDSN(dsn); err == nil {
+			t.Fatalf("DSN with a host override was accepted: %s", dsn)
+		}
+	}
+	if err := VulnixCheckLoopbackDSN("postgres://artex:x@127.0.0.1:5432/artex?sslmode=disable"); err != nil {
+		t.Fatalf("plain loopback DSN refused: %v", err)
+	}
+}
+
+func TestVulnixBridgeTransportRefusesNonLoopback(t *testing.T) {
+	tr := VulnixLoopbackOnlyTransport()
+	for _, addr := range []string{"93.184.216.34:80", "10.0.0.1:443", "[2001:db8::1]:80"} {
+		if _, err := tr.DialContext(context.Background(), "tcp", addr); err == nil ||
+			!strings.Contains(err.Error(), "non-loopback") {
+			t.Fatalf("dial to %s was not refused as non-loopback: %v", addr, err)
+		}
+	}
+	if tr.Proxy != nil {
+		t.Fatalf("transport must not use a proxy")
+	}
+}
+
+func TestVulnixBridgeBackgroundAndExecToolsAreDisallowed(t *testing.T) {
+	want := map[string]bool{}
+	for _, n := range VulnixDisallowedTools {
+		want[n] = true
+	}
+	for _, n := range []string{"Bash", "WebFetch", "TaskOutput", "TaskStop", "TaskList", "Monitor", "add_task_scope"} {
+		if !want[n] {
+			t.Fatalf("%s missing from VulnixDisallowedTools", n)
+		}
+	}
+	for _, n := range VulnixPlannerAllowlist {
+		if want[n] {
+			t.Fatalf("%s is both allowed and disallowed", n)
+		}
 	}
 }

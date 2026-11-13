@@ -12,7 +12,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from tests.artex_mock_llm import INTENTS  # noqa: E402
+from tests.artex_mock_llm import INTENTS
 
 ALLOWED = ["graph_overview", "list_findings", "list_facts", "node_detail", "list_goals", "add_intent",
            "prove_goal", "goal_met"]
@@ -32,6 +32,9 @@ calls = [{"name": "add_intent", "allowed": True}]
 if mode == "bad_call":
     calls.append({"name": "WebFetch", "allowed": True})
 intents = req.get("fake_intents") or INTENTS
+# like real ARTEX: an intent naming an asset that does not exist is not stored
+seeded = {t.get("asset_id") for t in req.get("targets") or []}
+intents = [it for it in intents if all(a in seeded for a in it.get("asset_ids") or [])]
 print(json.dumps({
     "engine": "artex", "artex_module": "github.com/Autumn-27/artex", "artex_commit": "fake-not-artex",
     "go_version": "none", "allowed_tools": allowed, "tool_calls": calls,

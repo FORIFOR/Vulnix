@@ -18,11 +18,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/norma/agentcore"
@@ -30,6 +32,44 @@ import (
 	"github.com/Autumn-27/norma/llm"
 	actool "github.com/Autumn-27/norma/tool"
 )
+
+// VulnixLoopbackOnlyTransport makes every connection of the default HTTP transport -
+// and of every transport cloned from it, such as ARTEX's LLM client - loopback only.
+// Redirects or any other outbound HTTP to another host fail at dial time.
+func VulnixLoopbackOnlyTransport() *http.Transport {
+	base := http.DefaultTransport.(*http.Transport).Clone()
+	base.Proxy = nil
+	d := &net.Dialer{Timeout: 10 * time.Second}
+	base.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, err
+		}
+		ips := []net.IP{net.ParseIP(host)}
+		if ips[0] == nil {
+			found, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+			if err != nil {
+				return nil, err
+			}
+			ips = found
+		}
+		for _, ip := range ips {
+			if ip == nil || !ip.IsLoopback() {
+				return nil, fmt.Errorf("vulnix-planner: refusing non-loopback connection to %s", addr)
+			}
+		}
+		return d.DialContext(ctx, network, net.JoinHostPort(ips[0].String(), port))
+	}
+	return base
+}
+
+// VulnixDisallowedTools are never available to the planner, whatever else is configured.
+var VulnixDisallowedTools = []string{
+	"Bash", "Read", "Write", "Edit", "MultiEdit", "LS", "Glob", "Grep", "WebFetch", "WebSearch",
+	"TaskOutput", "TaskStop", "TaskList", "Monitor", "TodoWrite", "AskUserQuestion", "Skill",
+	"add_company_scope", "add_task_scope", "report_finding", "list_assets", "list_untested_assets",
+	"kill_work", "steer_work", "get_worker_output", "get_worker_trace", "search_all_worker_traces",
+}
 
 // VulnixPlannerAllowlist is the exact set of ARTEX planner tool names the
 // planner-only run may use: read-only graph views plus intent generation and goal
@@ -108,6 +148,13 @@ func vulnixCheckLoopback(raw string, schemes []string) error {
 	}
 	if !okScheme {
 		return fmt.Errorf("scheme %q not allowed (want one of %v)", u.Scheme, schemes)
+	}
+	// pgx honours host/hostaddr query parameters, which would override the host above
+	q := u.Query()
+	for _, k := range []string{"host", "hostaddr", "service", "servicefile"} {
+		if q.Has(k) {
+			return fmt.Errorf("query parameter %q is not allowed (it can redirect the connection)", k)
+		}
 	}
 	host := strings.ToLower(u.Hostname())
 	switch host {
@@ -197,6 +244,9 @@ type VulnixIntent struct {
 	Summary  string  `json:"summary"`
 	AssetIDs []int64 `json:"asset_ids"`
 	Priority int     `json:"priority"`
+	// ARTEX asset ids the intent named that are not seeded Vulnix targets: Vulnix
+	// treats such an intent as advisory (never executable).
+	UnmappedAssetIDs []int64 `json:"unmapped_asset_ids"`
 }
 
 // VulnixPlannerResult is what one round produced.
@@ -332,6 +382,12 @@ func VulnixRunPlanner(ctx context.Context, d *db.DB, prov llm.Provider, req Vuln
 		Compaction:      compactionConfig(0),
 		Settlement:      wrapupSettlement("planner", nil),
 		NonStreaming:    true,
+		// norma injects background-task tools (TaskOutput/TaskStop/TaskList/Monitor) by
+		// default; the planner gets none of them (found by the Vulnix CI check of the
+		// tools actually offered to the model).
+		DisableBackgroundTasks: true,
+		// Defence in depth on top of the allowlisted Tools and the deny hook.
+		DisallowedTools: VulnixDisallowedTools,
 	}
 	opts.Hooks = gate.registry()
 
@@ -375,15 +431,18 @@ func VulnixRunPlanner(ctx context.Context, d *db.DB, prov llm.Provider, req Vuln
 		}
 		_ = json.Unmarshal(n.Payload, &p)
 		mapped := []int64{}
+		unmapped := []int64{}
 		for _, aid := range p.AssetIDs {
 			vs, ok := artexToVulnix[aid]
 			if !ok {
-				logf("intent %d references ARTEX asset %d that is not a seeded target; dropped from asset_ids", n.ID, aid)
+				logf("intent %d references ARTEX asset %d that is not a seeded target", n.ID, aid)
+				unmapped = append(unmapped, aid)
 				continue
 			}
 			mapped = append(mapped, vs...)
 		}
-		intents = append(intents, VulnixIntent{ID: n.ID, Summary: p.Summary, AssetIDs: mapped, Priority: n.Priority})
+		intents = append(intents, VulnixIntent{ID: n.ID, Summary: p.Summary, AssetIDs: mapped,
+			Priority: n.Priority, UnmappedAssetIDs: unmapped})
 	}
 
 	goalMet := tsx.GoalMet

@@ -280,6 +280,7 @@ class AssessmentService:
         self._artex_llm_url = os.environ.get("VULNIX_ARTEX_LLM_URL", "")
         self._artex_llm_model = os.environ.get("VULNIX_ARTEX_LLM_MODEL", "mock")
         self._artex_pg_dsn = os.environ.get("VULNIX_ARTEX_PG_DSN", "")
+        self._artex_expected_sha256 = os.environ.get("VULNIX_ARTEX_EXPECTED_SHA256", "")
         self._artex_plan: dict | None = None
         self._artex_items: dict = {}
 
@@ -1477,7 +1478,8 @@ class AssessmentService:
         self.audit.record("artex.plan_requested", actor=actor, targets=len(targets))
         try:
             run = run_artex_planner(self._artex_real_cmd, request, llm_url=self._artex_llm_url,
-                                    llm_model=self._artex_llm_model, pg_dsn=self._artex_pg_dsn)
+                                    llm_model=self._artex_llm_model, pg_dsn=self._artex_pg_dsn,
+                                    expected_sha256=self._artex_expected_sha256)
         except ArtexBridgeError as e:
             self.audit.record("artex.plan_failed", actor=actor, reason=str(e)[:200])
             raise ValueError(str(e)) from None
@@ -1493,22 +1495,30 @@ class AssessmentService:
         tasks = self.artex.plan_phase("artex", {"target_id": "lab"}, router=router)
         prov = run.provenance
         with self._lock:
+            if gen != self._run_generation:
+                raise ValueError("停止またはリセットされたため、ARTEX 計画を破棄しました")
+            # a new plan replaces the previous one: its items can no longer run
+            self._artex_items = {}
             for item in rec.items:
                 tk = next((t for t in tasks if t.routed.proposal["tool"] == item.proposal["tool"]
                            and t.routed.proposal["args"] == item.proposal["args"]), None)
+                if tk is None or tk.status == "unsupported":
+                    item.status = "unsupported"      # the router or Gateway catalog refused it
                 if tk is not None:
+                    tk.id = item.id                  # unique across plans
                     tk.status = item.status
-                    item_task_id = tk.id
-                else:
-                    item_task_id = None
-                self._artex_items[item.id] = {"item": item, "task_id": item_task_id}
+                self._artex_items[item.id] = {"item": item, "task_id": tk.id if tk else None,
+                                              "gen": gen, "run_id": run_id, "requested_by": actor}
+            kind = prov.get("kind")
+            label = ("ARTEX 本体（overlay ビルド・ハッシュ固定）" if kind == "artex-binary" and prov.get("pinned")
+                     else "ARTEX 本体ビルド（ハッシュ未固定）" if kind == "artex-binary"
+                     else "ARTEX 互換プロセス（本体と未確認）")
             self._artex_plan = {
                 "run_id": run_id, "requested_by": actor, "at": time.time(),
-                "engine": {"kind": prov.get("kind"), "sha256": prov.get("sha256"),
+                "engine": {"kind": kind, "pinned": bool(prov.get("pinned")), "sha256": prov.get("sha256"),
                            "artex_module": prov.get("artex_module"), "artex_commit": prov.get("artex_commit"),
-                           "go_version": prov.get("go_version"),
-                           "label": "ARTEX 本体（overlay ビルド）" if prov.get("kind") == "artex-binary"
-                                    else "ARTEX 互換プロセス（本体と未確認）"},
+                           "go_version": prov.get("go_version"), "norma_version": prov.get("norma_version"),
+                           "label": label},
                 "allowed_tools": run.allowed_tools, "tool_calls": run.tool_calls,
                 "denied_tool_calls": run.denied_tool_calls, "goal_met": run.goal_met,
                 "elapsed_ms": run.elapsed_ms, "intents": len(run.intents),
@@ -1516,9 +1526,9 @@ class AssessmentService:
                                 "reason": a.reason} for a in rec.advisories],
             }
         self.audit.record("artex.plan_received", actor=actor, run_id=run_id, engine_kind=prov.get("kind"),
-                          engine_sha256=prov.get("sha256"), artex_commit=prov.get("artex_commit"),
-                          intents=len(run.intents), items=len(rec.items), advisories=len(rec.advisories),
-                          denied_tool_calls=len(run.denied_tool_calls))
+                          engine_pinned=bool(prov.get("pinned")), engine_sha256=prov.get("sha256"),
+                          artex_commit=prov.get("artex_commit"), intents=len(run.intents), items=len(rec.items),
+                          advisories=len(rec.advisories), denied_tool_calls=len(run.denied_tool_calls))
         for a in rec.advisories:
             self.audit.record("artex.intent_advisory", run_id=run_id, intent=a.intent_id, reason=a.reason)
         self.bus.publish(self.a.id, "artex.plan", artex_plan=self.artex_plan_view())
@@ -1531,70 +1541,97 @@ class AssessmentService:
             items = []
             for rec in self._artex_items.values():
                 it = rec["item"]
-                if not it.id.startswith(self._artex_plan["run_id"]):
-                    continue
                 items.append({"id": it.id, "intent_id": it.intent_id,
                               "intent_summary": clean_target_text(it.intent_summary, 500),
                               "catalog_id": it.catalog_id, "label": it.label, "level": it.level,
                               "target_id": it.target_id, "tool": it.proposal["tool"], "status": it.status})
             return {"configured": bool(self._artex_real_cmd), "plan": {**self._artex_plan, "items": items}}
 
+    def _claim_artex_item_locked(self, item_id: str) -> dict:
+        """Check and claim (set running) in ONE locked step: no second request can
+        claim the same item, and an item of an old plan or workspace never runs."""
+        rec = self._artex_items.get(item_id)
+        if rec is None or (self._artex_plan or {}).get("run_id") != rec["run_id"]:
+            raise ValueError("ARTEX 計画の項目が見つからないか、新しい計画で置き換えられました")
+        if rec["gen"] != self._run_generation:
+            raise ValueError("停止またはリセット前の ARTEX 計画は実行できません。計画を作り直してください")
+        item = rec["item"]
+        if item.status not in ("planned", "awaiting_approval"):
+            raise ValueError("この項目は実行できません（実行中・実行済み・未対応）")
+        self._refuse_after_stop_locked()
+        self._refuse_artex_on_real_service_locked()
+        if self.gateway.state is State.PAUSED:
+            raise ValueError("診断を一時停止中です。再開または停止してから実行してください")
+        return rec
+
     def execute_artex_item(self, item_id: str, actor: str, *, roles=None) -> dict:
         """Run ONE item of the ARTEX plan. The operation is rebuilt from Vulnix's catalog
         (never from what ARTEX or the stored proposal says); L1 goes through the Gateway
         under the L1 policy, L2 needs an approver and runs in the isolated worker."""
-        with self._lock:
-            rec = self._artex_items.get(item_id)
-            if rec is None:
-                raise ValueError("ARTEX 計画の項目が見つかりません")
-            item = rec["item"]
-            if item.status in ("running", "completed"):
-                raise ValueError("この項目は実行中または実行済みです")
-            self._refuse_after_stop_locked()
-            self._refuse_artex_on_real_service_locked()
-            requested_by = (self._artex_plan or {}).get("requested_by")
-        entry = CATALOG_BY_ID[item.catalog_id]
-        if entry.level == "L2":
-            if not actor or str(actor).startswith("policy:"):
-                raise ValueError("L2 検証には人間の個別承認が必要です（自動承認不可）")
-            if roles is not None and "approver" not in roles:
-                self.audit.record("artex.item_denied", item=item_id, actor=actor, reason="approver role required")
-                raise ApproverRequired("ARTEX 計画の L2 検証には承認責任者の権限が必要です")
-            if self.separate_l2_approver and actor == requested_by:
-                self.audit.record("artex.item_denied", item=item_id, actor=actor, reason="separation of duties")
-                raise ApproverRequired("計画を依頼した本人は、その L2 検証を承認できません")
-            self.audit.record("artex.item_approved", item=item_id, approver=actor, check=entry.check,
-                              requested_by=requested_by)
-            self._set_artex_item_status(item_id, "running")
-            try:
-                snap = self.verify_finding(entry.finding_id, actor, roles=roles)
-            except Exception:
-                self._set_artex_item_status(item_id, "failed")
-                raise
-            self._set_artex_item_status(item_id, "failed" if snap.get("state") == "failed" else "completed")
-            return self.snapshot()
-        # L1: one read-only GET of the registered URL, through the Gateway
-        self._begin_operation()
+        self._begin_operation()          # from here the active asset cannot be switched
         prev = getattr(self._tls, "gen", None)
+        claimed = False
         try:
             with self._lock:
-                self._refuse_after_stop_locked()
+                rec = self._claim_artex_item_locked(item_id)
+                item = rec["item"]
+                entry = CATALOG_BY_ID[item.catalog_id]
+                if entry.level == "L2":
+                    if not actor or str(actor).startswith("policy:"):
+                        raise ValueError("L2 検証には人間の個別承認が必要です（自動承認不可）")
+                    if roles is not None and "approver" not in roles:
+                        self.audit.record("artex.item_denied", item=item_id, actor=actor,
+                                          reason="approver role required")
+                        raise ApproverRequired("ARTEX 計画の L2 検証には承認責任者の権限が必要です")
+                    if self.separate_l2_approver and actor == rec["requested_by"]:
+                        self.audit.record("artex.item_denied", item=item_id, actor=actor,
+                                          reason="separation of duties")
+                        raise ApproverRequired("計画を依頼した本人は、その L2 検証を承認できません")
+                item.status = "running"
+                claimed = True
                 self._tls.gen = self._run_generation
-                self._ensure_active_window_locked()
                 url = self.a.target_url
-            self._set_artex_item_status(item_id, "running")
-            res, _ev = self._exec(entry.tool, entry.action, entry.args_for(url), approval_actor=f"artex-L1:{actor}")
-            if res is not None:
+            self._sync_artex_item(item_id)
+            if entry.level == "L2":
+                self.audit.record("artex.item_approved", item=item_id, approver=actor, check=entry.check,
+                                  requested_by=rec["requested_by"])
+                snap = self.verify_finding(entry.finding_id, actor, roles=roles)
+                ok = snap.get("state") != "failed"
+            else:
                 with self._lock:
-                    self._analyze(res, _ev)
-            self._set_artex_item_status(item_id, "completed" if res is not None else "failed")
+                    self._ensure_active_window_locked()
+                res, ev = self._exec(entry.tool, entry.action, entry.args_for(url),
+                                     approval_actor=f"artex-L1:{actor}")
+                if res is not None:
+                    with self._lock:
+                        self._analyze(res, ev)
+                ok = res is not None
+            self._set_artex_item_status(item_id, "completed" if ok else "failed")
+            claimed = False
+            return self.snapshot()
         except _Stopped:
-            self._set_artex_item_status(item_id, "failed")
             raise ValueError("停止またはリセットされたため、検証を中止しました") from None
+        except (ApproverRequired, ValueError):
+            if claimed:
+                self._set_artex_item_status(item_id, "failed")
+            raise
+        except Exception:
+            if claimed:
+                self._set_artex_item_status(item_id, "failed")
+            raise
         finally:
             self._tls.gen = prev
             self._end_operation()
-        return self.snapshot()
+
+    def _sync_artex_item(self, item_id: str) -> None:
+        with self._lock:
+            rec = self._artex_items.get(item_id)
+            if rec is None:
+                return
+            for tk in self.artex.tasks:
+                if tk.id == rec["task_id"]:
+                    tk.status = rec["item"].status
+        self.bus.publish(self.a.id, "artex.plan", artex_plan=self.artex_plan_view())
 
     def _set_artex_item_status(self, item_id: str, status: str) -> None:
         with self._lock:
@@ -1602,11 +1639,8 @@ class AssessmentService:
             if rec is None:
                 return
             rec["item"].status = status
-            for tk in self.artex.tasks:
-                if tk.id == rec["task_id"]:
-                    tk.status = status
         self.audit.record("artex.item_status", item=item_id, status=status)
-        self.bus.publish(self.a.id, "artex.plan", artex_plan=self.artex_plan_view())
+        self._sync_artex_item(item_id)
 
     @staticmethod
     def _default_phases() -> list[dict]:
@@ -2432,6 +2466,9 @@ class AssessmentService:
             self.a.stop_report = None
         self.a.defense_comparison = None
         self.artex.tasks = []
+        # an ARTEX plan belongs to the workspace it was made in
+        self._artex_items = {}
+        self._artex_plan = None
         self._set_state("stopped" if stays_stopped else "idle")
 
     def planner_status(self) -> dict:
