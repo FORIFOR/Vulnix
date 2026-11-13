@@ -454,6 +454,86 @@ print(out["error"]["kind"], round(time.monotonic() - t0, 1), ",".join(seen), sys
 """
 
 
+# The worker with its overall deadline lost (as if every re-arm had been swallowed): the
+# alarm handler never raises. Everything else, including the per-stage timeouts, is real.
+_DEADLINE_LOST_WORKER = r"""
+import sys
+sys.path.insert(0, sys.argv[1])
+from aegis.workers import http_probe as hp
+hp._Alarm.__call__ = lambda self, signum, frame: None
+sys.argv = ["http_probe"] + sys.argv[2:]
+hp.main()
+"""
+
+
+class _FiniteDrip:
+    """Headers dripped one byte every `gap` s for `n` bytes, then a complete empty response."""
+
+    def __init__(self, n: int, gap: float):
+        self.n, self.gap = n, gap
+        self.sock = socket.socket()
+        self.sock.bind(("127.0.0.1", 0))
+        self.sock.listen(4)
+        self.port = self.sock.getsockname()[1]
+        threading.Thread(target=self._serve, daemon=True).start()
+
+    def _serve(self):
+        try:
+            c, _ = self.sock.accept()
+            c.recv(4096)
+            c.sendall(b"HTTP/1.1 200 OK\r\nX-Slow: ")
+            for _ in range(self.n):
+                c.sendall(b"a")
+                time.sleep(self.gap)
+            c.sendall(b"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            c.close()
+        except OSError:
+            pass
+
+    def close(self):
+        self.sock.close()
+
+
+@unittest.skipUnless(hasattr(__import__("signal"), "setitimer"), "the SIGALRM deadline exists only where setitimer does")
+class TestWhatEndsARunOnceTheDeadlineIsLost(unittest.TestCase):
+    """LOW 1 of the final review of PR #6: the rearm() comment claimed the per-stage socket
+    timeouts still end the run. Against a dripping target they do not."""
+
+    ARGS = ["--scheme", "http", "--host", "drip.test", "--ip", "127.0.0.1", "--path", "/", "--method", "GET",
+            "--connect-timeout", "1", "--read-timeout", "1", "--overall-timeout", "1"]
+
+    def test_per_stage_timeouts_do_not_stop_a_dripping_stage_the_next_stage_start_does(self):
+        srv = _FiniteDrip(n=12, gap=0.25)                  # 3 s of drip, each gap well under the 1 s read timeout
+        try:
+            p = subprocess.run([sys.executable, "-I", "-c", _DEADLINE_LOST_WORKER, str(ROOT), *self.ARGS,
+                                "--port", str(srv.port)], capture_output=True, text=True, timeout=60)
+        finally:
+            srv.close()
+        out = json.loads(p.stdout)
+        # the dripping stage ran on well past the lost 1 s deadline and the 1 s read timeout ...
+        self.assertGreater(out["timings_ms"]["first_byte_ms"], 2500)
+        # ... and ended only when the target finished it; the next stage's clock check then refused
+        self.assertEqual((out["error"]["stage"], out["error"]["kind"]), ("body", "timeout"))
+        self.assertEqual(p.returncode, 3)
+        self.assertEqual(p.stderr, "")
+
+    def test_the_gateway_worker_limit_is_what_ends_it_without_a_report(self):
+        from aegis.gateway import http_probe_tool
+        from aegis.runtime import WorkerPool
+        self.assertEqual(http_probe_tool().timeout_s, 50)  # the limit the comment names
+        srv = _Drip("headers")                              # one byte every 0.3 s for about 2 minutes
+        try:
+            # the same runner the gateway uses, with a short limit standing in for its 50 s
+            res = WorkerPool(max_concurrent=1).run(
+                [sys.executable, "-I", "-c", _DEADLINE_LOST_WORKER, str(ROOT), *self.ARGS, "--port", str(srv.port)],
+                timeout_s=2)
+        finally:
+            srv.close()
+        self.assertTrue(res.killed)
+        self.assertLess(res.elapsed_s, 10)
+        self.assertEqual(res.stdout.strip(), "")            # killed: no structured stage report
+
+
 @unittest.skipUnless(hasattr(__import__("signal"), "setitimer"), "the SIGALRM deadline exists only where setitimer does")
 class TestSwallowedDeadline(unittest.TestCase):
     """Seen once in a full local run: the alarm landed in a finalizer, Python printed

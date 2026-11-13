@@ -91,6 +91,11 @@ class _FakeHandler(http.server.BaseHTTPRequestHandler):
         srv.seen.append((self.path, auth))
         token = (auth or "").removeprefix("Bearer ")
         mode = srv.mode
+        if mode == "hang_all":
+            # holds every request open, an L1 probe too (used for the gateway deadline)
+            srv.hanging.set()
+            time.sleep(60)
+            return self._send(200, {"late": True})
         if mode == "hang" and token:
             # holds an authenticated (L2) request open, so the worker is still running
             # when a stop, revocation or expiry happens
