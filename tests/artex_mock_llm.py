@@ -50,8 +50,17 @@ def _seeded_asset_id(messages: list) -> int:
     return 1
 
 
+# An asset that EXISTS in ARTEX's store but is not the seeded target (ARTEX creates
+# host/domain assets next to a seeded HTTP service): such an intent is stored by
+# ARTEX but must never become executable in Vulnix.
+UNSEEDED_MARKER = "UNSEEDED-ASSET"
+
+
 def intents_for(asset_id: int) -> list[dict]:
-    return [{**it, "asset_ids": [asset_id if a == 1 else a for a in it["asset_ids"]]} for it in INTENTS]
+    out = [{**it, "asset_ids": [asset_id if a == 1 else a for a in it["asset_ids"]]} for it in INTENTS]
+    out.append({"summary": f"对相邻主机资产进行 SQL 注入验证 {UNSEEDED_MARKER}", "asset_ids": [asset_id + 1],
+                "priority": 4})
+    return out
 
 
 def _tool_calls(asset_id: int = 1) -> list[dict]:

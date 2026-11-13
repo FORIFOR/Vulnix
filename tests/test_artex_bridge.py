@@ -23,7 +23,7 @@ from aegis.assessment import ApproverRequired, AssessmentService
 from aegis.lab import set_lab_mode, start_lab
 from aegis.router import sanitize_proposal
 from tests import TEST_CONFINEMENT
-from tests.artex_mock_llm import MockLLM
+from tests.artex_mock_llm import UNSEEDED_MARKER, MockLLM
 
 FAKE = [sys.executable, str(Path(__file__).with_name("fake_artex_planner.py"))]
 LOOPBACK_LLM = "http://127.0.0.1:9/v1"
@@ -79,6 +79,12 @@ class TestIntentsAreRebuiltFromVulnixOnly(unittest.TestCase):
         run = ab.parse_planner_output({"engine": "artex", "allowed_tools": ["add_intent"], "intents": [
             {"id": 1, "summary": "SQL 注入", "asset_ids": [], "unmapped_asset_ids": [3]}]}, {})
         self.assertTrue(run.intents[0]["unmapped"])
+
+    def test_an_artex_build_that_omits_the_unmapped_field_fails_closed(self):
+        out = {"engine": "artex", "allowed_tools": ["add_intent"],
+               "intents": [{"id": 1, "summary": "SQL 注入", "asset_ids": []}]}
+        self.assertTrue(ab.parse_planner_output(out, {"kind": "artex-binary"}).intents[0]["unmapped"])
+        self.assertFalse(ab.parse_planner_output(out, {"kind": "unverified"}).intents[0]["unmapped"])
 
     def test_an_unregistered_asset_id_is_never_a_target(self):
         rec = ab.reconstruct([{"id": 1, "summary": "SQL 注入", "asset_ids": [99], "priority": 5}], TARGETS, "ax")
@@ -183,6 +189,7 @@ class TestRunningThePlanner(unittest.TestCase):
 
     def test_only_a_local_database_is_accepted(self):
         for dsn in ("postgres://u:p@db.example.com/x", "mysql://127.0.0.1/x", "postgres://10.0.0.2/x",
+                    "postgres://u:p@localhost:5432,evil.example:5432/db", "postgres://127.0.0.1:99999/x",
                     "postgres://u:p@127.0.0.1/x?host=db.example.com", "postgres://127.0.0.1/x?hostaddr=10.0.0.1"):
             with self.assertRaises(ab.ArtexBridgeError):
                 ab.run_artex_planner(FAKE, {}, llm_url=LOOPBACK_LLM, pg_dsn=dsn)
@@ -316,6 +323,17 @@ class TestThePlanThroughTheGateway(ServiceBase):
             if self.svc._thread is not None:
                 self.svc._thread.join(timeout=30)
 
+    def test_re_planning_replaces_the_old_tasks_and_waits_for_a_running_item(self):
+        first = self.plan()
+        self.plan()
+        self.assertEqual(len([t for t in self.svc.snapshot()["artex_tasks"] if t["phase"] == "artex"]), 3)
+        current = self.svc.artex_plan_view()["plan"]
+        self.assertNotEqual(current["run_id"], first["run_id"])
+        rec = next(iter(self.svc._artex_items.values()))
+        rec["item"].status = "running"
+        with self.assertRaises(ValueError):
+            self.svc.plan_with_artex("op")
+
     def test_the_planner_cannot_approve_its_own_l2_even_across_plans(self):
         self.svc.separate_l2_approver = True
         plan = self.plan()                        # requested by "op"
@@ -397,8 +415,16 @@ class TestRealArtexPlanner(ServiceBase):
         self.assertEqual({i["catalog_id"] for i in plan["items"]}, {"l2_sqli", "l2_idor", "l1_http_probe"})
         # webshell/RCE and the target-less recon intent are advisories; the asset-99
         # intent is refused by ARTEX itself (no such asset), so it never reaches Vulnix
-        self.assertEqual(len(plan["advisories"]), 2, plan["advisories"])
-        self.assertFalse(any("99" in a["summary"] for a in plan["advisories"]))
+        self.assertFalse(any("asset 99" in a["summary"] for a in plan["advisories"]))
+        reasons = [a["reason"] for a in plan["advisories"]]
+        self.assertTrue(any("カタログ外" in r for r in reasons), reasons)
+        self.assertTrue(any("該当しない" in r for r in reasons), reasons)
+        # an intent aimed at an existing but unseeded ARTEX asset is never executable
+        self.assertFalse(any(UNSEEDED_MARKER in i["intent_summary"] for i in plan["items"]), plan["items"])
+        # the direct-execution tools the model asked for were denied, and never ran
+        self.assertTrue({"Bash", "WebFetch", "add_task_scope"} <= set(plan["denied_tool_calls"]),
+                        plan["denied_tool_calls"])
+        self.assertFalse([c for c in plan["tool_calls"] if c["allowed"] and c["name"] not in ab.PLANNER_TOOL_ALLOWLIST])
         # Gateway: L1 allowed, L2 refused without approver, L2 approved runs in the worker
         self.svc.execute_artex_item(self.item(plan, "l1_http_probe")["id"], "op", roles=("operator",))
         with self.assertRaises(ApproverRequired):

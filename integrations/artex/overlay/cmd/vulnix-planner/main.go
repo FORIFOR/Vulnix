@@ -48,6 +48,8 @@ type intentOut struct {
 	Summary  string  `json:"summary"`
 	AssetIDs []int64 `json:"asset_ids"`
 	Priority int     `json:"priority"`
+	// always present (never null): Vulnix treats a missing field as unmapped
+	UnmappedAssetIDs []int64 `json:"unmapped_asset_ids"`
 }
 
 type output struct {
@@ -167,7 +169,12 @@ func run() error {
 		if ids == nil {
 			ids = []int64{}
 		}
-		out.Intents = append(out.Intents, intentOut{ID: it.ID, Summary: it.Summary, AssetIDs: ids, Priority: it.Priority})
+		unmapped := it.UnmappedAssetIDs
+		if unmapped == nil {
+			unmapped = []int64{}
+		}
+		out.Intents = append(out.Intents, intentOut{ID: it.ID, Summary: it.Summary, AssetIDs: ids,
+			Priority: it.Priority, UnmappedAssetIDs: unmapped})
 	}
 	b, err := json.Marshal(out)
 	if err != nil {

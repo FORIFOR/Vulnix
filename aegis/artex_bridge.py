@@ -207,6 +207,12 @@ def require_loopback_dsn(dsn: str) -> str:
     """ARTEX's store (PostgreSQL) must be a local database. Query parameters that
     can redirect the connection (host, hostaddr, service) are refused."""
     u = urllib.parse.urlsplit(str(dsn or ""))
+    if "," in u.netloc:          # multi-host DSN: only the first host would be checked
+        raise ArtexBridgeError("ARTEX のデータベースに複数の接続先は指定できません")
+    try:
+        _ = u.port
+    except ValueError:
+        raise ArtexBridgeError("ARTEX のデータベースの接続先が不正です") from None
     if u.scheme not in ("postgres", "postgresql") or (u.hostname or "") not in ("127.0.0.1", "::1", "localhost"):
         raise ArtexBridgeError("ARTEX のデータベースはローカル（ループバック）の PostgreSQL のみ使用できます")
     q = urllib.parse.parse_qs(u.query)
@@ -310,14 +316,18 @@ def parse_planner_output(data: object, provenance: dict, elapsed_ms: float = 0.0
         if not isinstance(summary, str) or not summary.strip():
             continue
         ids = it.get("asset_ids") or []
-        unmapped = it.get("unmapped_asset_ids") or []
+        # an ARTEX build always reports the field; if it is missing, fail closed
+        if "unmapped_asset_ids" in it:
+            unmapped = it.get("unmapped_asset_ids")
+        else:
+            unmapped = [] if provenance.get("kind") != "artex-binary" else ["missing"]
         intents.append({
             "id": int(it["id"]) if isinstance(it.get("id"), int) else 0,
             "summary": summary.strip()[:MAX_SUMMARY],
             "asset_ids": [i for i in ids if isinstance(i, int) and not isinstance(i, bool)][:20]
             if isinstance(ids, list) else [],
             "priority": it["priority"] if isinstance(it.get("priority"), int) else 5,
-            "unmapped": bool(unmapped) if isinstance(unmapped, list) else True,
+            "unmapped": bool(unmapped) if isinstance(unmapped, list) else unmapped is not None,
         })
     prov = dict(provenance)
     prov.update({

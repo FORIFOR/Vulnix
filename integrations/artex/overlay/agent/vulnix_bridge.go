@@ -386,7 +386,9 @@ func VulnixRunPlanner(ctx context.Context, d *db.DB, prov llm.Provider, req Vuln
 		// default; the planner gets none of them (found by the Vulnix CI check of the
 		// tools actually offered to the model).
 		DisableBackgroundTasks: true,
-		// Defence in depth on top of the allowlisted Tools and the deny hook.
+		// Denied at call time by norma's permission check (it does not remove a tool
+		// from what the model is offered: that is done by Tools and
+		// DisableBackgroundTasks above). Defence in depth with the deny hook.
 		DisallowedTools: VulnixDisallowedTools,
 	}
 	opts.Hooks = gate.registry()

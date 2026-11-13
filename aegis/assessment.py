@@ -1492,7 +1492,11 @@ class AssessmentService:
             if gen != self._run_generation:
                 raise ValueError("停止またはリセットされたため、ARTEX 計画を破棄しました")
             self._refuse_after_stop_locked()
-        tasks = self.artex.plan_phase("artex", {"target_id": "lab"}, router=router)
+            if any(r["item"].status == "running" for r in self._artex_items.values()):
+                raise ValueError("ARTEX 計画の項目を実行中です。完了してから再計画してください")
+            # the previous plan's tasks leave the plan view with it
+            self.artex.tasks = [t for t in self.artex.tasks if t.phase != "artex"]
+            tasks = self.artex.plan_phase("artex", {"target_id": "lab"}, router=router)
         prov = run.provenance
         with self._lock:
             if gen != self._run_generation:
@@ -1511,7 +1515,7 @@ class AssessmentService:
                                               "gen": gen, "run_id": run_id, "requested_by": actor}
             kind = prov.get("kind")
             label = ("ARTEX 本体（overlay ビルド・ハッシュ固定）" if kind == "artex-binary" and prov.get("pinned")
-                     else "ARTEX 本体ビルド（ハッシュ未固定）" if kind == "artex-binary"
+                     else "ARTEX ビルド（ハッシュ未固定のため本体と未確認）" if kind == "artex-binary"
                      else "ARTEX 互換プロセス（本体と未確認）")
             self._artex_plan = {
                 "run_id": run_id, "requested_by": actor, "at": time.time(),
@@ -1595,8 +1599,13 @@ class AssessmentService:
             if entry.level == "L2":
                 self.audit.record("artex.item_approved", item=item_id, approver=actor, check=entry.check,
                                   requested_by=rec["requested_by"])
-                snap = self.verify_finding(entry.finding_id, actor, roles=roles)
-                ok = snap.get("state") != "failed"
+                def _proofs():
+                    with self._lock:
+                        f = self.a.findings.get(entry.finding_id) or {}
+                        return sum(1 for e in f.get("evidence") or [] if e.get("audit_hash"))
+                before = _proofs()
+                self.verify_finding(entry.finding_id, actor, roles=roles)
+                ok = _proofs() > before          # this run recorded evidence for this finding
             else:
                 with self._lock:
                     self._ensure_active_window_locked()
@@ -1610,6 +1619,8 @@ class AssessmentService:
             claimed = False
             return self.snapshot()
         except _Stopped:
+            if claimed:
+                self._set_artex_item_status(item_id, "failed")
             raise ValueError("停止またはリセットされたため、検証を中止しました") from None
         except (ApproverRequired, ValueError):
             if claimed:
