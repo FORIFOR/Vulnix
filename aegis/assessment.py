@@ -1607,9 +1607,9 @@ class AssessmentService:
             if gateway is not None:
                 gateway.__exit__(None, None, None)
                 self._note_gateway_run(gateway, actor)
-        if gateway is not None and gateway.failure:
+        if gateway is not None and (gateway.failed or gateway.failure):
             # one upstream failure ends the run: whatever ARTEX made of it is not a plan
-            status = gateway.failure.get("http_status")
+            status = (gateway.failure or {}).get("http_status")
             self.audit.record("artex.plan_failed", actor=actor,
                               reason=f"upstream_http_{status}" if status else "upstream_failure")
             raise ValueError(f"Planner LLM の上流 API がエラーを返したため、計画を破棄しました（HTTP {status}）")

@@ -253,13 +253,15 @@ def _error_details(e: BaseException) -> tuple[int | None, bytes]:
     return (code if isinstance(code, int) else None), body
 
 
-_HIGH_ENTROPY = re.compile(r"[A-Za-z0-9+/_=\-]{20,}")
+# a long run that mixes letters AND digits (tokens, keys, ids) - not an error code
+# such as "invalid_request_error" or a model name, which stay readable
+_HIGH_ENTROPY = re.compile(r"(?=[A-Za-z0-9+/_=\-]*[0-9])(?=[A-Za-z0-9+/_=\-]*[A-Za-z])[A-Za-z0-9+/_=\-]{20,}")
 
 
 def _valid_response(resp) -> bool:
     """A chat completion Vulnix can hand to ARTEX: a dict with a non-empty list of
     choices whose messages are dicts with list-or-absent tool_calls - and no error."""
-    if not isinstance(resp, dict) or "error" in resp:
+    if not isinstance(resp, dict) or resp.get("error"):
         return False
     choices = resp.get("choices")
     if not isinstance(choices, list) or not choices:
@@ -524,7 +526,7 @@ class PlannerLLMGateway:
                 raise GatewayRefused("run_failed", "the run failed upstream: nothing more is sent")
             if self._closed.is_set():
                 raise GatewayRefused("closed", "the planner run is over")
-            if self.mode == "forward" and self._may_forward is not None and not self._may_forward():
+            if self.mode == "forward" and not self._may():
                 raise GatewayRefused("stopped", "the planner run was stopped")
             with self._lock:
                 if self._failed.is_set():
@@ -575,7 +577,7 @@ class PlannerLLMGateway:
         if self._failed.is_set():
             self._release(rec, "run_failed")
             raise GatewayRefused("run_failed", "the run failed upstream: nothing more is sent")
-        if self._closed.is_set() or (self._may_forward is not None and not self._may_forward()):
+        if self._closed.is_set() or not self._may():
             self._release(rec, "stopped")
             raise GatewayRefused("stopped", "the planner run was stopped")
         with self._lock:
@@ -732,6 +734,19 @@ class PlannerLLMGateway:
             }
 
     # ---- server ------------------------------------------------------------------
+    def _may(self) -> bool:
+        """May this run still forward? An error answering it counts as no."""
+        try:
+            return self._may_forward is None or bool(self._may_forward())
+        except Exception:  # noqa: BLE001 - cannot confirm the run may continue: not sent
+            return False
+
+    @property
+    def failed(self) -> bool:
+        """True once an upstream exchange failed in this run (even if its details could
+        not be recorded)."""
+        return self._failed.is_set()
+
     def close(self) -> None:
         """No further request is forwarded (emergency stop, end of the run). Lock-free."""
         self._closed.set()

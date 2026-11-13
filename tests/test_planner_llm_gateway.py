@@ -737,3 +737,31 @@ class TestServiceRejectsAPlanAfterAGatewayFailure(unittest.TestCase):
         self.assertIsNone(svc.artex_plan_view()["plan"])
         self.assertTrue([e for e in svc.audit.entries() if e["event"] == "artex.plan_failed"
                          and e["fields"].get("reason") == "upstream_http_402"])
+
+
+class TestReviewRoundSix(unittest.TestCase):
+    def test_error_codes_stay_readable_while_tokens_are_redacted(self):
+        gw = PlannerLLMGateway(mode="preview", model="m", responder=canned, api_key=KEY)
+        s = gw._sanitize_error(json.dumps({"error": {"type": "invalid_request_error", "code": "context_length_exceeded",
+                                                     "message": "model abliterated-model rejected; trace 9f8e7d6c5b4a39281706f5e4"}}).encode())
+        for word in ("invalid_request_error", "context_length_exceeded", "abliterated-model"):
+            self.assertIn(word, s)
+        self.assertNotIn("9f8e7d6c5b4a39281706f5e4", s)
+
+    def test_an_explicit_null_error_is_a_normal_completion(self):
+        def t(*_a):
+            return json.dumps({"error": None, "choices": [{"message": {"content": "ok"}}]}).encode()
+        with PlannerLLMGateway(mode="forward", model="m", upstream_url="http://127.0.0.1:9/v1", transport=t,
+                               allowed_hosts={"lab.test"}, audit=Audit()) as gw:
+            self.assertEqual(post(gw, chat())[0], 200)
+
+    def test_a_stop_check_that_raises_means_not_sent(self):
+        sent = []
+
+        def boom():
+            raise RuntimeError("cannot tell")
+        with PlannerLLMGateway(mode="forward", model="m", upstream_url="http://127.0.0.1:9/v1",
+                               transport=lambda *a: sent.append(1) or ok_transport(), may_forward=boom,
+                               allowed_hosts={"lab.test"}, audit=Audit()) as gw:
+            self.assertIn(post(gw, chat())[0], (403, 500))
+        self.assertEqual(sent, [])
