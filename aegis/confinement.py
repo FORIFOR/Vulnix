@@ -397,23 +397,24 @@ class ConfinementSession:
         q = shlex.quote
         keep = self._keep_paths(staged)
         hide = sorted({h for h in self.ns["hide"]}, key=lambda h: -h.count("/"))
-        lines = ["set -eu", "mount --make-rprivate /",
-                 "mount -t tmpfs -o size=1m,mode=0700 vxstash /mnt"]
+        # -n everywhere: mount must not write its utab into the (empty) /run of the view
+        lines = ["set -eu", "mount -n --make-rprivate /",
+                 "mount -n -t tmpfs -o size=1m,mode=0700 vxstash /mnt"]
         for i, k in enumerate(keep):
-            lines += [f"mkdir /mnt/k{i}", f"mount --bind {q(k)} /mnt/k{i}"]
+            lines += [f"mkdir /mnt/k{i}", f"mount -n --bind {q(k)} /mnt/k{i}"]
         for h in hide:
             if h == "/mnt":
                 continue                     # the stash itself: covered after it is gone
             mode = "1777" if h in ("/tmp", "/var/tmp", "/dev/shm") else "0755"
-            lines.append(f"if [ -d {q(h)} ]; then mount -t tmpfs -o mode={mode},nosuid,nodev,size=64m vxhide {q(h)}; fi")
+            lines.append(f"if [ -d {q(h)} ]; then mount -n -t tmpfs -o mode={mode},nosuid,nodev,size=64m vxhide {q(h)}; fi")
         for i, k in enumerate(keep):
-            lines += [f"mkdir -p {q(k)}", f"mount --bind /mnt/k{i} {q(k)}"]
-        lines += ["umount -l /mnt"]
+            lines += [f"mkdir -p {q(k)}", f"mount -n --bind /mnt/k{i} {q(k)}"]
+        lines += ["umount -n -l /mnt"]
         if "/mnt" in hide:
-            lines.append("mount -t tmpfs -o mode=0755,nosuid,nodev,size=1m vxhide /mnt")
+            lines.append("mount -n -t tmpfs -o mode=0755,nosuid,nodev,size=1m vxhide /mnt")
         lines += [
                   # a fresh /proc of this run's own PID namespace: nothing else is visible
-                  "mount -t proc -o hidepid=invisible,subset=pid vxproc /proc",
+                  "mount -n -t proc -o hidepid=invisible,subset=pid vxproc /proc",
                   # no working directory of the caller (it may lie under a hidden path)
                   "cd /",
                   'exec "$@"']

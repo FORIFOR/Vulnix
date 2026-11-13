@@ -862,16 +862,17 @@ class TestPlannerSeccompProfileAndNamespaceChain(unittest.TestCase):
         i = argv.index("netns")
         self.assertEqual(argv[i:i + 3], ["netns", "exec", sess.name])
         script = argv[argv.index("-c", i) + 1]
-        self.assertIn("mount --make-rprivate /", script)
+        self.assertIn("mount -n --make-rprivate /", script)
+        self.assertNotIn("mount -t", script.replace("mount -n -t", ""))   # every mount without utab
         for h in ("/home", "/root", "/tmp", "/var", "/dev/shm", "/run", "/opt", "/srv", "/srv/vulnix/data"):
             self.assertIn(f"vxhide {h}", script)
         # the stash (/mnt) is covered only after the bind-backs and its unmount
-        self.assertLess(script.index("umount -l /mnt"), script.index("vxhide /mnt"))
-        self.assertLess(script.rindex("mount --bind /mnt/k0"), script.index("umount -l /mnt"))
+        self.assertLess(script.index("umount -n -l /mnt"), script.index("vxhide /mnt"))
+        self.assertLess(script.rindex("mount -n --bind /mnt/k0"), script.index("umount -n -l /mnt"))
         self.assertIn("--ipc", argv)
         self.assertIn("--pid", argv)
         self.assertIn("cd /", script)
-        self.assertIn(f"mount --bind /mnt/k0 {work}", script.replace("'", ""))
+        self.assertIn(f"mount -n --bind /mnt/k0 {work}", script.replace("'", ""))
         self.assertIn("hidepid=invisible", script)
         self.assertLess(argv.index("netns"), argv.index("/usr/bin/setpriv"))   # mounts before the drop
         self.assertIn("--profile=planner", argv)
