@@ -698,7 +698,9 @@ class TestRealArtexPlanner(ServiceBase):
             self.assertTrue(iso["hidden_paths_ok"], iso)
             for k in ("netlink_socket", "vsock_socket", "bpf_syscall"):
                 self.assertTrue(str(iso[k]).startswith("DENIED"), (k, iso))
-            self.assertLessEqual(iso["procs_visible"], 8, iso)
+            self.assertLessEqual(iso["procs_visible"], 2, iso)       # own PID namespace
+            self.assertEqual(iso["seccomp_mode"], ["2"], iso)
+            self.assertFalse(iso.get("netns_left"), iso)
             self.assertEqual(iso.get("limits"), {"pids.max": 512, "memory.max": 2 << 30}, iso)
             self.assertFalse(iso.get("files_left"), iso)
             with self.assertRaises(OSError):
@@ -861,8 +863,14 @@ class TestPlannerSeccompProfileAndNamespaceChain(unittest.TestCase):
         self.assertEqual(argv[i:i + 3], ["netns", "exec", sess.name])
         script = argv[argv.index("-c", i) + 1]
         self.assertIn("mount --make-rprivate /", script)
-        for h in ("/home", "/root", "/tmp", "/var/tmp", "/dev/shm", "/srv/vulnix/data"):
+        for h in ("/home", "/root", "/tmp", "/var", "/dev/shm", "/run", "/opt", "/srv", "/srv/vulnix/data"):
             self.assertIn(f"vxhide {h}", script)
+        # the stash (/mnt) is covered only after the bind-backs and its unmount
+        self.assertLess(script.index("umount -l /mnt"), script.index("vxhide /mnt"))
+        self.assertLess(script.rindex("mount --bind /mnt/k0"), script.index("umount -l /mnt"))
+        self.assertIn("--ipc", argv)
+        self.assertIn("--pid", argv)
+        self.assertIn("cd /", script)
         self.assertIn(f"mount --bind /mnt/k0 {work}", script.replace("'", ""))
         self.assertIn("hidepid=invisible", script)
         self.assertLess(argv.index("netns"), argv.index("/usr/bin/setpriv"))   # mounts before the drop
@@ -877,3 +885,66 @@ class TestPlannerSeccompProfileAndNamespaceChain(unittest.TestCase):
         o.fresh_identity = lambda: 4242
         with self.assertRaises(ConfinementError):
             ConfinementSession(o, "10.0.0.5", 80, namespaces={"hide": [], "keep": []})
+
+
+@unittest.skipUnless(os.environ.get("VULNIX_ARTEX_CONFINE") == "1" and sys.platform.startswith("linux"),
+                     "real kernel namespace confinement only in Linux CI")
+class TestNamespaceConfinementStopsOnLinux(unittest.TestCase):
+    """Emergency stop and the deadline kill, on the real kernel, in namespace mode."""
+
+    SLEEPER = [sys.executable, "-I", "-c", "import time; time.sleep(120)"]
+
+    def wait_until(self, cond, seconds=15):
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            if cond():
+                return True
+            time.sleep(0.2)
+        return cond()
+
+    def test_a_kill_ends_the_planner_and_its_relay_and_the_namespace_goes(self):
+        import subprocess as sp
+        import urllib.parse
+
+        from aegis.confinement import KernelConfinement
+        with MockLLM() as mock:
+            port = urllib.parse.urlsplit(mock.url).port
+            work = tempfile.mkdtemp(prefix="vulnix-artex-")
+            os.chmod(work, 0o755)
+            self.addCleanup(lambda: __import__("shutil").rmtree(work, True))
+            sess = KernelConfinement().session("127.0.0.1", port, limits=ab.ARTEX_LIMITS,
+                                               namespaces={"hide": ab.planner_hidden_paths(), "keep": [work]})
+            with sess:
+                self.assertTrue(sess.evidence["netns_separate"], sess.evidence)
+                proc = sp.Popen(sess.wrap(self.SLEEPER, interpreter=sys.executable), stdin=sp.DEVNULL,
+                                stdout=sp.DEVNULL, stderr=sp.DEVNULL, cwd=work, start_new_session=True)
+                self.assertTrue(self.wait_until(lambda: not sess.empty(), 10))
+                self.assertTrue(sess.kill())                       # what emergency stop does
+                proc.wait(timeout=20)
+                self.assertTrue(self.wait_until(sess.empty), "cgroup not empty after kill")
+                self.assertIsNotNone(sess._relay.wait(timeout=10))  # the relay died with it
+            self.assertFalse(sess.leftover)
+            self.assertFalse(sess.netns_left)
+            self.assertFalse(os.path.exists(f"/run/netns/{sess.name}"))
+
+    def test_the_deadline_kills_a_planner_that_never_ends(self):
+        from aegis.confinement import KernelConfinement
+        with MockLLM() as mock:
+            kc = KernelConfinement()
+            made = []
+            original = kc.session
+
+            def spy(*a, **k):
+                s = original(*a, **k)
+                made.append(s)
+                return s
+            kc.session = spy
+            t0 = time.monotonic()
+            with self.assertRaises(ab.ArtexBridgeError) as cm:
+                ab.run_artex_planner(self.SLEEPER, {}, llm_url=mock.url, timeout_s=3, confinement=kc)
+            self.assertIn("制限時間", str(cm.exception))
+            self.assertLess(time.monotonic() - t0, 60)
+            (s,) = made
+            self.assertTrue(s.empty())
+            self.assertFalse(s.leftover)
+            self.assertFalse(os.path.exists(f"/run/netns/{s.name}"))

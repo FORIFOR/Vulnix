@@ -101,7 +101,7 @@ def _artex_isolation_view(iso: dict) -> dict:
             "run_dropped_packets", "limits", "files_left",
             "netns_separate", "netns_interfaces", "host_loopback_canary", "host_loopback_canary_arrived",
             "relay_endpoints", "hidden_paths_ok", "netlink_socket", "vsock_socket", "bpf_syscall",
-            "procs_visible")
+            "procs_visible", "seccomp_mode", "netns_left")
     view = {k: iso[k] for k in keys if k in iso}
     view["confined"] = bool(iso.get("confined"))
     view["label"] = (f"OS 隔離あり（{iso.get('mechanism', '')}）" if view["confined"]
@@ -1545,7 +1545,8 @@ class AssessmentService:
                                     on_leftover=self._note_leftover_session,
                                     on_started=lambda sess: self._artex_session_started(sess, gen),
                                     on_finished=self._artex_session_finished,
-                                    may_start=lambda: self._artex_may_start(gen))
+                                    may_start=lambda: self._artex_may_start(gen),
+                                    data_dirs=(str(self.data_dir),))
         except ArtexBridgeError as e:
             self.audit.record("artex.plan_failed", actor=actor, reason=str(e)[:200])
             raise ValueError(str(e)) from None

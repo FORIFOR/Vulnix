@@ -228,13 +228,20 @@ def require_loopback_dsn(dsn: str) -> str:
     return dsn
 
 
-def planner_hidden_paths(forbidden_paths=()) -> list[str]:
-    """What the ARTEX planner must not see at all (covered by empty tmpfs in its mount
-    view): users' homes, shared temp directories, the Vulnix installation, and the
-    directories holding Vulnix's protected files (the data directory)."""
+# Host directories a planner never needs: covered by empty tmpfs in its mount view
+# (what it needs from them - its work dir, the launcher, the interpreter - is bound back).
+PLANNER_HIDDEN = ("/home", "/root", "/tmp", "/var", "/dev/shm", "/run", "/mnt", "/media", "/srv",
+                  "/opt", "/boot", "/lost+found", "/snap")
+
+
+def planner_hidden_paths(forbidden_paths=(), data_dirs=()) -> list[str]:
+    """What the ARTEX planner must not see at all: users' homes, temp and state
+    directories, /run (secrets, sockets), mounts, the Vulnix installation, and
+    Vulnix's data directory (given explicitly, and every directory of a protected file)."""
     repo = str(Path(__file__).resolve().parents[1])
     dirs = {str(Path(f).resolve().parent) for f in forbidden_paths}
-    return sorted({"/home", "/root", "/tmp", "/var/tmp", "/dev/shm", repo, *dirs})
+    dirs |= {str(Path(d).resolve()) for d in data_dirs}
+    return sorted({*PLANNER_HIDDEN, repo, *dirs})
 
 
 def _endpoint(url: str, default_port: int) -> tuple[str, int]:
@@ -250,7 +257,8 @@ def _endpoint(url: str, default_port: int) -> tuple[str, int]:
 def run_artex_planner(command: list[str], request: dict, *, llm_url: str, llm_model: str = "mock",
                       llm_key: str = "", pg_dsn: str = "", timeout_s: float = 120.0,
                       expected_sha256: str = "", confinement=None, forbidden_paths=(),
-                      on_leftover=None, on_started=None, on_finished=None, may_start=None) -> ArtexRun:
+                      on_leftover=None, on_started=None, on_finished=None, may_start=None,
+                      data_dirs=()) -> ArtexRun:
     """`confinement`: a Vulnix confinement provider (aegis.confinement.KernelConfinement).
     When given, ARTEX runs inside a per-run cgroup v2 + nftables confinement under its
     own unprivileged uid, with no capabilities, no_new_privs and the seccomp launcher;
@@ -287,7 +295,7 @@ def run_artex_planner(command: list[str], request: dict, *, llm_url: str, llm_mo
                 created = confinement.session(
                     llm_ep[0], llm_ep[1], forbidden_paths=tuple(forbidden_paths),
                     protected_pid=os.getpid(), extra_endpoints=extra, limits=ARTEX_LIMITS,
-                    namespaces={"hide": planner_hidden_paths(forbidden_paths), "keep": [work]})
+                    namespaces={"hide": planner_hidden_paths(forbidden_paths, data_dirs), "keep": [work]})
                 # on record BEFORE anything runs in it (the probe included): a probe that
                 # cannot be killed is recorded, and an emergency stop during set-up sees it
                 if on_leftover is not None:
@@ -379,6 +387,7 @@ def run_artex_planner(command: list[str], request: dict, *, llm_url: str, llm_mo
         raise ArtexBridgeError("ARTEX の隔離を解除できない残存プロセスがあります（隔離は維持されています）")
     if sess is not None:
         isolation["files_left"] = bool(getattr(sess, "files_left", False))
+        isolation["netns_left"] = bool(getattr(sess, "netns_left", False))
     if len(out) > MAX_OUTPUT_BYTES:
         raise ArtexBridgeError("ARTEX の出力が大きすぎます")
     try:

@@ -41,12 +41,13 @@ AF_INET, AF_INET6 = 2, 10
 # --profile=planner: refused with EPERM (numbers per architecture)
 PLANNER_DENY = {
     "x86_64": (321, 323, 298, 250, 248, 249, 101, 310, 311, 165, 166, 155, 161, 246, 320, 175, 313,
-               176, 304, 303, 167, 168, 169, 163, 179, 172, 173),
+               176, 304, 303, 167, 168, 169, 163, 179, 172, 173, *range(428, 434), 442),
     # bpf userfaultfd perf_event_open keyctl add_key request_key ptrace process_vm_readv/writev
     # mount umount2 pivot_root chroot kexec_load kexec_file_load init_module finit_module
     # delete_module open_by_handle_at name_to_handle_at swapon swapoff reboot acct quotactl iopl ioperm
     "aarch64": (280, 282, 241, 219, 217, 218, 117, 270, 271, 40, 39, 41, 51, 104, 294, 105, 273,
-                106, 265, 264, 224, 225, 142, 89, 60),
+                106, 265, 264, 224, 225, 142, 89, 60, *range(428, 434), 442),
+    # (both) open_tree move_mount fsopen fsconfig fsmount fspick, mount_setattr
 }
 IO_URING = (425, 426, 427)   # io_uring_setup / _enter / _register (same on both): io_uring can
                              # create and connect sockets without passing through seccomp

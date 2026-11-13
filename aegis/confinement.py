@@ -266,7 +266,8 @@ class KernelConfinement:
         sess._table = sess._dir = True
         sess.leftover = True
         sess.extra, sess._owned, sess.limits, sess.files_left = (), [], {}, False
-        sess.ns, sess._netns, sess._relay, sess.netns_left = None, False, None, False
+        # a namespace of a run left behind is deleted with it (a no-op when there is none)
+        sess.ns, sess._netns, sess._relay, sess.netns_left = None, True, None, False
         return sess
 
     def interpreter_reachable_by_others(self) -> str:
@@ -401,21 +402,39 @@ class ConfinementSession:
         for i, k in enumerate(keep):
             lines += [f"mkdir /mnt/k{i}", f"mount --bind {q(k)} /mnt/k{i}"]
         for h in hide:
+            if h == "/mnt":
+                continue                     # the stash itself: covered after it is gone
             mode = "1777" if h in ("/tmp", "/var/tmp", "/dev/shm") else "0755"
             lines.append(f"if [ -d {q(h)} ]; then mount -t tmpfs -o mode={mode},nosuid,nodev,size=64m vxhide {q(h)}; fi")
         for i, k in enumerate(keep):
             lines += [f"mkdir -p {q(k)}", f"mount --bind /mnt/k{i} {q(k)}"]
-        lines += ["umount -l /mnt",
-                  # a fresh /proc: other users' processes invisible, no /proc/sys etc.
+        lines += ["umount -l /mnt"]
+        if "/mnt" in hide:
+            lines.append("mount -t tmpfs -o mode=0755,nosuid,nodev,size=1m vxhide /mnt")
+        lines += [
+                  # a fresh /proc of this run's own PID namespace: nothing else is visible
                   "mount -t proc -o hidepid=invisible,subset=pid vxproc /proc",
+                  # no working directory of the caller (it may lie under a hidden path)
+                  "cd /",
                   'exec "$@"']
-        ip = self._o._which("ip") or "ip"
-        return [ip, "netns", "exec", self.name, self._o._which("sh") or "sh", "-c", "\n".join(lines), "sh"]
+        ip = self._ip()
+        unshare = self._o._which("unshare")
+        if not unshare:
+            raise ConfinementError("unshare が見つかりません")
+        # own IPC (no SysV / POSIX IPC of the host) and PID namespaces as well
+        return [ip, "netns", "exec", self.name, unshare, "--ipc", "--pid", "--fork",
+                self._o._which("sh") or "sh", "-c", "\n".join(lines), "sh"]
+
+    def _ip(self) -> str:
+        ip = self._o._which("ip")
+        if not ip:
+            raise ConfinementError("ip（iproute2）が見つかりません")
+        return ip
 
     def _setup_netns(self) -> None:
         """The run's network namespace (only `lo`, up) and the relay into it, started
         inside this run's cgroup (so the pinned rules apply to its upstream side)."""
-        ip = self._o._which("ip") or "ip"
+        ip = self._ip()
         r = self._o._run([*self._o._priv(), ip, "netns", "add", self.name], capture_output=True, text=True,
                          timeout=10)
         if r.returncode != 0:
@@ -688,6 +707,7 @@ class ConfinementSession:
             f"r=libc.syscall({bpf},0,0,0)\n"
             "out['bpf']='ALLOWED' if r>=0 else 'DENIED:%d' % ctypes.get_errno()\n"
             "out['procs_visible']=len([d for d in os.listdir('/proc') if d.isdigit()])\n"
+            "out['seccomp']=[l.split()[1] for l in open('/proc/self/status') if l.startswith('Seccomp:')]\n"
         )
 
     def _ns_verdict(self, seen: dict, canary) -> tuple[bool, dict]:
@@ -700,7 +720,8 @@ class ConfinementSession:
                 arrived = True
             except (BlockingIOError, OSError):
                 pass
-            canary.close()
+            finally:
+                canary.close()
         keep = set(self._keep_paths(self._o.staged_workers()))
         hidden = seen.get("hidden") if isinstance(seen.get("hidden"), dict) else {}
 
@@ -722,14 +743,16 @@ class ConfinementSession:
                                and all(hidden_ok(d, v) for d, v in hidden.items()),
             "netlink_socket": seen.get("netlink"), "vsock_socket": seen.get("vsock"),
             "bpf_syscall": seen.get("bpf"), "procs_visible": seen.get("procs_visible"),
+            "seccomp_mode": seen.get("seccomp"),
         }
         ok = (ev["netns_separate"] and ev["netns_interfaces"] == ["lo"]
               and str(ev["host_loopback_canary"]).startswith("BLOCKED:") and not arrived
               and relay and all(v == "OK" for v in relay.values())
               and set(relay) == {str(pt) for pt in self.ns["ports"]}
               and ev["hidden_paths_ok"]
-              and str(ev["netlink_socket"]).startswith("DENIED:") and str(ev["vsock_socket"]).startswith("DENIED:")
-              and str(ev["bpf_syscall"]).startswith("DENIED:")
+              # EPERM from the filter itself (not "module missing" / "disabled anyway")
+              and ev["netlink_socket"] == "DENIED:PermissionError" and ev["vsock_socket"] == "DENIED:PermissionError"
+              and ev["bpf_syscall"] == "DENIED:1" and ev["seccomp_mode"] == ["2"]
               and isinstance(ev["procs_visible"], int) and ev["procs_visible"] <= 8)
         return bool(ok), ev
 
@@ -795,7 +818,7 @@ class ConfinementSession:
                 except (subprocess.TimeoutExpired, OSError):
                     pass
             if removed and getattr(self, "_netns", False):
-                ip = self._o._which("ip") or "ip"
+                ip = self._o._which("ip") or "/usr/sbin/ip"
                 r = self._o._run([*self._o._priv(), ip, "netns", "delete", self.name],
                                  capture_output=True, text=True, timeout=10)
                 if r.returncode == 0:

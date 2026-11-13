@@ -90,8 +90,9 @@ def main() -> None:
     os.setgid(uid)
     os.setuid(uid)
     libc = ctypes.CDLL(None, use_errno=True)
-    libc.prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)
-    if os.getuid() != uid or os.geteuid() != uid:
+    if libc.prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0:
+        sys.exit(97)
+    if os.getuid() != uid or os.geteuid() != uid or os.getgroups():
         sys.exit(97)
     threads = [threading.Thread(target=_serve, args=(s, p), daemon=True) for s, p in listeners]
     for t in threads:
