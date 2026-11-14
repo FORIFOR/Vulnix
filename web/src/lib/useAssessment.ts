@@ -4,6 +4,7 @@
 // than what we have; duplicates are dropped and a gap triggers a full refetch,
 // so the screen always converges on server state.
 import { useCallback, useEffect, useRef, useState, type SetStateAction } from "react";
+import { needsPoll, POLL_EVERY_MS } from "./polling";
 import { getJSON } from "./api";
 import { applyEvent, withNewerPlanner } from "./assessmentEvents";
 import type { AegisEvent, AuditEntry, Snapshot } from "./types";
@@ -65,6 +66,14 @@ export function useAssessment(id: string) {
   useEffect(() => {
     let es: EventSource | null = null;
     let cancelled = false;
+    let lastEventAt = Date.now();
+    // backup for paths that hold event streams back (e.g. Cloudflare Quick Tunnels)
+    const poll = setInterval(() => {
+      if (needsPoll(lastEventAt, Date.now(), document.visibilityState === "visible")) {
+        lastEventAt = Date.now();
+        void refetch();
+      }
+    }, POLL_EVERY_MS);
     (async () => {
       const last = await refetch();
       if (cancelled || last === null) {
@@ -75,6 +84,7 @@ export function useAssessment(id: string) {
       es.onopen = () => setConn("live");
       es.onerror = () => setConn(es?.readyState === EventSource.CLOSED ? "offline" : "reconnecting");
       es.onmessage = (m) => {
+        lastEventAt = Date.now();
         const ev = JSON.parse(m.data) as AegisEvent;
         if (ev.seq <= seqRef.current) return; // duplicate / stale
         const gap = ev.seq > seqRef.current + 1;
@@ -103,6 +113,7 @@ export function useAssessment(id: string) {
     })();
     return () => {
       cancelled = true;
+      clearInterval(poll);
       es?.close();
       if (verifyTimer.current) clearTimeout(verifyTimer.current);
     };
