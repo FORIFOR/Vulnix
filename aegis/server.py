@@ -143,7 +143,11 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     "mfa_enabled": ops.totp_enabled(sess.operator)} if sess else None
 
         def _org_requested(self, query_org: str | None = None) -> str:
-            return (self.headers.get("X-Vulnix-Org") or query_org or "").strip()[:40]
+            """The organization the client says it is working in: header, query, or the
+            `vulnix_org` cookie the UI sets. Only a choice - membership is checked by _bind."""
+            jar = http.cookies.SimpleCookie(self.headers.get("Cookie", ""))
+            cookie = jar.get("vulnix_org")
+            return (self.headers.get("X-Vulnix-Org") or query_org or (cookie.value if cookie else "")).strip()[:40]
 
         def _bind(self, sess, query_org: str | None = None):
             """The organization this request acts in: (its service, the session with the
@@ -826,6 +830,16 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
 
 def _build_server(svc, a, data, first, seed, env_opt_out):
     ops = OperatorStore(seed)
+    tenancy = None
+    if os.environ.get("VULNIX_MULTI_TENANT", "1") != "0":
+        # organizations: the existing workspace is the default organization; each new
+        # organization gets its own service and data directory under <data>/orgs/
+        store = OrgStore(Path(data) / "orgs.json", bootstrap_members=lambda: default_members_from(ops))
+        tenancy = TenantRegistry(
+            store, svc,
+            lambda d: AssessmentService(d, a.lab_port, a.verify_seconds,
+                                        separate_l2_approver=a.separate_l2_approver or None),
+            Path(data))
     if not getattr(svc, "previous_session_clean", True):
         # a logout or sign-out-everywhere of the previous run may not be on disk
         n = ops.revoke_all_sessions("the control plane did not shut down cleanly")   # raises if not saved
@@ -834,7 +848,7 @@ def _build_server(svc, a, data, first, seed, env_opt_out):
     read_auth = False if a.no_read_auth else (True if a.require_read_auth else None)
     srv = ThreadingHTTPServer(
         ("127.0.0.1", a.port),
-        make_handler(svc, ops, require_read_auth=read_auth),
+        make_handler(svc, ops, require_read_auth=read_auth, tenancy=tenancy),
     )
     srv.daemon_threads = True
     print(f"Vulnix control plane: http://127.0.0.1:{a.port}  (audit: {data / 'audit.jsonl'})")
@@ -847,6 +861,7 @@ def _build_server(svc, a, data, first, seed, env_opt_out):
     if ops.admin_credentials_path:
         print(f"管理者アカウントを作成しました（ロール付与用・平文・600権限）: {ops.admin_credentials_path}")
     srv.ops = ops
+    srv.tenancy = tenancy
     return srv
 
 
@@ -954,6 +969,8 @@ def main() -> None:
         # an auth change that never reached the disk (a logout, a password change)
         # makes this an unclean shutdown too: the next start then signs everyone out
         auth_saved = ops.trusted()
+        if getattr(srv, "tenancy", None) is not None:
+            srv.tenancy.close_all()
         clean = svc.close(external_clean=auth_saved)
         print("コントロールプレーンを停止しました" + ("" if clean else
               "（保存または Worker の停止を確認できなかったため、次回起動時に実サービスの診断許可を保留します）"))

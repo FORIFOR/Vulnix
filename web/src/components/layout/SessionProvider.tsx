@@ -4,18 +4,23 @@ import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { getJSON } from "@/lib/api";
 import { SessionContext, type SessionInfo } from "@/lib/useSession";
+import { activeOrg, getSelectedOrg, type OrgInfo } from "@/lib/org";
 
 /** Loads the session, and redirects to /login when a protected page has none. */
 export function SessionProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [loading, setLoading] = useState(true);
+  const [orgs, setOrgs] = useState<OrgInfo[]>([]);
+  const [multiTenant, setMultiTenant] = useState(false);
   const path = usePathname();
   const router = useRouter();
 
   const refresh = useCallback(async () => {
     try {
-      const { session } = await getJSON<{ session: SessionInfo | null }>("/api/auth/me");
-      setSession(session);
+      const me = await getJSON<{ session: SessionInfo | null; orgs?: OrgInfo[]; multi_tenant?: boolean }>("/api/auth/me");
+      setSession(me.session);
+      setOrgs(me.orgs ?? []);
+      setMultiTenant(Boolean(me.multi_tenant));
     } catch {
       setSession(null);
     } finally {
@@ -47,11 +52,12 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   }, [refresh]);
 
   useEffect(() => {
-    if (!loading && !session && path !== "/login") router.replace("/login");
+    if (!loading && !session && path !== "/login" && path !== "/invite") router.replace("/login");
   }, [loading, session, path, router]);
 
   return (
-    <SessionContext.Provider value={{ session, loading, refresh, logout }}>
+    <SessionContext.Provider value={{ session, loading, refresh, logout, orgs, multiTenant,
+                                      org: activeOrg(orgs, typeof document === "undefined" ? null : getSelectedOrg()) }}>
       {children}
     </SessionContext.Provider>
   );

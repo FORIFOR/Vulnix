@@ -28,6 +28,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y nftables iproute2
 
+      - name: Python static checks (ruff, pinned)
+        run: |
+          python3 -m pip install --quiet ruff==0.6.9
+          ruff check aegis tests
+
       - name: Run Python Unit & Integration Test Suite
         run: |
           python3 -m unittest discover -s tests -p "test_*.py" -v
@@ -81,6 +86,9 @@ jobs:
 
       - name: Run Frontend Unit Tests
         run: npm test
+
+      - name: Lint
+        run: npm run lint
 
       - name: Build Next.js Production Bundle
         run: npm run build

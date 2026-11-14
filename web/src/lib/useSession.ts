@@ -1,6 +1,7 @@
 "use client";
 
 import { createContext, useContext } from "react";
+import type { OrgInfo } from "./org";
 
 export interface SessionInfo {
   operator: string;
@@ -12,6 +13,10 @@ export interface SessionInfo {
 export interface SessionCtx {
   session: SessionInfo | null;
   loading: boolean;
+  /** organizations of this account (multi-tenant control plane only) */
+  orgs: OrgInfo[];
+  multiTenant: boolean;
+  org: OrgInfo | null;
   refresh: () => Promise<void>;
   logout: () => Promise<void>;
 }
@@ -19,6 +24,9 @@ export interface SessionCtx {
 export const SessionContext = createContext<SessionCtx>({
   session: null,
   loading: true,
+  orgs: [],
+  multiTenant: false,
+  org: null,
   refresh: async () => {},
   logout: async () => {},
 });

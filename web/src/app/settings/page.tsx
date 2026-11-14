@@ -4,6 +4,7 @@ import { useState, useSyncExternalStore } from "react";
 import { MfaSection } from "@/components/settings/MfaSection";
 import { ProfilesSection } from "@/components/settings/ProfilesSection";
 import { RolesSection } from "@/components/settings/RolesSection";
+import { OrgSection } from "@/components/settings/OrgSection";
 import { PasswordChangeForm } from "@/components/settings/PasswordChangeForm";
 import { Card, Pill } from "@/components/ui";
 import { command } from "@/lib/api";
@@ -129,6 +130,8 @@ export default function Settings() {
         {session && <PasswordChangeForm />}
         {session && <MfaSection />}
       </Card>
+
+      {session && <OrgSection />}
 
       {session && (
         <Card>
