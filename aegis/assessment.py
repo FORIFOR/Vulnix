@@ -4256,6 +4256,39 @@ class AssessmentService:
                              planner={k: planner[k] for k in _PLANNER_EVENT_FIELDS})
             return {"message": ai_msg, "chat_messages": list(self.a.chat_messages), "planner": planner}
 
+    def advise_findings(self, advisor, actor: str = "system") -> dict:
+        """Ask the AI advisor (aegis/ai_advisor.py) about the lab findings. Proposal only:
+        nothing is approved, queued or run. Nothing from a real-service asset, and no finding
+        about a real service, is given to the advisor (same allow-list as the chat)."""
+        from .ai_advisor import AbliterationAdvisor, AdvisorError
+        if not isinstance(advisor, AbliterationAdvisor):
+            raise TypeError("advise_findings takes an AbliterationAdvisor")
+        with self._lock:
+            all_f = [copy.deepcopy(f) for f in self.a.findings.values()]
+            # the chat's rule: an asset that is, or is becoming, a registered real service sends
+            # nothing, whatever its findings carry (one without evidence included)
+            real_asset = (self._in_ownership_flow(self.a.asset.get("name"))
+                          or any(k in self.a.asset for k in ("challenge", "ownership_proof")))
+            eligible = [] if real_asset else [f for f in all_f if not self._finding_touches_real_service(f)]
+        excluded = len(all_f) - len(eligible)
+        # the model call happens outside the service lock (a slow model must not block a stop)
+        try:
+            result = advisor.advise(eligible).to_dict()
+        except AdvisorError as e:
+            with self._lock:
+                self.audit.record("advisor.failed", actor=actor, backend=advisor.name,
+                                  endpoint_kind=advisor.endpoint_kind, offered=len(eligible),
+                                  excluded_real_service=excluded, reason=str(e)[:200],
+                                  sent_to_external_model=advisor.endpoint_kind != "loopback_mock")
+            raise
+        result["excluded_real_service_findings"] = excluded
+        with self._lock:
+            self.audit.record("advisor.asked", actor=actor, backend=result["backend"],
+                              endpoint_kind=result["endpoint_kind"], sent=len(result["sent_refs"]),
+                              excluded_real_service=excluded, rejected=len(result["rejected"]),
+                              sent_to_external_model=result["endpoint_kind"] != "loopback_mock")
+        return result
+
     def _finding_touches_real_service(self, finding: dict | None) -> bool:
         """Whether a finding may NOT be shown to an external model. Allow-list: only
         evidence that was recorded as taken from the local lab passes. Evidence
