@@ -1,6 +1,7 @@
 "use client";
 
 import { usePathname, useRouter } from "next/navigation";
+import { isPublicPage } from "@/lib/publicMode";
 import { useCallback, useEffect, useState } from "react";
 import { getJSON } from "@/lib/api";
 import { SessionContext, type SessionInfo } from "@/lib/useSession";
@@ -47,7 +48,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   }, [refresh]);
 
   useEffect(() => {
-    if (!loading && !session && path !== "/login") router.replace("/login");
+    if (!loading && !session && !isPublicPage(path)) router.replace("/login");
   }, [loading, session, path, router]);
 
   return (
