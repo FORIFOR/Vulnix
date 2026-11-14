@@ -900,7 +900,8 @@ class TestPlannerSeccompProfileAndNamespaceChain(unittest.TestCase):
         script = argv[argv.index("-c", i) + 1]
         self.assertIn("mount -n --make-rprivate /", script)
         self.assertNotIn("mount -t", script.replace("mount -n -t", ""))   # every mount without utab
-        for h in ("/home", "/root", "/tmp", "/var", "/dev/shm", "/run", "/opt", "/srv", "/srv/vulnix/data"):
+        for h in ("/home", "/root", "/tmp", "/var", "/dev/shm", "/run", "/opt", "/srv", "/Users", "/Volumes",
+                  "/srv/vulnix/data"):
             self.assertIn(f"vxhide {h}", script)
         # the stash (/mnt) is covered only after the bind-backs and its unmount
         self.assertLess(script.index("umount -n -l /mnt"), script.index("vxhide /mnt"))
@@ -1040,3 +1041,106 @@ class TestNamespaceConfinementStopsOnLinux(unittest.TestCase):
             self.assertTrue(s.empty())
             self.assertFalse(s.leftover)
             self.assertFalse(os.path.exists(f"/run/netns/{s.name}"))
+
+
+@unittest.skipUnless(os.environ.get("VULNIX_ARTEX_REAL_BIN"), "real ARTEX overlay binary only in Linux CI")
+class TestRealArtexThroughThePlannerGateway(TestRealArtexPlanner):
+    """The real ARTEX, confined, with the Vulnix Planner LLM Gateway as its only model."""
+
+    def test_the_real_planner_plans_and_the_gateway_decides(self):      # replaced below
+        pass
+
+    def test_forward_mode_through_the_gateway_to_the_local_mock(self):
+        env = {"VULNIX_ARTEX_LLM_MODE": "gateway-forward",
+               "VULNIX_ARTEX_LLM_UPSTREAM_URL": self.mock.url + "/chat/completions",
+               "VULNIX_ARTEX_LLM_MODEL": "gateway-forced-model"}
+        with patch.dict(os.environ, env):
+            plan = self.plan()
+        gw = plan["llm_gateway"]
+        self.assertEqual((gw["mode"], gw["refused"]), ("forward", 0), gw)
+        self.assertGreaterEqual(gw["calls"], 2)
+        self.assertTrue(self.mock.requests)
+        self.assertTrue(all(r["body"].get("model") == "gateway-forced-model" for r in self.mock.requests))
+        self.assertEqual({i["catalog_id"] for i in plan["items"]}, {"l2_sqli", "l2_idor", "l1_http_probe"})
+        # the plan still goes through the Vulnix Gateway: L1 once, L2 approver only
+        self.svc.execute_artex_item(self.item(plan, "l1_http_probe")["id"], "op", roles=("operator",))
+        with self.assertRaises(ApproverRequired):
+            self.svc.execute_artex_item(self.item(plan, "l2_idor")["id"], "op", roles=("operator",))
+        out = os.environ.get("VULNIX_ARTEX_GATEWAY_EVIDENCE")
+        if out:
+            Path(out + ".forward.json").write_text(json.dumps(
+                {"llm_gateway": gw, "isolation_confined": plan["isolation"].get("confined"),
+                 "items": [(i["catalog_id"], i["status"]) for i in plan["items"]]}, ensure_ascii=False, indent=2))
+
+    def test_preview_mode_sends_nothing_and_shows_what_would_be_sent(self):
+        with patch.dict(os.environ, {"VULNIX_ARTEX_LLM_MODE": "gateway-preview",
+                                     "VULNIX_ARTEX_LLM_MODEL": "abliterated-model"}):
+            plan = self.plan()
+        gw = plan["llm_gateway"]
+        self.assertEqual((gw["mode"], gw["upstream"]), ("preview", None))
+        self.assertGreaterEqual(gw["calls"], 1)                        # the real ARTEX did ask
+        self.assertEqual(self.mock.requests, [])                       # not even the local mock
+        pv = self.svc.artex_llm_preview()
+        self.assertEqual(len(pv["requests"]), gw["calls"])
+        out = os.environ.get("VULNIX_ARTEX_GATEWAY_EVIDENCE")
+        if out:
+            first = pv["requests"][0] if pv["requests"] else {}
+            Path(out + ".preview.json").write_text(json.dumps(
+                {"llm_gateway": gw, "records": pv["report"]["records"], "first_request": first},
+                ensure_ascii=False, indent=2))
+
+
+def _structure(req: dict) -> list:
+    """The shape of a chat request (roles, tool-call wiring, content types) - no text."""
+    out = []
+    for m in req.get("messages") or []:
+        out.append({"role": m.get("role"), "content_type": type(m.get("content")).__name__,
+                    "tool_calls": [tc.get("id") for tc in m.get("tool_calls") or []],
+                    "tool_call_id": m.get("tool_call_id")})
+    return out
+
+
+@unittest.skipUnless(os.environ.get("VULNIX_ARTEX_REAL_BIN"), "real ARTEX overlay binary only in Linux CI / test VM")
+class TestRealArtexUpstreamCompatibilityAndFailure(ServiceBase):
+    """The real ARTEX's follow-up request against the official tool-calling rules, and a
+    failing upstream: ARTEX's internal retries must never reach it."""
+
+    command = [os.environ.get("VULNIX_ARTEX_REAL_BIN", "")]
+    expected_sha256 = os.environ.get("VULNIX_ARTEX_CI_BINARY_SHA256", "")
+    aegis_env = "production"
+
+    def run_against(self, mock):
+        self.llm_url = mock.url
+        with patch.dict(os.environ, {"VULNIX_ARTEX_LLM_MODE": "gateway-forward",
+                                     "VULNIX_ARTEX_LLM_UPSTREAM_URL": mock.url + "/chat/completions",
+                                     "VULNIX_ARTEX_LLM_MODEL": "abliterated-model"}):
+            return self.svc.plan_with_artex("op")
+
+    def test_the_follow_up_request_meets_the_official_tool_calling_rules(self):
+        from tests.artex_mock_llm import spec_violation
+        with MockLLM(strict=True) as mock:
+            snap = self.run_against(mock)
+        plan = snap["artex_plan"]["plan"]
+        self.assertGreaterEqual(len(mock.requests), 2)
+        for r in mock.requests:
+            self.assertIsNone(spec_violation(r["body"]))
+        self.assertEqual(plan["llm_gateway"]["refused"], 0)
+        out = os.environ.get("VULNIX_ARTEX_GATEWAY_EVIDENCE")
+        if out:
+            Path(out + ".second-request-structure.json").write_text(json.dumps(
+                {"second_request": _structure(mock.requests[1]["body"]),
+                 "keys": sorted(mock.requests[1]["body"])}, indent=2))
+
+    def test_a_failing_upstream_ends_the_run_with_no_retry_reaching_it(self):
+        with MockLLM(fail_at=2, fail_status=402) as mock:
+            with self.assertRaises(ValueError):
+                self.run_against(mock)
+        self.assertEqual(len(mock.requests), 2)                     # 0 sends after the error
+        pv = self.svc.artex_llm_preview()
+        rep = pv["report"]
+        self.assertEqual(rep["failed_upstream"]["http_status"], 402)
+        self.assertNotIn("sk-mockSECRET", json.dumps(rep, ensure_ascii=False))
+        audit = json.dumps(self.svc.audit.entries(), ensure_ascii=False)
+        self.assertNotIn("sk-mockSECRET", audit)
+        self.assertNotIn("insufficient credits", audit)
+        self.assertTrue(self.events("artex.plan_failed"))
