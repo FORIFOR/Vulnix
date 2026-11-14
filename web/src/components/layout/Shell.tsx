@@ -4,13 +4,14 @@ import { usePathname } from "next/navigation";
 import { useSession } from "@/lib/useSession";
 import { AppSidebar } from "./AppSidebar";
 import { CreateOrgPanel } from "@/components/org/CreateOrgPanel";
+import { isPublicPage } from "@/lib/publicMode";
 
 /** App chrome: sidebar + content, except on the login page. */
 export function Shell({ children }: { children: React.ReactNode }) {
   const path = usePathname();
   const { session, loading, multiTenant, orgs } = useSession();
 
-  if (path === "/login" || path === "/invite") return <>{children}</>;
+  if (isPublicPage(path)) return <>{children}</>;
 
   // Avoid a flash of protected content before the redirect in SessionProvider.
   if (loading || !session) {

@@ -41,7 +41,7 @@ start)
   if running web; then kill "$(cat "$RUN/web.pid")"; sleep 1; fi
   # the proxy answers only for this host name (and loopback), and sends API calls to the
   # public control plane only
-  AEGIS_UI_ALLOWED_HOSTS="$host" AEGIS_API="$API" nohup npx next start -p "$PORT" -H 127.0.0.1 \
+  VULNIX_APP_LANDING=1 AEGIS_UI_ALLOWED_HOSTS="$host" AEGIS_API="$API" nohup npx next start -p "$PORT" -H 127.0.0.1 \
     >"$RUN/web.log" 2>&1 &
   echo $! >"$RUN/web.pid"
   echo "$url" >"$RUN/url"
