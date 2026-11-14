@@ -222,3 +222,11 @@ cd web && npm run typecheck && npm run lint && npm run build
 詳細な要件定義は [REQUIREMENTS.md](REQUIREMENTS.md)、UI/UX詳細設計は [UI_UX_DESIGN.md](UI_UX_DESIGN.md) を参照。
 
 
+
+## ライセンス
+
+Vulnix は [GNU Affero General Public License v3.0](LICENSE)（AGPL-3.0-or-later）で提供します。
+
+- ARTEX（[jiwoochris/artex-global](https://github.com/jiwoochris/artex-global)）は AGPL-3.0 です。連携用の overlay（`integrations/artex/overlay/`）も AGPL-3.0-or-later です（[integrations/artex/NOTICE](integrations/artex/NOTICE)）。
+- **ネットワーク経由で提供する場合（AGPL 第13条）**：Vulnix を改変してサービスとして提供するときは、利用者がその改変版のソースコードを入手できるようにしてください。公式版のソースコードは、このリポジトリで公開しています。
+- 同梱していないもの：ARTEX 本体のソースコード（CI と検証環境で、固定したコミットから取得してビルドします）、Abliteration AI の API。
