@@ -11,7 +11,7 @@ import json
 import sys
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from .audit import AuditLog
@@ -44,6 +44,21 @@ class StopReport:
     confirmed: bool = False
 
 
+def deadline_report(tool_name: str, result: WorkerResult) -> WorkerResult:
+    """The result of a run the runtime killed at its deadline, built by the gateway alone: it
+    does not read the worker's stdout, which is dropped (it is not evidence of anything)."""
+    report = {
+        "error": {"stage": result.last_stage or "started", "kind": "deadline_exceeded",
+                  "timeout_s": result.deadline_s, "exception": "GatewayDeadline", "source": "gateway"},
+        "gateway": {"tool": tool_name, "elapsed_s": round(result.elapsed_s, 3),
+                    "stages_seen": [s for s, _ in result.stages],
+                    "stop_confirmed": result.stop_confirmed, "worker_stdout_discarded": True},
+    }
+    # never rc 0: a caller that looks only at the return code must not see a success
+    return replace(result, stdout=json.dumps(report), stderr="", killed=True,
+                   returncode=result.returncode if result.returncode not in (0, None) else -9)
+
+
 def http_probe_tool() -> Tool:
     workers = Path(__file__).parent / "workers"
     worker = str(workers / "http_probe.py")
@@ -52,7 +67,10 @@ def http_probe_tool() -> Tool:
     def build(args: dict, d: PinnedDestination) -> list[str]:
         inner = [worker, "--scheme", d.scheme, "--host", d.host, "--ip", d.ip,
                  "--port", str(d.port), "--path", d.path,
-                 "--method", args.get("method", "HEAD")]
+                 "--method", args.get("method", "HEAD"),
+                 # stage markers for the gateway's own deadline (an argument, not an env var:
+                 # a confined run goes through sudo, which need not pass extra env)
+                 "--progress", "stderr"]
         # Launch through the egress sentinel so the worker can reach ONLY the
         # pinned ip:port even if its own code tries elsewhere (defense in depth).
         return [sys.executable, "-I", sentinel, "--allow", f"{d.ip}/{d.port}", "--", *inner]
@@ -101,8 +119,15 @@ class Gateway:
                  approvals: ApprovalStore, egress: EgressGuard, workers: WorkerPool,
                  audit: AuditLog, tools: dict[str, Tool], budget: Budget, clock=time.time,
                  ephemeral_env_provider=None, secret_redactor=None,
-                 confinement_provider=None, launch_guard=None):
+                 confinement_provider=None, launch_guard=None, on_unstopped=None):
         self.engagement = engagement
+        # Optional callable(pids, pool): a worker the runtime could not confirm stopped at
+        # its deadline is handed to the control plane's record of unstopped workers.
+        self.on_unstopped = on_unstopped
+        # Survivors the control plane could not be told about (on_unstopped failed or is not
+        # set): the gateway itself refuses every launch while any of them is still alive.
+        self._unrecorded_survivors: list[tuple[int, object]] = []
+        self._survivor_lock = threading.Lock()
         self.tokens = tokens
         self.approvals = approvals
         self.egress = egress
@@ -160,6 +185,9 @@ class Gateway:
     def _execute(self, proposal: object, token: str) -> Decision:
         if self._state is not State.RUNNING:
             raise AuthzError(f"gateway {self._state.value}")
+        if self._unrecorded_survivors_alive():
+            raise PolicyError("a worker that passed its deadline could not be confirmed stopped; "
+                              "no new worker is started")
         # Both are fixed NOW. A stop or reset closes this pool and moves the epoch
         # on, so a request that outlives it can only fail.
         epoch, workers = self._launch_epoch, self.workers
@@ -195,7 +223,7 @@ class Gateway:
                 if self.launch_guard:
                     self.launch_guard(tool.name, args, dest)
                 result = workers.run(argv, tool.timeout_s, extra_env=extra_env or None,
-                                     permit=lambda: self._still_current(epoch))
+                                     permit=lambda: self._still_current(epoch), progress=True)
             else:
                 # Applied and confirmed by the kernel BEFORE any secret is read for
                 # the worker; a failure here means nothing is launched.
@@ -213,7 +241,8 @@ class Gateway:
                         if self.launch_guard:
                             self.launch_guard(tool.name, args, dest)
                         result = workers.run(argv, tool.timeout_s, extra_env=extra_env,
-                                             session=session, permit=lambda: self._still_current(epoch))
+                                             session=session, permit=lambda: self._still_current(epoch),
+                                             progress=True)
                         intact = session.still_enforced()
                 except ConfinementError as e:
                     raise PolicyError(f"kernel confinement not confirmed: {e}") from None
@@ -231,21 +260,74 @@ class Gateway:
                     # is not evidence of a confined run
                     self.audit.record("confinement.lost", jti=claims["jti"], tool=tool.name)
                     raise PolicyError("kernel confinement was not in place for the whole run")
+            unconfirmed = result.timed_out and result.stop_confirmed is not True
+            if unconfirmed:
+                # the deadline passed and the worker could not be confirmed dead: fail closed,
+                # no result of any kind, and the worker goes on the unstopped record. Neither a
+                # failing audit log nor a failing record may change that outcome.
+                self._try_audit("worker.stop_unconfirmed", jti=claims["jti"], tool=tool.name,
+                                deadline_s=result.deadline_s, pid=result.pid)
+                if result.pid:
+                    recorded = False
+                    if self.on_unstopped:
+                        try:
+                            self.on_unstopped([result.pid], workers)
+                            recorded = True
+                        except Exception as e:  # noqa: BLE001 - the refusal below must still happen
+                            self._try_audit("worker.unstopped_record_failed", jti=claims["jti"],
+                                            tool=tool.name, pid=result.pid, error=type(e).__name__)
+                    if not recorded:
+                        with self._survivor_lock:
+                            self._unrecorded_survivors.append((result.pid, workers))
+            if result.pipes_held:
+                # something outside the worker's (dead) process group kept its output open: an
+                # escaped descendant could have written anything there; nothing of this run counts
+                self._try_audit("worker.pipes_held", jti=claims["jti"], tool=tool.name,
+                                timed_out=result.timed_out, elapsed=round(result.elapsed_s, 3))
+                raise PolicyError("a process outside the worker's process group kept its output open; "
+                                  "this run is not accepted")
+            if unconfirmed:
+                raise PolicyError("the worker passed its deadline and could not be confirmed stopped; "
+                                  "this run is not accepted")
+            if result.timed_out:
+                # Decided by the runtime's clock, not by the worker: its stdout is discarded
+                # (even valid JSON) and replaced by the gateway's own structured report.
+                self.audit.record("worker.deadline_exceeded", jti=claims["jti"], tool=tool.name,
+                                  deadline_s=result.deadline_s, elapsed=round(result.elapsed_s, 3),
+                                  last_stage=result.last_stage or "", stop_confirmed=result.stop_confirmed,
+                                  worker_stdout_bytes=len(result.stdout or ""))
+                result = deadline_report(tool.name, result)
             if self.secret_redactor:
-                result = WorkerResult(
-                    result.returncode,
-                    self.secret_redactor(result.stdout or ""),
-                    self.secret_redactor(result.stderr or ""),
-                    result.killed,
-                    result.elapsed_s,
-                )
+                result = replace(result, stdout=self.secret_redactor(result.stdout or ""),
+                                 stderr=self.secret_redactor(result.stderr or ""))
             self.audit.record("result", jti=claims["jti"], tool=tool.name, rc=result.returncode,
-                              killed=result.killed, elapsed=result.elapsed_s,
+                              killed=result.killed, elapsed=result.elapsed_s, timed_out=result.timed_out,
                               stdout_preview=result.stdout.strip()[:280])
             return Decision(True, "executed", result, dest)
         finally:
             with self._inflight_lock:
                 self._inflight.discard(key)
+
+    def _try_audit(self, event: str, **fields) -> None:
+        """An audit write on a refusal path: attempted, never allowed to turn the refusal into
+        anything else (the caller raises PolicyError right after)."""
+        try:
+            self.audit.record(event, **fields)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _unrecorded_survivors_alive(self) -> bool:
+        with self._survivor_lock:
+            keep = []
+            for pid, pool in self._unrecorded_survivors:
+                try:
+                    alive = bool(pool.still_running([pid]))
+                except Exception:  # noqa: BLE001 - cannot tell: still a survivor
+                    alive = True
+                if alive:
+                    keep.append((pid, pool))
+            self._unrecorded_survivors = keep
+            return bool(keep)
 
     # ---- pause / resume ---------------------------------------------------
     def pause(self, actor: str) -> None:

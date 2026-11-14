@@ -288,7 +288,8 @@ class AssessmentService:
             ephemeral_env_provider=self._ephemeral_worker_env,
             secret_redactor=self.secrets.redact,
             confinement_provider=self._worker_confinement,
-            launch_guard=self._launch_guard)
+            launch_guard=self._launch_guard,
+            on_unstopped=self._note_deadline_survivor)
 
         # Wire ARTEX (in-process + optional external CLI subprocess) + Abliteration ProposalRouter
         self._artex_cli_backend = ArtexSubprocessBackend()
@@ -739,6 +740,12 @@ class AssessmentService:
         except Exception:
             self._cleanup_pending.extend(x for x in batch if not any(x is y for y in self._cleanup_pending))
             self._cleanup_running = False
+
+    def _note_deadline_survivor(self, pids: list[int], pool) -> None:
+        """A worker the runtime killed at its deadline but could not confirm dead: on the
+        same record as any other unstopped worker (system status, launch block, restart)."""
+        with self._lock:
+            self._note_unstopped_locked((self.a.asset.get("name") or "").lower(), list(pids), pool)
 
     def _note_leftover_session(self, session) -> None:
         """A confined run whose cgroup could not be emptied: kept on record like any
@@ -4099,6 +4106,13 @@ class AssessmentService:
     @staticmethod
     def _worker_failure_text(tool: str, result) -> str:
         """Why a worker failed, from its own structured report when it gave one."""
+        if getattr(result, "timed_out", False):
+            stage = {"started": "開始直後", "connect": "TCP接続", "tls": "TLSハンドシェイク", "send": "リクエスト送信",
+                     "first_byte": "応答の最初のバイト待ち", "body": "応答本文の受信", "report": "結果の出力"}.get(
+                         str(getattr(result, "last_stage", None) or "started"), "不明な段階")
+            confirmed = "" if getattr(result, "stop_confirmed", True) else "。停止を確認できていません"
+            return (f"Worker が制限時間（{float(result.deadline_s or 0):g} 秒）内に終わらず、Gateway が停止しました"
+                    f"（最後に確認した段階: {stage}、{tool}）{confirmed}")
         if result.killed:
             return f"Worker が制限時間内に終わらず停止されました（{tool}）"
         try:
