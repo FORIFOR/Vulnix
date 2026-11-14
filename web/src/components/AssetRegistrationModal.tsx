@@ -31,7 +31,7 @@ export function AssetRegistrationModal({ open, onClose, onRegistered, initialAss
     setBusy(true);
     setErr(null);
     try {
-      const res = await postJSON<{ asset: Asset; assets: Asset[] }>("/api/assets", {
+      const res = await postJSON<{ asset: Asset & { workspace_activated?: boolean; activation_skipped?: string | null }; assets: Asset[] }>("/api/assets", {
         name: name.trim(),
         kind,
         environment,
@@ -40,8 +40,13 @@ export function AssetRegistrationModal({ open, onClose, onRegistered, initialAss
         activate_workspace: activateWorkspace,
       });
       onRegistered(res.assets, res.asset);
+      if (activateWorkspace && res.asset.activation_skipped === "running") {
+        // registered, but the workspace did not switch: say so instead of opening the running diagnosis
+        setErr("登録しました。ただし実行中の診断があるため、ワークスペースは切り替えていません。現在の診断が終わってから、資産一覧の「この対象を診断」で開いてください。");
+        return;
+      }
       onClose();
-      if (activateWorkspace && res.asset.assessment_id) {
+      if (activateWorkspace && res.asset.workspace_activated !== false && res.asset.assessment_id) {
         router.push(`/assessments/${res.asset.assessment_id}`);
       }
     } catch (e) {

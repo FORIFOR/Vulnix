@@ -100,7 +100,9 @@ export function ArtexPlanPanel({ snap, onUpdate }: {
                       <span className="font-medium">{it.label}</span>
                       <Pill className={st.cls}>{st.label}</Pill>
                     </div>
-                    <p className="mt-1 break-words text-xs text-zinc-500">ARTEX intent #{it.intent_id}：{it.intent_summary}</p>
+                    <p className="mt-1 break-words text-xs text-zinc-500">
+                      <span className="font-medium">ARTEX の原文</span>（AI出力・未翻訳。実行内容は上の検証項目のとおりで、この文では決まりません）#{it.intent_id}：{it.intent_summary}
+                    </p>
                   </div>
                   <button
                     type="button"
@@ -120,6 +122,7 @@ export function ArtexPlanPanel({ snap, onUpdate }: {
           {plan.advisories.length > 0 && (
             <div>
               <h3 className="mb-1 text-xs font-semibold text-zinc-600 dark:text-zinc-400">参考提案（実行されません）</h3>
+              <p className="mb-1 text-xs text-zinc-500">ARTEX の原文をそのまま表示しています（AI出力・未翻訳。日本語以外の場合があります）。</p>
               <ul className="space-y-1 text-xs">
                 {plan.advisories.map((a, i) => (
                   <li key={i} className="rounded-lg bg-zinc-50 p-2 dark:bg-zinc-800/60">

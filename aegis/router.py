@@ -275,15 +275,13 @@ class AbliterationBackend(HttpModelBackend):
     def chat_with_status(self, question: str, context: dict) -> tuple[str | None, str | None]:
         """`chat()` plus this call's own failure kind (None when it answered). Returned,
         not stored on the shared instance, so concurrent questions cannot mix them up."""
+        from .chat_guard import CHAT_SYSTEM_PROMPT   # local: chat_guard -> ai_advisor -> router
         payload = {
             "model": self._model or "abliteration-sec-1",
             "messages": [
                 {
                     "role": "system",
-                    "content": (
-                        "あなたは Vulnix AI セキュリティ診断アシスタントです。"
-                        "与えられた診断コンテキストと証拠のみを根拠に、簡潔・正確に日本語で回答してください。"
-                    ),
+                    "content": CHAT_SYSTEM_PROMPT,
                 },
                 {
                     "role": "user",

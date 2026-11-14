@@ -41,8 +41,8 @@ ARTEX source.
 
 ARTEX プランナーは Linux カーネル隔離（専用 cgroup v2・nftables、専用のネットワーク／マウント／IPC／PID 名前空間、専用 uid・権限なし、planner 用 seccomp、プロセス・メモリ上限）の中でのみ起動します。CI で実機の ARTEX について検証済みです。ただし、次の点は本番利用の前に判断が必要です。
 
-1. **ホストの一部ファイルは読み取れます。** マウントビューは固定の一覧（`/home` `/root` `/tmp` `/var` `/dev/shm` `/dev/mqueue` `/run` `/mnt` `/media` `/srv` `/opt` `/boot` `/snap`、Vulnix 本体、データディレクトリ）を空の tmpfs で隠す方式で、最小ルートへの `pivot_root` ではありません。`/etc` `/usr` `/lib*` `/sys` などは見えたままで、他ユーザーが読めるファイル（world-readable）は ARTEX から読めます。Vulnix の秘密情報とデータディレクトリは隠れています（起動前のプローブで確認）。
-   - **本番で必要になり得る対策：** 最小ルート（tmpfs ルートに `/usr` `/lib*`、必要最小限の `/etc` と実行に必要なパスだけを読み取り専用でバインド）への `pivot_root`。または、ホスト上に機密ファイルを world-readable で置かない運用の確認。
+1. **ホストの一部ファイルは読み取れます。** マウントビューは固定の一覧（`/etc` `/home` `/root` `/tmp` `/var` `/dev/shm` `/dev/mqueue` `/run` `/mnt` `/media` `/srv` `/opt` `/boot` `/snap`、Vulnix 本体、データディレクトリ）を空の tmpfs で隠す方式で、最小ルートへの `pivot_root` ではありません。2026-11-14 から `/etc`（ユーザー一覧、ホスト名、サービス設定）も隠しています（ARTEX は 127.0.0.1 だけに接続するため名前解決は不要。VM で実 ARTEX の隔離テスト 70 件が通ることを確認）。`/usr` `/lib*` `/sys` `/proc` などのシステム領域は見えたままで、そこにある他ユーザーが読めるファイルは ARTEX から読めます。Vulnix の秘密情報とデータディレクトリは隠れています（起動前のプローブで、隠した各ディレクトリが空に見えることを確認）。
+   - **本番で必要になり得る対策：** 最小ルート（tmpfs ルートに `/usr` `/lib*` と実行に必要なパスだけを読み取り専用でバインド）への `pivot_root`。または、システム領域に機密ファイルを置かない運用の確認。
 2. **中継（relay）は ARTEX と同じ uid で、専用の seccomp がありません。** ARTEX が中継を停止・枯渇させることはできますが、影響は ARTEX 自身の通信が止まることに限られます。
 3. **DB 権限の検査は、ハッシュ固定した overlay バイナリ自身が行います**（スーパーユーザー・CREATEROLE・サーバープログラム／ファイル権限・dblink/postgres_fdw を拒否）。
 4. **動作要件：** cgroup v2、nftables、iproute2、passwordless sudo、Linux 5.14 以降（`cgroup.kill` / `cgroup.freeze` / `subset=pid`）。満たさない環境では起動を拒否します（fail closed）。検証は GitHub の Ubuntu ランナーのみです。

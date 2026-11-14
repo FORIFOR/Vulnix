@@ -87,6 +87,14 @@ export interface ChatMessage {
   role: "user" | "assistant";
   actor: string;
   source?: "builtin" | "external_model";
+  /** set when the external model's answer was withheld by the output check */
+  withheld_reason?: string;
+  guard_note?: string;
+  /** code-written status for an answer about a finding not proven by L2 */
+  verdict_note?: string;
+  /** code-written warning when the answer reads as an overclaim or a breach claim */
+  caution_note?: string;
+  cautions?: string[];
   text: string;
   term?: string | null;
   finding_id?: string | null;
@@ -203,6 +211,8 @@ export interface Snapshot {
   planner: {
     mode: "builtin" | "external_configured";
     external_model_configured: boolean;
+    /** the explanation (chat) model; configured independently of external proposals */
+    explanation_model_configured?: boolean;
     connection_verified: boolean;
     /** configured ≠ connected: "verified" only after a real answer, "failed" after a failed call */
     connection_state?: "unconfigured" | "configured" | "verified" | "failed";

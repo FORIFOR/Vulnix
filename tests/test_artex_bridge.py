@@ -98,6 +98,17 @@ class TestIntentsAreRebuiltFromVulnixOnly(unittest.TestCase):
         self.assertNotIn("token", clean)
 
 
+class TestPlannerCannotReadHostConfiguration(unittest.TestCase):
+    """/etc (user list, host name, service configuration) is hidden from the planner like
+    the homes and state directories; the confined run reports hidden_paths_ok only when
+    every listed path is hidden inside its mount view."""
+
+    def test_etc_is_hidden(self):
+        hidden = ab.planner_hidden_paths()
+        for path in ("/etc", "/home", "/root", "/var", "/run", "/opt"):
+            self.assertIn(path, hidden)
+
+
 class TestPlannerOutputIsValidated(unittest.TestCase):
     base = {"engine": "artex", "allowed_tools": ["add_intent"], "tool_calls": [], "intents": []}
 

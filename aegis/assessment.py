@@ -192,6 +192,29 @@ ADDRESS_PROOF_MAX_AGE_S = 24 * 3600
 OWNERSHIP_PROOF_MAX_AGE_S = 24 * 3600
 
 
+_GATEWAY_REFUSALS_JA = {
+    "the request names a registered real service":
+        "ARTEX の要求に、外部AIへ送らない対象（追加登録した診断対象・実サービス）の名前が含まれていたため、"
+        "Planner LLM Gateway が送信を止めました。外部モデルを使う ARTEX 計画は、既定の模擬ラボ（lab.test）を"
+        "対象にしたときだけ実行できます。",
+    "the request contains something that looks like a secret":
+        "ARTEX の要求に秘密情報らしき値が含まれていたため、Planner LLM Gateway が送信を止めました。",
+    "the request names an internal host outside the local lab":
+        "ARTEX の要求に模擬ラボ以外の内部ホスト名が含まれていたため、Planner LLM Gateway が送信を止めました。",
+}
+
+
+def artex_failure_message(raw: str) -> str:
+    """A planner failure for the UI: a known gateway refusal is explained in Japanese
+    (nothing was sent to the external model); anything else is kept as it is."""
+    if "refused by the Vulnix planner gateway" in raw:
+        for key, ja in _GATEWAY_REFUSALS_JA.items():
+            if key in raw:
+                return ja + "（外部への送信は行っていません）"
+        return "Planner LLM Gateway が ARTEX の要求を止めました（外部への送信は行っていません）。"
+    return raw
+
+
 class AssessmentService:
     def __init__(self, data_dir: Path, lab_port: int, verify_seconds: float = 1.5,
                  l2_profile_dirs: list[Path] | None = None,
@@ -1599,7 +1622,7 @@ class AssessmentService:
                                     data_dirs=(str(self.data_dir),))
         except ArtexBridgeError as e:
             self.audit.record("artex.plan_failed", actor=actor, reason=str(e)[:200])
-            raise ValueError(str(e)) from None
+            raise ValueError(artex_failure_message(str(e))) from None
         except Exception as e:  # noqa: BLE001 - recorded, and never a half-made plan
             self.audit.record("artex.plan_failed", actor=actor, reason=type(e).__name__)
             raise ValueError(f"ARTEX の計画に失敗しました（{type(e).__name__}）") from None
@@ -2086,8 +2109,11 @@ class AssessmentService:
                 raise ValueError("この資産は実サービスとして登録されています。所有確認（DNS TXT / 検証ファイル）の手順で登録してください")
             if authorized:
                 self._allowed_hosts.add(clean_name)
+            # whether the workspace switched to this asset (reported, never stored)
+            activated, skipped = False, None
             # Check if updating the current primary asset
             if self.a.asset["name"].lower() == clean_name:
+                activated = authorized
                 self.a.asset = {
                     **self.a.asset,
                     "kind": clean_kind,
@@ -2140,6 +2166,9 @@ class AssessmentService:
 
                 if activate_workspace and authorized and self.a.state != "running":
                     self._activate_asset_locked(asset_record, clean_ref)
+                    activated = True
+                elif activate_workspace:
+                    skipped = "running" if authorized else "not_authorized"
             self._save_state_locked()
 
         self.audit.record(
@@ -2151,7 +2180,7 @@ class AssessmentService:
             authorized=authorized,
             authorization_ref=clean_ref,
         )
-        return asset_record
+        return {**asset_record, "workspace_activated": activated, "activation_skipped": skipped}
 
     def _activate_asset_locked(self, asset_record: dict, auth_ref: str) -> None:
         # the single place where the active asset changes: never during a verification
@@ -2803,6 +2832,8 @@ class AssessmentService:
         return {
             "mode": "external_configured" if self._external_model_configured else "builtin",
             "external_model_configured": self._external_model_configured,
+            # the explanation (chat) model is configured independently of external proposals
+            "explanation_model_configured": self._chat_backend is not None,
             "connection_state": conn["state"],
             "connection_verified": verified,
             "connected": verified,
@@ -2817,7 +2848,9 @@ class AssessmentService:
             "artex_engine": "ready",
             "autonomous_execution": False,
             "note": _PLANNER_NOTES[conn["state"]] if self._external_model_configured
-                    else "内蔵 ARTEX プランナーで動作中。外部 AI モデルは未設定です。",
+                    else (f"提案は内蔵 ARTEX プランナー（外部モデルからの提案は無効）。AI解説に "
+                          f"{self._chat_backend._model or '外部モデル'} を使用します。" if self._chat_backend is not None
+                          else "内蔵 ARTEX プランナーで動作中。外部 AI モデルは未設定です。"),
         }
 
     def _note_model_outcome_locked(self, ok: bool, error: str | None = None) -> None:
@@ -3731,7 +3764,7 @@ class AssessmentService:
                 if tk.status != "unsupported":
                     tk.status = "awaiting_approval"
             ap_id = self._request_approval(
-                "safe_reproduction", "L2", "検出された脆弱性の侵入成立実証（CVE-2021-41773 / IDOR / SQLi）",
+                "safe_reproduction", "L2", "検出された問題（未実証）が成立するかのL2実証（CVE-2021-41773 / IDOR / SQLi）",
                 "検出したバージョン表示（CVE-2021-41773）、テストアカウント間の認可境界（IDOR）、および検索APIのSQLインジェクション境界が"
                 "実際に成立するかを、egress_sentinel 隔離Worker（reproduction_probe）で非破壊実証します。")
             if self.a.approvals[ap_id]["status"] != "approved":
@@ -4244,11 +4277,23 @@ class AssessmentService:
                 "finding_id": finding_id,
                 "ts": time.time(),
             }
+            if outcome.get("verdict_note"):
+                ai_msg["verdict_note"] = outcome["verdict_note"]
+            if outcome.get("cautions"):
+                from .chat_guard import caution_note
+                ai_msg["cautions"] = list(outcome["cautions"])
+                ai_msg["caution_note"] = caution_note(outcome["cautions"], mixed=bool(outcome.get("mixed")))
+            if outcome.get("withheld"):
+                from .chat_guard import GUARD_NOTES
+                ai_msg["withheld_reason"] = outcome["withheld"]
+                ai_msg["guard_note"] = GUARD_NOTES.get(outcome["withheld"], GUARD_NOTES["empty"])
             self.a.chat_messages.extend([user_msg, ai_msg])
             self._save_state_locked()
             self.audit.record("chat.asked", actor=actor, term=term or "", finding_id=finding_id or "",
                               answered_by=source, sent_to_external_model=model_attempted,
-                              model_error=outcome["model_error"] or "")
+                              model_error=outcome["model_error"] or "",
+                              answer_withheld=outcome.get("withheld") or "",
+                              answer_cautions=",".join(outcome.get("cautions") or []))
             planner = self.planner_status()
             # every open view learns the new connection state - and nothing else of the
             # planner status (no verification report, endpoint or model text in events)
@@ -4320,11 +4365,16 @@ class AssessmentService:
                 )
             elif real:
                 target_f = real[0]
+            # a term-only question may be about any finding sharing that term (also when the
+            # finding_id given was not found): taken from the same point-in-time state
+            by_term = bool(term) and not (finding_id and finding_id in self.a.findings)
+            term_proven = {f.get("verdict") == "proven" for f in all_f if f.get("help_term") == term} if by_term else set()
             # Ground each answer in one immutable, point-in-time context.
             context = copy.deepcopy({
                 "asset": self.a.asset,
                 "state": self.a.state,
                 "risk": self._risk(),
+                "risk_scope": "診断全体（この問題単独のスコアではない）",
                 "target_finding": target_f,
             })
             done_phases = sum(1 for p in self.a.phases if p["status"] == "done")
@@ -4352,7 +4402,25 @@ class AssessmentService:
                 outcome["model_attempted"] = True
                 outcome["model_error"] = None if ans else str(err or "no_answer")[:60]
             if ans:
-                return "external_model", ans
+                # untrusted text (aegis/chat_guard.py): instructions to bypass approval, disable a
+                # defence, destroy data or run attack tools are withheld (not stored, not audited)
+                # and the built-in answer is used; otherwise the answer is shown, with a
+                # code-written verdict note for an unproven finding and cautions for overclaims
+                from .chat_guard import MIXED_VERDICT_NOTE, cautions, check_answer, verdict_note
+                proven = bool(target_f and target_f.get("verdict") == "proven")
+                # it counts as proven only when every finding sharing the term is
+                mixed = term_proven == {True, False}
+                proven = proven and not mixed
+                withheld = check_answer(ans, proven=proven)
+                if withheld is None:
+                    if outcome is not None:
+                        if target_f and not proven:
+                            outcome["verdict_note"] = MIXED_VERDICT_NOTE if mixed else verdict_note(target_f.get("verdict"))
+                        outcome["cautions"] = cautions(ans, proven=proven)
+                        outcome["mixed"] = mixed
+                    return "external_model", ans
+                if outcome is not None:
+                    outcome["withheld"] = withheld
 
         ql = q.lower()
         if target_f:
