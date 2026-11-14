@@ -54,6 +54,7 @@ def development_mode() -> bool:
 MAX_BODY_BYTES = 1_000_000
 # Limits for a publicly reachable beta (per process).
 SIGNUPS_PER_MINUTE = 10          # self-registrations, whole platform
+SIGNUP_ATTEMPTS_PER_MINUTE = 30  # sign-up attempts that reach password hashing, whole platform
 SSE_PER_ACCOUNT = 4              # simultaneous event streams per account
 CHAT_PER_ORG_PER_HOUR = 30       # AI explanation questions per organization
 CHAT_PLATFORM_PER_HOUR = 300     # AI explanation questions, whole platform (one API key)
@@ -76,12 +77,19 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
     paudit = tenancy.platform_audit if tenancy is not None else svc.audit
     limits_lock = threading.Lock()
     signup_times: list[float] = []
+    signup_attempts: list[float] = []
     chat_times: dict[str, list[float]] = {}
     chat_all: list[float] = []
     plan_times: dict[str, list[float]] = {}
     plan_all: list[float] = []
     sse_open: dict[str, int] = {}
     signup_lock = threading.Lock()
+
+    def room(times: list[float], window: float, cap: int) -> bool:
+        """Whether one more use fits, without recording it."""
+        now = time.monotonic()
+        times[:] = [t for t in times if now - t < window]
+        return len(times) < cap
 
     def within(times: list[float], window: float, cap: int) -> bool:
         """Sliding-window limit: records this use and says whether it is allowed."""
@@ -473,15 +481,25 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         return self._json(403, {"error": "閲覧者の権限では操作できません"})
                     if p.endswith("/chat"):
                         with limits_lock:
-                            ok = within(chat_times.setdefault(self._bound_org, []), 3600, CHAT_PER_ORG_PER_HOUR) \
-                                and within(chat_all, 3600, CHAT_PLATFORM_PER_HOUR)
+                            mine = chat_times.setdefault(self._bound_org, [])
+                            # both limits are checked before either is used: a refusal costs no quota
+                            ok = room(mine, 3600, CHAT_PER_ORG_PER_HOUR) and room(chat_all, 3600, CHAT_PLATFORM_PER_HOUR)
+                            if ok:
+                                within(mine, 3600, CHAT_PER_ORG_PER_HOUR)
+                                within(chat_all, 3600, CHAT_PLATFORM_PER_HOUR)
                         if not ok:
                             return self._json(429, {"error": f"AI 解説は1つの組織につき1時間あたり {CHAT_PER_ORG_PER_HOUR} 回までです"},
                                               [("Retry-After", "600")])
-                    if p.endswith("/artex/plan") and str(body.get("llm_mode", "")).startswith("gateway-forward"):
+                    # the mode as the service decides it (request value, else the configured one)
+                    mode = (str(body.get("llm_mode") or "") or os.environ.get("VULNIX_ARTEX_LLM_MODE", "direct")).strip().lower()
+                    if p.endswith("/artex/plan") and mode != "direct" and mode != "gateway-preview":
                         with limits_lock:
-                            ok = within(plan_times.setdefault(self._bound_org, []), 3600, ARTEX_LLM_PLANS_PER_ORG_PER_HOUR) \
-                                and within(plan_all, 3600, ARTEX_LLM_PLANS_PLATFORM_PER_HOUR)
+                            mine = plan_times.setdefault(self._bound_org, [])
+                            ok = room(mine, 3600, ARTEX_LLM_PLANS_PER_ORG_PER_HOUR) \
+                                and room(plan_all, 3600, ARTEX_LLM_PLANS_PLATFORM_PER_HOUR)
+                            if ok:
+                                within(mine, 3600, ARTEX_LLM_PLANS_PER_ORG_PER_HOUR)
+                                within(plan_all, 3600, ARTEX_LLM_PLANS_PLATFORM_PER_HOUR)
                         if not ok:
                             return self._json(429, {"error": "実モデルを使う ARTEX の計画は、利用上限に達しています。時間をおいてください"},
                                               [("Retry-After", "600")])
@@ -589,9 +607,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             if tenancy is not None and not invite and tenancy.store.at_capacity():
                 return self._json(503, {"error": "現在、新しい登録を受け付けていません（β版の受け入れ上限に達しました）"})
             with limits_lock:
-                now = time.monotonic()
-                signup_times[:] = [t for t in signup_times if now - t < 60]
-                allowed = len(signup_times) < SIGNUPS_PER_MINUTE      # only successful sign-ups count
+                allowed = room(signup_times, 60, SIGNUPS_PER_MINUTE)  # cheap early refusal
             if not allowed:
                 paudit.record("auth.registration_throttled", name=name[:32])
                 return self._json(429, {"error": "ただいま登録が混み合っています。少し時間をおいてお試しください"},
@@ -602,6 +618,18 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             try:
                 if tenancy is not None and invite and not tenancy.store.invite_valid(invite):
                     return self._json(400, {"error": "招待が無効です（使用済み・取り消し済み・期限切れ・誤り）"})
+                with limits_lock:
+                    # decided again here, one sign-up at a time: a parallel burst cannot pass
+                    # the early check together; every attempt that will hash a password counts
+                    if not room(signup_times, 60, SIGNUPS_PER_MINUTE) \
+                            or not within(signup_attempts, 60, SIGNUP_ATTEMPTS_PER_MINUTE):
+                        throttled = True
+                    else:
+                        throttled = False
+                if throttled:
+                    paudit.record("auth.registration_throttled", name=name[:32])
+                    return self._json(429, {"error": "ただいま登録が混み合っています。少し時間をおいてお試しください"},
+                                      [("Retry-After", "60")])
                 try:
                     sess = ops.register(name, password, display=display)
                 except AuthError as e:

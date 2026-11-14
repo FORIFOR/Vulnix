@@ -3470,6 +3470,16 @@ class AssessmentService:
             self._end_operation()
 
     def _verify_fix(self, actor: str) -> dict:
+        """The fix check. When the mock lab is shared with other organizations, it is put
+        back to its vulnerable mode afterwards, so their checks never run against a lab
+        left patched by this one."""
+        try:
+            return self._verify_fix_body(actor)
+        finally:
+            if getattr(self, "_restore_lab_after_fix", False) and getattr(self, "_may_switch_lab", True):
+                set_lab_mode("vulnerable")
+
+    def _verify_fix_body(self, actor: str) -> dict:
         with self._lock:
             if self.a.state not in ("completed", "idle"):
                 raise ValueError("診断完了後に修正後の再検証を実行してください")

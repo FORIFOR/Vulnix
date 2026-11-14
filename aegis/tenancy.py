@@ -304,6 +304,8 @@ class TenantRegistry:
         # account-level events (sign-up, sign-in, MFA, roles, refused org access) of every
         # tenant: never in an organization's own audit log or event stream
         self.platform_audit = AuditLog(Path(data_dir) / "platform-audit.jsonl")
+        # the default service shares the mock lab with every organization
+        default_svc._restore_lab_after_fix = True
 
     def service(self, org_id: str):
         if org_id == DEFAULT_ORG:

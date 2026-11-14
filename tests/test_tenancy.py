@@ -472,3 +472,54 @@ class TestSecondReviewFixes(TestTenantIsolationOverHttp):
         for c, _ in held:
             c.close()
         self.assertEqual(codes, [200, 429])
+
+
+class TestThirdReviewFixes(TestTenantIsolationOverHttp):
+    """Third independent review."""
+
+    def test_the_real_model_plan_cap_sees_the_mode_the_service_will_use(self):
+        from aegis import server as srvmod
+        a = self.signup("alice")
+        with patch.object(srvmod, "ARTEX_LLM_PLANS_PER_ORG_PER_HOUR", 0):
+            for body in ({"llm_mode": " gateway-forward"}, {"llm_mode": "GATEWAY-FORWARD "}):
+                self.assertEqual(self.req(a, "/assessments/scan_001/artex/plan", body)[0], 429, body)
+            with patch.dict(os.environ, {"VULNIX_ARTEX_LLM_MODE": "gateway-forward"}):
+                self.assertEqual(self.req(a, "/assessments/scan_001/artex/plan", {})[0], 429)
+
+    def test_parallel_signups_cannot_exceed_the_limit(self):
+        from aegis import server as srvmod
+        import concurrent.futures as cf
+        with patch.object(srvmod, "SIGNUPS_PER_MINUTE", 3):
+            with cf.ThreadPoolExecutor(10) as ex:
+                codes = list(ex.map(lambda i: self.req({}, "/auth/register", {"name": f"burst{i:02d}", "password": f"burst{i:02d}-Passw0rd!"})[0], range(10)))
+        self.assertEqual(codes.count(200), 3, codes)
+        self.assertTrue(all(c in (200, 429) for c in codes), codes)
+
+    def test_signup_attempts_are_capped_too(self):
+        from aegis import server as srvmod
+        with patch.object(srvmod, "SIGNUP_ATTEMPTS_PER_MINUTE", 3):
+            codes = [self.req({}, "/auth/register", {"name": "padmin", "password": "x-Passw0rd!xx"})[0] for _ in range(5)]
+        self.assertEqual(codes[:3], [400, 400, 400])                 # existing name: each costs a hash
+        self.assertEqual(codes[3:], [429, 429])
+
+    def test_a_platform_refusal_does_not_use_the_orgs_ai_quota(self):
+        from aegis import server as srvmod
+        a = self.signup("alice")
+        with patch.object(srvmod, "CHAT_PLATFORM_PER_HOUR", 0), patch.object(srvmod, "CHAT_PER_ORG_PER_HOUR", 1):
+            self.assertEqual(self.req(a, "/assessments/scan_001/chat", {"question": "x"})[0], 429)
+        with patch.object(srvmod, "CHAT_PER_ORG_PER_HOUR", 1):
+            self.assertEqual(self.req(a, "/assessments/scan_001/chat", {"question": "x"})[0], 200)
+
+    def test_the_default_orgs_fix_check_puts_the_shared_lab_back(self):
+        import aegis.assessment as am
+        from aegis.lab import get_lab_mode, set_lab_mode
+        set_lab_mode("vulnerable")
+        self.assertTrue(getattr(self.svc, "_restore_lab_after_fix", False))
+
+        def body(actor):                 # stands in for the real check: it switches the lab
+            am.set_lab_mode("patched")
+            return {"defense_comparison": {"lab_mode": get_lab_mode()}}
+        with patch.object(self.svc, "_verify_fix_body", side_effect=body):
+            out = self.svc._verify_fix("padmin")
+        self.assertEqual(out["defense_comparison"]["lab_mode"], "patched")   # recorded during the check
+        self.assertEqual(get_lab_mode(), "vulnerable")                       # shared lab put back
