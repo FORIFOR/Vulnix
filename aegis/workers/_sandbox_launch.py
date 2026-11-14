@@ -6,7 +6,13 @@ socket(AF_UNIX, ...) and socketpair(AF_UNIX, ...) fail with EPERM, then execs
 the worker; the filter is inherited and cannot be removed. Any failure to
 install it ends the run (exit 97): nothing runs without it.
 
-Usage: python -I _sandbox_launch.py <program> [args...]
+Usage: python -I _sandbox_launch.py [--profile=planner] <program> [args...]
+
+`--profile=planner` (the ARTEX planner): sockets of the IP families only (AF_INET,
+AF_INET6 - no netlink, vsock, packet, ...), no socketpair, and the system calls a
+planner never needs are refused (bpf, userfaultfd, perf_event_open, keys, ptrace,
+process_vm_*, mount family, chroot, kexec, kernel modules, file handles, swap,
+reboot, acct, quotactl, iopl/ioperm). Without it, the L2 worker filter is unchanged.
 Standard library only; no secrets on argv."""
 import ctypes
 import os
@@ -30,6 +36,18 @@ ARCHES = {
                "unshare": 272, "setns": 308, "clone3": 435},
     "aarch64": {"arch": 0xC00000B7, "socket": 198, "socketpair": 199, "clone": 220,
                 "unshare": 97, "setns": 268, "clone3": 435},
+}
+AF_INET, AF_INET6 = 2, 10
+# --profile=planner: refused with EPERM (numbers per architecture)
+PLANNER_DENY = {
+    "x86_64": (321, 323, 298, 250, 248, 249, 101, 310, 311, 165, 166, 155, 161, 246, 320, 175, 313,
+               176, 304, 303, 167, 168, 169, 163, 179, 172, 173, *range(428, 434), 442),
+    # bpf userfaultfd perf_event_open keyctl add_key request_key ptrace process_vm_readv/writev
+    # mount umount2 pivot_root chroot kexec_load kexec_file_load init_module finit_module
+    # delete_module open_by_handle_at name_to_handle_at swapon swapoff reboot acct quotactl iopl ioperm
+    "aarch64": (280, 282, 241, 219, 217, 218, 117, 270, 271, 40, 39, 41, 51, 104, 294, 105, 273,
+                106, 265, 264, 224, 225, 142, 89, 60, *range(428, 434), 442),
+    # (both) open_tree move_mount fsopen fsconfig fsmount fspick, mount_setattr
 }
 IO_URING = (425, 426, 427)   # io_uring_setup / _enter / _register (same on both): io_uring can
                              # create and connect sockets without passing through seccomp
@@ -56,11 +74,41 @@ def _assemble(items) -> bytes:
     return b"".join(out)
 
 
-def filter_program(cfg: dict) -> bytes:
+def filter_program(cfg: dict, planner: bool = False, deny: tuple = ()) -> bytes:
     """Refuse: UNIX-domain sockets, io_uring, new user namespaces (unshare, setns,
     clone with CLONE_NEWUSER; clone3 -> ENOSYS so the C library falls back to
     clone). Kill: any other ABI (i386, x32). Allow everything else."""
     eq = lambda nr, target: (JEQ, target, 0, nr)
+    if planner:
+        return _assemble([
+            (LD, 0, 0, 4),
+            (JEQ, 0, "kill", cfg["arch"]),
+            (LD, 0, 0, 0),
+            (JGE, "kill", 0, 0x40000000),
+            eq(IO_URING[0], "eperm"), eq(IO_URING[1], "eperm"), eq(IO_URING[2], "eperm"),
+            eq(cfg["unshare"], "eperm"), eq(cfg["setns"], "eperm"),
+            eq(cfg["clone3"], "enosys"),
+            eq(cfg["clone"], "clone"),
+            eq(cfg["socketpair"], "eperm"),
+            eq(cfg["socket"], "domain"),
+            *[eq(nr, "eperm") for nr in deny],
+            (RET, 0, 0, RET_ALLOW),
+            ("label", "domain"),
+            (LD, 0, 0, 16),                             # args[0]: domain - IP families only
+            (JEQ, "allow", 0, AF_INET),
+            (JEQ, "allow", "eperm", AF_INET6),
+            ("label", "clone"),
+            (LD, 0, 0, 16),
+            (JSET, "eperm", "allow", CLONE_NEWUSER),
+            ("label", "allow"),
+            (RET, 0, 0, RET_ALLOW),
+            ("label", "eperm"),
+            (RET, 0, 0, RET_ERRNO | EPERM),
+            ("label", "enosys"),
+            (RET, 0, 0, RET_ERRNO | ENOSYS),
+            ("label", "kill"),
+            (RET, 0, 0, RET_KILL_PROCESS),
+        ])
     return _assemble([
         (LD, 0, 0, 4),                                  # arch
         (JEQ, 0, "kill", cfg["arch"]),
@@ -93,13 +141,13 @@ def _ins(code, jt, jf, k):
     return struct.pack("HBBI", code, jt, jf, k)
 
 
-def install() -> None:
+def install(planner: bool = False) -> None:
     if not sys.platform.startswith("linux"):
         raise OSError("seccomp is Linux only")
     machine = platform.machine()
     if machine not in ARCHES:
         raise OSError(f"unsupported architecture {machine}")
-    raw = filter_program(ARCHES[machine])
+    raw = filter_program(ARCHES[machine], planner, PLANNER_DENY[machine] if planner else ())
     import resource
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))     # no core file with the tokens in it (kept across exec)
 
@@ -116,14 +164,18 @@ def install() -> None:
 
 
 def main() -> None:
-    if len(sys.argv) < 2:
+    args = sys.argv[1:]
+    planner = bool(args) and args[0] == "--profile=planner"
+    if planner:
+        args = args[1:]
+    if not args or args[0].startswith("--profile"):
         sys.exit(97)
     try:
-        install()
+        install(planner)
     except Exception as e:                       # no filter, no worker
         print(f"sandbox: {type(e).__name__}: {e}", file=sys.stderr)
         sys.exit(97)
-    os.execv(sys.argv[1], sys.argv[1:])
+    os.execv(args[0], args)
 
 
 if __name__ == "__main__":

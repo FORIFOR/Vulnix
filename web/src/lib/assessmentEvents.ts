@@ -31,6 +31,8 @@ export function applyEvent(s: Snapshot, ev: AegisEvent): Snapshot {
       };
     case "stop.report":
       return { ...s, stop_report: ev.stop_report as Snapshot["stop_report"] };
+    case "artex.plan":
+      return { ...s, artex_plan: ev.artex_plan as Snapshot["artex_plan"] };
     case "chat.message": {
       const incoming = (ev.messages as ChatMessage[]) ?? [];
       const cur = s.chat_messages ?? [];
