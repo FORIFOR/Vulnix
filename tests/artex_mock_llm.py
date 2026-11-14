@@ -73,9 +73,39 @@ def _tool_calls(asset_id: int = 1) -> list[dict]:
     return calls
 
 
+def spec_violation(req: dict) -> str | None:
+    """The official Chat Completions tool-calling rules a strict upstream enforces."""
+    tools = req.get("tools")
+    if tools is not None and not tools:
+        return "empty tools array"
+    if req.get("tool_choice") is not None and not tools:
+        return "tool_choice without tools"
+    pending = []
+    for m in req.get("messages") or []:
+        role = m.get("role")
+        if role == "assistant" and m.get("tool_calls"):
+            if pending:
+                return "tool call not answered"
+            pending = [tc.get("id") for tc in m["tool_calls"]]
+        elif role == "tool":
+            if m.get("tool_call_id") not in pending:
+                return "tool result for no open tool call"
+            if not isinstance(m.get("content"), str):
+                return "tool content must be a string"
+            pending.remove(m["tool_call_id"])
+        elif pending:
+            return "tool call not answered"
+    return "tool call not answered" if pending else None
+
+
 class MockLLM:
-    def __init__(self, port: int = 0):
+    """`strict`: reject (400) what breaks the official tool-calling rules.
+    `fail_at` / `fail_status`: answer the Nth request with that HTTP error (its body
+    carries a secret-looking string, to prove the gateway never logs or shows it)."""
+
+    def __init__(self, port: int = 0, *, strict: bool = False, fail_at: int | None = None, fail_status: int = 402):
         self.requests: list[dict] = []
+        self.strict, self.fail_at, self.fail_status = strict, fail_at, fail_status
         mock = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -93,6 +123,14 @@ class MockLLM:
                 except ValueError:
                     req = {}
                 mock.requests.append({"path": self.path, "body": req})
+                if mock.fail_at is not None and len(mock.requests) == mock.fail_at:
+                    err = json.dumps({"error": {"message": "insufficient credits; account token sk-mockSECRETvalue1234567890",
+                                                "type": "billing"}}).encode()
+                    return self._send(mock.fail_status, err, "application/json")
+                if mock.strict:
+                    why = spec_violation(req)
+                    if why:
+                        return self._send(400, json.dumps({"error": {"message": why}}).encode(), "application/json")
                 msgs = req.get("messages") or []
                 has_results = any(m.get("role") == "tool" for m in msgs if isinstance(m, dict))
                 if has_results:

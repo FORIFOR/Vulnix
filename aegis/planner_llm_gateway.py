@@ -113,6 +113,17 @@ def estimate_tokens(text: str) -> int:
     return max(1, len(text) // 3)
 
 
+class _BadResponse(Exception):
+    """A 200 whose body is not a usable completion; `read` gives (part of) it."""
+
+    def __init__(self, body: bytes):
+        super().__init__("bad upstream response")
+        self._body = body
+
+    def read(self, n=-1):
+        return self._body[:n] if n and n > 0 else self._body
+
+
 class GatewayRefused(Exception):
     """`code` is a fixed reason code (safe to audit); the message may be more specific."""
 
@@ -194,6 +205,8 @@ def _clean_message(m) -> dict:
     if not isinstance(m, dict):
         raise GatewayRefused("bad_message", "a message is not an object")
     out = {k: m[k] for k in _MSG_FIELDS if k in m and k != "tool_calls"}
+    if "tool_call_id" in out and (not isinstance(out["tool_call_id"], str) or not 0 < len(out["tool_call_id"]) <= 128):
+        raise GatewayRefused("bad_message", "a tool_call_id is missing or too long")
     if not isinstance(out.get("role"), str):
         raise GatewayRefused("bad_message", "a message without a role")
     calls = []
@@ -201,10 +214,103 @@ def _clean_message(m) -> dict:
         fn = tc.get("function") if isinstance(tc, dict) else None
         if not isinstance(fn, dict):
             raise GatewayRefused("bad_message", "a malformed tool call")
-        calls.append({"id": str(tc.get("id", ""))[:64], "type": "function",
-                      "function": {"name": str(fn.get("name", ""))[:80], "arguments": fn.get("arguments", "")}})
+        cid = tc.get("id")
+        if not isinstance(cid, str) or not 0 < len(cid) <= 128:
+            raise GatewayRefused("bad_message", "a tool call id is missing or too long")
+        args = fn.get("arguments", "")
+        if not isinstance(args, str):                     # the API takes a JSON string
+            args = json.dumps(args, ensure_ascii=False, sort_keys=True)
+        calls.append({"id": cid, "type": "function",
+                      "function": {"name": str(fn.get("name", ""))[:80], "arguments": args}})
     if calls:
         out["tool_calls"] = calls
+    return out
+
+
+MAX_ERROR_SUMMARY = 200
+
+
+def _error_details(e: BaseException) -> tuple[int | None, bytes]:
+    """HTTP status and (at most 4 KiB of) the upstream's error body, if any."""
+    code = getattr(e, "code", None)
+    body = b""
+    reader = getattr(e, "read", None)
+    if callable(reader):
+        try:
+            body = reader(4096) or b""
+            if isinstance(body, str):
+                body = body.encode("utf-8", "replace")
+            elif not isinstance(body, bytes):
+                body = b""
+        except Exception:  # noqa: BLE001
+            body = b""
+    closer = getattr(e, "close", None)
+    if callable(closer):
+        try:
+            closer()
+        except Exception:  # noqa: BLE001
+            pass
+    return (code if isinstance(code, int) else None), body
+
+
+# a long run that mixes letters AND digits (tokens, keys, ids) - not an error code
+# such as "invalid_request_error" or a model name, which stay readable
+_HIGH_ENTROPY = re.compile(r"(?=[A-Za-z0-9+/_=\-]*[0-9])(?=[A-Za-z0-9+/_=\-]*[A-Za-z])[A-Za-z0-9+/_=\-]{20,}")
+
+
+def _valid_response(resp) -> bool:
+    """A chat completion Vulnix can hand to ARTEX: a dict with a non-empty list of
+    choices whose messages are dicts with list-or-absent tool_calls - and no error."""
+    if not isinstance(resp, dict) or resp.get("error"):
+        return False
+    choices = resp.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return False
+    for ch in choices:
+        msg = ch.get("message") if isinstance(ch, dict) else None
+        if not isinstance(msg, dict):
+            return False
+        tcs = msg.get("tool_calls")
+        if tcs is not None and not (isinstance(tcs, list) and all(isinstance(t, dict) for t in tcs)):
+            return False
+    return True
+
+
+def _compat_messages(messages: list) -> list:
+    """The conversation in the shape of the official Chat Completions tool-calling
+    format, without changing any tool's meaning: an assistant turn that carries
+    tool_calls has null (not empty) content; a tool result's content is a string;
+    and every tool call is answered by exactly one tool message, in order, before
+    the next non-tool message - a request that breaks this is not sent at all."""
+    out, pending = [], []
+    for m in messages:
+        m = dict(m)
+        role = m.get("role")
+        if role == "assistant" and m.get("tool_calls"):
+            if pending:
+                raise GatewayRefused("bad_sequence", "a tool call was not answered before the next turn")
+            if m.get("content") == "":
+                m["content"] = None
+            pending = [tc["id"] for tc in m["tool_calls"]]
+            if len(set(pending)) != len(pending) or not all(pending):
+                raise GatewayRefused("bad_sequence", "tool calls without unique ids")
+        elif role == "tool":
+            if m.get("tool_call_id") not in pending:
+                raise GatewayRefused("bad_sequence", "a tool result that answers no open tool call")
+            pending.remove(m["tool_call_id"])
+            c = m.get("content")
+            if isinstance(c, list) and all(isinstance(x, dict) and x.get("type") == "text" for x in c):
+                m["content"] = "".join(str(x.get("text", "")) for x in c)    # text parts: the same text
+            elif not isinstance(c, str):
+                m["content"] = json.dumps(c, ensure_ascii=False) if c is not None else ""
+        else:
+            if pending:
+                raise GatewayRefused("bad_sequence", "a tool call was not answered before the next turn")
+            if role not in ("system", "user", "assistant", "developer"):
+                raise GatewayRefused("bad_message", "an unknown message role")
+        out.append(m)
+    if pending:
+        raise GatewayRefused("bad_sequence", "a tool call was not answered")
     return out
 
 
@@ -222,7 +328,7 @@ def _turn_digest(msg: dict) -> str:
             args = json.dumps(json.loads(args), sort_keys=True, ensure_ascii=False) if isinstance(args, str) else ""
         except ValueError:
             args = _norm(args).strip()
-        calls.append([str(fn.get("name")), args])
+        calls.append([str(tc.get("id")), str(fn.get("name")), args])     # ids too: same call, other round
     return hashlib.sha256(json.dumps([text, calls], ensure_ascii=False).encode()).hexdigest()
 
 
@@ -274,6 +380,10 @@ class PlannerLLMGateway:
         self._cost_used = 0.0
         self._first_passed = False            # until one request passed, the fingerprint binds
         self._closed = threading.Event()      # lock-free: close() never waits for a request
+        # one upstream failure ends the run: nothing more is sent, whatever retries
+        self._failed = threading.Event()
+        self.failure: dict | None = None
+        self._send_lock = threading.Lock()   # one upstream request in flight per run
         # turns the model itself returned in this run: only these, resent, count as the
         # model's own (ARTEX writes the request - a role label alone proves nothing)
         self._model_turns: dict[str, dict] = {}       # digest -> the turn as the model returned it
@@ -322,7 +432,7 @@ class PlannerLLMGateway:
             with self._lock:
                 if self._tools_sha is not None and tools_sha != self._tools_sha:
                     raise GatewayRefused("tools_changed", "the tool schemas changed during the run")
-        tc = body.get("tool_choice")
+        tc = body.get("tool_choice") if tools else None      # without tools the API rejects it
         if tc in ("auto", "none", "required"):
             out["tool_choice"] = tc
         elif isinstance(tc, dict) and (tc.get("function") or {}).get("name") in PLANNER_TOOL_ALLOWLIST:
@@ -345,7 +455,7 @@ class PlannerLLMGateway:
             else:
                 rebuilt.append(m)
                 theirs.append(m)
-        out["messages"] = rebuilt
+        out["messages"] = _compat_messages(rebuilt)
         strings, keyed = [], []
         _strings(out["messages"], strings, keyed)
         _strings(theirs, own, own_keyed)
@@ -408,13 +518,19 @@ class PlannerLLMGateway:
             prompt_tokens = estimate_tokens(payload.decode())
             worst_tokens = prompt_tokens + clean["max_tokens"]
             worst_cost = self.budget.estimate(prompt_tokens, clean["max_tokens"])
+            tools_sha = hashlib.sha256(json.dumps(clean.get("tools") or [], sort_keys=True,
+                                                  ensure_ascii=False).encode()).hexdigest()
             # asked OUTSIDE the gateway lock (it takes the service lock; an emergency stop
             # holds the service lock and closes gateways - opposite order would deadlock)
+            if self._failed.is_set():
+                raise GatewayRefused("run_failed", "the run failed upstream: nothing more is sent")
             if self._closed.is_set():
                 raise GatewayRefused("closed", "the planner run is over")
-            if self.mode == "forward" and self._may_forward is not None and not self._may_forward():
+            if self.mode == "forward" and not self._may():
                 raise GatewayRefused("stopped", "the planner run was stopped")
             with self._lock:
+                if self._failed.is_set():
+                    raise GatewayRefused("run_failed", "the run failed upstream: nothing more is sent")
                 passed = [c for c in self.calls if c.decision in ("forwarded", "previewed", "failed")]
                 if len(passed) >= self.budget.max_calls:
                     raise GatewayRefused("call_budget", f"call budget exhausted ({self.budget.max_calls})")
@@ -431,8 +547,6 @@ class PlannerLLMGateway:
                                  "", sha, len(payload), prompt_tokens, charged_tokens=worst_tokens,
                                  est_cost_usd=worst_cost)
                 self.calls.append(rec)
-            tools_sha = hashlib.sha256(json.dumps(clean.get("tools") or [], sort_keys=True,
-                                                  ensure_ascii=False).encode()).hexdigest()
             if self.mode == "preview":
                 self.preview_requests.append(clean)
                 resp = self._responder(clean)
@@ -440,70 +554,106 @@ class PlannerLLMGateway:
                     self._first_passed = True
                     if self._tools_sha is None and clean.get("tools"):
                         self._tools_sha = tools_sha
-            else:
-                # no audit record, no forward
-                try:
-                    self._record("planner_llm.forwarding", rec, required=True)
-                except GatewayRefused:
-                    self._release(rec, "no_audit")
-                    raise
-                # once more right before sending: a stop may have landed meanwhile
-                if self._closed.is_set() or (self._may_forward is not None and not self._may_forward()):
-                    self._release(rec, "stopped")
-                    raise GatewayRefused("stopped", "the planner run was stopped")
-                headers = {"Content-Type": "application/json"}
-                if self._key:
-                    headers["Authorization"] = f"Bearer {self._key}"
-                transport = self._transport
-                if transport is None:
-                    from .router import _http_transport
-                    transport = _http_transport
-                try:
-                    data = transport(self.upstream_url, headers, payload)
-                    if len(data) > MAX_RESPONSE_BYTES:
-                        raise ValueError("upstream response too large")
-                    resp = json.loads(data)
-                    with self._lock:
-                        self._first_passed = True
-                        if self._tools_sha is None and clean.get("tools"):
-                            self._tools_sha = tools_sha
-                except Exception as e:  # noqa: BLE001 - sent (maybe): the reserve stays charged
-                    with self._lock:
-                        rec.decision, rec.reason = "failed", f"upstream_error:{type(e).__name__}"[:60]
-                    self._record("planner_llm.upstream_error", rec)
-                    return 502, {"error": {"message": "upstream error"}}
-            usage = resp.get("usage") if isinstance(resp, dict) else None
-            with self._lock:
-                for ch in (resp.get("choices") or []) if isinstance(resp, dict) else []:
-                    msg = ch.get("message") if isinstance(ch, dict) else None
-                    if isinstance(msg, dict):
-                        try:
-                            turn = _clean_message({**msg, "role": "assistant"})
-                        except GatewayRefused:
-                            continue
-                        self._model_turns[_turn_digest(turn)] = turn
-                if isinstance(usage, dict) and isinstance(usage.get("completion_tokens"), int):
-                    completion = max(0, min(int(usage["completion_tokens"]), clean["max_tokens"]))
-                    pt = usage.get("prompt_tokens")
-                    prompt_real = max(0, pt) if isinstance(pt, int) else 0
-                    actual_tokens = max(prompt_real, prompt_tokens) + completion
-                    actual_cost = self.budget.estimate(max(prompt_real, prompt_tokens), completion)
-                    # settle: never below zero, never more than the reserve released
-                    self._tokens_used += actual_tokens - rec.charged_tokens
-                    self._cost_used += actual_cost - rec.est_cost_usd
-                    rec.completion_tokens, rec.charged_tokens, rec.est_cost_usd = completion, actual_tokens, actual_cost
-                # no usage figures: the reserved worst case stays charged
-            self._record("planner_llm.call", rec)
-            return 200, resp
+                self._settle(rec, clean, resp, prompt_tokens)
+                self._record("planner_llm.call", rec)
+                return 200, resp
+            with self._send_lock:                        # one request in flight: a racer waits here
+                return self._send(rec, clean, payload, tools_sha, prompt_tokens)
         except GatewayRefused as e:
             if rec is not None and rec.decision == "refused":
                 self._record("planner_llm.refused", rec)
-                return 403, {"error": {"message": f"refused by the Vulnix planner gateway: {e}"}}
-            r = CallRecord(len(self.calls) + 1, "refused", e.code, hashlib.sha256(raw).hexdigest(), len(raw), 0)
-            with self._lock:
-                self.calls.append(r)
-            self._record("planner_llm.refused", r)
+            else:
+                r = CallRecord(len(self.calls) + 1, "refused", e.code, hashlib.sha256(raw).hexdigest(), len(raw), 0)
+                with self._lock:
+                    self.calls.append(r)
+                self._record("planner_llm.refused", r)
             return 403, {"error": {"message": f"refused by the Vulnix planner gateway: {e}"}}
+
+    def _send(self, rec: CallRecord, clean: dict, payload: bytes, tools_sha: str,
+              prompt_tokens: int) -> tuple[int, dict]:
+        """Under the send lock: the last checks, the audit record, the ONE upstream
+        request, and its outcome - all before the lock is released."""
+        # a failure or stop that landed while this request waited: it is not sent
+        if self._failed.is_set():
+            self._release(rec, "run_failed")
+            raise GatewayRefused("run_failed", "the run failed upstream: nothing more is sent")
+        if self._closed.is_set() or not self._may():
+            self._release(rec, "stopped")
+            raise GatewayRefused("stopped", "the planner run was stopped")
+        with self._lock:
+            locked_tools = self._tools_sha
+        if clean.get("tools") and locked_tools is not None and tools_sha != locked_tools:
+            self._release(rec, "tools_changed")
+            raise GatewayRefused("tools_changed", "the tool schemas changed during the run")
+        try:
+            self._record("planner_llm.forwarding", rec, required=True)          # no record, no send
+        except GatewayRefused:
+            self._release(rec, "no_audit")
+            raise
+        headers = {"Content-Type": "application/json"}
+        if self._key:
+            headers["Authorization"] = f"Bearer {self._key}"
+        transport = self._transport
+        if transport is None:
+            from .router import _http_transport
+            transport = _http_transport
+        try:
+            data = transport(self.upstream_url, headers, payload)
+            if len(data) > MAX_RESPONSE_BYTES:
+                raise ValueError("upstream response too large")
+            resp = json.loads(data)
+            if not _valid_response(resp):
+                # a 200 that is not a usable completion (or carries an error): a failure too
+                raise _BadResponse(json.dumps(resp, ensure_ascii=False)[:4096].encode()
+                                   if isinstance(resp, (dict, list)) else b"")
+            self._settle(rec, clean, resp, prompt_tokens)
+        except Exception as e:  # noqa: BLE001 - sent (maybe): the reserve stays charged
+            self._failed.set()                           # first: the run is over, no retry reaches upstream
+            status, raw = _error_details(e)
+            digest = hashlib.sha256(raw).hexdigest()
+            with self._lock:
+                rec.decision = "failed"
+                rec.reason = (f"upstream_http_{status}" if status
+                              else "upstream_bad_response" if isinstance(e, _BadResponse)
+                              else f"upstream_{type(e).__name__}"[:60])
+                self.failure = {"index": rec.index, "http_status": status, "error_type": type(e).__name__,
+                                "error_bytes": len(raw), "error_sha256": digest,
+                                "error_summary": self._sanitize_error(raw)}
+            # the audit gets the status, size and hash - never the error body
+            self._record("planner_llm.upstream_error", rec,
+                         extra={"http_status": status, "error_bytes": len(raw), "error_sha256": digest})
+            # 409: a final answer for this run (not "try again")
+            return 409, {"error": {"message": f"upstream refused the request (HTTP {status}); "
+                                              "the run is over and nothing more is sent"}}
+        with self._lock:
+            self._first_passed = True
+            if self._tools_sha is None and clean.get("tools"):
+                self._tools_sha = tools_sha
+        self._record("planner_llm.call", rec)
+        return 200, resp
+
+    def _settle(self, rec: CallRecord, clean: dict, resp, prompt_tokens: int) -> None:
+        usage = resp.get("usage") if isinstance(resp, dict) else None
+        with self._lock:
+            for ch in (resp.get("choices") or []) if isinstance(resp, dict) else []:
+                msg = ch.get("message") if isinstance(ch, dict) else None
+                if isinstance(msg, dict):
+                    try:
+                        turn = _clean_message({**msg, "role": "assistant"})
+                    except GatewayRefused:
+                        continue
+                    self._model_turns[_turn_digest(turn)] = turn
+            if isinstance(usage, dict) and isinstance(usage.get("completion_tokens"), int):
+                completion = max(0, min(int(usage["completion_tokens"]), clean["max_tokens"]))
+                pt = usage.get("prompt_tokens")
+                prompt_real = max(0, pt) if isinstance(pt, int) else 0
+                actual_tokens = max(prompt_real, prompt_tokens) + completion
+                actual_cost = self.budget.estimate(max(prompt_real, prompt_tokens), completion)
+                # settle against actual usage (never below zero)
+                self._tokens_used += actual_tokens - rec.charged_tokens
+                self._cost_used += actual_cost - rec.est_cost_usd
+                rec.completion_tokens, rec.charged_tokens, rec.est_cost_usd = completion, actual_tokens, actual_cost
+            # no usage figures: the reserved worst case stays charged
 
     def _release(self, rec: CallRecord, code: str) -> None:
         """A reserved call that was not sent after all: refused, reserve released."""
@@ -512,7 +662,44 @@ class PlannerLLMGateway:
             self._cost_used -= rec.est_cost_usd
             rec.decision, rec.reason, rec.charged_tokens, rec.est_cost_usd = "refused", code, 0, 0.0
 
-    def _record(self, event: str, rec: CallRecord, required: bool = False) -> None:
+    def _sanitize_error(self, raw: bytes) -> str:
+        """A short, secret-free summary of an upstream error body, for the operator:
+        only error.message / type / code when it is JSON; any form of the key (also
+        escaped, case-folded, or any 8+ character piece of it), secret shapes and every
+        long high-entropy run are redacted."""
+        text = raw.decode("utf-8", "replace")
+        try:
+            obj = json.loads(text)
+            err = obj.get("error") if isinstance(obj, dict) else None
+            if isinstance(err, dict):
+                text = " ".join(str(err.get(k)) for k in ("type", "code", "message") if err.get(k) is not None)
+            elif isinstance(err, str):
+                text = err
+        except ValueError:
+            pass
+        text = _norm(text).replace("\\/", "/")
+        low = text.lower()
+        key = self._key or ""
+        if key:
+            for form in self._key_forms:
+                i = low.find(form.lower())
+                while i >= 0:
+                    text = text[:i] + "[redacted]" + text[i + len(form):]
+                    low = text.lower()
+                    i = low.find(form.lower())
+            for size in range(len(key), 7, -1):           # any 8+ character piece of the key
+                for start in range(0, len(key) - size + 1):
+                    piece = key[start:start + size].lower()
+                    if piece in low:
+                        text = re.sub(re.escape(piece), "[redacted]", text, flags=re.I)
+                        low = text.lower()
+        for pat in SECRET_PATTERNS:
+            text = pat.sub("[redacted]", text)
+        text = _HIGH_ENTROPY.sub("[redacted]", text)
+        text = " ".join(text.split())
+        return text[:MAX_ERROR_SUMMARY]
+
+    def _record(self, event: str, rec: CallRecord, required: bool = False, extra: dict | None = None) -> None:
         if self._audit is None:
             if required:
                 raise GatewayRefused("no_audit", "no audit log: nothing is forwarded")
@@ -522,7 +709,7 @@ class PlannerLLMGateway:
                                reason=rec.reason, request_sha256=rec.request_sha256,
                                request_bytes=rec.request_bytes, est_prompt_tokens=rec.est_prompt_tokens,
                                completion_tokens=rec.completion_tokens, charged_tokens=rec.charged_tokens,
-                               est_cost_usd=rec.est_cost_usd)
+                               est_cost_usd=rec.est_cost_usd, **(extra or {}))
         except Exception:  # noqa: BLE001
             if required:
                 raise GatewayRefused("no_audit", "the audit record could not be written") from None
@@ -542,10 +729,24 @@ class PlannerLLMGateway:
                            "usd_per_1k_input": self.budget.usd_per_1k_input,
                            "usd_per_1k_output": self.budget.usd_per_1k_output},
                 "first_request_sha256": passed[0].request_sha256 if passed else None,
+                "failed_upstream": dict(self.failure) if self.failure else None,
                 "records": [c.__dict__ for c in self.calls],
             }
 
     # ---- server ------------------------------------------------------------------
+    def _may(self) -> bool:
+        """May this run still forward? An error answering it counts as no."""
+        try:
+            return self._may_forward is None or bool(self._may_forward())
+        except Exception:  # noqa: BLE001 - cannot confirm the run may continue: not sent
+            return False
+
+    @property
+    def failed(self) -> bool:
+        """True once an upstream exchange failed in this run (even if its details could
+        not be recorded)."""
+        return self._failed.is_set()
+
     def close(self) -> None:
         """No further request is forwarded (emergency stop, end of the run). Lock-free."""
         self._closed.set()

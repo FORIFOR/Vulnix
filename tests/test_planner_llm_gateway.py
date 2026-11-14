@@ -104,7 +104,8 @@ class TestInspection(unittest.TestCase):
         body = chat()
         body["messages"] += [{"role": "assistant", "content": "", "tool_calls": [
             {"id": "c", "type": "function", "function": {"name": "add_intent",
-                                                         "arguments": json.dumps({"password": "hunter2hunter2"})}}]}]
+                                                         "arguments": json.dumps({"password": "hunter2hunter2"})}}]},
+                             {"role": "tool", "tool_call_id": "c", "content": "ok"}]
         self.refused(body, "contains_secret")
         split = chat()
         split["messages"] = [{"role": "user", "content": "sk-abcdefgh"}, {"role": "user", "content": "ijklmnopqrstuv"}]
@@ -202,7 +203,7 @@ class TestBudgets(unittest.TestCase):
         with forward(broken, audit=Audit()) as gw:
             code, _ = post(gw, chat())
         rep = gw.report()
-        self.assertEqual(code, 502)
+        self.assertEqual(code, 409)                                     # a final answer, not "retry"
         self.assertEqual((rep["calls"], rep["refused"], rep["failed"]), (1, 0, 1))
         self.assertGreater(rep["est_tokens"], 2048)                     # the reserve stays charged
 
@@ -529,3 +530,238 @@ class TestPreviewRoute(unittest.TestCase):
         self.assertIn("/artex/llm-preview", get_part)
         post_part = src[src.index("def do_POST"):]
         self.assertNotIn("/artex/llm-preview", post_part)
+
+
+class TestUpstreamFailureEndsTheRun(unittest.TestCase):
+    def test_after_the_first_upstream_error_nothing_more_is_sent(self):
+        with MockLLM(fail_at=2, fail_status=402) as mock, \
+                PlannerLLMGateway(mode="forward", model="m", upstream_url=mock.url + "/chat/completions",
+                                  allowed_hosts={"lab.test"}, audit=(audit := Audit())) as gw:
+            self.assertEqual(post(gw, chat())[0], 200)
+            code, body = post(gw, chat("2 lab.test"))
+            self.assertEqual(code, 409)
+            for _ in range(3):                                   # ARTEX's internal client retrying
+                self.assertEqual(post(gw, chat("2 lab.test"))[0], 403)
+        self.assertEqual(len(mock.requests), 2)                  # 0 extra sends after the error
+        rep = gw.report()
+        self.assertEqual(rep["failed_upstream"]["http_status"], 402)
+        self.assertIn("insufficient credits", rep["failed_upstream"]["error_summary"])
+        self.assertNotIn("sk-mockSECRET", rep["failed_upstream"]["error_summary"])
+        self.assertLessEqual(len(rep["failed_upstream"]["error_summary"]), 200)
+        blob = json.dumps(audit.entries, ensure_ascii=False)
+        self.assertIn('"http_status": 402', blob)
+        self.assertNotIn("insufficient credits", blob)           # no error body in the audit
+        self.assertNotIn("sk-mockSECRET", blob)
+        self.assertEqual(sum(1 for c in rep["records"] if c["reason"] == "run_failed"), 3)
+
+    def test_a_racing_request_waits_and_is_refused_after_the_failure(self):
+        gate, sent = threading.Event(), []
+
+        def transport(_u, _h, _b):
+            sent.append(1)
+            if len(sent) == 1:
+                gate.wait(5)
+                raise urllib.error.HTTPError("https://api.example.test", 500, "boom", {}, None)
+            return ok_transport()
+        gw = PlannerLLMGateway(mode="forward", model="m", upstream_url="http://127.0.0.1:9/v1",
+                               allowed_hosts={"lab.test"}, transport=transport, audit=Audit())
+        with gw:
+            results = []
+            a = threading.Thread(target=lambda: results.append(post(gw, chat())[0]))
+            a.start()
+            time.sleep(0.3)
+            b = threading.Thread(target=lambda: results.append(post(gw, chat("b lab.test"))[0]))
+            b.start()
+            time.sleep(0.3)
+            gate.set()
+            a.join(10)
+            b.join(10)
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sorted(results), [403, 409])
+
+    def test_an_error_body_without_status_or_body_is_handled(self):
+        with forward(lambda *a: (_ for _ in ()).throw(TimeoutError()), audit=Audit()) as gw:
+            self.assertEqual(post(gw, chat())[0], 409)
+            self.assertEqual(post(gw, chat())[0], 403)
+        self.assertEqual(gw.report()["failed_upstream"]["http_status"], None)
+
+
+class TestCompatibility(unittest.TestCase):
+    def conv(self, tool_content="ok", assistant_content=""):
+        return [{"role": "user", "content": "lab.test"},
+                {"role": "assistant", "content": assistant_content, "tool_calls": [
+                    {"id": "c1", "type": "function", "function": {"name": "add_intent", "arguments": "{}"}}]},
+                {"role": "tool", "tool_call_id": "c1", "content": tool_content}]
+
+    def test_shape_is_normalised_without_changing_meaning(self):
+        out = preview().inspect({"messages": self.conv(tool_content={"ids": [1]}), "tools": chat()["tools"]})
+        self.assertIsNone(out["messages"][1]["content"])                      # "" -> null
+        self.assertEqual(out["messages"][1]["tool_calls"][0]["function"]["name"], "add_intent")
+        self.assertEqual(json.loads(out["messages"][2]["content"]), {"ids": [1]})   # string, same data
+        from tests.artex_mock_llm import spec_violation
+        self.assertIsNone(spec_violation(out))
+
+    def test_sequences_the_api_would_reject_are_not_sent(self):
+        bad = [
+            self.conv()[:2],                                                  # unanswered tool call
+            [self.conv()[0], {"role": "tool", "tool_call_id": "zz", "content": "x"}],   # orphan tool result
+            self.conv()[:2] + [{"role": "user", "content": "x"}],              # turn before the answer
+        ]
+        for msgs in bad:
+            with self.assertRaises(GatewayRefused) as cm:
+                preview().inspect({"messages": msgs, "tools": chat()["tools"]})
+            self.assertEqual(cm.exception.code, "bad_sequence")
+
+    def test_tool_choice_is_dropped_without_tools(self):
+        out = preview().inspect({"messages": [{"role": "user", "content": "lab.test"}], "tool_choice": "auto"})
+        self.assertNotIn("tool_choice", out)
+
+
+class TestReviewRoundFive(unittest.TestCase):
+    KEY = "abcd/efgh+ijkl=mnop1234QRST"
+
+    def gw(self, transport, **kw):
+        return PlannerLLMGateway(mode="forward", model="m", upstream_url="http://127.0.0.1:9/v1", api_key=self.KEY,
+                                 allowed_hosts={"lab.test"}, transport=transport, audit=kw.pop("audit", Audit()), **kw)
+
+    def test_a_malformed_or_error_carrying_200_ends_the_run(self):
+        for body in ({"choices": [{"message": {"tool_calls": 5}}]}, {"choices": 1}, {"error": {"message": "x"}},
+                     [], {"choices": []}):
+            sent = []
+
+            def t(*_a, b=body):
+                sent.append(1)
+                return json.dumps(b).encode()
+            with self.gw(t) as gw:
+                self.assertEqual(post(gw, chat())[0], 409, body)
+                self.assertEqual(post(gw, chat())[0], 403, body)          # the retry is not sent
+            self.assertEqual(len(sent), 1, body)
+            self.assertEqual(gw.report()["records"][0]["reason"], "upstream_bad_response")
+
+    def test_the_key_is_redacted_from_the_error_summary_in_every_form(self):
+        k = self.KEY
+        forms = [k, k.replace("/", "\\/"), k.upper(), k.encode().hex().upper(),
+                 "Basic " + base64.b64encode(("user:" + k).encode()).decode(), k[3:15]]
+        for f in forms:
+            body = json.dumps({"error": {"message": f"bad key {f} for account", "type": "auth"}}).encode()
+
+            def t(*_a, b=body):
+                raise urllib.error.HTTPError("https://x", 401, "x", {}, __import__("io").BytesIO(b))
+            with self.gw(t) as gw:
+                post(gw, chat())
+            summary = gw.report()["failed_upstream"]["error_summary"]
+            for piece in (k, k.lower(), k[3:15], k[3:15].lower()):
+                self.assertNotIn(piece, summary)
+                self.assertNotIn(piece, summary.lower())
+            self.assertIn("auth", summary)
+
+    def test_a_racer_waits_at_the_send_lock_and_is_never_audited_as_forwarding(self):
+        gate, sent, audit = threading.Event(), [], Audit()
+
+        def transport(_u, _h, _b):
+            sent.append(1)
+            gate.wait(5)
+            raise urllib.error.HTTPError("https://x", 500, "boom", {}, None)
+        with self.gw(transport, audit=audit) as gw:
+            out = []
+            a = threading.Thread(target=lambda: out.append(post(gw, chat())[0]))
+            a.start()
+            time.sleep(0.3)
+            b = threading.Thread(target=lambda: out.append(post(gw, chat("b lab.test"))[0]))
+            b.start()
+            time.sleep(0.5)                                 # b has passed the reserve and waits
+            gate.set()
+            a.join(10)
+            b.join(10)
+        self.assertEqual(len(sent), 1)
+        reasons = [c["reason"] for c in gw.report()["records"]]
+        self.assertIn("run_failed", reasons)
+        self.assertEqual(sum(1 for e in audit.entries if e["event"] == "planner_llm.forwarding"), 1)
+
+    def test_same_call_in_two_rounds_replays_each_with_its_own_ids(self):
+        turns = [{"role": "assistant", "content": None, "tool_calls": [
+            {"id": cid, "type": "function", "function": {"name": "add_intent", "arguments": "{}"}}]} for cid in ("c1", "c2")]
+        replies = iter(turns)
+
+        def t(*_a):
+            return json.dumps({"choices": [{"message": next(replies)}],
+                               "usage": {"prompt_tokens": 1, "completion_tokens": 1}}).encode()
+        with self.gw(t) as gw:
+            self.assertEqual(post(gw, chat())[0], 200)
+            b = chat()
+            b["messages"] += [turns[0], {"role": "tool", "tool_call_id": "c1", "content": "ok"}]
+            self.assertEqual(post(gw, b)[0], 200)
+            b["messages"] += [turns[1], {"role": "tool", "tool_call_id": "c2", "content": "ok"}]
+            self.assertNotEqual(post(gw, b)[0], 403)
+
+    def test_long_ids_are_refused_not_truncated(self):
+        long_id = "x" * 200
+        msgs = [{"role": "user", "content": "lab.test"},
+                {"role": "assistant", "content": None, "tool_calls": [
+                    {"id": long_id, "type": "function", "function": {"name": "add_intent", "arguments": "{}"}}]},
+                {"role": "tool", "tool_call_id": long_id, "content": "ok"}]
+        with self.assertRaises(GatewayRefused):
+            preview().inspect({"messages": msgs, "tools": chat()["tools"]})
+
+    def test_tool_text_parts_keep_their_text_and_dict_arguments_become_json(self):
+        msgs = [{"role": "user", "content": "lab.test"},
+                {"role": "assistant", "content": None, "tool_calls": [
+                    {"id": "c1", "type": "function", "function": {"name": "add_intent", "arguments": {"a": 1}}}]},
+                {"role": "tool", "tool_call_id": "c1", "content": [{"type": "text", "text": "done"}]}]
+        out = preview().inspect({"messages": msgs, "tools": chat()["tools"]})
+        self.assertEqual(out["messages"][2]["content"], "done")
+        self.assertEqual(json.loads(out["messages"][1]["tool_calls"][0]["function"]["arguments"]), {"a": 1})
+
+
+class TestServiceRejectsAPlanAfterAGatewayFailure(unittest.TestCase):
+    def test_a_failed_gateway_run_never_becomes_a_plan(self):
+        from aegis.assessment import AssessmentService
+        from tests import TEST_CONFINEMENT
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        fake = [sys.executable, str(Path(__file__).with_name("fake_artex_planner.py"))]
+        with MockLLM() as mock, patch.dict(os.environ, {
+                "VULNIX_ARTEX_REAL_CMD": " ".join(fake), "VULNIX_ARTEX_LLM_URL": "http://127.0.0.1:9/v1",
+                "AEGIS_ENV": "development", "VULNIX_ARTEX_LLM_MODE": "gateway-forward",
+                "VULNIX_ARTEX_LLM_UPSTREAM_URL": mock.url + "/chat/completions"}):
+            svc = AssessmentService(Path(tmp.name), 18097, l2_confinement=TEST_CONFINEMENT)
+            self.addCleanup(svc.workers.kill_all)
+            original = PlannerLLMGateway.__exit__
+
+            def failing_exit(gw, *a):
+                gw.failure = {"http_status": 402}         # as if one call had failed upstream
+                return original(gw, *a)
+            with patch.object(PlannerLLMGateway, "__exit__", failing_exit):
+                with self.assertRaises(ValueError):
+                    svc.plan_with_artex("op")
+        self.assertIsNone(svc.artex_plan_view()["plan"])
+        self.assertTrue([e for e in svc.audit.entries() if e["event"] == "artex.plan_failed"
+                         and e["fields"].get("reason") == "upstream_http_402"])
+
+
+class TestReviewRoundSix(unittest.TestCase):
+    def test_error_codes_stay_readable_while_tokens_are_redacted(self):
+        gw = PlannerLLMGateway(mode="preview", model="m", responder=canned, api_key=KEY)
+        s = gw._sanitize_error(json.dumps({"error": {"type": "invalid_request_error", "code": "context_length_exceeded",
+                                                     "message": "model abliterated-model rejected; trace 9f8e7d6c5b4a39281706f5e4"}}).encode())
+        for word in ("invalid_request_error", "context_length_exceeded", "abliterated-model"):
+            self.assertIn(word, s)
+        self.assertNotIn("9f8e7d6c5b4a39281706f5e4", s)
+
+    def test_an_explicit_null_error_is_a_normal_completion(self):
+        def t(*_a):
+            return json.dumps({"error": None, "choices": [{"message": {"content": "ok"}}]}).encode()
+        with PlannerLLMGateway(mode="forward", model="m", upstream_url="http://127.0.0.1:9/v1", transport=t,
+                               allowed_hosts={"lab.test"}, audit=Audit()) as gw:
+            self.assertEqual(post(gw, chat())[0], 200)
+
+    def test_a_stop_check_that_raises_means_not_sent(self):
+        sent = []
+
+        def boom():
+            raise RuntimeError("cannot tell")
+        with PlannerLLMGateway(mode="forward", model="m", upstream_url="http://127.0.0.1:9/v1",
+                               transport=lambda *a: sent.append(1) or ok_transport(), may_forward=boom,
+                               allowed_hosts={"lab.test"}, audit=Audit()) as gw:
+            self.assertIn(post(gw, chat())[0], (403, 500))
+        self.assertEqual(sent, [])
