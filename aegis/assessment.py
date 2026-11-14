@@ -17,6 +17,8 @@ import re
 import secrets
 import sys
 import tempfile
+import shutil
+import subprocess
 import threading
 import time
 import urllib.parse
@@ -90,6 +92,8 @@ class Assessment:
 
 
 MAX_RUN_HISTORY = 50
+# ARTEX runs that start from an emptied, shared working database must not overlap
+_ARTEX_DB_LOCK = threading.Lock()
 
 
 class StopNotConfirmed(RuntimeError):
@@ -1618,7 +1622,14 @@ class AssessmentService:
             with self._lock:
                 self._artex_gateways.add(gateway)
             llm_url, llm_key = gateway.url, gateway.token
+        fresh = os.environ.get("VULNIX_ARTEX_RESET_DB") == "1" and bool(self._artex_pg_dsn)
+        if fresh:
+            _ARTEX_DB_LOCK.acquire()
         try:
+            if fresh:
+                # the same starting state for every run: a preview and the approved forward
+                # then send the same first request (anything left over would change it)
+                self._reset_artex_db()
             run = run_artex_planner(self._artex_real_cmd, request, llm_url=llm_url, llm_key=llm_key,
                                     llm_model=self._artex_llm_model, pg_dsn=self._artex_pg_dsn,
                                     expected_sha256=self._artex_expected_sha256,
@@ -1635,6 +1646,8 @@ class AssessmentService:
             self.audit.record("artex.plan_failed", actor=actor, reason=type(e).__name__)
             raise ValueError(f"ARTEX の計画に失敗しました（{type(e).__name__}）") from None
         finally:
+            if fresh:
+                _ARTEX_DB_LOCK.release()
             if gateway is not None:
                 gateway.__exit__(None, None, None)
                 self._note_gateway_run(gateway, actor)
@@ -3479,6 +3492,25 @@ class AssessmentService:
         finally:
             self._tls.gen = prev
             self._end_operation()
+
+    def _reset_artex_db(self) -> None:
+        """Empty ARTEX's working database (VULNIX_ARTEX_RESET_DB=1). psql is taken from the
+        system directories only, and the DSN, which holds the planner role's password, is
+        passed in the environment (PGDATABASE), never on a command line or in a message."""
+        if os.environ.get("VULNIX_ARTEX_RESET_DB") != "1" or not self._artex_pg_dsn:
+            return
+        psql = shutil.which("psql", path="/usr/bin:/usr/local/bin:/bin")
+        if not psql:
+            raise ValueError("ARTEX の作業用 DB を初期化できません（psql が見つかりません）")
+        proc = subprocess.run(
+            [psql, "-X", "-q", "-v", "ON_ERROR_STOP=1", "-c",
+             "DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;"],
+            capture_output=True, text=True, timeout=30,
+            env={"PATH": "/usr/bin:/bin", "LC_ALL": "C", "PGDATABASE": self._artex_pg_dsn,
+                 "PGCONNECT_TIMEOUT": "10"})
+        if proc.returncode != 0:
+            self.audit.record("artex.db_reset_failed", rc=proc.returncode)
+            raise ValueError("ARTEX の作業用 DB を初期化できませんでした（計画は実行していません）")
 
     def _verify_fix(self, actor: str) -> dict:
         """The fix check. When the mock lab is shared with other organizations, it is put

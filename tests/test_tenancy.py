@@ -663,3 +663,59 @@ class TestRealModelDailyCap(TestTenantIsolationOverHttp):
             m = importlib.reload(srvmod)
             self.assertEqual((m.ARTEX_LLM_PLANS_PER_DAY, m.ARTEX_LLM_PLANS_PER_ORG_PER_HOUR), (10, 1))
         importlib.reload(srvmod)
+
+
+class TestArtexFreshDatabase(unittest.TestCase):
+    """Every ARTEX run starts from an empty working database (VULNIX_ARTEX_RESET_DB=1): the
+    preview and the approved forward then send the same first request. Runs that share the
+    database are serialised, and the DSN (with its password) never appears on a command line."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        with patch.dict(os.environ, {}, clear=True):
+            self.svc = AssessmentService(Path(self.tmp.name), LAB_PORT, verify_seconds=30)
+        self.addCleanup(self.svc.close)
+        self.svc._artex_pg_dsn = "postgres://artex_planner:SECRET-PW@127.0.0.1:5432/artex_planner_public?sslmode=disable"
+
+    def test_reset_runs_psql_with_the_dsn_in_the_environment_only(self):
+        import aegis.assessment as am
+        calls = []
+
+        class P:
+            returncode = 0
+            stdout = stderr = ""
+
+        def fake_run(argv, **kw):
+            calls.append((argv, kw))
+            return P()
+        with patch.dict(os.environ, {"VULNIX_ARTEX_RESET_DB": "1"}), \
+                patch.object(am.shutil, "which", return_value="/usr/bin/psql"), \
+                patch.object(am.subprocess, "run", side_effect=fake_run):
+            self.svc._reset_artex_db()
+        argv, kw = calls[0]
+        self.assertEqual(argv[0], "/usr/bin/psql")
+        self.assertNotIn("SECRET-PW", " ".join(argv))
+        self.assertEqual(kw["env"]["PGDATABASE"], self.svc._artex_pg_dsn)
+        self.assertIn("DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;", argv)
+
+    def test_off_by_default(self):
+        import aegis.assessment as am
+        with patch.dict(os.environ, {}, clear=False), patch.object(am.subprocess, "run") as run:
+            os.environ.pop("VULNIX_ARTEX_RESET_DB", None)
+            self.svc._reset_artex_db()
+        run.assert_not_called()
+
+    def test_a_failed_reset_stops_the_run_without_showing_the_dsn(self):
+        import aegis.assessment as am
+
+        class P:
+            returncode = 2
+            stdout = ""
+            stderr = "psql: error: connection to postgres://artex_planner:SECRET-PW@... failed"
+        with patch.dict(os.environ, {"VULNIX_ARTEX_RESET_DB": "1"}), \
+                patch.object(am.shutil, "which", return_value="/usr/bin/psql"), \
+                patch.object(am.subprocess, "run", return_value=P()):
+            with self.assertRaises(ValueError) as e:
+                self.svc._reset_artex_db()
+        self.assertNotIn("SECRET-PW", str(e.exception))
