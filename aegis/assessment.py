@@ -4351,6 +4351,7 @@ class AssessmentService:
                 "asset": self.a.asset,
                 "state": self.a.state,
                 "risk": self._risk(),
+                "risk_scope": "診断全体（この問題単独のスコアではない）",
                 "target_finding": target_f,
             })
             done_phases = sum(1 for p in self.a.phases if p["status"] == "done")

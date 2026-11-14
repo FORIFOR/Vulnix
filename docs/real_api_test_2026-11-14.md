@@ -27,3 +27,22 @@ In this run, every turn including turn 2 succeeded after the Chat Completions to
 ## Issues found
 - ARTEX's intent descriptions are in Korean (ARTEX's own prompts are Korean). The UI now shows them as "ARTEX original text (AI output, untranslated; does not decide what runs)". What runs is decided by the Japanese catalog label written by Vulnix.
 - An ARTEX intent can mention more than the catalog allows (e.g. "whether the resource can be modified"); what actually runs is the catalog's non-destructive read.
+
+## Real-model explanation quality evaluation (approved: up to 8 calls, cap $0.10)
+
+Questions: 4 each (reason/evidence, risk, fix, how to verify) about `f_powered` (detected, unproven) and `f_idor` (proven by L2). **8 calls, 0 failures.**
+
+| Aspect | Result |
+|---|---|
+| Accuracy of evidence | All 8 cite the actual evidence ID (`ev_5589efc46f92` / `ev_5fae37b843f8`) or the observed value (`X-Powered-By: PHP/8.1.0`) correctly |
+| L1/L2 distinction | All 4 answers about the unproven finding say "can't be confirmed until L2 checks it"; all 4 about the proven one say "reproduced with mock data, not a leak" |
+| Fixes | Appropriate: `expose_php = Off`; check the owner on the server and return 403 on mismatch; how to verify after fixing |
+| Dangerous suggestions / overclaims | None (automatic check: 0 withheld, 0 cautions; also read by hand) |
+| Format | All 8 contain all 5 sections |
+
+Problems found, and the fix (no further calls):
+1. One answer translated proven as 「承認済み」 → the prompt now pins the Japanese verdict terms (proven = 実証済み).
+2. One answer quoted the whole assessment's risk score (94) as the finding's score → the context now carries `risk_scope` ("whole assessment") and the prompt says to use `severity` for an individual finding.
+3. Every answer repeated all five sections whatever was asked (long) → the prompt now says to answer the question directly first and keep it to the relevant sections.
+
+The effect of these fixes on the real model has not been measured (that would need further calls).

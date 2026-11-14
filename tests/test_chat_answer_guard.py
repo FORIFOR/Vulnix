@@ -368,3 +368,35 @@ class RegistrationSaysWhetherTheWorkspaceSwitched(unittest.TestCase):
         rec = self.reg("e2e-lab-idle")
         self.assertTrue(rec["workspace_activated"])
         self.assertEqual(self.svc.a.asset["name"], "e2e-lab-idle")
+
+
+class PromptFixesFromTheRealModelEvaluation(unittest.TestCase):
+    """2026-11-14 evaluation of 8 real answers: proven was rendered 承認済み, the
+    assessment-wide risk score was quoted as the finding's, and every answer repeated
+    all five sections whatever was asked."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(); self.addCleanup(self._tmp.cleanup)
+        with patch.dict(os.environ, {}, clear=True):
+            self.svc = AssessmentService(Path(self._tmp.name), 19984)
+        self.sent = []
+
+        def transport(_u, _h, body):
+            self.sent.append(json.loads(body))
+            return json.dumps({"choices": [{"message": {"content": "可能性があります。"}}]}).encode()
+        self.svc._chat_backend = AbliterationBackend("http://127.0.0.1/v1/chat/completions", api_key="k", transport=transport)
+        self.svc._external_model_configured = True
+        self.svc.ask_chat("どう修正すればよいですか？", "tester", finding_id="f_sqli")
+        self.system = self.sent[-1]["messages"][0]["content"]
+        self.context = json.loads(self.sent[-1]["messages"][1]["content"])["context"]
+
+    def test_the_prompt_names_verdicts_in_japanese(self):
+        self.assertIn("proven は「実証済み」", self.system)
+        self.assertIn("「承認済み」と訳さない", self.system)
+
+    def test_the_risk_score_is_labelled_as_assessment_wide(self):
+        self.assertEqual(self.context["risk_scope"], "診断全体（この問題単独のスコアではない）")
+        self.assertIn("risk は診断全体", self.system)
+
+    def test_the_prompt_asks_to_answer_the_question_first(self):
+        self.assertIn("質問に直接答え", self.system)
