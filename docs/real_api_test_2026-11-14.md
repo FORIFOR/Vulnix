@@ -45,4 +45,14 @@ Problems found, and the fix (no further calls):
 2. One answer quoted the whole assessment's risk score (94) as the finding's score → the context now carries `risk_scope` ("whole assessment") and the prompt says to use `severity` for an individual finding.
 3. Every answer repeated all five sections whatever was asked (long) → the prompt now says to answer the question directly first and keep it to the relevant sections.
 
-The effect of these fixes on the real model has not been measured (that would need further calls).
+## Re-measurement after the fixes (approved: 4 calls, cap $0.05)
+
+Asked again the questions that showed the problems (`f_idor` proven: reason/evidence and risk; `f_powered` unproven: fix and how to verify). **4 calls, 0 failures, nothing withheld, no cautions.**
+
+| Problem | Before | After |
+|---|---|---|
+| Translation of proven | 「承認済み」 (1 of 8 answers) | 「実証済み（proven）」; 「承認済み」 appears in none |
+| Risk score attribution | Quoted the assessment-wide 94 as the finding's score | 「診断全体のリスクスコア（94）とは異なり、この問題単独の重さは high」 |
+| Length / focus | All five sections every time (about 600–900 characters) | Answers the question directly, 118–305 characters |
+
+The L1/L2 distinction (「検出（未実証）」 for the unproven finding, 「模擬データでの実証であり流出ではない」 for the proven one) and the evidence citations were kept.
