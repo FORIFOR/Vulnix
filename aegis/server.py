@@ -191,6 +191,11 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 return self._json(200, svc.snapshot())
             if p == f"/api/assessments/{svc.a.id}/logs":
                 return self._json(200, svc.logs())
+            if p == f"/api/assessments/{svc.a.id}/artex/llm-preview":
+                # what the planner model was (or would be) sent: approver review only
+                if not sess or "approver" not in sess.roles:
+                    return self._json(403, {"error": "preview の内容確認には承認責任者の権限が必要です"})
+                return self._json(200, svc.artex_llm_preview())
             if p == f"/api/assessments/{svc.a.id}/report":
                 return self._json(200, {
                     "markdown": svc.report_markdown(),
@@ -596,6 +601,15 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     # the service decides whether this needs an approver, under its own
                     # lock (a check here could be invalidated by a concurrent switch)
                     return self._json(200, svc.verify_finding(fid, actor, roles=tuple(sess.roles)))
+                elif p == base + "/artex/plan":
+                    # the REAL ARTEX planner (planner-only overlay) proposes; Vulnix rebuilds
+                    approval = body.get("llm_approval") if isinstance(body.get("llm_approval"), dict) else None
+                    llm_mode = body.get("llm_mode") if isinstance(body.get("llm_mode"), str) else None
+                    return self._json(200, svc.plan_with_artex(actor, llm_approval=approval,
+                                                               roles=tuple(sess.roles), llm_mode=llm_mode))
+                elif m := re.fullmatch(base + r"/artex/items/([A-Za-z0-9_]{1,80})/execute", p):
+                    # L2 needs an approver: decided by the service, with the caller's roles
+                    return self._json(200, svc.execute_artex_item(m.group(1), actor, roles=tuple(sess.roles)))
                 elif p == base + "/request-l2":
                     fid = str(body.get("finding_id", "")).strip()
                     if not fid:

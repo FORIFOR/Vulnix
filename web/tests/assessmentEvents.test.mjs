@@ -84,3 +84,11 @@ test("an older full snapshot keeps our connection state but brings its other pla
   assert.equal(next.planner.connection_state, "failed");
   assert.equal(next.planner.artex_cli_verified, true);
 });
+
+test("the ARTEX plan event replaces the plan view", () => {
+  const s0 = { ...initial, artex_plan: { configured: true, plan: null } };
+  const view = { configured: true, plan: { run_id: "ax1", items: [{ id: "ax1_1", status: "completed" }], advisories: [] } };
+  const next = applyEvent(s0, { type: "artex.plan", artex_plan: view });
+  assert.equal(next.artex_plan.plan.items[0].status, "completed");
+  assert.equal(next.findings, s0.findings);
+});

@@ -29,7 +29,7 @@ class _LoopbackSession:
     def __exit__(self, *exc):
         return None
 
-    def wrap(self, argv, env_keys=(), cpu_seconds=60):
+    def wrap(self, argv, env_keys=(), cpu_seconds=60, **_kw):
         return list(argv)
 
     def still_enforced(self):
@@ -54,6 +54,7 @@ class LoopbackTestConfinement:
         if not ipaddress.ip_address(ip).is_loopback:
             raise ConfinementError("the test stand-in confines nothing: loopback targets only")
         self.sessions.append((ip, int(port)))
+        self.last_checks = dict(checks)
         return _LoopbackSession()
 
 

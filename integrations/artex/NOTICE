@@ -1,0 +1,22 @@
+ARTEX planner-only overlay for Vulnix
+=====================================
+
+The files under integrations/artex/overlay/ are an overlay for ARTEX:
+
+  ARTEX - https://github.com/jiwoochris/artex-global (fork of the Go module
+  github.com/Autumn-27/artex), licensed under the GNU Affero General Public
+  License v3.0. Copyright (c) the ARTEX authors.
+
+The overlay files are licensed under the GNU Affero General Public License,
+version 3 or (at your option) any later version. They include short strings
+copied from ARTEX's agent/planner.go (planner round instructions). The full
+license text is at https://www.gnu.org/licenses/agpl-3.0.txt.
+
+The overlay is built into an ARTEX checkout at a pinned commit and runs as a
+separate program; Vulnix exchanges only JSON with it over stdin/stdout.
+
+AGPL section 13: if you run a modified version of this program and let users
+interact with it remotely over a network, you must offer those users the
+Corresponding Source of that version. The overlay sources are in this
+directory; ARTEX's sources are at the repository and commit named in
+.github/workflows/ci.yml (job artex-real-planner).
