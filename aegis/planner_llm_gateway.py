@@ -472,11 +472,15 @@ class PlannerLLMGateway:
             out["tool_choice"] = tc
         elif isinstance(tc, dict) and (tc.get("function") or {}).get("name") in PLANNER_TOOL_ALLOWLIST:
             out["tool_choice"] = {"type": "function", "function": {"name": tc["function"]["name"]}}
-        first_turn = not any(isinstance(m, dict) and m.get("role") in ("assistant", "tool") for m in body["messages"])
-        if (self.first_turn_tool and first_turn
+        with self._lock:
+            first_of_run = not self._first_passed
+        first_turn = first_of_run and not any(
+            isinstance(m, dict) and m.get("role") in ("assistant", "tool") for m in body["messages"])
+        if (self.first_turn_tool and first_turn and tc in (None, "auto")
                 and any(t["function"]["name"] == self.first_turn_tool for t in tools or [])):
-            # opt-in: a model that would answer the first turn in prose proposes instead;
-            # deterministic from the request alone, so the preview and the send agree
+            # opt-in: a model that would answer the run's first turn in prose proposes instead.
+            # Only the first request of the run (the one an approval's fingerprint covers),
+            # never a later fresh or compacted conversation, and never over ARTEX's own choice.
             out["tool_choice"] = {"type": "function", "function": {"name": self.first_turn_tool}}
         mt = body.get("max_tokens")
         out["max_tokens"] = mt if isinstance(mt, int) and 0 < mt <= MAX_COMPLETION_TOKENS else MAX_COMPLETION_TOKENS

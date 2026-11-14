@@ -362,6 +362,48 @@ class TestFirstTurnTool(unittest.TestCase):
         self.assertNotIn("tool_choice", g.inspect(chat(tools=("graph_overview",))))
         self.assertNotIn("tool_choice", self.gw().inspect(chat(tools=("add_intent",))))
 
+    def test_only_the_runs_first_request_and_never_over_artex_choice(self):
+        forced = {"type": "function", "function": {"name": "add_intent"}}
+        with self.gw("add_intent") as g:
+            self.assertEqual(post(g, chat())[0], 200)
+            compacted = chat("summary: proposed 3 intents lab.test")          # system/user only, after the first
+            self.assertEqual(post(g, compacted)[0], 200)
+        self.assertEqual(g.preview_requests[0]["tool_choice"], forced)
+        self.assertNotIn("tool_choice", g.preview_requests[1])
+        g2 = self.gw("add_intent")
+        self.assertEqual(g2.inspect(chat(tool_choice="none"))["tool_choice"], "none")
+        named = {"type": "function", "function": {"name": "list_goals"}}
+        self.assertEqual(g2.inspect(chat(tools=("add_intent", "list_goals"), tool_choice=named))["tool_choice"], named)
+
+    def test_the_forced_request_is_what_is_sent_and_matches_the_approved_preview(self):
+        body = chat(tools=("graph_overview", "add_intent"))
+        pv = preview(first_turn_tool="add_intent")                        # same model as forward()
+        sent = []
+        gw = forward(lambda u, h, b: sent.append(json.loads(b)) or ok_transport(), first_body=body,
+                     audit=Audit(), first_turn_tool="add_intent")
+        self.assertEqual(gw.approval["first_request_sha256"], sha_of(pv, body))
+        with gw:
+            self.assertEqual(post(gw, body)[0], 200)
+        self.assertEqual(sent[0]["tool_choice"], {"type": "function", "function": {"name": "add_intent"}})
+        off = forward(ok_transport, first_body=body, audit=Audit(), first_turn_tool="add_intent")
+        off.first_turn_tool = None                                        # setting changed after approval
+        with off:
+            self.assertEqual(post(off, body)[0], 403)                     # differs from the approved preview
+
+    def test_a_bad_setting_fails_before_any_approval_is_taken(self):
+        from aegis.assessment import AssessmentService
+        from tests import TEST_CONFINEMENT
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.dict(os.environ, {"VULNIX_PLANNER_FIRST_TOOL": "prove_goal"}):
+            svc = AssessmentService(Path(tmp), 18097, l2_confinement=TEST_CONFINEMENT)
+            taken = []
+            svc._take_preview_approval = lambda *a: taken.append(a)
+            for mode in ("gateway-preview", "gateway-forward"):
+                with self.assertRaises(ValueError) as cm:
+                    svc._planner_gateway("someone", {"preview_id": "x"}, ("approver",), 0, mode)
+                self.assertIn("VULNIX_PLANNER_FIRST_TOOL", str(cm.exception))
+            self.assertEqual(taken, [])
+
     def test_only_add_intent_can_be_forced(self):
         for bad in ("prove_goal", "goal_met", "graph_overview", "shell", ""):
             with self.assertRaises(ValueError):

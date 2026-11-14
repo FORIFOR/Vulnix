@@ -1741,7 +1741,12 @@ class AssessmentService:
             raise ValueError("Planner LLM Gateway が設定されているため、direct には切り替えられません")
         if mode == "direct":
             return None
-        from .planner_llm_gateway import Budget, PlannerLLMGateway
+        from .planner_llm_gateway import FORCEABLE_FIRST_TOOLS, Budget, PlannerLLMGateway
+        first_tool = os.environ.get("VULNIX_PLANNER_FIRST_TOOL", "").strip() or None
+        if first_tool is not None and first_tool not in FORCEABLE_FIRST_TOOLS:
+            # checked before any approval is taken, so a bad setting never uses one up
+            self.audit.record("artex.plan_failed", reason="bad_setting", setting="VULNIX_PLANNER_FIRST_TOOL")
+            raise ValueError("VULNIX_PLANNER_FIRST_TOOL は add_intent か空欄のみ指定できます")
 
         def num(name, default, cast=float):
             try:
@@ -1762,7 +1767,6 @@ class AssessmentService:
             allowed = set(self._allowed_hosts) | {"lab.test"}
         model = os.environ.get("VULNIX_ARTEX_LLM_MODEL") or os.environ.get("VULNIX_ABLITERATION_MODEL") or "mock"
         may_forward = (lambda: self._artex_may_start(gen))
-        first_tool = os.environ.get("VULNIX_PLANNER_FIRST_TOOL", "").strip() or None
         common = dict(model=model, budget=budget, allowed_hosts=allowed, denied_hosts=denied, audit=self.audit,
                       may_forward=may_forward, first_turn_tool=first_tool)
         if mode == "gateway-preview":
