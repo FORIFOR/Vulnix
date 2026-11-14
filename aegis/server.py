@@ -63,7 +63,8 @@ CHAT_PLATFORM_PER_DAY = int(os.environ.get("VULNIX_CHAT_PER_DAY", "1000") or 100
 # The public beta runs with this off until the owner approves real-site diagnosis.
 REAL_SERVICE_DIAGNOSIS = os.environ.get("VULNIX_REAL_SERVICE_DIAGNOSIS", "1") != "0"
 SSE_PLATFORM = 200               # simultaneous event streams, whole platform
-ARTEX_LLM_PLANS_PER_ORG_PER_HOUR = 3     # ARTEX plans that reach the real model
+ARTEX_LLM_PLANS_PER_ORG_PER_HOUR = int(os.environ.get("VULNIX_ARTEX_LLM_PLANS_PER_ORG_PER_HOUR", "3") or 0)  # plans reaching the real model
+ARTEX_LLM_PLANS_PER_DAY = int(os.environ.get("VULNIX_ARTEX_LLM_PLANS_PER_DAY", "100") or 0)
 ARTEX_PLANS_PER_ORG_PER_HOUR = int(os.environ.get("VULNIX_ARTEX_PLANS_PER_ORG_PER_HOUR", "6") or 0)  # any ARTEX run (CPU, confinement)
 ARTEX_PLANS_PLATFORM_PER_HOUR = int(os.environ.get("VULNIX_ARTEX_PLANS_PER_HOUR", "60") or 0)
 ARTEX_LLM_PLANS_PLATFORM_PER_HOUR = int(os.environ.get("VULNIX_ARTEX_LLM_PLANS_PER_HOUR", "20") or 0)
@@ -89,6 +90,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
     chat_day: list[float] = []
     plan_times: dict[str, list[float]] = {}
     plan_all: list[float] = []
+    plan_day: list[float] = []
     run_times: dict[str, list[float]] = {}
     run_all: list[float] = []
     sse_open: dict[str, int] = {}
@@ -547,10 +549,12 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         with limits_lock:
                             mine = plan_times.setdefault(self._bound_org, [])
                             ok = room(mine, 3600, ARTEX_LLM_PLANS_PER_ORG_PER_HOUR) \
-                                and room(plan_all, 3600, ARTEX_LLM_PLANS_PLATFORM_PER_HOUR)
+                                and room(plan_all, 3600, ARTEX_LLM_PLANS_PLATFORM_PER_HOUR) \
+                                and room(plan_day, 86400, ARTEX_LLM_PLANS_PER_DAY)
                             if ok:
                                 within(mine, 3600, ARTEX_LLM_PLANS_PER_ORG_PER_HOUR)
                                 within(plan_all, 3600, ARTEX_LLM_PLANS_PLATFORM_PER_HOUR)
+                                within(plan_day, 86400, ARTEX_LLM_PLANS_PER_DAY)
                         if not ok:
                             return self._json(429, {"error": "実モデルを使う ARTEX の計画は、利用上限に達しています。時間をおいてください"},
                                               [("Retry-After", "600")])
