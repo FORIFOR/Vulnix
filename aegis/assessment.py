@@ -2920,7 +2920,9 @@ class AssessmentService:
                 "chat_messages": list(self.a.chat_messages),
                 # the demo history is fictional; never attach it to a real service
                 "history": None if is_ext else self._history(risk),
-                "run_history": list(self.a.run_history),
+                # the open site's runs only: nothing of another site follows into this view
+                "run_history": [h for h in self.a.run_history
+                                if h.get("asset_id") == self.a.asset.get("id")],
                 "defense_comparison": self.a.defense_comparison,
                 "cve_status": self.cve_monitor.status(),
                 "artex_tasks": [
@@ -4174,7 +4176,8 @@ class AssessmentService:
             risk = self._risk()
             summary = evidence_summary(list(self.a.findings.values()))
             self.a.run_history.insert(0, {
-                "at": time.time(), "asset": str(self.a.asset.get("name", ""))[:253],
+                "at": time.time(), "asset_id": str(self.a.asset.get("id", "")),
+                "asset": str(self.a.asset.get("name", ""))[:253],
                 "score": risk.get("score"), "label": risk.get("label"),
                 "counts": {k: summary.get(k, 0) for k in ("detected", "proven", "not_reproduced", "incomplete")},
                 "findings": len(self._real_findings())})

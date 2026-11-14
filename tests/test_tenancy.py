@@ -631,3 +631,14 @@ class TestFifthReviewFixes(TestTenantIsolationOverHttp):
             me = self.req(a, "/auth/me")[1]
             self.assertIs(me["real_service_diagnosis"], False)
             self.assertIs(me["development"], False)
+
+
+
+class TestRunHistoryPerSite(TestRunHistory):
+    def test_history_shows_only_the_open_sites_runs(self):
+        self.complete()
+        with self.svc._lock:
+            self.svc.a.asset = {**self.svc.a.asset, "id": "other", "name": "other.lab.test"}
+        self.assertEqual(self.svc.snapshot()["run_history"], [])
+        self.complete()
+        self.assertEqual([h["asset"] for h in self.svc.snapshot()["run_history"]], ["other.lab.test"])
