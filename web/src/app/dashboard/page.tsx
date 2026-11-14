@@ -1,8 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useEffect, useState } from "react";
 import { AssetRegistrationModal } from "@/components/AssetRegistrationModal";
 import { OwnershipWizard } from "@/components/OwnershipWizard";
 import { RiskScore } from "@/components/findings/RiskScore";
@@ -19,7 +19,16 @@ const STATUS_CLS: Record<string, string> = {
 };
 
 export default function Dashboard() {
+  return (
+    <Suspense fallback={null}>
+      <DashboardInner />
+    </Suspense>
+  );
+}
+
+function DashboardInner() {
   const router = useRouter();
+  const params = useSearchParams();
   const [assets, setAssets] = useState<Asset[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -31,9 +40,24 @@ export default function Dashboard() {
   const { multiTenant: plain } = useSession();
   const visible = assets?.filter((a) => !(plain && !a.assessment_id && !a.challenge));
 
+  const [wizardNotice, setWizardNotice] = useState<string | null>(null);
+
   useEffect(() => {
-    getJSON<Asset[]>("/api/assets").then(setAssets, (e) => setErr(e.message));
-  }, []);
+    getJSON<Asset[]>("/api/assets").then((list) => {
+      setAssets(list);
+      // back from Google: continue the dialog for that site
+      const host = params.get("resume");
+      const a = host ? list.find((x) => x.name === host) : undefined;
+      if (a) {
+        setWizardAsset(a);
+        setWizardNotice(params.get("google") === "failed"
+          ? "Google では、このサイトの所有者として確認できませんでした。Search Console の「ドメイン」プロパティ、またはこの URL のプロパティの所有者アカウントでお試しいただくか、下の方法で確認してください。"
+          : null);
+        setWizardOpen(true);
+        router.replace("/dashboard");
+      }
+    }, (e) => setErr(e.message));
+  }, [params, router]);
 
   const handleSelectAsset = async (a: Asset) => {
     if (!a.assessment_id) return;
@@ -84,6 +108,7 @@ export default function Dashboard() {
             type="button"
             onClick={() => {
               setWizardAsset(null);
+              setWizardNotice(null);
               setWizardOpen(true);
             }}
             className="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-semibold text-white hover:bg-zinc-700 dark:bg-white dark:text-zinc-900"
@@ -181,6 +206,7 @@ export default function Dashboard() {
         key={wizardOpen ? `open-${wizardAsset?.id ?? "new"}` : "closed"}
         open={wizardOpen}
         initialAsset={wizardAsset}
+        notice={wizardNotice}
         onClose={() => setWizardOpen(false)}
         onAssetsChanged={setAssets}
       />

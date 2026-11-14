@@ -107,7 +107,7 @@ class TestServer(unittest.TestCase):
                      "/system/verify-controls", "/cve/real-software-verify", "/operators"):
             self.assertEqual(self._req(self.root + path)[0], 401, path)
         self.assertEqual(self._req(f"{self.root}/auth/me"), (200, {"session": None, "self_registration": False,
-                                                                 "real_service_diagnosis": True, "real_site_read_only": False,
+                                                                 "real_service_diagnosis": True, "real_site_read_only": False, "google_ownership": False,
                                                              "development": False}))
         self.assertEqual(self._req(f"{self.root}/health"), (200, {"ok": True}))
         self.login("op", "op-pw")
