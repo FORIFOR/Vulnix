@@ -230,7 +230,7 @@ def require_loopback_dsn(dsn: str) -> str:
 
 # Host directories a planner never needs: covered by empty tmpfs in its mount view
 # (what it needs from them - its work dir, the launcher, the interpreter - is bound back).
-PLANNER_HIDDEN = ("/home", "/root", "/tmp", "/var", "/dev/shm", "/dev/mqueue", "/run", "/mnt", "/media",
+PLANNER_HIDDEN = ("/etc", "/home", "/root", "/tmp", "/var", "/dev/shm", "/dev/mqueue", "/run", "/mnt", "/media",
                   "/srv", "/opt", "/boot", "/lost+found", "/snap",
                   # host folders shared into a VM (Colima / Lima / Docker Desktop mount the
                   # Mac home at /Users/<name>, external disks at /Volumes)
