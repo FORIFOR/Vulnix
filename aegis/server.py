@@ -60,8 +60,19 @@ CHAT_PER_ORG_PER_HOUR = 30       # AI explanation questions per organization
 CHAT_PLATFORM_PER_HOUR = 300     # AI explanation questions, whole platform (one API key)
 CHAT_PLATFORM_PER_DAY = int(os.environ.get("VULNIX_CHAT_PER_DAY", "1000") or 1000)
 # Traffic to real (non-lab) sites: ownership checks over the network and diagnoses.
-# The public beta runs with this off until the owner approves real-site diagnosis.
-REAL_SERVICE_DIAGNOSIS = os.environ.get("VULNIX_REAL_SERVICE_DIAGNOSIS", "1") != "0"
+#   1 (default)  everything the service allows (L1, approved L2, ARTEX on the lab only)
+#   l1           public beta: ownership checks and the read-only (L1) diagnosis of a
+#                site whose ownership this organization proved; nothing beyond that
+#   0            no traffic to real sites at all
+_REAL_SITE_MODE = (os.environ.get("VULNIX_REAL_SERVICE_DIAGNOSIS", "1") or "1").strip().lower()
+REAL_SERVICE_DIAGNOSIS = _REAL_SITE_MODE not in ("0", "l1")
+REAL_SITE_L1_ONLY = _REAL_SITE_MODE == "l1"
+OWNERSHIP_CHECKS_PER_ORG_PER_HOUR = 20   # DNS / .well-known lookups a single organization may trigger
+OWNERSHIP_CHECKS_PLATFORM_PER_HOUR = 300
+REAL_SITE_RUNS_PER_ORG_PER_HOUR = 10     # read-only runs on proven real sites
+REAL_SITE_RUNS_PLATFORM_PER_HOUR = 200
+# In L1-only mode these stay open on a real site: the read-only run and its controls
+_L1_ONLY_ROUTES = ("/start", "/restart", "/resume", "/pause", "/emergency-stop", "/chat")
 SSE_PLATFORM = 200               # simultaneous event streams, whole platform
 ARTEX_LLM_PLANS_PER_ORG_PER_HOUR = int(os.environ.get("VULNIX_ARTEX_LLM_PLANS_PER_ORG_PER_HOUR", "3") or 0)  # plans reaching the real model
 ARTEX_LLM_PLANS_PER_DAY = int(os.environ.get("VULNIX_ARTEX_LLM_PLANS_PER_DAY", "100") or 0)
@@ -93,6 +104,10 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
     plan_day: list[float] = []
     run_times: dict[str, list[float]] = {}
     run_all: list[float] = []
+    verify_times: dict[str, list[float]] = {}
+    verify_all: list[float] = []
+    real_run_times: dict[str, list[float]] = {}
+    real_run_all: list[float] = []
     sse_open: dict[str, int] = {}
     signup_lock = threading.Lock()
 
@@ -208,6 +223,18 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             except Exception:   # noqa: BLE001 - when in doubt, treat it as real
                 return True
 
+        def _real_site_refusal(self, p: str, osvc) -> str:
+            """L1-only mode: why this request may not reach the real site ("" = allowed).
+            The ownership check itself is allowed (rate-limited); switching to a site and
+            starting the run are allowed (the service requires proven ownership and a
+            confirmed scope); every other assessment action on a real site is refused."""
+            if p in ("/api/assets/verify-ownership", "/api/assets/select"):
+                return ""
+            if p.endswith(_L1_ONLY_ROUTES):
+                return ""
+            return ("実在するサイトに対しては、読み取り専用の診断（ページを1回取得して設定を調べる）だけを行います。"
+                    "この操作は実在するサイトでは使えません")
+
         def _org_requested(self, query_org: str | None = None) -> str:
             """The organization the client says it is working in: header, query, or the
             `vulnix_org` cookie the UI sets. Only a choice - membership is checked by _bind."""
@@ -220,6 +247,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             account's roles IN that organization). Answers 401/403/404 itself and returns
             None when there is none. Without tenancy: the single service, unchanged."""
             if tenancy is None:
+                default_svc.real_site_read_only = REAL_SITE_L1_ONLY and not REAL_SERVICE_DIAGNOSIS
                 return default_svc, sess
             if not sess:
                 self._json(401, {"error": "ログインが必要です"})
@@ -243,6 +271,8 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 self._json(404, {"error": str(e)})
                 return None
             self._bound_org = wanted
+            # enforced again inside the service, under its lock (an asset switch cannot race it)
+            osvc.real_site_read_only = REAL_SITE_L1_ONLY and not REAL_SERVICE_DIAGNOSIS
             return osvc, dataclasses.replace(sess, roles=service_roles(roles))
 
         def _host_ok(self) -> bool:
@@ -272,6 +302,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             if p == "/api/auth/me":
                 me = {"session": self._public_session(sess), "self_registration": self_registration_allowed()}
                 me["real_service_diagnosis"] = REAL_SERVICE_DIAGNOSIS
+                me["real_site_read_only"] = REAL_SITE_L1_ONLY
                 me["development"] = development_mode()
                 if tenancy is not None:
                     me["multi_tenant"] = True
@@ -509,13 +540,39 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     osvc, osess = bound
                     self._select_target = str(body.get("id", "")) if p == "/api/assets/select" else ""
                     if not REAL_SERVICE_DIAGNOSIS and self._touches_real_site(p, osvc):
-                        paudit.record("tenancy.real_site_refused", actor=sess.operator, route=p[-60:])
-                        return self._json(403, {"error": "このβ版では、実サイトへの通信（所有確認の実行・診断）はまだ有効になっていません。"
-                                                         "模擬ラボで機能をお試しください"})
+                        refusal = self._real_site_refusal(p, osvc) if REAL_SITE_L1_ONLY else \
+                            "このβ版では、実サイトへの通信（所有確認の実行・診断）はまだ有効になっていません。模擬ラボで機能をお試しください"
+                        if refusal:
+                            paudit.record("tenancy.real_site_refused", actor=sess.operator, route=p[-60:])
+                            return self._json(403, {"error": refusal})
+                        real_site_traffic = True
+                    else:
+                        real_site_traffic = False
                     # viewers read; stopping things stays open to every member
                     if not ({"operator", "approver", "admin"} & set(osess.roles)) \
                             and not p.endswith(("/emergency-stop", "/pause")):
                         return self._json(403, {"error": "閲覧者の権限では操作できません"})
+                    # L1-only mode: traffic to real sites is bounded per organization and platform-wide
+                    limited = None
+                    if real_site_traffic and REAL_SITE_L1_ONLY:
+                        if p == "/api/assets/verify-ownership":
+                            limited = (verify_times, verify_all, OWNERSHIP_CHECKS_PER_ORG_PER_HOUR,
+                                       OWNERSHIP_CHECKS_PLATFORM_PER_HOUR,
+                                       "所有確認は1時間あたりの上限に達しました。DNS の設定が反映されるまで少し待ってからお試しください")
+                        elif p.endswith(("/start", "/restart", "/resume")):
+                            limited = (real_run_times, real_run_all, REAL_SITE_RUNS_PER_ORG_PER_HOUR,
+                                       REAL_SITE_RUNS_PLATFORM_PER_HOUR,
+                                       "このサイトの診断は1時間あたりの上限に達しました。時間をおいてお試しください")
+                    if limited:
+                        per_org, overall, cap_org, cap_all, msg = limited
+                        with limits_lock:
+                            mine_v = per_org.setdefault(self._bound_org, [])
+                            ok = room(mine_v, 3600, cap_org) and room(overall, 3600, cap_all)
+                            if ok:
+                                within(mine_v, 3600, cap_org)
+                                within(overall, 3600, cap_all)
+                        if not ok:
+                            return self._json(429, {"error": msg}, [("Retry-After", "600")])
                     if p.endswith("/chat"):
                         with limits_lock:
                             mine = chat_times.setdefault(self._bound_org, [])

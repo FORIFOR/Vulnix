@@ -3,11 +3,14 @@
 import { useState } from "react";
 import { getJSON, postJSON } from "@/lib/api";
 import type { SecretsStatus, Snapshot } from "@/lib/types";
+import { useSession } from "@/lib/useSession";
 
 /** Banner + L2 test-account settings shown only for an ownership-verified real service. */
 export function RealServicePanel({ snap, onUpdate }: { snap: Snapshot; onUpdate: (s: Snapshot) => void }) {
   const status = snap.secrets_status;
   const [open, setOpen] = useState(false);
+  // the public beta (multi-tenant) only reads real sites: no test accounts, no extra checks
+  const { multiTenant: readOnly } = useSession();
   const [tokens, setTokens] = useState<Record<string, string>>({});
   const [paths, setPaths] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
@@ -67,15 +70,17 @@ export function RealServicePanel({ snap, onUpdate }: { snap: Snapshot; onUpdate:
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 space-y-0.5">
           <p className="font-semibold">
-            実サービス診断（所有確認済み）：<span className="break-all font-mono">{snap.target_url}</span>
+            {readOnly ? "診断中のサイト（所有確認済み）：" : "実サービス診断（所有確認済み）："}
+            <span className="break-all font-mono">{snap.target_url}</span>
           </p>
           <p className="text-sky-900 dark:text-sky-200">
-            L1は読み取り専用の実測です。L2検証は検証用アカウントと模擬データに限定し、項目ごとに承認責任者が実行します（一括実行はしません）。
-            未計測の項目を「安全」とは表示しません。
+            {readOnly
+              ? "公開されているページを読み取って調べた結果です。サイトのデータを変更したり、ログインを試したりはしていません。調べていない項目を「安全」とは表示しません。"
+              : "L1は読み取り専用の実測です。L2検証は検証用アカウントと模擬データに限定し、項目ごとに承認責任者が実行します（一括実行はしません）。未計測の項目を「安全」とは表示しません。"}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <button
+          {!readOnly && <button
             type="button"
             onClick={() => setOpen((v) => !v)}
             aria-expanded={open}
@@ -85,7 +90,7 @@ export function RealServicePanel({ snap, onUpdate }: { snap: Snapshot; onUpdate:
               ? `L2検証用アカウント（${readyCount}/${checks.length} 項目が実行可能）`
               : "L2検証（判定ルール未設定）"}
             {open ? " ▴" : " ▾"}
-          </button>
+          </button>}
           <button
             type="button"
             onClick={exportVideoData}
@@ -96,14 +101,14 @@ export function RealServicePanel({ snap, onUpdate }: { snap: Snapshot; onUpdate:
         </div>
       </div>
 
-      {open && !profile && (
+      {open && !readOnly && !profile && (
         <p className="mt-3 border-t border-sky-200 pt-3 dark:border-sky-900/60">
           この対象に適用できるL2判定ルール（サービスプロファイル）がありません。実行できるのはL1の読み取り専用診断だけです。
           L2検証を行うには、対象APIの仕様に基づく判定ルールをサーバー側の設定（<span className="font-mono">aegis/l2_profiles/</span>）に追加してください。
         </p>
       )}
 
-      {open && profile && (
+      {open && !readOnly && profile && (
         <div className="mt-3 grid gap-4 border-t border-sky-200 pt-3 md:grid-cols-2 dark:border-sky-900/60">
           <div className="space-y-2">
             <h3 className="font-semibold">項目ごとの準備状況（判定ルール：{profile.label}）</h3>

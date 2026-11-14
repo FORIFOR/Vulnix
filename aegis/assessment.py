@@ -1953,6 +1953,7 @@ class AssessmentService:
         claimed = False
         try:
             with self._lock:
+                self._refuse_read_only_real_locked()
                 rec = self._claim_artex_item_locked(item_id)
                 item = rec["item"]
                 entry = CATALOG_BY_ID[item.catalog_id]
@@ -3076,8 +3077,17 @@ class AssessmentService:
             ev.set()
         return report
 
+    def _refuse_read_only_real_locked(self) -> None:
+        """Public beta (L1-only): on a real site only the read-only run is allowed. Checked
+        under the service lock with the active asset pinned, so a concurrent switch to a
+        real site cannot slip an L2 / re-check / approval past the HTTP layer's check."""
+        if getattr(self, "real_site_read_only", False) and self._is_external_service_asset():
+            raise ValueError("実在するサイトに対しては、読み取り専用の診断だけを行います。"
+                             "この操作は実在するサイトでは使えません")
+
     def decide_approval(self, approval_id: str, decision: str, actor: str) -> None:
         with self._lock:
+            self._refuse_read_only_real_locked()
             ap = self.a.approvals.get(approval_id)
             if ap is None or ap["status"] != "pending":
                 raise ValueError("approval not pending")
@@ -3103,6 +3113,7 @@ class AssessmentService:
         approves nothing; under separation of duties it is the precondition for a
         different approver to run that item."""
         with self._lock:
+            self._refuse_read_only_real_locked()
             check = self._l2_check_for_finding(finding_id)
             if not self._is_external_service_asset() or check is None:
                 raise ValueError("L2検証の依頼は、実サービスの判定ルールに含まれる項目に対してのみ行えます")
@@ -3149,6 +3160,8 @@ class AssessmentService:
         self._begin_operation()        # the active asset cannot be switched while this runs
         prev = getattr(self._tls, "gen", None)
         try:
+            with self._lock:
+                self._refuse_read_only_real_locked()
             return self._verify_finding(finding_id, actor, roles)
         except _Stopped:
             raise ValueError("停止またはリセットされたため、検証を中止しました") from None
@@ -3504,6 +3517,8 @@ class AssessmentService:
         self._begin_operation()        # the active asset cannot be switched while this runs
         prev = getattr(self._tls, "gen", None)
         try:
+            with self._lock:
+                self._refuse_read_only_real_locked()
             return self._verify_fix(actor)
         except _Stopped:
             raise ValueError("停止またはリセットされたため、再検証を中止しました") from None

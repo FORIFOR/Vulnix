@@ -723,3 +723,155 @@ class TestArtexFreshDatabase(unittest.TestCase):
             with self.assertRaises(ValueError) as e:
                 self.svc._reset_artex_db()
         self.assertNotIn("SECRET-PW", str(e.exception))
+
+
+class TestPublicReadOnlyRealSites(TestTenantIsolationOverHttp):
+    """VULNIX_REAL_SERVICE_DIAGNOSIS=l1 (public beta): anyone may register a site, prove
+    ownership and run the read-only diagnosis on it. Nothing beyond that reaches a real
+    site, and nothing is allowed before ownership is proven."""
+
+    def setUp(self):
+        super().setUp()
+        from aegis import server as srvmod
+        for name, value in (("REAL_SERVICE_DIAGNOSIS", False), ("REAL_SITE_L1_ONLY", True)):
+            p = patch.object(srvmod, name, value)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def _verify(self, who, host):
+        from aegis.ownership import challenge_for_host
+        osvc = self.reg.service(who["orgs"][0]["id"])
+        token = challenge_for_host(host, osvc._ownership_secret)["token"]
+        with patch("aegis.ownership.default_dns_txt_lookup", return_value=[f'"{token}"']):
+            return self.req(who, "/assets/verify-ownership", {"host": host, "method": "dns_txt"})
+
+    def test_register_prove_and_start_on_a_proven_site(self):
+        a = self.signup("alice")
+        self.assertEqual(self.req(a, "/assets/challenge", {"url": "https://next-standards.com"})[0], 200)
+        code, body = self._verify(a, "next-standards.com")
+        self.assertEqual(code, 200, body)
+        self.assertTrue(body.get("verified"), body)
+        code, body = self.req(a, "/assets/confirm-scope", {"host": "next-standards.com", "confirmed_prohibited": True,
+                                                          "activate_workspace": True})
+        self.assertEqual(code, 200, body)
+        self.assertTrue(body["snapshot"]["is_external_service"])
+        aid = body["snapshot"]["id"]
+        with patch("aegis.assessment.AssessmentService.start", return_value={"ok": True}) as start:
+            self.assertEqual(self.req(a, f"/assessments/{aid}/start", {})[0], 200)
+        start.assert_called_once()
+
+    def test_a_subdomain_can_be_registered_too(self):
+        a = self.signup("alice")
+        for url in ("https://next-standards.com", "https://wonder.next-standards.com"):
+            code, body = self.req(a, "/assets/challenge", {"url": url})
+            self.assertEqual(code, 200, body)
+        names = {x.get("name") for x in self.req(a, "/assets")[1]}
+        self.assertTrue({"next-standards.com", "wonder.next-standards.com"} <= names)
+
+    def test_nothing_runs_on_an_unproven_site(self):
+        a = self.signup("alice")
+        self.req(a, "/assets/challenge", {"url": "https://shop.example.com/"})
+        real = next(x for x in self.req(a, "/assets")[1] if x.get("name") == "shop.example.com")
+        self.assertNotEqual(self.req(a, "/assets/select", {"id": real["id"]})[0], 200)
+        code, _ = self.req(a, "/assets/confirm-scope", {"host": "shop.example.com", "confirmed_prohibited": True})
+        self.assertNotEqual(code, 200)
+
+    def test_only_the_read_only_diagnosis_reaches_a_real_site(self):
+        a = self.signup("alice")
+        self.req(a, "/assets/challenge", {"url": "https://next-standards.com"})
+        self._verify(a, "next-standards.com")
+        aid = self.req(a, "/assets/confirm-scope", {"host": "next-standards.com", "confirmed_prohibited": True,
+                                                   "activate_workspace": True})[1]["snapshot"]["id"]
+        for route, body in (("/request-l2", {"finding_id": "f_x"}), ("/artex/plan", {}), ("/verify-fix", {}),
+                            ("/verify-finding", {"finding_id": "f_x"}), ("/approvals/req_0a", {"decision": "approve"})):
+            code, out = self.req(a, f"/assessments/{aid}{route}", body)
+            self.assertEqual(code, 403, route)
+            self.assertIn("読み取り", out["error"], route)
+
+    def test_ownership_checks_are_rate_limited_per_org(self):
+        from aegis import server as srvmod
+        a = self.signup("alice")
+        self.req(a, "/assets/challenge", {"url": "https://shop.example.com/"})
+        with patch.object(srvmod, "OWNERSHIP_CHECKS_PER_ORG_PER_HOUR", 2), \
+                patch("aegis.ownership.default_dns_txt_lookup", return_value=[]):
+            codes = [self.req(a, "/assets/verify-ownership", {"host": "shop.example.com"})[0] for _ in range(3)]
+        self.assertEqual(codes[-1], 429)
+
+    def test_another_org_cannot_use_my_proof(self):
+        a, b = self.signup("alice"), self.signup("bobby")
+        self.req(a, "/assets/challenge", {"url": "https://next-standards.com"})
+        self._verify(a, "next-standards.com")
+        self.req(b, "/assets/challenge", {"url": "https://next-standards.com"})
+        from aegis.ownership import challenge_for_host
+        a_token = challenge_for_host("next-standards.com", self.reg.service(a["orgs"][0]["id"])._ownership_secret)["token"]
+        with patch("aegis.ownership.default_dns_txt_lookup", return_value=[f'"{a_token}"']):
+            code, body = self.req(b, "/assets/verify-ownership", {"host": "next-standards.com"})
+        self.assertFalse(body.get("verified"), body)
+
+    def test_the_mode_is_visible_and_read_from_the_environment(self):
+        import importlib
+        from aegis import server as srvmod
+        a = self.signup("alice")
+        me = self.req(a, "/auth/me")[1]
+        self.assertIs(me["real_service_diagnosis"], False)
+        self.assertIs(me["real_site_read_only"], True)
+        with patch.dict(os.environ, {"VULNIX_REAL_SERVICE_DIAGNOSIS": "l1"}):
+            m = importlib.reload(srvmod)
+            self.assertEqual((m.REAL_SERVICE_DIAGNOSIS, m.REAL_SITE_L1_ONLY), (False, True))
+        importlib.reload(srvmod)
+
+
+class TestPublicReadOnlyRealSitesReview(TestPublicReadOnlyRealSites):
+    """Review of the L1-only mode: quotas, the service-level guard, the other modes."""
+
+    def _proven(self, who, host="next-standards.com"):
+        self.req(who, "/assets/challenge", {"url": f"https://{host}"})
+        self._verify(who, host)
+        return self.req(who, "/assets/confirm-scope", {"host": host, "confirmed_prohibited": True,
+                                                      "activate_workspace": True})[1]["snapshot"]["id"]
+
+    def test_the_run_and_its_controls_stay_open_on_a_proven_site(self):
+        a = self.signup("alice")
+        aid = self._proven(a)
+        with patch("aegis.assessment.AssessmentService.restart", return_value={"ok": True}), \
+                patch("aegis.assessment.AssessmentService.resume", return_value={"ok": True}):
+            for route in ("/restart", "/resume"):
+                self.assertNotEqual(self.req(a, f"/assessments/{aid}{route}", {})[0], 403, route)
+        self.assertNotEqual(self.req(a, f"/assessments/{aid}/chat", {"question": "x"})[0], 403)
+
+    def test_real_site_runs_are_capped_per_org(self):
+        from aegis import server as srvmod
+        a = self.signup("alice")
+        aid = self._proven(a)
+        with patch.object(srvmod, "REAL_SITE_RUNS_PER_ORG_PER_HOUR", 1), \
+                patch("aegis.assessment.AssessmentService.restart", return_value={"ok": True}):
+            codes = [self.req(a, f"/assessments/{aid}/restart", {})[0] for _ in range(2)]
+        self.assertEqual(codes, [200, 429])
+
+    def test_ownership_checks_have_a_platform_cap(self):
+        from aegis import server as srvmod
+        a, b = self.signup("alice"), self.signup("bobby")
+        for who in (a, b):
+            self.req(who, "/assets/challenge", {"url": "https://shop.example.com/"})
+        with patch.object(srvmod, "OWNERSHIP_CHECKS_PLATFORM_PER_HOUR", 1), \
+                patch("aegis.ownership.default_dns_txt_lookup", return_value=[]):
+            self.assertNotEqual(self.req(a, "/assets/verify-ownership", {"host": "shop.example.com"})[0], 429)
+            self.assertEqual(self.req(b, "/assets/verify-ownership", {"host": "shop.example.com"})[0], 429)
+
+    def test_the_service_refuses_under_its_lock_too(self):
+        a = self.signup("alice")
+        self._proven(a)
+        osvc = self.reg.service(a["orgs"][0]["id"])
+        self.assertTrue(osvc.real_site_read_only)
+        for call in (lambda: osvc.verify_fix("alice"), lambda: osvc.verify_finding("all", "alice"),
+                     lambda: osvc.request_l2_run("f_x", "alice"), lambda: osvc.decide_approval("req_0", "approve", "alice")):
+            with self.assertRaises(ValueError) as cm:
+                call()
+            self.assertIn("読み取り専用", str(cm.exception))
+
+    def test_switched_off_still_refuses_the_ownership_check(self):
+        from aegis import server as srvmod
+        a = self.signup("alice")
+        self.req(a, "/assets/challenge", {"url": "https://shop.example.com/"})
+        with patch.object(srvmod, "REAL_SITE_L1_ONLY", False):
+            self.assertEqual(self.req(a, "/assets/verify-ownership", {"host": "shop.example.com"})[0], 403)
