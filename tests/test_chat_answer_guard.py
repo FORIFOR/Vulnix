@@ -400,3 +400,20 @@ class PromptFixesFromTheRealModelEvaluation(unittest.TestCase):
 
     def test_the_prompt_asks_to_answer_the_question_first(self):
         self.assertIn("質問に直接答え", self.system)
+
+
+class GatewayRefusalsAreExplainedInJapanese(unittest.TestCase):
+    def test_known_refusals_get_a_japanese_reason(self):
+        from aegis.assessment import artex_failure_message
+        raw = ('ARTEX プランナーが失敗しました（exit 1）: planner round: openai: status 403: {"error": {"message": '
+               '"refused by the Vulnix planner gateway: the request names a registered real service"}}')
+        msg = artex_failure_message(raw)
+        self.assertIn("外部AIへ送らない", msg)
+        self.assertIn("lab.test", msg)
+        self.assertNotIn("refused by", msg)
+        self.assertIn("秘密情報", artex_failure_message("x: refused by the Vulnix planner gateway: the request contains something that looks like a secret"))
+
+    def test_other_failures_are_kept(self):
+        from aegis.assessment import artex_failure_message
+        self.assertEqual(artex_failure_message("ARTEX プランナーが失敗しました（exit 2）: boom"),
+                         "ARTEX プランナーが失敗しました（exit 2）: boom")

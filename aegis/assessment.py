@@ -192,6 +192,29 @@ ADDRESS_PROOF_MAX_AGE_S = 24 * 3600
 OWNERSHIP_PROOF_MAX_AGE_S = 24 * 3600
 
 
+_GATEWAY_REFUSALS_JA = {
+    "the request names a registered real service":
+        "ARTEX の要求に、外部AIへ送らない対象（追加登録した診断対象・実サービス）の名前が含まれていたため、"
+        "Planner LLM Gateway が送信を止めました。外部モデルを使う ARTEX 計画は、既定の模擬ラボ（lab.test）を"
+        "対象にしたときだけ実行できます。",
+    "the request contains something that looks like a secret":
+        "ARTEX の要求に秘密情報らしき値が含まれていたため、Planner LLM Gateway が送信を止めました。",
+    "the request names an internal host outside the local lab":
+        "ARTEX の要求に模擬ラボ以外の内部ホスト名が含まれていたため、Planner LLM Gateway が送信を止めました。",
+}
+
+
+def artex_failure_message(raw: str) -> str:
+    """A planner failure for the UI: a known gateway refusal is explained in Japanese
+    (nothing was sent to the external model); anything else is kept as it is."""
+    if "refused by the Vulnix planner gateway" in raw:
+        for key, ja in _GATEWAY_REFUSALS_JA.items():
+            if key in raw:
+                return ja + "（外部への送信は行っていません）"
+        return "Planner LLM Gateway が ARTEX の要求を止めました（外部への送信は行っていません）。"
+    return raw
+
+
 class AssessmentService:
     def __init__(self, data_dir: Path, lab_port: int, verify_seconds: float = 1.5,
                  l2_profile_dirs: list[Path] | None = None,
@@ -1599,7 +1622,7 @@ class AssessmentService:
                                     data_dirs=(str(self.data_dir),))
         except ArtexBridgeError as e:
             self.audit.record("artex.plan_failed", actor=actor, reason=str(e)[:200])
-            raise ValueError(str(e)) from None
+            raise ValueError(artex_failure_message(str(e))) from None
         except Exception as e:  # noqa: BLE001 - recorded, and never a half-made plan
             self.audit.record("artex.plan_failed", actor=actor, reason=type(e).__name__)
             raise ValueError(f"ARTEX の計画に失敗しました（{type(e).__name__}）") from None
