@@ -64,6 +64,8 @@ CHAT_PLATFORM_PER_DAY = int(os.environ.get("VULNIX_CHAT_PER_DAY", "1000") or 100
 REAL_SERVICE_DIAGNOSIS = os.environ.get("VULNIX_REAL_SERVICE_DIAGNOSIS", "1") != "0"
 SSE_PLATFORM = 200               # simultaneous event streams, whole platform
 ARTEX_LLM_PLANS_PER_ORG_PER_HOUR = 3     # ARTEX plans that reach the real model
+ARTEX_PLANS_PER_ORG_PER_HOUR = int(os.environ.get("VULNIX_ARTEX_PLANS_PER_ORG_PER_HOUR", "6") or 0)  # any ARTEX run (CPU, confinement)
+ARTEX_PLANS_PLATFORM_PER_HOUR = int(os.environ.get("VULNIX_ARTEX_PLANS_PER_HOUR", "60") or 0)
 ARTEX_LLM_PLANS_PLATFORM_PER_HOUR = int(os.environ.get("VULNIX_ARTEX_LLM_PLANS_PER_HOUR", "20") or 0)
 # Platform-wide POST routes: they act on this machine or on configuration shared by
 # every organization, so they are decided by the account's own (global) roles.
@@ -87,6 +89,8 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
     chat_day: list[float] = []
     plan_times: dict[str, list[float]] = {}
     plan_all: list[float] = []
+    run_times: dict[str, list[float]] = {}
+    run_all: list[float] = []
     sse_open: dict[str, int] = {}
     signup_lock = threading.Lock()
 
@@ -512,6 +516,17 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                                 within(chat_day, 86400, CHAT_PLATFORM_PER_DAY)
                         if not ok:
                             return self._json(429, {"error": f"AI 解説は1つの組織につき1時間あたり {CHAT_PER_ORG_PER_HOUR} 回までです"},
+                                              [("Retry-After", "600")])
+                    if p.endswith("/artex/plan"):
+                        # every ARTEX run costs CPU and a confined process, whatever the model mode
+                        with limits_lock:
+                            mine_r = run_times.setdefault(self._bound_org, [])
+                            ok = room(mine_r, 3600, ARTEX_PLANS_PER_ORG_PER_HOUR) and room(run_all, 3600, ARTEX_PLANS_PLATFORM_PER_HOUR)
+                            if ok:
+                                within(mine_r, 3600, ARTEX_PLANS_PER_ORG_PER_HOUR)
+                                within(run_all, 3600, ARTEX_PLANS_PLATFORM_PER_HOUR)
+                        if not ok:
+                            return self._json(429, {"error": "ARTEX の計画は、1時間あたりの上限に達しています。時間をおいてください"},
                                               [("Retry-After", "600")])
                     # the mode as the service decides it (request value, else the configured one)
                     mode = (str(body.get("llm_mode") or "") or os.environ.get("VULNIX_ARTEX_LLM_MODE", "direct")).strip().lower()

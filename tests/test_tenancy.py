@@ -571,3 +571,11 @@ class TestPublicDeploymentSwitches(TestTenantIsolationOverHttp):
             m = importlib.reload(srvmod)
             self.assertEqual((m.ARTEX_LLM_PLANS_PLATFORM_PER_HOUR, m.CHAT_PLATFORM_PER_DAY, m.REAL_SERVICE_DIAGNOSIS), (0, 7, False))
         importlib.reload(srvmod)
+
+    def test_all_artex_plans_are_capped_per_org(self):
+        from aegis import server as srvmod
+        a = self.signup("alice")
+        with patch.object(srvmod, "ARTEX_PLANS_PER_ORG_PER_HOUR", 1):
+            first = self.req(a, "/assessments/scan_001/artex/plan", {"llm_mode": "gateway-preview"})[0]
+            self.assertNotEqual(first, 429)
+            self.assertEqual(self.req(a, "/assessments/scan_001/artex/plan", {"llm_mode": "gateway-preview"})[0], 429)
