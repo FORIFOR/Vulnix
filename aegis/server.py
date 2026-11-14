@@ -12,6 +12,7 @@ Run:  python3 -m aegis.server  [--port 8787] [--lab-port 18081]
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import http.cookies
 import hashlib
 import json
@@ -31,6 +32,8 @@ from .lab import set_lab_mode, start_lab
 from .operators import AuthError, LockedOut, MFAChallenge, OperatorStore
 from .ownership import parse_service_target
 from .real_software_cve import run_real_software_cve_comparison
+from .tenancy import (DEFAULT_ORG, OrgStore, TenancyError, TenantRegistry, default_members_from,
+                      service_roles, valid_org_id)
 
 ALLOWED_ORIGINS = {"http://localhost:3000", "http://127.0.0.1:3000"}
 COOKIE = "aegis_session"
@@ -49,17 +52,31 @@ def development_mode() -> bool:
 
 
 MAX_BODY_BYTES = 1_000_000
+# Platform-wide POST routes: they act on this machine or on configuration shared by
+# every organization, so they are decided by the account's own (global) roles.
+PLATFORM_POST_ROUTES = frozenset({"/api/l2-profiles/accept", "/api/router/verify", "/api/cve/sync",
+                                  "/api/system/verify-controls", "/api/cve/real-software-verify"})
 # Routes that start a verification job (spawn workers / probes on this machine).
 JOB_ROUTES = frozenset({"/api/system/verify-controls", "/api/cve/real-software-verify"})
 
 
 def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_auth: bool | None = None,
-                 allow_self_registration: bool | None = None):
+                 allow_self_registration: bool | None = None, tenancy: TenantRegistry | None = None,
+                 public_signup: bool | None = None):
+    default_svc = svc
+
     def self_registration_allowed() -> bool:
         # Anyone who can reach the port could otherwise mint themselves a session
-        # (and a second identity). Outside development mode accounts are created
-        # by an admin only.
-        return development_mode() if allow_self_registration is None else bool(allow_self_registration)
+        # (and a second identity). Without tenancy, outside development mode, accounts
+        # are created by an admin only. With tenancy a self-registered account gets an
+        # organization of its own and sees nothing else, so public sign-up can be
+        # switched on (VULNIX_PUBLIC_SIGNUP=1).
+        if allow_self_registration is not None:
+            return bool(allow_self_registration)
+        if tenancy is not None and (public_signup if public_signup is not None
+                                    else os.environ.get("VULNIX_PUBLIC_SIGNUP") == "1"):
+            return True
+        return development_mode()
 
     # Secure by default: reads need a session. The environment switch
     # `AEGIS_REQUIRE_READ_AUTH=0` is honoured ONLY in development mode
@@ -125,6 +142,38 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     "expires": sess.expires,
                     "mfa_enabled": ops.totp_enabled(sess.operator)} if sess else None
 
+        def _org_requested(self, query_org: str | None = None) -> str:
+            return (self.headers.get("X-Vulnix-Org") or query_org or "").strip()[:40]
+
+        def _bind(self, sess, query_org: str | None = None):
+            """The organization this request acts in: (its service, the session with the
+            account's roles IN that organization). Answers 401/403/404 itself and returns
+            None when there is none. Without tenancy: the single service, unchanged."""
+            if tenancy is None:
+                return default_svc, sess
+            if not sess:
+                self._json(401, {"error": "ログインが必要です"})
+                return None
+            wanted = self._org_requested(query_org)
+            if not wanted:
+                orgs = tenancy.store.orgs_of(sess.operator)
+                if not orgs:
+                    self._json(403, {"error": "所属している組織がありません。組織を作成するか、招待を受け入れてください",
+                                     "no_org": True})
+                    return None
+                wanted = orgs[0]["id"]
+            roles = tenancy.store.roles_in(wanted, sess.operator) if valid_org_id(wanted) else ()
+            if not roles:
+                default_svc.audit.record("tenancy.access_denied", actor=sess.operator, org=wanted)
+                self._json(403, {"error": "この組織のメンバーではありません"})
+                return None
+            try:
+                osvc = tenancy.service(wanted)
+            except TenancyError as e:
+                self._json(404, {"error": str(e)})
+                return None
+            return osvc, dataclasses.replace(sess, roles=service_roles(roles))
+
         def _host_ok(self) -> bool:
             """The control plane answers only when addressed as loopback. A request
             whose Host is some other name (a DNS-rebinding page, a LAN client going
@@ -150,8 +199,11 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             p = u.path.rstrip("/")
             sess = self._session()
             if p == "/api/auth/me":
-                return self._json(200, {"session": self._public_session(sess),
-                                        "self_registration": self_registration_allowed()})
+                me = {"session": self._public_session(sess), "self_registration": self_registration_allowed()}
+                if tenancy is not None:
+                    me["multi_tenant"] = True
+                    me["orgs"] = tenancy.store.orgs_of(sess.operator) if sess else []
+                return self._json(200, me)
             if p == "/api/health":
                 return self._json(200, {"ok": True})
             if enforce_read_auth and not sess:
@@ -170,12 +222,13 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     for o in ops.operators()]})
             if p == "/api/system/status":
                 return self._json(200, svc.system_status())
-            if p == "/api/assets":
-                return self._json(200, svc.assets())
-            if p == "/api/assets/secrets-status":
-                q = parse_qs(u.query)
-                host = (q.get("host") or [None])[0]
-                return self._json(200, svc.secrets_status(host))
+            if tenancy is not None and p.startswith("/api/orgs"):
+                return self._tenancy_get(p, u, sess)
+            if p.startswith(("/api/assets", "/api/assessments/")):
+                bound = self._bind(sess, (parse_qs(u.query).get("org") or [None])[0])
+                if bound is None:
+                    return None
+                return self._get_org(p, u, *bound)
             if p == "/api/router/status":
                 return self._json(200, svc.planner_status())
             if p == "/api/l2-profiles":
@@ -187,6 +240,16 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 return self._json(405, {"error": "この操作は POST で実行してください"}, [("Allow", "POST")])
             if p == "/api/cve/status":
                 return self._json(200, svc.cve_monitor.status())
+            return self._json(404, {"error": "not found"})
+
+        def _get_org(self, p, u, svc, sess):
+            """Reads of one organization's data, from that organization's service only."""
+            if p == "/api/assets":
+                return self._json(200, svc.assets())
+            if p == "/api/assets/secrets-status":
+                q = parse_qs(u.query)
+                host = (q.get("host") or [None])[0]
+                return self._json(200, svc.secrets_status(host))
             if p == f"/api/assessments/{svc.a.id}":
                 return self._json(200, svc.snapshot())
             if p == f"/api/assessments/{svc.a.id}/logs":
@@ -214,10 +277,11 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 q = parse_qs(u.query)
                 after = self.headers.get("Last-Event-ID") or (q.get("after") or ["0"])[0]
                 after = int(re.sub(r"\D", "", after) or 0)
-                return self._sse(after)
+                return self._sse(after, svc)
             return self._json(404, {"error": "not found"})
 
-        def _sse(self, after: int) -> None:
+        def _sse(self, after: int, svc=None) -> None:
+            svc = svc or default_svc
             self.close_connection = True   # never reuse a socket after a stream ends
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")
@@ -315,6 +379,19 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 return self._set_roles(body, sess)
             if p in ("/api/operators/unlock", "/api/operators/reset-mfa"):
                 return self._admin_recovery(p, body, sess)
+            if tenancy is not None:
+                if p.startswith("/api/orgs") or p == "/api/invites/accept":
+                    return self._tenancy_post(p, body, sess)
+                if p not in PLATFORM_POST_ROUTES:
+                    bound = self._bind(sess)
+                    if bound is None:
+                        return None
+                    osvc, osess = bound
+                    # viewers read; stopping things stays open to every member
+                    if not ({"operator", "approver", "admin"} & set(osess.roles)) \
+                            and not p.endswith(("/emergency-stop", "/pause")):
+                        return self._json(403, {"error": "閲覧者の権限では操作できません"})
+                    return self._dispatch(p, body, osess, osvc)
             return self._dispatch(p, body, sess)
 
         def _change_password(self, body, sess):
@@ -410,17 +487,35 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 svc.audit.record("auth.registration_refused", name=name[:32])
                 return self._json(403, {"error": "アカウントの作成は管理者が行います（設定 → アカウントとロール）。"
                                                  "自己登録は開発モードでのみ利用できます"})
+            invite = str(body.get("invite", "") or "")
+            tenancy_warning = None
             try:
                 sess = ops.register(name, password, display=display)
             except AuthError as e:
                 return self._json(400, {"error": str(e)})
+            if tenancy is not None:
+                # the new account sees only its own organization (or the one it was invited to)
+                try:
+                    if invite:
+                        org_id, roles = tenancy.store.accept_invite(invite, sess.operator)
+                        tenancy.service(org_id).audit.record("tenancy.invite_accepted", actor=sess.operator,
+                                                             roles=roles)
+                    else:
+                        org_id = tenancy.store.create_org(f"{display or sess.operator} の組織", sess.operator)
+                        tenancy.service(org_id).audit.record("tenancy.org_created", actor=sess.operator)
+                except TenancyError as e:
+                    tenancy_warning = str(e)     # signed in all the same; no organization yet
             svc.audit.record("auth.registered", actor=sess.operator, roles=list(sess.roles),
                              self_registered=True,
                              requested_roles_ignored=[r for r in asked if r not in sess.roles])
             cookie = (f"{COOKIE}={sess.token}; HttpOnly; SameSite=Strict; Path=/; "
                       f"Max-Age={int(sess.expires - time.time())}")
-            return self._json(200, {"session": self._public_session(sess)},
-                              [("Set-Cookie", cookie)])
+            out = {"session": self._public_session(sess)}
+            if tenancy is not None:
+                out["orgs"] = tenancy.store.orgs_of(sess.operator)
+                if tenancy_warning:
+                    out["warning"] = tenancy_warning
+            return self._json(200, out, [("Set-Cookie", cookie)])
 
         def _set_roles(self, body, sess):
             if "admin" not in sess.roles:
@@ -458,10 +553,82 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 return self._json(409, {"error": str(e)})
             return self._json(200, {"name": target, "changed": changed})
 
+        # ---- organizations (tenancy) --------------------------------------------
+        def _org_for_management(self, sess, body=None):
+            org_id = self._org_requested(str((body or {}).get("org", "") or "") or None)
+            if not org_id:
+                orgs = tenancy.store.orgs_of(sess.operator)
+                org_id = orgs[0]["id"] if orgs else ""
+            if not org_id or not tenancy.store.roles_in(org_id, sess.operator):
+                raise TenancyError("この組織のメンバーではありません")
+            return org_id
+
+        def _tenancy_get(self, p, u, sess):
+            if not sess:
+                return self._json(401, {"error": "ログインが必要です"})
+            if p == "/api/orgs":
+                return self._json(200, {"orgs": tenancy.store.orgs_of(sess.operator)})
+            try:
+                org_id = self._org_for_management(sess, {"org": (parse_qs(u.query).get("org") or [""])[0]})
+            except TenancyError as e:
+                return self._json(403, {"error": str(e)})
+            mine = set(tenancy.store.roles_in(org_id, sess.operator))
+            if p == "/api/orgs/members":
+                return self._json(200, {"org": {"id": org_id, "name": tenancy.store.org_name(org_id)},
+                                        "my_roles": sorted(mine), "members": tenancy.store.members(org_id)})
+            if p == "/api/orgs/invites":
+                if not mine & {"owner", "admin"}:
+                    return self._json(403, {"error": "招待の一覧はオーナーまたは管理者だけが見られます"})
+                return self._json(200, {"invites": tenancy.store.invites(org_id)})
+            return self._json(404, {"error": "not found"})
+
+        def _tenancy_post(self, p, body, sess):
+            st = tenancy.store
+            try:
+                if p == "/api/orgs":
+                    org_id = st.create_org(str(body.get("name", "")), sess.operator)
+                    tenancy.service(org_id).audit.record("tenancy.org_created", actor=sess.operator)
+                    return self._json(200, {"org": {"id": org_id, "name": st.org_name(org_id)},
+                                            "orgs": st.orgs_of(sess.operator)})
+                if p == "/api/invites/accept":
+                    org_id, roles = st.accept_invite(str(body.get("token", "")), sess.operator)
+                    tenancy.service(org_id).audit.record("tenancy.invite_accepted", actor=sess.operator, roles=roles)
+                    return self._json(200, {"org": {"id": org_id, "name": st.org_name(org_id)}, "roles": roles,
+                                            "orgs": st.orgs_of(sess.operator)})
+                org_id = self._org_for_management(sess, body)
+                audit = tenancy.service(org_id).audit
+                if p == "/api/orgs/members/roles":
+                    target = str(body.get("name", "")).strip()
+                    before = st.set_roles(org_id, sess.operator, target, body.get("roles"))
+                    audit.record("tenancy.member_roles_changed", actor=sess.operator, target=target,
+                                 before=before, after=list(st.roles_in(org_id, target)))
+                    return self._json(200, {"members": st.members(org_id)})
+                if p == "/api/orgs/members/remove":
+                    target = str(body.get("name", "")).strip()
+                    st.remove_member(org_id, sess.operator, target)
+                    audit.record("tenancy.member_removed", actor=sess.operator, target=target)
+                    return self._json(200, {"members": st.members(org_id)})
+                if p == "/api/orgs/invites":
+                    hours = body.get("ttl_hours", 168)
+                    ttl = float(hours) * 3600 if isinstance(hours, (int, float)) else 168 * 3600
+                    iid, token = st.create_invite(org_id, sess.operator, body.get("roles"), ttl)
+                    audit.record("tenancy.invite_created", actor=sess.operator, invite=iid,
+                                 roles=list(body.get("roles") or []))
+                    # the token is shown once to the inviter; only its hash is stored
+                    return self._json(200, {"id": iid, "token": token, "invites": st.invites(org_id)})
+                if p == "/api/orgs/invites/revoke":
+                    st.revoke_invite(org_id, sess.operator, str(body.get("id", "")))
+                    audit.record("tenancy.invite_revoked", actor=sess.operator, invite=str(body.get("id", ""))[:40])
+                    return self._json(200, {"invites": st.invites(org_id)})
+            except TenancyError as e:
+                return self._json(403 if "権限" in str(e) or "メンバー" in str(e) else 400, {"error": str(e)})
+            return self._json(404, {"error": "not found"})
+
         def _clear_cookie(self):
             return [("Set-Cookie", f"{COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0")]
 
-        def _dispatch(self, p, body, sess):
+        def _dispatch(self, p, body, sess, svc=None):
+            svc = svc or default_svc
             base = f"/api/assessments/{svc.a.id}"
             actor = sess.operator
             try:
