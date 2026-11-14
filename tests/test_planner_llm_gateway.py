@@ -291,6 +291,58 @@ class TestTheAuditHasNoContent(unittest.TestCase):
             self.assertNotIn(marker, blob)
 
 
+class TestResponseShapeIsAudited(unittest.TestCase):
+    """A real-model run that ends with no plan must be diagnosable without content:
+    the call audit carries the shape of each answer (finish reason, tool calls by
+    offered name, text length, offered tool names written into the text)."""
+
+    def _run(self, answer, tools=("add_intent", "prove_goal")):
+        audit = Audit()
+        resp = {"choices": [{"message": answer, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5}}
+        body = chat(tools=tools)
+        with forward(lambda *a: json.dumps(resp).encode(), first_body=body, audit=audit) as gw:
+            self.assertEqual(post(gw, body)[0], 200)
+        return next(e["fields"] for e in audit.entries if e["event"] == "planner_llm.call")
+
+    def test_a_text_only_answer_that_writes_a_tool_name_into_the_text(self):
+        secret_text = "UNIQUE-ANSWER-MARKER: I would call add_intent with asset_ids=[1]"
+        f = self._run({"role": "assistant", "content": secret_text})
+        self.assertEqual(f["finish_reason"], "stop")
+        self.assertEqual(f["tool_call_count"], 0)
+        self.assertEqual(f["tool_call_names"], [])
+        self.assertEqual(f["content_chars"], len(secret_text))
+        self.assertEqual(f["tool_names_in_text"], ["add_intent"])
+        self.assertNotIn("UNIQUE-ANSWER-MARKER", json.dumps(f))
+
+    def test_tool_calls_are_counted_and_only_offered_names_are_kept(self):
+        f = self._run({"role": "assistant", "content": None, "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "add_intent", "arguments": "{}"}},
+            {"id": "c2", "type": "function", "function": {"name": "SECRET-NOT-OFFERED", "arguments": "{}"}}]})
+        self.assertEqual(f["tool_call_count"], 2)
+        self.assertEqual(f["tool_call_names"], ["add_intent", "(other)"])
+        self.assertEqual(f["content_chars"], 0)
+        self.assertNotIn("SECRET-NOT-OFFERED", json.dumps(f))
+
+    def test_odd_tool_call_entries_still_answer_once_and_keep_the_run_open(self):
+        for bad in ({"function": "x"}, {"function": ["a"]}, {}, {"function": {"name": 7}}):
+            audit = Audit()
+            resp = {"choices": [{"message": {"role": "assistant", "content": [{"type": "text"}],
+                                             "tool_calls": [bad]}, "finish_reason": {"x": "EVIL"}}]}
+            with forward(lambda *a: json.dumps(resp).encode(), audit=audit) as gw:
+                self.assertEqual(post(gw, chat())[0], 200, bad)
+                self.assertFalse(gw._failed.is_set())
+            calls = [e["fields"] for e in audit.entries if e["event"] == "planner_llm.call"]
+            self.assertEqual(len(calls), 1, bad)
+            self.assertEqual(calls[0]["tool_call_names"], ["(other)"])
+            self.assertEqual(calls[0]["finish_reason"], "(other)")
+            self.assertEqual(calls[0]["content_chars"], 0)
+
+    def test_a_tool_name_inside_a_longer_word_is_not_counted(self):
+        f = self._run({"role": "assistant", "content": "add_intents and prove_goal_x are not tools"})
+        self.assertEqual(f["tool_names_in_text"], [])
+
+
 class TestServiceApprovalFlow(unittest.TestCase):
     """plan_with_artex with the gateway (the stand-in planner; it makes no model call,
     so the preview's first request is planted to exercise the approval flow)."""

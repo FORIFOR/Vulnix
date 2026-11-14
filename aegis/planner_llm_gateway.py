@@ -276,6 +276,34 @@ def _valid_response(resp) -> bool:
     return True
 
 
+def _response_shape(resp: dict, offered: list) -> dict:
+    """The shape of a model answer for the audit - never its content: finish reason,
+    tool calls (by offered name only; any other name becomes "(other)"), text length,
+    and which offered tool names appear in the text (a model that writes a call out
+    as text instead of making it)."""
+    def fn_name(t):
+        fn = t.get("function") if isinstance(t, dict) else None
+        n = fn.get("name") if isinstance(fn, dict) else None
+        return n if isinstance(n, str) else None
+    try:
+        names = [n for n in (fn_name(t) for t in offered) if n]
+        ch = (resp.get("choices") or [{}])[0]
+        ch = ch if isinstance(ch, dict) else {}
+        msg = ch.get("message") if isinstance(ch.get("message"), dict) else {}
+        fr = ch.get("finish_reason")
+        calls = msg.get("tool_calls") if isinstance(msg.get("tool_calls"), list) else []
+        content = msg.get("content")
+        text = content if isinstance(content, str) else ""
+        called = [n if (n := fn_name(tc)) in names else "(other)" for tc in calls]
+        in_text = sorted(n for n in set(names) if re.search(rf"(?<![A-Za-z0-9_]){re.escape(n)}(?![A-Za-z0-9_])", text))
+        known = ("stop", "length", "tool_calls", "content_filter", "function_call")
+        return {"finish_reason": fr if isinstance(fr, str) and fr in known else (None if fr is None else "(other)"),
+                "tool_call_count": len(calls), "tool_call_names": called[:20],
+                "content_chars": len(text), "tool_names_in_text": in_text}
+    except Exception:  # noqa: BLE001 - diagnostics only: never break an answered call
+        return {"shape_error": True}
+
+
 def _compat_messages(messages: list) -> list:
     """The conversation in the shape of the official Chat Completions tool-calling
     format, without changing any tool's meaning: an assistant turn that carries
@@ -629,7 +657,7 @@ class PlannerLLMGateway:
             self._first_passed = True
             if self._tools_sha is None and clean.get("tools"):
                 self._tools_sha = tools_sha
-        self._record("planner_llm.call", rec)
+        self._record("planner_llm.call", rec, extra=_response_shape(resp, clean.get("tools") or []))
         return 200, resp
 
     def _settle(self, rec: CallRecord, clean: dict, resp, prompt_tokens: int) -> None:
