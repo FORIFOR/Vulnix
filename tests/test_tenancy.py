@@ -642,3 +642,24 @@ class TestRunHistoryPerSite(TestRunHistory):
         self.assertEqual(self.svc.snapshot()["run_history"], [])
         self.complete()
         self.assertEqual([h["asset"] for h in self.svc.snapshot()["run_history"]], ["other.lab.test"])
+
+
+class TestRealModelDailyCap(TestTenantIsolationOverHttp):
+    def test_real_model_plans_have_a_daily_platform_cap(self):
+        from aegis import server as srvmod
+        a, b = self.signup("alice"), self.signup("bobby")
+        appr = {"llm_mode": "gateway-forward",
+                "llm_approval": {"preview_id": "pv_x", "max_calls": 1, "first_request_sha256": "0" * 64}}
+        with patch.object(srvmod, "ARTEX_LLM_PLANS_PER_DAY", 1), \
+                patch.object(srvmod, "ARTEX_LLM_PLANS_PER_ORG_PER_HOUR", 5), \
+                patch.object(srvmod, "ARTEX_LLM_PLANS_PLATFORM_PER_HOUR", 5):
+            self.assertNotEqual(self.req(a, "/assessments/scan_001/artex/plan", appr)[0], 429)
+            self.assertEqual(self.req(b, "/assessments/scan_001/artex/plan", appr)[0], 429)
+
+    def test_the_caps_come_from_the_environment(self):
+        import importlib
+        from aegis import server as srvmod
+        with patch.dict(os.environ, {"VULNIX_ARTEX_LLM_PLANS_PER_DAY": "10", "VULNIX_ARTEX_LLM_PLANS_PER_ORG_PER_HOUR": "1"}):
+            m = importlib.reload(srvmod)
+            self.assertEqual((m.ARTEX_LLM_PLANS_PER_DAY, m.ARTEX_LLM_PLANS_PER_ORG_PER_HOUR), (10, 1))
+        importlib.reload(srvmod)
