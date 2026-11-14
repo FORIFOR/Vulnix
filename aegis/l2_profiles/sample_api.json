@@ -1,0 +1,266 @@
+{
+  "id": "sample_api",
+  "label": "サンプルAPI（汎用ひな形）",
+  "spec_note": "公開リポジトリ用の汎用ひな形です。特定のサービスを表すものではありません。適用ホストは空で、すべての項目が仕様未照合（placeholder）のため、このままでは何も実行されません。実際の対象に合わせた確定済みルールと、その根拠・適用ホストは、リポジトリ外の <データディレクトリ>/l2_profiles/（git管理外）に置いてください。",
+  "applies_to": {
+    "hosts": []
+  },
+  "tokens": {
+    "user_a_token": {
+      "label": "アカウントA（権限のない側）"
+    },
+    "user_b_token": {
+      "label": "アカウントB（模擬データの所有者）"
+    },
+    "free_plan_token": {
+      "label": "Freeプランのアカウント"
+    },
+    "premium_plan_token": {
+      "label": "有料プランのアカウント（対照用）"
+    }
+  },
+  "distinct_tokens": [
+    [
+      "user_a_token",
+      "user_b_token"
+    ],
+    [
+      "free_plan_token",
+      "premium_plan_token"
+    ]
+  ],
+  "paths": {
+    "resource_b_path": {
+      "label": "未確定：アカウントB所有の模擬データ",
+      "default": "/unconfirmed"
+    },
+    "resource_a_path": {
+      "label": "未確定：アカウントA所有の模擬データ（Aの認証確認用）",
+      "default": "/unconfirmed"
+    },
+    "share_expired_path": {
+      "label": "未確定：失効・期限切れの模擬共有リンク",
+      "default": "/unconfirmed"
+    },
+    "share_valid_path": {
+      "label": "未確定：有効な模擬共有リンク（対照用）",
+      "default": "/unconfirmed"
+    },
+    "paid_only_path": {
+      "label": "未確定：有料プラン専用の機能",
+      "default": "/unconfirmed"
+    },
+    "plan_path": {
+      "label": "未確定：自分の契約プランを確認するAPI",
+      "default": "/unconfirmed"
+    }
+  },
+  "checks": [
+    {
+      "id": "sample_idor",
+      "category": "idor",
+      "label": "他アカウントの模擬データの取得",
+      "spec_status": "placeholder",
+      "spec_evidence": [],
+      "spec_note": "仕様未照合。パス・拒否応答・応答内容の条件は未確定です。",
+      "finding": {
+        "id": "f_sample_idor",
+        "title": "他アカウントの資源へのアクセス制御（IDOR/BOLA）",
+        "severity": "high",
+        "category": "アクセス制御（IDOR/BOLA）",
+        "help_term": "idor",
+        "summary": "検証用アカウントAのトークンで、アカウントBが所有する模擬データのIDを指定して取得を試み、所有者照合が強制されているか検証します。",
+        "impact": "認可不備がある場合、資源のIDを知った第三者に他アカウントのデータが閲覧される恐れがあります。",
+        "steps": [
+          "資源を返すすべての取得APIで、認証ユーザーと資源の所有者・共有先をサーバー側で照合する",
+          "照合に失敗した場合は HTTP 403 を返し、応答本文に資源の内容を含めない"
+        ],
+        "how_to_verify": "所有者Bは模擬データを取得でき、Aは 403 で拒否され、Aへの応答にBの模擬データが含まれないことを同じ実行内で確認します。"
+      },
+      "subject": {
+        "token": "user_a_token",
+        "path": "resource_b_path",
+        "headers": {}
+      },
+      "preconditions": [
+        {
+          "name": "owner_access",
+          "label": "所有者Bが模擬データを取得できる",
+          "token": "user_b_token",
+          "path": "resource_b_path",
+          "expect": {
+            "status": [
+              200
+            ],
+            "body_contains": [
+              "VULNIX_MOCK_OWNER_B_DATA"
+            ]
+          }
+        },
+        {
+          "name": "subject_authenticated",
+          "label": "Aのトークンが有効で、A自身の模擬データは取得できる",
+          "token": "user_a_token",
+          "path": "resource_a_path",
+          "expect": {
+            "status": [
+              200
+            ],
+            "body_contains": [
+              "VULNIX_MOCK_OWNER_A_DATA"
+            ]
+          }
+        }
+      ],
+      "denied": {
+        "status": [
+          403
+        ],
+        "body_not_contains": [
+          "VULNIX_MOCK_OWNER_B_DATA"
+        ]
+      },
+      "exposed": {
+        "status": [
+          200
+        ],
+        "body_contains": [
+          "VULNIX_MOCK_OWNER_B_DATA"
+        ]
+      }
+    },
+    {
+      "id": "sample_share_link",
+      "category": "share_link",
+      "label": "失効・期限切れの共有リンク",
+      "spec_status": "placeholder",
+      "spec_evidence": [],
+      "spec_note": "仕様未照合。パス・拒否応答・応答内容の条件は未確定です。",
+      "finding": {
+        "id": "f_sample_share",
+        "title": "共有リンクの失効・有効期限切れ後のアクセス制御",
+        "severity": "medium",
+        "category": "セッション・共有管理",
+        "help_term": "idor",
+        "summary": "失効済みまたは有効期限切れの模擬共有トークンへアクセスし、サーバー側で確実に拒否されるか検証します。",
+        "impact": "失効後もトークンが有効な場合、共有解除したはずのデータへ第三者が継続アクセスできるリスクがあります。",
+        "steps": [
+          "共有リンク参照時に失効状態と有効期限を毎回サーバー側で検証する",
+          "失効・期限切れの場合は内容を返さず拒否する"
+        ],
+        "how_to_verify": "有効な模擬共有リンクでは内容を取得でき、失効・期限切れの模擬共有リンクでは拒否されて内容が返らないことを同じ実行内で確認します。"
+      },
+      "subject": {
+        "token": "user_a_token",
+        "path": "share_expired_path",
+        "headers": {}
+      },
+      "preconditions": [
+        {
+          "name": "valid_link_works",
+          "label": "有効な模擬共有リンクでは内容を取得できる",
+          "token": "user_a_token",
+          "path": "share_valid_path",
+          "expect": {
+            "status": [
+              200
+            ],
+            "body_contains": [
+              "VULNIX_MOCK_OWNER_B_DATA"
+            ]
+          }
+        }
+      ],
+      "denied": {
+        "status": [
+          403
+        ],
+        "body_not_contains": [
+          "VULNIX_MOCK_OWNER_B_DATA"
+        ]
+      },
+      "exposed": {
+        "status": [
+          200
+        ],
+        "body_contains": [
+          "VULNIX_MOCK_OWNER_B_DATA"
+        ]
+      },
+      "owner_control_exception": "失効・期限切れのリンクは誰も開けないため、同じパスでの所有者対照は存在しない。有効なリンクでの取得成功を対照とする。"
+    },
+    {
+      "id": "sample_plan_gating",
+      "category": "billing_plan",
+      "label": "課金プランのサーバー側制御",
+      "spec_status": "placeholder",
+      "spec_evidence": [],
+      "spec_note": "仕様未照合。パス・拒否応答・応答内容の条件は未確定です。",
+      "finding": {
+        "id": "f_sample_plan",
+        "title": "課金・契約プラン上限のサーバー側権限制御",
+        "severity": "medium",
+        "category": "ビジネスロジック・認可",
+        "help_term": "idor",
+        "summary": "Freeプランの検証用アカウントから有料プラン専用の機能を呼び出し、サーバー側で権限制御されているか検証します。",
+        "impact": "画面側の非表示だけで制限している場合、APIの直接呼び出しで有料機能が不正利用される恐れがあります。",
+        "steps": [
+          "有料機能と利用上限の対象APIすべてで、サーバー側で契約プランと残量を検証する",
+          "権限不足の場合は機能を実行せず拒否する"
+        ],
+        "how_to_verify": "有料プランの検証用アカウントでは利用でき、Freeプランの検証用アカウントでは拒否されることを同じ実行内で確認します。"
+      },
+      "subject": {
+        "token": "free_plan_token",
+        "path": "paid_only_path",
+        "headers": {}
+      },
+      "preconditions": [
+        {
+          "name": "premium_access",
+          "label": "有料プランのアカウントでは利用できる",
+          "token": "premium_plan_token",
+          "path": "paid_only_path",
+          "expect": {
+            "status": [
+              200
+            ],
+            "body_contains": [
+              "VULNIX_MOCK_OWNER_B_DATA"
+            ]
+          }
+        },
+        {
+          "name": "subject_authenticated",
+          "label": "Freeプランのトークンが有効",
+          "token": "free_plan_token",
+          "path": "plan_path",
+          "expect": {
+            "status": [
+              200
+            ],
+            "body_contains": [
+              "VULNIX_MOCK_OWNER_A_DATA"
+            ]
+          }
+        }
+      ],
+      "denied": {
+        "status": [
+          403
+        ],
+        "body_not_contains": [
+          "VULNIX_MOCK_OWNER_B_DATA"
+        ]
+      },
+      "exposed": {
+        "status": [
+          200
+        ],
+        "body_contains": [
+          "VULNIX_MOCK_OWNER_B_DATA"
+        ]
+      }
+    }
+  ]
+}

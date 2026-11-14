@@ -56,6 +56,10 @@ class ApprovalStore:
         self._approvals[approval_id] = (approver, engagement_id, target_id, action)
         return approval_id
 
+    def revoke(self, approval_id: str) -> None:
+        """Drop a per-item approval once the run it was given for has finished."""
+        self._approvals.pop(approval_id, None)
+
     def check(self, approval_id: str, engagement_id: str, target_id: str, action: str) -> None:
         rec = self._approvals.get(approval_id)
         if rec is None or rec[1:] != (engagement_id, target_id, action):

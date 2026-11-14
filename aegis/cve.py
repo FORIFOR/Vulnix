@@ -19,9 +19,11 @@ from typing import Callable
 
 
 def parse_version(v: str) -> tuple[int, ...]:
+    # Version strings can come from a target's banner: bound everything, so a
+    # hostile value can neither raise (huge integers) nor burn CPU.
     parts = []
-    for chunk in v.split("."):
-        m = re.match(r"\d+", chunk)
+    for chunk in str(v)[:64].split(".")[:8]:
+        m = re.match(r"\d{1,9}", chunk)
         parts.append(int(m.group()) if m else 0)
     return tuple(parts)
 
@@ -109,7 +111,9 @@ _BUILTIN: tuple[CVE, ...] = (
 FEED_PATH = Path(__file__).parent / "feeds" / "nvd-recent.json"
 KEV_PATH = Path(__file__).parent / "feeds" / "cisa-kev.json"
 
-_BANNER = re.compile(r"([A-Za-z][\w-]*)/(\d+(?:\.\d+)+)")
+# Bounded quantifiers: linear on any input (the banner comes from the target).
+_BANNER = re.compile(r"(?<![\w-])([A-Za-z][\w-]{0,40})/(\d{1,9}(?:\.\d{1,9}){1,6})")
+MAX_BANNER_CHARS = 512
 
 _SEV = {"CRITICAL": "critical", "HIGH": "high", "MEDIUM": "medium", "LOW": "low", "NONE": "info"}
 
@@ -143,6 +147,11 @@ def _nvd_ranges(cve_obj: dict) -> tuple[str, tuple[dict, ...]]:
                     continue
                 parts = cm.get("criteria", "").split(":")
                 if len(parts) < 6 or parts[2] != "a":
+                    continue
+                if product and parts[4] != product:
+                    # A CVE listing several products: only the first product's ranges
+                    # belong to it. Attaching another product's version range here
+                    # would flag unrelated software.
                     continue
                 product = product or parts[4]
                 r: dict = {}
@@ -240,7 +249,7 @@ def detect_from_banner(banner: str, *, source: str = "banner",
     cat = CATALOG if catalog is None else catalog
     kev_map = KEV_CATALOG if kev is None else kev
     out: list[Candidate] = []
-    for m in _BANNER.finditer(banner or ""):
+    for m in _BANNER.finditer(str(banner or "")[:MAX_BANNER_CHARS]):
         raw_product, version = m.group(1).lower(), m.group(2)
         product = PRODUCT_ALIASES.get(raw_product, raw_product)
         for cve in match(product, version, cat):

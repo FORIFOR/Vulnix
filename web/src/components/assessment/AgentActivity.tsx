@@ -4,9 +4,11 @@ import { useState, type Dispatch, type SetStateAction } from "react";
 import { applyChatReply } from "@/lib/assessmentEvents";
 import { command } from "@/lib/api";
 import { fmtTime } from "@/lib/labels";
+import { failureHeadline, statusNotices, stoppedHeadline } from "@/lib/statusNotices";
 import { canApprove, useSession } from "@/lib/useSession";
 import type { AegisEvent, Approval, AuditEntry, Snapshot } from "@/lib/types";
 import { HelpPopover } from "../learning/HelpPopover";
+import { SafeMarkdown } from "../SafeMarkdown";
 import { Card, Pill } from "../ui";
 import { ReasoningTrace } from "./ReasoningTrace";
 
@@ -44,8 +46,8 @@ function headline(s: Snapshot): string {
   switch (s.state) {
     case "idle": return "診断はまだ開始していません。許可範囲を確認のうえ「診断を開始」を押してください。";
     case "paused": return "一時停止中です。新しい操作は実行されません（実行中の処理は完了まで続きます）。";
-    case "stopped": return "緊急停止しました。実行許可を失効させ、実行中の処理を強制終了しました。";
-    case "failed": return "診断を中断しました。ログで理由を確認してください。";
+    case "stopped": return stoppedHeadline(s);
+    case "failed": return failureHeadline(s);
     case "completed": return `診断が完了しました。${s.findings.filter((f) => !f.demo_fixture).length} 件の問題を記録しています。`;
     default: return running ? `${running.label}：${running.detail}` : "処理を進めています。";
   }
@@ -151,6 +153,21 @@ export function AgentActivity({
     <div className="min-w-0 space-y-4">
       <Bubble>{headline(snap)}</Bubble>
 
+      {statusNotices(snap).map((n) => (
+        <div
+          key={n.title}
+          role={n.tone === "error" ? "alert" : "status"}
+          className={`ml-11 rounded-xl border px-3 py-2 text-sm ${
+            n.tone === "error"
+              ? "border-red-300 bg-red-50 text-red-900 dark:border-red-900 dark:bg-red-950/40 dark:text-red-100"
+              : "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-100"
+          }`}
+        >
+          <div className="font-semibold">{n.title}</div>
+          <div className="mt-0.5 text-xs leading-relaxed">{n.detail}</div>
+        </div>
+      ))}
+
       <div className="ml-11">
         <ReasoningTrace
           snap={snap}
@@ -212,7 +229,22 @@ export function AgentActivity({
 
       {(snap.chat_messages ?? []).map((m) => (
         <Bubble key={m.id} actor={m.actor} isUser={m.role === "user"}>
-          {m.text}
+          {m.guard_note && (
+            <p role="note" className="mb-1.5 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+              {m.guard_note}
+            </p>
+          )}
+          {m.verdict_note && (
+            <p role="note" className="mb-1.5 rounded border border-zinc-200 bg-zinc-50 px-2 py-1 text-xs text-zinc-700 dark:border-zinc-700 dark:bg-zinc-800/60 dark:text-zinc-300">
+              {m.verdict_note}
+            </p>
+          )}
+          {m.caution_note && (
+            <p role="note" className="mb-1.5 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+              {m.caution_note}
+            </p>
+          )}
+          {m.source === "external_model" ? <SafeMarkdown text={m.text} /> : m.text}
         </Bubble>
       ))}
 
@@ -243,7 +275,7 @@ export function AgentActivity({
             value={question}
             onChange={(e) => setQuestion(e.target.value)}
             disabled={chatBusy}
-            placeholder={snap.planner.external_model_configured ? "AIに質問する…（原因・証拠・対策）" : "内蔵解説に質問する…（原因・証拠・対策）"}
+            placeholder={snap.planner.external_model_configured || snap.planner.explanation_model_configured ? "AIに質問する…（原因・証拠・対策）" : "内蔵解説に質問する…（原因・証拠・対策）"}
             className="flex-1 rounded-2xl border border-zinc-300 bg-white px-4 py-2.5 text-sm dark:border-zinc-700 dark:bg-zinc-900"
           />
           <button

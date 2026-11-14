@@ -1,4 +1,5 @@
 """Proposal router: untrusted proposals in, Gateway decides. No self-authority."""
+import tests  # noqa: F401  (hermetic revocation-marker directory)
 import http.server
 import json
 import os
@@ -342,7 +343,7 @@ class TestModelEnvironmentConfig(unittest.TestCase):
                     with patch.dict(os.environ, env, clear=True):
                         backend = adapter.from_env()
                     self.assertEqual(backend._timeout_s, expected)
-                    with patch("aegis.router.urllib.request.urlopen") as request:
+                    with patch("aegis.router._open_model_url") as request:
                         request.return_value.__enter__.return_value.read.return_value = b'{"proposals": []}'
                         backend.propose({})
                         self.assertEqual(request.call_args.kwargs["timeout"], expected)
@@ -353,7 +354,7 @@ class TestModelEnvironmentConfig(unittest.TestCase):
             "VULNIX_MODEL_TIMEOUT_SECONDS": "120",
         }, clear=True):
             backend = AbliterationBackend.from_env()
-        with patch("aegis.router.urllib.request.urlopen", side_effect=TimeoutError) as request:
+        with patch("aegis.router._open_model_url", side_effect=TimeoutError) as request:
             self.assertIsNone(backend.chat("Explain IDOR", {}))
             self.assertEqual(request.call_args.kwargs["timeout"], 120)
 

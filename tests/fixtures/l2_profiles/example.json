@@ -1,0 +1,365 @@
+{
+  "id": "example",
+  "label": "Example API（テスト用）",
+  "applies_to": {
+    "hosts": [
+      "svc.example.test"
+    ]
+  },
+  "tokens": {
+    "user_a_token": {
+      "label": "アカウントA"
+    },
+    "user_b_token": {
+      "label": "アカウントB"
+    },
+    "free_plan_token": {
+      "label": "Freeプラン"
+    },
+    "premium_plan_token": {
+      "label": "上位プラン"
+    },
+    "export_token": {
+      "label": "エクスポート用アカウント"
+    }
+  },
+  "distinct_tokens": [
+    [
+      "user_a_token",
+      "user_b_token"
+    ],
+    [
+      "free_plan_token",
+      "premium_plan_token"
+    ],
+    [
+      "export_token",
+      "user_b_token"
+    ]
+  ],
+  "paths": {
+    "note_b_path": {
+      "label": "Bのノート",
+      "default": "/api/notes/b1",
+      "override_pattern": "/api/notes/[A-Za-z0-9_-]{1,64}"
+    },
+    "note_a_path": {
+      "label": "Aのノート",
+      "default": "/api/notes/a1"
+    },
+    "share_expired_path": {
+      "label": "失効済み共有リンク",
+      "default": "/api/shares/expired"
+    },
+    "share_valid_path": {
+      "label": "有効な共有リンク",
+      "default": "/api/shares/valid"
+    },
+    "premium_path": {
+      "label": "上位プラン専用API",
+      "default": "/api/premium/summary"
+    },
+    "plan_path": {
+      "label": "契約プラン確認API",
+      "default": "/api/plan"
+    }
+  },
+  "checks": [
+    {
+      "id": "ex_idor_notes",
+      "category": "idor",
+      "label": "他ユーザーのノート",
+      "finding": {
+        "id": "f_ex_idor",
+        "title": "他ユーザーのノートへのアクセス制御",
+        "severity": "high",
+        "category": "アクセス制御",
+        "summary": "他ユーザーのノートへのアクセス制御を検証します。",
+        "impact": "テスト用の影響説明。",
+        "steps": [
+          "サーバー側で所有者を照合する"
+        ],
+        "how_to_verify": "L2検証を再実行する。"
+      },
+      "subject": {
+        "token": "user_a_token",
+        "path": "note_b_path",
+        "headers": {
+          "X-Probe": "vulnix"
+        }
+      },
+      "preconditions": [
+        {
+          "name": "owner_access",
+          "label": "所有者Bがノートを取得できる",
+          "token": "user_b_token",
+          "path": "note_b_path",
+          "expect": {
+            "status": [
+              200
+            ],
+            "content_type": "application/json",
+            "body_contains": [
+              "EX_NOTE_B_CONTENT"
+            ],
+            "json_fields": {
+              "owner": "user_b"
+            }
+          }
+        },
+        {
+          "name": "subject_authenticated",
+          "label": "Aのトークンが有効",
+          "token": "user_a_token",
+          "path": "note_a_path",
+          "expect": {
+            "status": [
+              200
+            ],
+            "json_fields": {
+              "owner": "user_a"
+            }
+          }
+        }
+      ],
+      "denied": {
+        "status": [
+          403,
+          404
+        ],
+        "body_not_contains": [
+          "EX_NOTE_B_CONTENT"
+        ],
+        "json_fields": {
+          "error": "forbidden"
+        }
+      },
+      "exposed": {
+        "status": [
+          200
+        ],
+        "body_contains": [
+          "EX_NOTE_B_CONTENT"
+        ]
+      },
+      "spec_status": "confirmed",
+      "spec_evidence": [
+        "tests/test_real_service.py: _FakeHandler.do_GET"
+      ]
+    },
+    {
+      "id": "ex_share_link",
+      "category": "share_link",
+      "label": "失効済み共有リンク",
+      "finding": {
+        "id": "f_ex_share",
+        "title": "失効済み共有リンクのアクセス制御",
+        "severity": "medium",
+        "category": "アクセス制御",
+        "summary": "失効済み共有リンクのアクセス制御を検証します。",
+        "impact": "テスト用の影響説明。",
+        "steps": [
+          "サーバー側で所有者を照合する"
+        ],
+        "how_to_verify": "L2検証を再実行する。"
+      },
+      "subject": {
+        "token": "user_a_token",
+        "path": "share_expired_path",
+        "headers": {}
+      },
+      "preconditions": [
+        {
+          "name": "valid_link_works",
+          "label": "有効な共有リンクは取得できる",
+          "token": "user_a_token",
+          "path": "share_valid_path",
+          "expect": {
+            "status": [
+              200
+            ],
+            "body_contains": [
+              "EX_SHARED_NOTE"
+            ]
+          }
+        }
+      ],
+      "denied": {
+        "status": [
+          403,
+          410
+        ],
+        "body_not_contains": [
+          "EX_SHARED_NOTE"
+        ]
+      },
+      "exposed": {
+        "status": [
+          200
+        ],
+        "body_contains": [
+          "EX_SHARED_NOTE"
+        ]
+      },
+      "spec_status": "confirmed",
+      "spec_evidence": [
+        "tests/test_real_service.py: _FakeHandler.do_GET"
+      ],
+      "owner_control_exception": "失効・期限切れのリンクは誰も開けないため、同じパスでの所有者対照は存在しない。有効なリンクでの取得成功を対照とする。"
+    },
+    {
+      "id": "ex_billing_plan",
+      "category": "billing_plan",
+      "label": "課金プランのサーバー側制御",
+      "finding": {
+        "id": "f_ex_billing",
+        "title": "課金プランのサーバー側制御",
+        "severity": "medium",
+        "category": "アクセス制御",
+        "summary": "課金プランのサーバー側制御を検証します。",
+        "impact": "テスト用の影響説明。",
+        "steps": [
+          "サーバー側で所有者を照合する"
+        ],
+        "how_to_verify": "L2検証を再実行する。"
+      },
+      "subject": {
+        "token": "free_plan_token",
+        "path": "premium_path",
+        "headers": {}
+      },
+      "preconditions": [
+        {
+          "name": "premium_access",
+          "label": "上位プランでは利用できる",
+          "token": "premium_plan_token",
+          "path": "premium_path",
+          "expect": {
+            "status": [
+              200
+            ],
+            "body_contains": [
+              "EX_PREMIUM_SUMMARY"
+            ]
+          }
+        },
+        {
+          "name": "subject_authenticated",
+          "label": "Freeプランのトークンが有効",
+          "token": "free_plan_token",
+          "path": "plan_path",
+          "expect": {
+            "status": [
+              200
+            ],
+            "json_fields": {
+              "plan": "free"
+            }
+          }
+        }
+      ],
+      "denied": {
+        "status": [
+          402,
+          403
+        ],
+        "body_not_contains": [
+          "EX_PREMIUM_SUMMARY"
+        ]
+      },
+      "exposed": {
+        "status": [
+          200
+        ],
+        "body_contains": [
+          "EX_PREMIUM_SUMMARY"
+        ]
+      },
+      "spec_status": "confirmed",
+      "spec_evidence": [
+        "tests/test_real_service.py: _FakeHandler.do_GET"
+      ]
+    },
+    {
+      "id": "ex_unconfirmed_export",
+      "category": "idor",
+      "label": "エクスポートAPI（仕様未照合）",
+      "finding": {
+        "id": "f_ex_unconfirmed",
+        "title": "エクスポートAPIのアクセス制御（仕様未照合）",
+        "severity": "high",
+        "category": "アクセス制御",
+        "summary": "他ユーザーのノートへのアクセス制御を検証します。",
+        "impact": "テスト用の影響説明。",
+        "steps": [
+          "サーバー側で所有者を照合する"
+        ],
+        "how_to_verify": "L2検証を再実行する。"
+      },
+      "subject": {
+        "token": "export_token",
+        "path": "note_b_path",
+        "headers": {
+          "X-Probe": "vulnix"
+        }
+      },
+      "preconditions": [
+        {
+          "name": "owner_access",
+          "label": "所有者Bがノートを取得できる",
+          "token": "user_b_token",
+          "path": "note_b_path",
+          "expect": {
+            "status": [
+              200
+            ],
+            "content_type": "application/json",
+            "body_contains": [
+              "EX_NOTE_B_CONTENT"
+            ],
+            "json_fields": {
+              "owner": "user_b"
+            }
+          }
+        },
+        {
+          "name": "subject_authenticated",
+          "label": "Aのトークンが有効",
+          "token": "export_token",
+          "path": "note_a_path",
+          "expect": {
+            "status": [
+              200
+            ],
+            "json_fields": {
+              "owner": "user_a"
+            }
+          }
+        }
+      ],
+      "denied": {
+        "status": [
+          403,
+          404
+        ],
+        "body_not_contains": [
+          "EX_NOTE_B_CONTENT"
+        ],
+        "json_fields": {
+          "error": "forbidden"
+        }
+      },
+      "exposed": {
+        "status": [
+          200
+        ],
+        "body_contains": [
+          "EX_NOTE_B_CONTENT"
+        ]
+      },
+      "spec_status": "placeholder",
+      "spec_evidence": [],
+      "spec_note": "テスト用：仕様未照合のルール"
+    }
+  ]
+}

@@ -21,7 +21,8 @@ export const STATE: Record<AssessmentState, { label: string; cls: string }> = {
   idle: { label: "未開始", cls: "bg-zinc-200 text-zinc-800" },
   running: { label: "診断中", cls: "bg-blue-600 text-white" },
   paused: { label: "一時停止中", cls: "bg-amber-400 text-amber-950" },
-  stopped: { label: "緊急停止済み", cls: "bg-red-700 text-white" },
+  // whether every worker was confirmed stopped is shown next to it (stop report / alerts)
+  stopped: { label: "緊急停止", cls: "bg-red-700 text-white" },
   failed: { label: "失敗", cls: "bg-red-200 text-red-900" },
   completed: { label: "完了", cls: "bg-emerald-600 text-white" },
 };

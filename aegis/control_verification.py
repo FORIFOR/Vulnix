@@ -239,6 +239,70 @@ def _verify_netfilter_layer() -> dict:
     }
 
 
+def _verify_worker_confinement() -> dict:
+    """The confinement the real-service L2 worker is started in (confinement.py).
+    Where it is available it is exercised against the live kernel: a worker run
+    through it may reach the pinned loopback port and nothing else. Where it is
+    not available the check passes only because real-service L2 is REFUSED there -
+    `kernel_confined` says which of the two this host is."""
+    import socket
+    from .confinement import ConfinementError, KernelConfinement
+    from .runtime import WorkerPool
+
+    t0 = time.monotonic()
+    conf = KernelConfinement()
+    st = conf.status()
+    base = {"id": "l2_worker_confinement",
+            "name": "実サービスL2 Workerのカーネル隔離（cgroup v2 + nftables、起動ごとに適用・確認）"}
+    if not st["ok"]:
+        refused = False
+        try:
+            conf.session("127.0.0.1", 18081)
+        except ConfinementError:
+            refused = True
+        return {**base, "passed": refused, "kernel_confined": False, "l2_real_service_allowed": False,
+                "elapsed_ms": round((time.monotonic() - t0) * 1000, 2),
+                "detail": f"このホストでは適用できないため、実サービスのL2検証は拒否します（{st['reason']}）"}
+    servers = []
+    try:
+        for _ in range(2):
+            srv = socket.socket()
+            srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            srv.bind(("127.0.0.1", 0))
+            srv.listen(4)
+            servers.append(srv)
+        pinned, other = (s.getsockname()[1] for s in servers)
+        code = (
+            "import json,socket\n"
+            "out={}\n"
+            f"for label,addr in (('pinned',('127.0.0.1',{pinned})),('other_port',('127.0.0.1',{other})),"
+            "('metadata',('169.254.169.254',80)),('external',('198.51.100.1',443))):\n"
+            "    s=socket.socket(); s.settimeout(0.8)\n"
+            "    try:\n        s.connect(addr); out[label]='CONNECTED'\n"
+            "    except OSError as e:\n        out[label]='BLOCKED:'+type(e).__name__\n"
+            "    finally:\n        s.close()\n"
+            "print(json.dumps(out))\n")
+        with conf.session("127.0.0.1", pinned) as sess:
+            res = WorkerPool().run([sys.executable, "-I", "-c", code], 30, session=sess)
+            held = sess.still_enforced()
+            evidence = dict(sess.evidence)
+        ran_clean = res.returncode == 0 and not res.timed_out and not res.pipes_held   # the runtime's own verdict
+        seen = json.loads(res.stdout.strip().splitlines()[-1]) if ran_clean and res.stdout.strip() else {}
+        ok = (held and seen.get("pinned") == "CONNECTED"
+              and all(str(seen.get(k, "")).startswith("BLOCKED:") for k in ("other_port", "metadata", "external"))
+              and evidence.get("kernel_dropped_packets", 0) >= 1 and evidence.get("probe_in_cgroup") is True)
+        return {**base, "passed": bool(ok), "kernel_confined": bool(ok), "l2_real_service_allowed": bool(ok),
+                "elapsed_ms": round((time.monotonic() - t0) * 1000, 2),
+                "detail": f"worker={seen}, verification={evidence}"}
+    except Exception as e:      # available but not working is a FAILED control
+        return {**base, "passed": False, "kernel_confined": False, "l2_real_service_allowed": False,
+                "elapsed_ms": round((time.monotonic() - t0) * 1000, 2),
+                "detail": f"カーネル隔離を適用・確認できませんでした: {type(e).__name__}: {e}"}
+    finally:
+        for srv in servers:
+            srv.close()
+
+
 def run_live_control_verification() -> dict:
     """Execute all live P0 safety control checks and return a signed report."""
     t0 = time.monotonic()
@@ -246,6 +310,7 @@ def run_live_control_verification() -> dict:
         _verify_egress_sentinel_subprocess(),
         *_verify_gateway_and_router_controls(),
         _verify_netfilter_layer(),
+        _verify_worker_confinement(),
     ]
     all_passed = all(c["passed"] for c in checks)
     return {

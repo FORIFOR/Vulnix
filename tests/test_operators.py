@@ -76,9 +76,12 @@ class TestStore(unittest.TestCase):
         lines = [l.split(": ", 1)[1] for l in creds.splitlines() if ": " in l and
                  (l.startswith("ユーザー名") or l.startswith("パスワード"))]
         pairs = list(zip(lines[0::2], lines[1::2]))
-        self.assertEqual(len(pairs), 2)
+        self.assertEqual(len(pairs), 3)
         for name, pw in pairs:
             self.assertEqual(store2.login(name, pw).operator, name)
+        roles = {o.name: o.roles for o in store2.operators()}
+        self.assertEqual(roles, {"operator": ("operator",), "approver": ("operator", "approver"),
+                                 "admin": ("operator", "admin")})
 
     def test_login_and_session_expiry(self):
         path = self.dir / "operators.json"
@@ -218,8 +221,12 @@ class TestStore(unittest.TestCase):
         secret, _ = store.begin_totp_enroll("op")
         store.confirm_totp("op", totp_code(secret, clock.t))
         with self.assertRaises(AuthError):
-            store.disable_totp("op", "wrong-password")
-        store.disable_totp("op", "pw")
+            store.disable_totp("op", "wrong-password", totp_code(secret, clock.t))
+        with self.assertRaises(AuthError):          # the password alone no longer removes the second factor
+            store.disable_totp("op", "pw")
+        with self.assertRaises(AuthError):
+            store.disable_totp("op", "pw", "000000")
+        store.disable_totp("op", "pw", totp_code(secret, clock.t))
         self.assertFalse(store.totp_enabled("op"))
         self.assertEqual(store.login("op", "pw").operator, "op")   # password alone again
 

@@ -19,6 +19,7 @@ import json
 import math
 import os
 import re
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from functools import partial
@@ -119,11 +120,39 @@ class StubBackend:
         return [dict(p) for p in self.proposals]      # copies: callers can't mutate ours
 
 
+MAX_MODEL_RESPONSE_BYTES = 1_000_000
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None      # a redirect would carry the Authorization header to another origin
+
+
+def _require_safe_model_url(url: str) -> None:
+    """The request carries the API key: https only, except a loopback endpoint."""
+    parts = urllib.parse.urlsplit(url)
+    host = (parts.hostname or "").lower()
+    if parts.scheme == "https":
+        return
+    if parts.scheme == "http" and host in ("127.0.0.1", "localhost", "::1"):
+        return
+    raise ValueError("model endpoint must be https (http is accepted for loopback only)")
+
+
+def _open_model_url(req, *, timeout):
+    """The API key never follows a redirect."""
+    return urllib.request.build_opener(_NoRedirect).open(req, timeout=timeout)
+
+
 def _http_transport(url: str, headers: dict, body: bytes, *,
                     timeout_s: float = DEFAULT_MODEL_TIMEOUT_SECONDS) -> bytes:
+    _require_safe_model_url(url)
     req = urllib.request.Request(url, data=body, headers=headers, method="POST")
-    with urllib.request.urlopen(req, timeout=timeout_s) as r:    # pragma: no cover - needs network
-        return r.read()
+    with _open_model_url(req, timeout=timeout_s) as r:      # pragma: no cover - needs network
+        data = r.read(MAX_MODEL_RESPONSE_BYTES + 1)
+    if len(data) > MAX_MODEL_RESPONSE_BYTES:
+        raise ValueError("model response too large")
+    return data
 
 
 class HttpModelBackend:
@@ -197,6 +226,15 @@ class HttpModelBackend:
         return extract_proposals_from_payload(data)
 
 
+def _error_kind(e: BaseException) -> str:
+    """A failure as a short, secret-free label: the exception class, plus the HTTP
+    status when there is one. Never the message, URL, headers or response body,
+    which may carry the API key or text the model returned."""
+    code = getattr(e, "code", None)
+    kind = type(e).__name__[:40]
+    return f"{kind} {code}" if isinstance(code, int) else kind
+
+
 class AbliterationBackend(HttpModelBackend):
     """Dedicated adapter for Abliteration AI / OpenAI-compatible Chat Completions API.
 
@@ -232,15 +270,18 @@ class AbliterationBackend(HttpModelBackend):
     def chat(self, question: str, context: dict) -> str | None:
         """Ask the OpenAI-compatible endpoint a natural-language question grounded
         in the assessment context. Output is plain text only (never executed)."""
+        return self.chat_with_status(question, context)[0]
+
+    def chat_with_status(self, question: str, context: dict) -> tuple[str | None, str | None]:
+        """`chat()` plus this call's own failure kind (None when it answered). Returned,
+        not stored on the shared instance, so concurrent questions cannot mix them up."""
+        from .chat_guard import CHAT_SYSTEM_PROMPT   # local: chat_guard -> ai_advisor -> router
         payload = {
             "model": self._model or "abliteration-sec-1",
             "messages": [
                 {
                     "role": "system",
-                    "content": (
-                        "あなたは Vulnix AI セキュリティ診断アシスタントです。"
-                        "与えられた診断コンテキストと証拠のみを根拠に、簡潔・正確に日本語で回答してください。"
-                    ),
+                    "content": CHAT_SYSTEM_PROMPT,
                 },
                 {
                     "role": "user",
@@ -256,10 +297,10 @@ class AbliterationBackend(HttpModelBackend):
             if isinstance(choices, list) and choices:
                 content = choices[0].get("message", {}).get("content")
                 if isinstance(content, str) and content.strip():
-                    return content.strip()
-        except Exception:
-            return None
-        return None
+                    return content.strip(), None
+        except Exception as e:   # noqa: BLE001 - any failure falls back to the built-in answer
+            return None, _error_kind(e)
+        return None, "empty_response"
 
 
 @dataclass(frozen=True)
@@ -452,10 +493,18 @@ class ArtexEngine:
         self.tasks: list[ArtexTask] = []
         assert not hasattr(self, "tokens") and not hasattr(self, "approvals")
 
-    def plan_phase(self, phase: str, context: dict) -> list[ArtexTask]:
-        routed_list = self.router.collect({**context, "phase": phase})
+    def plan_phase(self, phase: str, context: dict, *, router=None, accept=None) -> list[ArtexTask]:
+        """`router`: the router to ask for THIS call (the engine's own by default) -
+        the caller chooses it per call instead of swapping a shared field.
+        `accept`: called after the backends answered; if it returns False the
+        proposals are dropped (the caller's workspace is gone)."""
+        router = router or self.router
+        routed_list = router.collect({**context, "phase": phase})
+        if accept is not None and not accept():
+            return []
         created: list[ArtexTask] = []
         seen_keys: set[tuple[str, str, str, str]] = set()
+        gateway_tools = getattr(router.gateway, "tools", None)
         for r in routed_list:
             p = r.proposal
             dedup_key = (
@@ -468,13 +517,42 @@ class ArtexEngine:
             idx = len(created) + 1
             act = p["action"]
             level = "L1" if act == "read_only_probe" else "L2"
-            t = ArtexTask(
-                id=f"artex_{phase}_{idx}",
-                phase=phase,
-                title=r.rationale or f"{p['tool']} ({act})",
-                risk_level=level,
-                routed=r,
-            )
+
+            unsupported_reason = None
+            if isinstance(gateway_tools, dict):
+                tool_spec = gateway_tools.get(p["tool"])
+                if tool_spec is None:
+                    unsupported_reason = f"未対応ツール: {p['tool']}"
+                else:
+                    chk = p.get("args", {}).get("check")
+                    chk_spec = tool_spec.args.get("check") if hasattr(tool_spec, "args") else None
+                    if chk and chk_spec and chk_spec.choices and chk not in chk_spec.choices:
+                        unsupported_reason = f"未対応の検証項目: {chk}"
+
+            if unsupported_reason:
+                router.audit.record(
+                    "proposal.unsupported",
+                    backend=r.backend,
+                    tool=p["tool"],
+                    action=act,
+                    reason=unsupported_reason,
+                )
+                t = ArtexTask(
+                    id=f"artex_{phase}_{idx}",
+                    phase=phase,
+                    title=f"【未対応】{r.rationale or p['tool']}（{unsupported_reason}）",
+                    risk_level=level,
+                    routed=r,
+                    status="unsupported",
+                )
+            else:
+                t = ArtexTask(
+                    id=f"artex_{phase}_{idx}",
+                    phase=phase,
+                    title=r.rationale or f"{p['tool']} ({act})",
+                    risk_level=level,
+                    routed=r,
+                )
             self.tasks.append(t)
             created.append(t)
         return created
@@ -550,7 +628,7 @@ def verify_planner_connections(*, abliteration_url: str | None = None,
     }, sort_keys=True, ensure_ascii=False)
     proof_hash = hashlib.sha256(proof_payload.encode("utf-8")).hexdigest()
 
-    return {
+    return redact_verification_report({
         "verified_at": time.time(),
         "elapsed_ms": round((time.monotonic() - t0) * 1000, 2),
         "all_verified": bool(artex_ok and ab_ok),
@@ -571,5 +649,35 @@ def verify_planner_connections(*, abliteration_url: str | None = None,
             "chat_verified": bool(chat_reply),
             "chat_preview": (chat_reply or "")[:120],
         },
-    }
+    })
+
+
+def _safe_endpoint(url: object) -> str:
+    """scheme://host[:port] only: never userinfo, path, query or fragment, any of which
+    may carry an API key or token."""
+    try:
+        u = urllib.parse.urlsplit(str(url or ""))
+        host = u.hostname or ""
+        if not u.scheme or not host:
+            return ""
+        if ":" in host:
+            host = f"[{host}]"
+        port = f":{u.port}" if u.port else ""
+        return f"{u.scheme}://{host}{port}"[:200]
+    except ValueError:
+        return ""
+
+
+def redact_verification_report(rep: dict) -> dict:
+    """A verification report as it may be stored, returned, shown or published:
+    the endpoint without credentials, and none of the model's own text."""
+    if not isinstance(rep, dict):
+        return {}
+    out = dict(rep)
+    api = dict(out.get("abliteration_api") or {})
+    if api:
+        api["url"] = _safe_endpoint(api.get("url"))
+        api.pop("chat_preview", None)
+        out["abliteration_api"] = api
+    return out
 

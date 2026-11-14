@@ -9,6 +9,7 @@ const EXECUTION_EVENTS = new Set([
   "agent.thought",
   "proposal.received",
   "proposal.rejected",
+  "proposal.unsupported",
   "approval.auto",
   "approval.approved",
   "approval.rejected",
@@ -64,6 +65,18 @@ function toTraceItem(e: AuditEntry): TraceItem {
         badgeCls: "bg-sky-100 text-sky-900 dark:bg-sky-900/60 dark:text-sky-100",
         title: `${f.backend} が ${f.tool}（${f.action}）を提案`,
         detail: `対象: ${f.target} — ProposalRouter によりスキーマ検証・無害化済み`,
+        tool: String(f.tool ?? ""),
+        hash: e.hash,
+      };
+    case "proposal.unsupported":
+      return {
+        key: e.hash,
+        ts: e.ts,
+        kind: "proposal",
+        badge: "未対応",
+        badgeCls: "bg-amber-200 text-amber-950 dark:bg-amber-900/60 dark:text-amber-100",
+        title: `【未対応】${f.backend} が提案した検査（${f.tool}）は未実装のため実行しません`,
+        detail: `理由: ${f.reason ?? "未対応ツール"}（未対応の提案を実行したと装うことはありません）`,
         tool: String(f.tool ?? ""),
         hash: e.hash,
       };

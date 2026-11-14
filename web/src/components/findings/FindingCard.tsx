@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useState } from "react";
 import { postJSON } from "@/lib/api";
 import type { Finding, Snapshot } from "@/lib/types";
+import { canApprove, useSession } from "@/lib/useSession";
 import { HelpPopover } from "../learning/HelpPopover";
 import { Card, FixtureBadge, Pill, SeverityBadge, VerdictBadge } from "../ui";
 
@@ -24,6 +25,19 @@ export function FindingCard({
   const [showLog, setShowLog] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const latestEv = f.evidence.at(-1);
+  // L2 on a real service: an explicit, per-item approval by an approver.
+  const needsApproval = Boolean(f.requires_l2_approval);
+  // A rule that is not confirmed against the target API can never run (the server refuses it too).
+  const unaccepted = f.l2_spec_status === "unaccepted";
+  const unconfirmed = needsApproval && (f.l2_spec_status === "placeholder" || unaccepted);
+  const blocked = unconfirmed || (needsApproval && f.l2_ready === false && f.evidence.length === 0);
+  // Separation of duties: one operator requests the run, a different approver approves it.
+  const { session } = useSession();
+  const separated = needsApproval && Boolean(f.l2_needs_request) && !blocked;
+  const request = f.l2_request ?? null;
+  const ownRequest = separated && request?.requested_by === session?.operator;
+  const mustRequest = separated && !request;
+  const waitingForOther = separated && !!request && (ownRequest || !canApprove(session));
 
   const runLiveVerify = async () => {
     setBusy(true);
@@ -31,9 +45,10 @@ export function FindingCard({
     onBusyChange?.(true);
     setErr(null);
     try {
-      const snap = await postJSON<Snapshot>(`/api/assessments/${assessmentId}/verify-finding`, {
-        finding_id: f.id,
-      });
+      const snap = await postJSON<Snapshot>(
+        `/api/assessments/${assessmentId}/${mustRequest ? "request-l2" : "verify-finding"}`,
+        { finding_id: f.id },
+      );
       onUpdate?.(snap);
     } catch (e) {
       setErr((e as Error).message);
@@ -44,7 +59,7 @@ export function FindingCard({
   };
 
   return (
-    <Card className="flex flex-col justify-between">
+    <Card className="flex min-w-0 flex-col justify-between">
       <div>
         <div className="flex flex-wrap items-center gap-2">
           <SeverityBadge s={f.severity} />
@@ -97,11 +112,11 @@ export function FindingCard({
                   <li>2. Gateway検査：単一使用トークン発行・EgressGuard ({labEndpoint}) 固定・egress_sentinel 隔離起動</li>
                   <li>
                     3. Worker結果：
-                    {busy ? " 応答待機中…" : ` 判定=${f.verdict} / 監査ハッシュ #${latestEv?.audit_hash?.slice(0, 12) ?? "—"}`}
+                    {busy ? " 応答待機中…" : ` 今回の判定=${f.last_run_verdict ?? f.verdict} / 監査ハッシュ #${latestEv?.audit_hash?.slice(0, 12) ?? "—"}`}
                   </li>
                 </ol>
                 {latestEv?.content && (
-                  <pre className="max-h-36 overflow-auto rounded-lg bg-zinc-950 p-2 font-mono text-[11px] text-emerald-300">
+                  <pre className="max-h-36 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-zinc-950 p-2 font-mono text-[11px] text-emerald-300">
                     {latestEv.content}
                   </pre>
                 )}
@@ -116,11 +131,32 @@ export function FindingCard({
         <div className="flex items-center gap-2">
           <button
             type="button"
-            disabled={busy}
+            disabled={busy || blocked || waitingForOther}
+            title={unaccepted
+              ? "この判定ルールのプロファイルは管理者にまだ承認されていないため、実行できません"
+              : unconfirmed
+              ? "この項目の判定ルールは対象APIの仕様と未照合のため、実行できません"
+              : blocked ? "先に、診断画面上部の「L2検証用アカウント」でこの項目に必要なアカウントを設定してください" : undefined}
             onClick={runLiveVerify}
             className="rounded-lg bg-zinc-900 px-2.5 py-1 text-xs font-semibold text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-white dark:text-zinc-900"
           >
-            {busy ? "Worker実行中…" : "▶ 実機Workerで今すぐ検証"}
+            {busy
+              ? "Worker実行中…"
+              : unaccepted
+                ? "実行不可（プロファイル未承認）"
+              : unconfirmed
+                ? "実行不可（判定ルールが仕様未照合）"
+              : blocked
+                ? "検証用アカウント未設定"
+              : mustRequest
+                ? "L2検証の実行を依頼"
+              : waitingForOther
+                ? `別の承認責任者の承認待ち（依頼: ${request?.requested_by}）`
+              : separated
+                ? `✓ 承認してL2検証を実行（依頼: ${request?.requested_by}）`
+                : needsApproval
+                  ? "✓ 承認してL2検証を実行"
+                  : "▶ 実機Workerで今すぐ検証"}
           </button>
           <Link href={`/findings/${f.id}?a=${assessmentId}`} className="font-semibold text-zinc-900 underline-offset-2 hover:underline dark:text-zinc-100">
             詳しく見る →

@@ -12,8 +12,10 @@ import { WorkspaceHeader } from "../layout/WorkspaceHeader";
 import { EventTimeline } from "../logs/EventTimeline";
 import { RawLogViewer } from "../logs/RawLogViewer";
 import { Card } from "../ui";
+import { ArtexPlanPanel } from "./ArtexPlanPanel";
 import { AgentActivity } from "./AgentActivity";
 import { PhaseTimeline } from "./PhaseTimeline";
+import { RealServicePanel } from "./RealServicePanel";
 import { ReasoningTrace } from "./ReasoningTrace";
 import { EvidenceOverview, EVIDENCE_STATES } from "./EvidenceOverview";
 
@@ -162,7 +164,13 @@ export function AssessmentTabs({ id }: { id: string }) {
           </div>
         )}
 
+        {snap.is_external_service && <RealServicePanel snap={snap} onUpdate={setSnap} />}
+
         <EvidenceOverview snap={snap} selected={tab === "findings" ? evidenceFilter : "all"} />
+
+        {tab === "assessment" && snap.artex_plan?.configured && !snap.is_external_service && (
+          <ArtexPlanPanel snap={snap} onUpdate={setSnap} />
+        )}
 
         {tab === "assessment" && (
           <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_18rem]">

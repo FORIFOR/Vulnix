@@ -24,7 +24,13 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const logout = useCallback(async () => {
-    await fetch("/api/auth/logout", { method: "POST", headers: { "X-Aegis-Request": "1" } });
+    const res = await fetch("/api/auth/logout", { method: "POST", headers: { "X-Aegis-Request": "1" } }).catch(() => null);
+    if (!res || !res.ok) {
+      // signed out here, but the server could not record it: say so instead of pretending
+      const body = res ? await res.json().catch(() => ({})) : {};
+      window.alert?.((body as { error?: string }).error ??
+        "ログアウトをサーバーに記録できませんでした。再起動するとセッションが復活する可能性があります。管理者に連絡してください。");
+    }
     setSession(null);
     router.push("/login");
   }, [router]);
