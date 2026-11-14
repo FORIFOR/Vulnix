@@ -32,7 +32,7 @@ function UnstoppedWorkersAlert() {
 
 const NAV = [
   { href: "/dashboard", label: "ホーム", icon: "⌂" },
-  { href: "/assets", label: "資産管理", icon: "▤" },
+  { href: "/assets", label: "サイト", icon: "▤" },
   { href: "/assessments/scan_001", label: "診断ワークスペース", icon: "◎" },
   { href: "/settings", label: "設定", icon: "⚙" },
 ];
@@ -73,11 +73,20 @@ export function AppSidebar() {
       })}
       <div className="mt-auto flex items-center gap-2 md:block">
         <OperatorBadge />
-        <p className="mt-2 hidden px-2 text-[11px] leading-relaxed text-zinc-500 md:block">
-          既定の対象はローカル模擬ラボです。対象の種別と提案エンジンの設定状態は診断画面で確認できます。
-        </p>
+        <SidebarNote />
       </div>
     </nav>
+  );
+}
+
+function SidebarNote() {
+  const { multiTenant } = useSession();
+  return (
+    <p className="mt-2 hidden px-2 text-[11px] leading-relaxed text-zinc-500 md:block">
+      {multiTenant
+        ? "「サイトを診断する」から、あなたのサイトの URL を入力して始められます。"
+        : "既定の対象はローカル模擬ラボです。対象の種別と提案エンジンの設定状態は診断画面で確認できます。"}
+    </p>
   );
 }
 

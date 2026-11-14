@@ -7,7 +7,8 @@
 #   scripts/public-app.sh status
 #
 # Requires the public control plane (VM: ~/vmscripts/start_public.sh) on 127.0.0.1:8788,
-# started with VULNIX_PUBLIC_SIGNUP=1 VULNIX_REAL_SERVICE_DIAGNOSIS=0 (see docs/PUBLIC_BETA.md).
+# started with VULNIX_PUBLIC_SIGNUP=1 and VULNIX_REAL_SERVICE_DIAGNOSIS=0 or l1 (read-only diagnosis of
+# ownership-proven sites only; see docs/PUBLIC_BETA.md).
 # Only this UI is exposed; the control plane, ARTEX, workers and databases are not.
 # The Quick Tunnel URL changes on every start.
 set -eu
@@ -24,7 +25,7 @@ start)
   curl -s -o /dev/null "$API/api/health" || { echo "コントロールプレーン（$API）が起動していません"; exit 1; }
   me=$(curl -s "$API/api/auth/me")
   echo "$me" | grep -q '"multi_tenant": true' || { echo "組織分離が無効なコントロールプレーンは公開しません"; exit 1; }
-  echo "$me" | grep -q '"real_service_diagnosis": false' || { echo "実サイトへの通信が有効なコントロールプレーンは公開しません（VULNIX_REAL_SERVICE_DIAGNOSIS=0 が必要）"; exit 1; }
+  echo "$me" | grep -q '"real_service_diagnosis": false' || { echo "実サイトへの通信が有効なコントロールプレーンは公開しません（VULNIX_REAL_SERVICE_DIAGNOSIS=0 または l1 が必要）"; exit 1; }
   echo "$me" | grep -q '"development": false' || { echo "開発モードのコントロールプレーンは公開しません"; exit 1; }
   if ! running tunnel; then
     nohup cloudflared tunnel --no-autoupdate --url "http://127.0.0.1:$PORT" >"$RUN/tunnel.log" 2>&1 &

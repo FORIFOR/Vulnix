@@ -4,10 +4,12 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { AssetRegistrationModal } from "@/components/AssetRegistrationModal";
+import { OwnershipWizard } from "@/components/OwnershipWizard";
 import { RiskScore } from "@/components/findings/RiskScore";
 import { Card, Pill } from "@/components/ui";
 import { getJSON, postJSON } from "@/lib/api";
 import type { Asset } from "@/lib/types";
+import { useSession } from "@/lib/useSession";
 
 const STATUS_CLS: Record<string, string> = {
   診断済み: "bg-emerald-100 text-emerald-900 dark:bg-emerald-900/50 dark:text-emerald-100",
@@ -23,6 +25,11 @@ export default function Dashboard() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [editingAsset, setEditingAsset] = useState<Asset | null>(null);
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const [wizardAsset, setWizardAsset] = useState<Asset | null>(null);
+  // public beta: plain view (no permit records, no demo targets that need one)
+  const { multiTenant: plain } = useSession();
+  const visible = assets?.filter((a) => !(plain && !a.assessment_id && !a.challenge));
 
   useEffect(() => {
     getJSON<Asset[]>("/api/assets").then(setAssets, (e) => setErr(e.message));
@@ -63,26 +70,26 @@ export default function Dashboard() {
         <div>
           <h1 className="text-2xl font-bold">セキュリティ診断</h1>
           <p className="text-xs text-zinc-500">
-            診断対象を選択・削除するか、新しい診断対象と書面許可（SOW）を登録してください。
+            サイトのURLを入力して所有確認をすると、AI がセキュリティ上の問題と直し方を調べます。
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <Link
+            href="/assessments/scan_001"
+            className="rounded-lg border border-zinc-300 bg-white px-3.5 py-2 text-sm font-semibold text-zinc-900 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800"
+          >
+            練習用サイトで試す
+          </Link>
           <button
             type="button"
             onClick={() => {
-              setEditingAsset(null);
-              setModalOpen(true);
+              setWizardAsset(null);
+              setWizardOpen(true);
             }}
-            className="rounded-lg border border-zinc-300 bg-white px-3.5 py-2 text-sm font-semibold text-zinc-900 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800"
-          >
-            ＋ 診断対象を登録
-          </button>
-          <Link
-            href="/assessments/scan_001"
             className="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-semibold text-white hover:bg-zinc-700 dark:bg-white dark:text-zinc-900"
           >
-            新しい診断を開始 →
-          </Link>
+            ＋ サイトを診断する
+          </button>
         </div>
       </div>
 
@@ -90,7 +97,7 @@ export default function Dashboard() {
       {!assets && !err && <p className="text-sm text-zinc-500">読み込み中…</p>}
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {assets?.map((a) => (
+        {visible?.map((a) => (
           <Card key={a.id} className="flex h-full flex-col justify-between">
             <div>
               <div className="flex items-start justify-between gap-2">
@@ -100,7 +107,7 @@ export default function Dashboard() {
                 </div>
                 <Pill className={STATUS_CLS[a.status] ?? "bg-zinc-200 text-zinc-800"}>{a.status}</Pill>
               </div>
-              {a.authorization_ref && (
+              {!plain && a.authorization_ref && (
                 <div className="mt-2 text-[11px] font-mono text-emerald-700 dark:text-emerald-400">
                   許可証: {a.authorization_ref}
                 </div>
@@ -119,7 +126,18 @@ export default function Dashboard() {
                   onClick={() => handleSelectAsset(a)}
                   className="flex-1 rounded-lg bg-zinc-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-white dark:text-zinc-900"
                 >
-                  {busyId === a.id ? "切替中…" : "この対象を診断 →"}
+                  {busyId === a.id ? "切替中…" : "このサイトを開く →"}
+                </button>
+              ) : a.challenge ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setWizardAsset(a);
+                    setWizardOpen(true);
+                  }}
+                  className="flex-1 rounded-lg bg-zinc-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-zinc-700 dark:bg-white dark:text-zinc-900"
+                >
+                  所有確認を続ける →
                 </button>
               ) : (
                 <button
@@ -149,7 +167,7 @@ export default function Dashboard() {
       </div>
 
       <p className="mt-6 text-xs text-zinc-500">
-        未診断の資産を安全とは判定しません。診断には書面許可と所有確認が必要です。
+        まだ診断していないサイトを「安全」とは判定しません。診断できるのは、所有確認が済んだサイトだけです。
       </p>
 
       <AssetRegistrationModal
@@ -158,6 +176,13 @@ export default function Dashboard() {
         onClose={() => setModalOpen(false)}
         initialAsset={editingAsset}
         onRegistered={(updated) => setAssets(updated)}
+      />
+      <OwnershipWizard
+        key={wizardOpen ? `open-${wizardAsset?.id ?? "new"}` : "closed"}
+        open={wizardOpen}
+        initialAsset={wizardAsset}
+        onClose={() => setWizardOpen(false)}
+        onAssetsChanged={setAssets}
       />
     </main>
   );

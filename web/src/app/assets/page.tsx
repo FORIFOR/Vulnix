@@ -66,9 +66,9 @@ export default function AssetsPage() {
     <main className="mx-auto max-w-5xl p-4 md:p-8">
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="mb-1 text-2xl font-bold">資産管理・診断許可登録</h1>
+          <h1 className="mb-1 text-2xl font-bold">サイト</h1>
           <p className="text-sm text-zinc-500">
-            診断対象の一覧です。対象の切り替え・削除・書面許可（SOW）の登録が行えます。
+            診断するサイトの一覧です。サイトを追加すると、所有確認のあとすぐに診断できます。
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -80,7 +80,7 @@ export default function AssetsPage() {
             }}
             className="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-semibold text-white hover:bg-zinc-700 dark:bg-white dark:text-zinc-900"
           >
-            ＋ 実サービスを登録（所有確認）
+            ＋ サイトを診断する
           </button>
           <button
             type="button"
@@ -90,7 +90,7 @@ export default function AssetsPage() {
             }}
             className="rounded-lg border border-zinc-300 px-4 py-2 text-sm font-semibold hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
           >
-            模擬ラボの対象を登録
+            練習用サイトを追加
           </button>
         </div>
       </div>
@@ -105,7 +105,6 @@ export default function AssetsPage() {
               <th scope="col" className="px-4 py-2 font-medium">資産</th>
               <th scope="col" className="hidden px-4 py-2 font-medium sm:table-cell">種別</th>
               <th scope="col" className="hidden px-4 py-2 font-medium md:table-cell">環境</th>
-              <th scope="col" className="hidden px-4 py-2 font-medium lg:table-cell">書面許可（SOW）</th>
               <th scope="col" className="px-4 py-2 font-medium">状態</th>
               <th scope="col" className="px-4 py-2 font-medium">リスク（前回比）</th>
               <th scope="col" className="px-4 py-2 text-right font-medium">操作</th>
@@ -121,13 +120,6 @@ export default function AssetsPage() {
                 </td>
                 <td className="hidden px-4 py-3 text-zinc-500 sm:table-cell">{a.kind}</td>
                 <td className="hidden px-4 py-3 text-zinc-500 md:table-cell">{a.environment}</td>
-                <td className="hidden px-4 py-3 font-mono text-xs lg:table-cell">
-                  {a.authorization_ref ? (
-                    <span className="text-emerald-700 dark:text-emerald-400">{a.authorization_ref}</span>
-                  ) : (
-                    <span className="text-amber-700 dark:text-amber-400">未登録</span>
-                  )}
-                </td>
                 <td className="px-4 py-3">
                   <Pill className={STATUS_CLS[a.status] ?? "bg-zinc-200 text-zinc-800"}>{a.status}</Pill>
                 </td>
