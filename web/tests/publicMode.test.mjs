@@ -37,5 +37,6 @@ test("pages that skip the login redirect and the app chrome", () => {
   assert.equal(isPublicPage("/"), true);
   assert.equal(isPublicPage("/login"), true);
   assert.equal(isPublicPage("/welcome"), true);
+  assert.equal(isPublicPage("/invite"), true);
   assert.equal(isPublicPage("/dashboard"), false);
 });

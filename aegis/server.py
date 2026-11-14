@@ -12,6 +12,7 @@ Run:  python3 -m aegis.server  [--port 8787] [--lab-port 18081]
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import http.cookies
 import hashlib
 import json
@@ -31,6 +32,8 @@ from .lab import set_lab_mode, start_lab
 from .operators import AuthError, LockedOut, MFAChallenge, OperatorStore
 from .ownership import parse_service_target
 from .real_software_cve import run_real_software_cve_comparison
+from .tenancy import (DEFAULT_ORG, OrgStore, TenancyError, TenantRegistry, default_members_from,
+                      service_roles, valid_org_id)
 
 ALLOWED_ORIGINS = {"http://localhost:3000", "http://127.0.0.1:3000"}
 COOKIE = "aegis_session"
@@ -49,17 +52,75 @@ def development_mode() -> bool:
 
 
 MAX_BODY_BYTES = 1_000_000
+# Limits for a publicly reachable beta (per process).
+SIGNUPS_PER_MINUTE = 10          # self-registrations, whole platform
+SIGNUP_ATTEMPTS_PER_MINUTE = 30  # sign-up attempts that reach password hashing, whole platform
+SSE_PER_ACCOUNT = 4              # simultaneous event streams per account
+CHAT_PER_ORG_PER_HOUR = 30       # AI explanation questions per organization
+CHAT_PLATFORM_PER_HOUR = 300     # AI explanation questions, whole platform (one API key)
+CHAT_PLATFORM_PER_DAY = int(os.environ.get("VULNIX_CHAT_PER_DAY", "1000") or 1000)
+# Traffic to real (non-lab) sites: ownership checks over the network and diagnoses.
+# The public beta runs with this off until the owner approves real-site diagnosis.
+REAL_SERVICE_DIAGNOSIS = os.environ.get("VULNIX_REAL_SERVICE_DIAGNOSIS", "1") != "0"
+SSE_PLATFORM = 200               # simultaneous event streams, whole platform
+ARTEX_LLM_PLANS_PER_ORG_PER_HOUR = 3     # ARTEX plans that reach the real model
+ARTEX_PLANS_PER_ORG_PER_HOUR = int(os.environ.get("VULNIX_ARTEX_PLANS_PER_ORG_PER_HOUR", "6") or 0)  # any ARTEX run (CPU, confinement)
+ARTEX_PLANS_PLATFORM_PER_HOUR = int(os.environ.get("VULNIX_ARTEX_PLANS_PER_HOUR", "60") or 0)
+ARTEX_LLM_PLANS_PLATFORM_PER_HOUR = int(os.environ.get("VULNIX_ARTEX_LLM_PLANS_PER_HOUR", "20") or 0)
+# Platform-wide POST routes: they act on this machine or on configuration shared by
+# every organization, so they are decided by the account's own (global) roles.
+PLATFORM_POST_ROUTES = frozenset({"/api/l2-profiles/accept", "/api/router/verify", "/api/cve/sync",
+                                  "/api/system/verify-controls", "/api/cve/real-software-verify"})
 # Routes that start a verification job (spawn workers / probes on this machine).
 JOB_ROUTES = frozenset({"/api/system/verify-controls", "/api/cve/real-software-verify"})
 
 
 def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_auth: bool | None = None,
-                 allow_self_registration: bool | None = None):
+                 allow_self_registration: bool | None = None, tenancy: TenantRegistry | None = None,
+                 public_signup: bool | None = None):
+    default_svc = svc
+    # where account-level events go: a platform log when there are organizations
+    paudit = tenancy.platform_audit if tenancy is not None else svc.audit
+    limits_lock = threading.Lock()
+    signup_times: list[float] = []
+    signup_attempts: list[float] = []
+    chat_times: dict[str, list[float]] = {}
+    chat_all: list[float] = []
+    chat_day: list[float] = []
+    plan_times: dict[str, list[float]] = {}
+    plan_all: list[float] = []
+    run_times: dict[str, list[float]] = {}
+    run_all: list[float] = []
+    sse_open: dict[str, int] = {}
+    signup_lock = threading.Lock()
+
+    def room(times: list[float], window: float, cap: int) -> bool:
+        """Whether one more use fits, without recording it."""
+        now = time.monotonic()
+        times[:] = [t for t in times if now - t < window]
+        return len(times) < cap
+
+    def within(times: list[float], window: float, cap: int) -> bool:
+        """Sliding-window limit: records this use and says whether it is allowed."""
+        now = time.monotonic()
+        times[:] = [t for t in times if now - t < window]
+        if len(times) >= cap:
+            return False
+        times.append(now)
+        return True
+
     def self_registration_allowed() -> bool:
         # Anyone who can reach the port could otherwise mint themselves a session
-        # (and a second identity). Outside development mode accounts are created
-        # by an admin only.
-        return development_mode() if allow_self_registration is None else bool(allow_self_registration)
+        # (and a second identity). Without tenancy, outside development mode, accounts
+        # are created by an admin only. With tenancy a self-registered account gets an
+        # organization of its own and sees nothing else, so public sign-up can be
+        # switched on (VULNIX_PUBLIC_SIGNUP=1).
+        if allow_self_registration is not None:
+            return bool(allow_self_registration)
+        if tenancy is not None and (public_signup if public_signup is not None
+                                    else os.environ.get("VULNIX_PUBLIC_SIGNUP") == "1"):
+            return True
+        return development_mode()
 
     # Secure by default: reads need a session. The environment switch
     # `AEGIS_REQUIRE_READ_AUTH=0` is honoured ONLY in development mode
@@ -72,7 +133,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
     if not enforce_read_auth:
         svc.audit.record("config.read_auth_disabled", development_mode=development_mode())
     if ops.legacy_sessions_revoked:
-        svc.audit.record("auth.legacy_sessions_revoked", count=ops.legacy_sessions_revoked,
+        paudit.record("auth.legacy_sessions_revoked", count=ops.legacy_sessions_revoked,
                          reason="session file held bearer tokens in plaintext; sessions must sign in again")
         ops.legacy_sessions_revoked = 0
 
@@ -81,7 +142,8 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
         account's approver role. Accounts that became approvers before roles
         were admin-granted have no such record and should be reviewed."""
         latest = None
-        for e in svc.audit.entries():
+        logs = [svc.audit] + ([paudit] if paudit is not svc.audit else [])
+        for e in (x for log in logs for x in log.entries()):
             if e["event"] == "operator.roles_changed" and e["fields"].get("target") == name:
                 latest = e["fields"]
         return bool(latest and "approver" in (latest.get("after") or []))
@@ -125,6 +187,62 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     "expires": sess.expires,
                     "mfa_enabled": ops.totp_enabled(sess.operator)} if sess else None
 
+        def _touches_real_site(self, p: str, osvc) -> bool:
+            """Requests that would send traffic to a registered real site."""
+            if p == "/api/assets/verify-ownership":
+                return True
+            if p == "/api/assets/select":
+                # switching the workspace onto a real site is the step before diagnosing it
+                body_id = getattr(self, "_select_target", "")
+                try:
+                    return bool(osvc.asset_is_real_service(asset_id=body_id))
+                except Exception:   # noqa: BLE001 - when in doubt, treat it as real
+                    return True
+            base = f"/api/assessments/{osvc.a.id}"
+            if not p.startswith(base) or p.endswith(("/emergency-stop", "/pause", "/chat")):
+                return False
+            try:
+                return bool(osvc._is_external_service_asset())
+            except Exception:   # noqa: BLE001 - when in doubt, treat it as real
+                return True
+
+        def _org_requested(self, query_org: str | None = None) -> str:
+            """The organization the client says it is working in: header, query, or the
+            `vulnix_org` cookie the UI sets. Only a choice - membership is checked by _bind."""
+            jar = http.cookies.SimpleCookie(self.headers.get("Cookie", ""))
+            cookie = jar.get("vulnix_org")
+            return (self.headers.get("X-Vulnix-Org") or query_org or (cookie.value if cookie else "")).strip()[:40]
+
+        def _bind(self, sess, query_org: str | None = None):
+            """The organization this request acts in: (its service, the session with the
+            account's roles IN that organization). Answers 401/403/404 itself and returns
+            None when there is none. Without tenancy: the single service, unchanged."""
+            if tenancy is None:
+                return default_svc, sess
+            if not sess:
+                self._json(401, {"error": "ログインが必要です"})
+                return None
+            wanted = self._org_requested(query_org)
+            if not wanted:
+                orgs = tenancy.store.orgs_of(sess.operator)
+                if not orgs:
+                    self._json(403, {"error": "所属している組織がありません。組織を作成するか、招待を受け入れてください",
+                                     "no_org": True})
+                    return None
+                wanted = orgs[0]["id"]
+            roles = tenancy.store.roles_in(wanted, sess.operator) if valid_org_id(wanted) else ()
+            if not roles:
+                paudit.record("tenancy.access_denied", actor=sess.operator, org=wanted)
+                self._json(403, {"error": "この組織のメンバーではありません"})
+                return None
+            try:
+                osvc = tenancy.service(wanted)
+            except TenancyError as e:
+                self._json(404, {"error": str(e)})
+                return None
+            self._bound_org = wanted
+            return osvc, dataclasses.replace(sess, roles=service_roles(roles))
+
         def _host_ok(self) -> bool:
             """The control plane answers only when addressed as loopback. A request
             whose Host is some other name (a DNS-rebinding page, a LAN client going
@@ -150,8 +268,13 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             p = u.path.rstrip("/")
             sess = self._session()
             if p == "/api/auth/me":
-                return self._json(200, {"session": self._public_session(sess),
-                                        "self_registration": self_registration_allowed()})
+                me = {"session": self._public_session(sess), "self_registration": self_registration_allowed()}
+                me["real_service_diagnosis"] = REAL_SERVICE_DIAGNOSIS
+                me["development"] = development_mode()
+                if tenancy is not None:
+                    me["multi_tenant"] = True
+                    me["orgs"] = tenancy.store.orgs_of(sess.operator) if sess else []
+                return self._json(200, me)
             if p == "/api/health":
                 return self._json(200, {"ok": True})
             if enforce_read_auth and not sess:
@@ -169,13 +292,20 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                      "needs_role_review": "approver" in o.roles and not approver_grant_recorded(o.name)}
                     for o in ops.operators()]})
             if p == "/api/system/status":
+                if tenancy is not None:
+                    # each tenant sees its own conditions (stuck workers, notices name hosts)
+                    bound = self._bind(sess)
+                    if bound is None:
+                        return None
+                    return self._json(200, bound[0].system_status())
                 return self._json(200, svc.system_status())
-            if p == "/api/assets":
-                return self._json(200, svc.assets())
-            if p == "/api/assets/secrets-status":
-                q = parse_qs(u.query)
-                host = (q.get("host") or [None])[0]
-                return self._json(200, svc.secrets_status(host))
+            if tenancy is not None and p.startswith("/api/orgs"):
+                return self._tenancy_get(p, u, sess)
+            if p.startswith(("/api/assets", "/api/assessments/")):
+                bound = self._bind(sess, (parse_qs(u.query).get("org") or [None])[0])
+                if bound is None:
+                    return None
+                return self._get_org(p, u, *bound)
             if p == "/api/router/status":
                 return self._json(200, svc.planner_status())
             if p == "/api/l2-profiles":
@@ -187,6 +317,16 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 return self._json(405, {"error": "この操作は POST で実行してください"}, [("Allow", "POST")])
             if p == "/api/cve/status":
                 return self._json(200, svc.cve_monitor.status())
+            return self._json(404, {"error": "not found"})
+
+        def _get_org(self, p, u, svc, sess):
+            """Reads of one organization's data, from that organization's service only."""
+            if p == "/api/assets":
+                return self._json(200, svc.assets())
+            if p == "/api/assets/secrets-status":
+                q = parse_qs(u.query)
+                host = (q.get("host") or [None])[0]
+                return self._json(200, svc.secrets_status(host))
             if p == f"/api/assessments/{svc.a.id}":
                 return self._json(200, svc.snapshot())
             if p == f"/api/assessments/{svc.a.id}/logs":
@@ -214,10 +354,39 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 q = parse_qs(u.query)
                 after = self.headers.get("Last-Event-ID") or (q.get("after") or ["0"])[0]
                 after = int(re.sub(r"\D", "", after) or 0)
-                return self._sse(after)
+                return self._sse(after, svc, sess)
             return self._json(404, {"error": "not found"})
 
-        def _sse(self, after: int) -> None:
+        def _sse(self, after: int, svc=None, sess=None) -> None:
+            svc = svc or default_svc
+            key = sess.operator if sess else ""
+            with limits_lock:
+                if key and sse_open.get(key, 0) >= SSE_PER_ACCOUNT:
+                    return self._json(429, {"error": "同時に開ける更新の受信が上限に達しています。ほかのタブを閉じてください"})
+                if sum(sse_open.values()) >= SSE_PLATFORM:
+                    return self._json(429, {"error": "ただいま混み合っています。しばらくしてから再読み込みしてください"},
+                                      [("Retry-After", "30")])
+                if key:
+                    sse_open[key] = sse_open.get(key, 0) + 1
+            org = getattr(self, "_bound_org", None)
+            token = sess.token if sess else None
+
+            def still_allowed() -> bool:
+                """A stream ends when its session ends, or when the account leaves the organization."""
+                if token is None:
+                    return True
+                now = ops.resolve(token)
+                if now is None:
+                    return False
+                return tenancy is None or org is None or bool(tenancy.store.roles_in(org, now.operator))
+            try:
+                return self._sse_loop(after, svc, still_allowed)
+            finally:
+                if key:
+                    with limits_lock:
+                        sse_open[key] -= 1
+
+        def _sse_loop(self, after: int, svc, still_allowed) -> None:
             self.close_connection = True   # never reuse a socket after a stream ends
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")
@@ -225,13 +394,22 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             self.send_header("X-Accel-Buffering", "no")
             self.send_header("Connection", "keep-alive")
             self.end_headers()
+            # send_header("Connection", "keep-alive") turns close_connection back off: set
+            # it again, so a stream that ends here closes its socket instead of waiting
+            # for another request on it
+            self.close_connection = True
             seq = after
             last_ping = time.monotonic()
             try:
                 self.wfile.write(b"retry: 2000\n\n")
                 self.wfile.flush()
                 while True:
-                    for ev in svc.bus.wait(seq, timeout=10):
+                    events = svc.bus.wait(seq, timeout=5)
+                    # checked after waiting and before writing: nothing that happened after
+                    # a removal, logout or expiry reaches the stream
+                    if not still_allowed():
+                        return
+                    for ev in events:
                         data = json.dumps(ev, ensure_ascii=False)
                         self.wfile.write(f"id: {ev['event_id']}\ndata: {data}\n\n".encode())
                         seq = ev["seq"]
@@ -278,7 +456,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 sess = self._session()
                 if sess:
                     try:
-                        svc.audit.record("auth.logout", actor=sess.operator)
+                        paudit.record("auth.logout", actor=sess.operator)
                     except Exception:
                         pass        # an audit log that cannot be written must not keep a session alive
                 try:
@@ -315,6 +493,68 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 return self._set_roles(body, sess)
             if p in ("/api/operators/unlock", "/api/operators/reset-mfa"):
                 return self._admin_recovery(p, body, sess)
+            if tenancy is not None:
+                if p.startswith("/api/orgs") or p == "/api/invites/accept":
+                    return self._tenancy_post(p, body, sess)
+                if p.endswith("/lab-mode") and "admin" not in sess.roles:
+                    # the mock lab is one process-wide service shared by every organization
+                    paudit.record("tenancy.lab_mode_denied", actor=sess.operator)
+                    return self._json(403, {"error": "模擬ラボの設定は全組織で共有のため、プラットフォーム管理者だけが変更できます"})
+                if p not in PLATFORM_POST_ROUTES:
+                    bound = self._bind(sess)
+                    if bound is None:
+                        return None
+                    osvc, osess = bound
+                    self._select_target = str(body.get("id", "")) if p == "/api/assets/select" else ""
+                    if not REAL_SERVICE_DIAGNOSIS and self._touches_real_site(p, osvc):
+                        paudit.record("tenancy.real_site_refused", actor=sess.operator, route=p[-60:])
+                        return self._json(403, {"error": "このβ版では、実サイトへの通信（所有確認の実行・診断）はまだ有効になっていません。"
+                                                         "模擬ラボで機能をお試しください"})
+                    # viewers read; stopping things stays open to every member
+                    if not ({"operator", "approver", "admin"} & set(osess.roles)) \
+                            and not p.endswith(("/emergency-stop", "/pause")):
+                        return self._json(403, {"error": "閲覧者の権限では操作できません"})
+                    if p.endswith("/chat"):
+                        with limits_lock:
+                            mine = chat_times.setdefault(self._bound_org, [])
+                            # both limits are checked before either is used: a refusal costs no quota
+                            ok = room(mine, 3600, CHAT_PER_ORG_PER_HOUR) and room(chat_all, 3600, CHAT_PLATFORM_PER_HOUR) \
+                                and room(chat_day, 86400, CHAT_PLATFORM_PER_DAY)
+                            if ok:
+                                within(mine, 3600, CHAT_PER_ORG_PER_HOUR)
+                                within(chat_all, 3600, CHAT_PLATFORM_PER_HOUR)
+                                within(chat_day, 86400, CHAT_PLATFORM_PER_DAY)
+                        if not ok:
+                            return self._json(429, {"error": f"AI 解説は1つの組織につき1時間あたり {CHAT_PER_ORG_PER_HOUR} 回までです"},
+                                              [("Retry-After", "600")])
+                    if p.endswith("/artex/plan"):
+                        # every ARTEX run costs CPU and a confined process, whatever the model mode
+                        with limits_lock:
+                            mine_r = run_times.setdefault(self._bound_org, [])
+                            ok = room(mine_r, 3600, ARTEX_PLANS_PER_ORG_PER_HOUR) and room(run_all, 3600, ARTEX_PLANS_PLATFORM_PER_HOUR)
+                            if ok:
+                                within(mine_r, 3600, ARTEX_PLANS_PER_ORG_PER_HOUR)
+                                within(run_all, 3600, ARTEX_PLANS_PLATFORM_PER_HOUR)
+                        if not ok:
+                            return self._json(429, {"error": "ARTEX の計画は、1時間あたりの上限に達しています。時間をおいてください"},
+                                              [("Retry-After", "600")])
+                    # the mode as the service decides it (request value, else the configured one)
+                    mode = (str(body.get("llm_mode") or "") or os.environ.get("VULNIX_ARTEX_LLM_MODE", "direct")).strip().lower()
+                    # counted only for a plan that can reach the real model: forward mode with an
+                    # approval (the service refuses forward without one, so it costs nothing)
+                    if p.endswith("/artex/plan") and mode != "direct" and mode != "gateway-preview" \
+                            and isinstance(body.get("llm_approval"), dict):
+                        with limits_lock:
+                            mine = plan_times.setdefault(self._bound_org, [])
+                            ok = room(mine, 3600, ARTEX_LLM_PLANS_PER_ORG_PER_HOUR) \
+                                and room(plan_all, 3600, ARTEX_LLM_PLANS_PLATFORM_PER_HOUR)
+                            if ok:
+                                within(mine, 3600, ARTEX_LLM_PLANS_PER_ORG_PER_HOUR)
+                                within(plan_all, 3600, ARTEX_LLM_PLANS_PLATFORM_PER_HOUR)
+                        if not ok:
+                            return self._json(429, {"error": "実モデルを使う ARTEX の計画は、利用上限に達しています。時間をおいてください"},
+                                              [("Retry-After", "600")])
+                    return self._dispatch(p, body, osess, osvc)
             return self._dispatch(p, body, sess)
 
         def _change_password(self, body, sess):
@@ -325,7 +565,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 return self._locked(e, sess.operator)
             except AuthError as e:
                 return self._json(400, {"error": str(e)})
-            svc.audit.record("auth.password_changed", actor=sess.operator)
+            paudit.record("auth.password_changed", actor=sess.operator)
             return self._json(200, {"ok": True})
 
         def _totp_enroll(self, sess):
@@ -335,7 +575,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 return self._json(400, {"error": str(e)})
             # The secret/URI are shown once to the operator to add to their
             # authenticator; they are not recorded in the audit log.
-            svc.audit.record("auth.mfa_enroll_started", actor=sess.operator)
+            paudit.record("auth.mfa_enroll_started", actor=sess.operator)
             return self._json(200, {"secret": secret, "uri": uri})
 
         def _totp_confirm(self, body, sess):
@@ -343,7 +583,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 ops.confirm_totp(sess.operator, str(body.get("code", "")))
             except AuthError as e:
                 return self._json(400, {"error": str(e)})
-            svc.audit.record("auth.mfa_enabled", actor=sess.operator)
+            paudit.record("auth.mfa_enabled", actor=sess.operator)
             return self._json(200, {"ok": True, "mfa_enabled": True})
 
         def _totp_disable(self, body, sess):
@@ -353,21 +593,21 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 return self._locked(e, sess.operator)
             except AuthError as e:
                 return self._json(400, {"error": str(e)})
-            svc.audit.record("auth.mfa_disabled", actor=sess.operator)
+            paudit.record("auth.mfa_disabled", actor=sess.operator)
             return self._json(200, {"ok": True, "mfa_enabled": False})
 
         def _locked(self, e: LockedOut, name: str):
             """429 for a paused sign-in. The same answer is given for names that do
             not exist, so it does not reveal which accounts are real."""
             if e.just_locked:
-                svc.audit.record("auth.locked", name=name[:32], seconds=int(e.retry_after))
+                paudit.record("auth.locked", name=name[:32], seconds=int(e.retry_after))
             return self._json(429, {"error": str(e), "locked": True, "retry_after": int(e.retry_after)},
                               [("Retry-After", str(int(e.retry_after)))])
 
         def _drain_recovery_events(self):
             while ops.recovery_events:
                 ev = ops.recovery_events.pop(0)
-                svc.audit.record(ev.pop("event"), **ev)
+                paudit.record(ev.pop("event"), **ev)
 
         def _login(self, body):
             try:
@@ -381,10 +621,10 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 return self._json(401, {"error": str(e), "mfa_required": True})
             except AuthError as e:
                 time.sleep(0.2)   # uniform-ish delay on failure
-                svc.audit.record("auth.login_failed", name=str(body.get("name", ""))[:32])
+                paudit.record("auth.login_failed", name=str(body.get("name", ""))[:32])
                 return self._json(401, {"error": str(e)})
             self._drain_recovery_events()
-            svc.audit.record("auth.login", actor=sess.operator, roles=list(sess.roles))
+            paudit.record("auth.login", actor=sess.operator, roles=list(sess.roles))
             cookie = (f"{COOKIE}={sess.token}; HttpOnly; SameSite=Strict; Path=/; "
                       f"Max-Age={int(sess.expires - time.time())}")
             return self._json(200, {"session": self._public_session(sess)},
@@ -403,28 +643,79 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     op = ops.create_account(name, password, display=display, actor=caller.operator)
                 except AuthError as e:
                     return self._json(400, {"error": str(e)})
-                svc.audit.record("operator.created", actor=caller.operator, target=op.name, roles=list(op.roles),
+                paudit.record("operator.created", actor=caller.operator, target=op.name, roles=list(op.roles),
                                  requested_roles_ignored=[r for r in asked if r not in op.roles])
                 return self._json(200, {"created": {"name": op.name, "display": op.display, "roles": list(op.roles)}})
             if not self_registration_allowed():
-                svc.audit.record("auth.registration_refused", name=name[:32])
+                paudit.record("auth.registration_refused", name=name[:32])
                 return self._json(403, {"error": "アカウントの作成は管理者が行います（設定 → アカウントとロール）。"
                                                  "自己登録は開発モードでのみ利用できます"})
+            invite = str(body.get("invite", "") or "")
+            tenancy_warning = None
+            if tenancy is not None and invite and not tenancy.store.invite_valid(invite):
+                # checked before the account exists: a bad link leaves no orphan account
+                return self._json(400, {"error": "招待が無効です（使用済み・取り消し済み・期限切れ・誤り）"})
+            if tenancy is not None and not invite and tenancy.store.at_capacity():
+                return self._json(503, {"error": "現在、新しい登録を受け付けていません（β版の受け入れ上限に達しました）"})
+            with limits_lock:
+                allowed = room(signup_times, 60, SIGNUPS_PER_MINUTE)  # cheap early refusal
+            if not allowed:
+                paudit.record("auth.registration_throttled", name=name[:32])
+                return self._json(429, {"error": "ただいま登録が混み合っています。少し時間をおいてお試しください"},
+                                  [("Retry-After", "60")])
+            # one sign-up at a time: the invite check, the account and the membership
+            # happen together (two sign-ups racing on one invite cannot both pass)
+            signup_lock.acquire()
             try:
-                sess = ops.register(name, password, display=display)
-            except AuthError as e:
-                return self._json(400, {"error": str(e)})
-            svc.audit.record("auth.registered", actor=sess.operator, roles=list(sess.roles),
+                if tenancy is not None and invite and not tenancy.store.invite_valid(invite):
+                    return self._json(400, {"error": "招待が無効です（使用済み・取り消し済み・期限切れ・誤り）"})
+                with limits_lock:
+                    # decided again here, one sign-up at a time: a parallel burst cannot pass
+                    # the early check together; every attempt that will hash a password counts
+                    if not room(signup_times, 60, SIGNUPS_PER_MINUTE) \
+                            or not within(signup_attempts, 60, SIGNUP_ATTEMPTS_PER_MINUTE):
+                        throttled = True
+                    else:
+                        throttled = False
+                if throttled:
+                    paudit.record("auth.registration_throttled", name=name[:32])
+                    return self._json(429, {"error": "ただいま登録が混み合っています。少し時間をおいてお試しください"},
+                                      [("Retry-After", "60")])
+                try:
+                    sess = ops.register(name, password, display=display)
+                except AuthError as e:
+                    return self._json(400, {"error": str(e)})
+                with limits_lock:
+                    signup_times.append(time.monotonic())
+                if tenancy is not None:
+                    # the new account sees only its own organization (or the one it was invited to)
+                    try:
+                        if invite:
+                            org_id, roles = tenancy.store.accept_invite(invite, sess.operator)
+                            tenancy.service(org_id).audit.record("tenancy.invite_accepted", actor=sess.operator,
+                                                                 roles=roles)
+                        else:
+                            org_id = tenancy.store.create_org(f"{display or sess.operator} の組織", sess.operator)
+                            tenancy.service(org_id).audit.record("tenancy.org_created", actor=sess.operator)
+                    except TenancyError as e:
+                        tenancy_warning = str(e)     # signed in all the same; no organization yet
+            finally:
+                signup_lock.release()
+            paudit.record("auth.registered", actor=sess.operator, roles=list(sess.roles),
                              self_registered=True,
                              requested_roles_ignored=[r for r in asked if r not in sess.roles])
             cookie = (f"{COOKIE}={sess.token}; HttpOnly; SameSite=Strict; Path=/; "
                       f"Max-Age={int(sess.expires - time.time())}")
-            return self._json(200, {"session": self._public_session(sess)},
-                              [("Set-Cookie", cookie)])
+            out = {"session": self._public_session(sess)}
+            if tenancy is not None:
+                out["orgs"] = tenancy.store.orgs_of(sess.operator)
+                if tenancy_warning:
+                    out["warning"] = tenancy_warning
+            return self._json(200, out, [("Set-Cookie", cookie)])
 
         def _set_roles(self, body, sess):
             if "admin" not in sess.roles:
-                svc.audit.record("operator.roles_change_denied", actor=sess.operator,
+                paudit.record("operator.roles_change_denied", actor=sess.operator,
                                  target=str(body.get("name", ""))[:64])
                 return self._json(403, {"error": "ロールの変更には管理者の権限が必要です"})
             raw = body.get("roles")
@@ -433,10 +724,10 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             try:
                 before, after = ops.set_roles(target, roles, actor=sess.operator)
             except AuthError as e:
-                svc.audit.record("operator.roles_change_failed", actor=sess.operator, target=target[:64],
+                paudit.record("operator.roles_change_failed", actor=sess.operator, target=target[:64],
                                  requested=roles[:8], error=str(e)[:200])
                 return self._json(409, {"error": str(e)})
-            svc.audit.record("operator.roles_changed", actor=sess.operator, target=target,
+            paudit.record("operator.roles_changed", actor=sess.operator, target=target,
                              before=list(before), after=list(after),
                              attested_unchanged=set(before) == set(after))
             return self._json(200, {"name": target, "roles": list(after)})
@@ -445,23 +736,95 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             """Recovery actions an admin performs for a legitimate user."""
             target = str(body.get("name", "")).strip()
             if "admin" not in sess.roles:
-                svc.audit.record("operator.recovery_denied", actor=sess.operator, target=target[:64], action=p)
+                paudit.record("operator.recovery_denied", actor=sess.operator, target=target[:64], action=p)
                 return self._json(403, {"error": "この操作には管理者の権限が必要です"})
             try:
                 if p == "/api/operators/unlock":
                     changed = ops.unlock(target, actor=sess.operator)
-                    svc.audit.record("operator.unlocked", actor=sess.operator, target=target[:64], was_locked=changed)
+                    paudit.record("operator.unlocked", actor=sess.operator, target=target[:64], was_locked=changed)
                 else:
                     changed = ops.reset_totp(target, actor=sess.operator)
-                    svc.audit.record("operator.mfa_reset", actor=sess.operator, target=target[:64], had_mfa=changed)
+                    paudit.record("operator.mfa_reset", actor=sess.operator, target=target[:64], had_mfa=changed)
             except AuthError as e:
                 return self._json(409, {"error": str(e)})
             return self._json(200, {"name": target, "changed": changed})
 
+        # ---- organizations (tenancy) --------------------------------------------
+        def _org_for_management(self, sess, body=None):
+            org_id = self._org_requested(str((body or {}).get("org", "") or "") or None)
+            if not org_id:
+                orgs = tenancy.store.orgs_of(sess.operator)
+                org_id = orgs[0]["id"] if orgs else ""
+            if not org_id or not tenancy.store.roles_in(org_id, sess.operator):
+                raise TenancyError("この組織のメンバーではありません")
+            return org_id
+
+        def _tenancy_get(self, p, u, sess):
+            if not sess:
+                return self._json(401, {"error": "ログインが必要です"})
+            if p == "/api/orgs":
+                return self._json(200, {"orgs": tenancy.store.orgs_of(sess.operator)})
+            try:
+                org_id = self._org_for_management(sess, {"org": (parse_qs(u.query).get("org") or [""])[0]})
+            except TenancyError as e:
+                return self._json(403, {"error": str(e)})
+            mine = set(tenancy.store.roles_in(org_id, sess.operator))
+            if p == "/api/orgs/members":
+                return self._json(200, {"org": {"id": org_id, "name": tenancy.store.org_name(org_id)},
+                                        "my_roles": sorted(mine), "members": tenancy.store.members(org_id)})
+            if p == "/api/orgs/invites":
+                if not mine & {"owner", "admin"}:
+                    return self._json(403, {"error": "招待の一覧はオーナーまたは管理者だけが見られます"})
+                return self._json(200, {"invites": tenancy.store.invites(org_id)})
+            return self._json(404, {"error": "not found"})
+
+        def _tenancy_post(self, p, body, sess):
+            st = tenancy.store
+            try:
+                if p == "/api/orgs":
+                    org_id = st.create_org(str(body.get("name", "")), sess.operator)
+                    tenancy.service(org_id).audit.record("tenancy.org_created", actor=sess.operator)
+                    return self._json(200, {"org": {"id": org_id, "name": st.org_name(org_id)},
+                                            "orgs": st.orgs_of(sess.operator)})
+                if p == "/api/invites/accept":
+                    org_id, roles = st.accept_invite(str(body.get("token", "")), sess.operator)
+                    tenancy.service(org_id).audit.record("tenancy.invite_accepted", actor=sess.operator, roles=roles)
+                    return self._json(200, {"org": {"id": org_id, "name": st.org_name(org_id)}, "roles": roles,
+                                            "orgs": st.orgs_of(sess.operator)})
+                org_id = self._org_for_management(sess, body)
+                audit = tenancy.service(org_id).audit
+                if p == "/api/orgs/members/roles":
+                    target = str(body.get("name", "")).strip()
+                    before = st.set_roles(org_id, sess.operator, target, body.get("roles"))
+                    audit.record("tenancy.member_roles_changed", actor=sess.operator, target=target,
+                                 before=before, after=list(st.roles_in(org_id, target)))
+                    return self._json(200, {"members": st.members(org_id)})
+                if p == "/api/orgs/members/remove":
+                    target = str(body.get("name", "")).strip()
+                    st.remove_member(org_id, sess.operator, target)
+                    audit.record("tenancy.member_removed", actor=sess.operator, target=target)
+                    return self._json(200, {"members": st.members(org_id)})
+                if p == "/api/orgs/invites":
+                    hours = body.get("ttl_hours", 168)
+                    ttl = float(hours) * 3600 if isinstance(hours, (int, float)) else 168 * 3600
+                    iid, token = st.create_invite(org_id, sess.operator, body.get("roles"), ttl)
+                    audit.record("tenancy.invite_created", actor=sess.operator, invite=iid,
+                                 roles=list(body.get("roles") or []))
+                    # the token is shown once to the inviter; only its hash is stored
+                    return self._json(200, {"id": iid, "token": token, "invites": st.invites(org_id)})
+                if p == "/api/orgs/invites/revoke":
+                    st.revoke_invite(org_id, sess.operator, str(body.get("id", "")))
+                    audit.record("tenancy.invite_revoked", actor=sess.operator, invite=str(body.get("id", ""))[:40])
+                    return self._json(200, {"invites": st.invites(org_id)})
+            except TenancyError as e:
+                return self._json(403 if "権限" in str(e) or "メンバー" in str(e) else 400, {"error": str(e)})
+            return self._json(404, {"error": "not found"})
+
         def _clear_cookie(self):
             return [("Set-Cookie", f"{COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0")]
 
-        def _dispatch(self, p, body, sess):
+        def _dispatch(self, p, body, sess, svc=None):
+            svc = svc or default_svc
             base = f"/api/assessments/{svc.a.id}"
             actor = sess.operator
             try:
@@ -548,28 +911,28 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     return self._json(200, {"assets": svc.assets(), "snapshot": snap})
                 elif p == "/api/l2-profiles/accept":
                     if "admin" not in sess.roles:
-                        svc.audit.record("l2.profile_accept_denied", actor=actor, profile=str(body.get("id", ""))[:64])
+                        paudit.record("l2.profile_accept_denied", actor=actor, profile=str(body.get("id", ""))[:64])
                         return self._json(403, {"error": "プロファイルの承認には管理者の権限が必要です"})
                     return self._json(200, svc.accept_l2_profile(
                         str(body.get("id", "")), str(body.get("sha256", "")), actor))
                 elif p in ("/api/router/verify", "/api/cve/sync") and not ({"approver", "admin"} & set(sess.roles)):
                     # one spawns the planner CLI and an outbound model call, the other replaces feed data
-                    svc.audit.record("system.job_denied", actor=actor, job=p)
+                    paudit.record("system.job_denied", actor=actor, job=p)
                     return self._json(403, {"error": "この操作には承認責任者または管理者の権限が必要です"})
                 elif p == "/api/router/verify":
                     rep = svc.verify_planner_connections(actor)
                     return self._json(200, rep)
                 elif p in JOB_ROUTES:
                     if not ({"approver", "admin"} & set(sess.roles)):
-                        svc.audit.record("system.job_denied", actor=actor, job=p)
+                        paudit.record("system.job_denied", actor=actor, job=p)
                         return self._json(403, {"error": "検証ジョブの実行には承認責任者または管理者の権限が必要です"})
-                    svc.audit.record("system.job_started", actor=actor, job=p)
+                    paudit.record("system.job_started", actor=actor, job=p)
                     if p == "/api/system/verify-controls":
                         rep = run_live_control_verification()
-                        svc.audit.record("system.controls_verified", actor=actor, all_passed=rep["all_passed"])
+                        paudit.record("system.controls_verified", actor=actor, all_passed=rep["all_passed"])
                     else:
                         rep = run_real_software_cve_comparison()
-                        svc.audit.record("cve.real_software_verified", actor=actor, all_passed=rep["all_passed"])
+                        paudit.record("cve.real_software_verified", actor=actor, all_passed=rep["all_passed"])
                     return self._json(200, rep)
                 elif p == "/api/cve/sync":
                     st = svc.cve_monitor.ingest_payloads(
@@ -577,7 +940,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         kev_obj=body.get("kev") if isinstance(body.get("kev"), dict) else None,
                         source=str(body.get("source", "operator_sync")),
                     )
-                    svc.audit.record("cve.synced", actor=actor, cve_count=st["cve_count"], kev_count=st["kev_count"],
+                    paudit.record("cve.synced", actor=actor, cve_count=st["cve_count"], kev_count=st["kev_count"],
                                      source=str(body.get("source", "operator_sync"))[:64],
                                      payload_sha256=hashlib.sha256(
                                          json.dumps({"nvd": body.get("nvd"), "kev": body.get("kev")},
@@ -659,6 +1022,16 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
 
 def _build_server(svc, a, data, first, seed, env_opt_out):
     ops = OperatorStore(seed)
+    tenancy = None
+    if os.environ.get("VULNIX_MULTI_TENANT", "1") != "0":
+        # organizations: the existing workspace is the default organization; each new
+        # organization gets its own service and data directory under <data>/orgs/
+        store = OrgStore(Path(data) / "orgs.json", bootstrap_members=lambda: default_members_from(ops))
+        tenancy = TenantRegistry(
+            store, svc,
+            lambda d: AssessmentService(d, a.lab_port, a.verify_seconds,
+                                        separate_l2_approver=a.separate_l2_approver or None),
+            Path(data))
     if not getattr(svc, "previous_session_clean", True):
         # a logout or sign-out-everywhere of the previous run may not be on disk
         n = ops.revoke_all_sessions("the control plane did not shut down cleanly")   # raises if not saved
@@ -667,7 +1040,7 @@ def _build_server(svc, a, data, first, seed, env_opt_out):
     read_auth = False if a.no_read_auth else (True if a.require_read_auth else None)
     srv = ThreadingHTTPServer(
         ("127.0.0.1", a.port),
-        make_handler(svc, ops, require_read_auth=read_auth),
+        make_handler(svc, ops, require_read_auth=read_auth, tenancy=tenancy),
     )
     srv.daemon_threads = True
     print(f"Vulnix control plane: http://127.0.0.1:{a.port}  (audit: {data / 'audit.jsonl'})")
@@ -680,6 +1053,7 @@ def _build_server(svc, a, data, first, seed, env_opt_out):
     if ops.admin_credentials_path:
         print(f"管理者アカウントを作成しました（ロール付与用・平文・600権限）: {ops.admin_credentials_path}")
     srv.ops = ops
+    srv.tenancy = tenancy
     return srv
 
 
@@ -787,6 +1161,8 @@ def main() -> None:
         # an auth change that never reached the disk (a logout, a password change)
         # makes this an unclean shutdown too: the next start then signs everyone out
         auth_saved = ops.trusted()
+        if getattr(srv, "tenancy", None) is not None:
+            srv.tenancy.close_all()
         clean = svc.close(external_clean=auth_saved)
         print("コントロールプレーンを停止しました" + ("" if clean else
               "（保存または Worker の停止を確認できなかったため、次回起動時に実サービスの診断許可を保留します）"))

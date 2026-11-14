@@ -1,6 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
+import { selectOrg } from "@/lib/org";
 import { useEffect, useState } from "react";
 import { useSession } from "@/lib/useSession";
 
@@ -25,7 +26,7 @@ export default function LoginPage() {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    if (!loading && session) router.replace("/dashboard");
+    if (!loading && session) router.replace(afterLogin());
   }, [loading, session, router]);
 
   // Self-registration exists only in development mode; otherwise an admin creates accounts.
@@ -55,7 +56,7 @@ export default function LoginPage() {
         throw new Error(data.error ?? `HTTP ${res.status}`);
       }
       await refresh();
-      router.replace("/dashboard");
+      router.replace(afterLogin());
     } catch (e) {
       setErr((e as Error).message);
     } finally {
@@ -79,12 +80,16 @@ export default function LoginPage() {
           name: regName.trim(),
           display: regDisplay.trim() || regName.trim(),
           password: regPassword,
+          // an invitation opened before signing up: the new account joins that organization
+          ...(pendingInvite() ? { invite: pendingInvite() } : {}),
         }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         throw new Error(data.error ?? `HTTP ${res.status}`);
       }
+      try { sessionStorage.removeItem("vulnix_invite"); } catch { /* ignore */ }
+      if (data.orgs?.[0]?.id) selectOrg(data.orgs[0].id);
       await refresh();
       router.replace("/dashboard");
     } catch (e) {
@@ -139,7 +144,7 @@ export default function LoginPage() {
                 : "text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
             }`}
           >
-            新規アカウント登録（開発モード）
+            新規アカウント登録
           </button>}
         </div>
 
@@ -217,8 +222,12 @@ export default function LoginPage() {
               placeholder="例: sec-admin"
               autoComplete="username"
               autoFocus
-              className="mb-3 w-full rounded-lg border border-zinc-300 px-3 py-2 text-sm dark:border-zinc-600 dark:bg-zinc-950"
+              aria-describedby="reg-name-hint"
+              className="mb-1 w-full rounded-lg border border-zinc-300 px-3 py-2 text-sm dark:border-zinc-600 dark:bg-zinc-950"
             />
+            <p id="reg-name-hint" className="mb-3 text-xs text-zinc-500">
+              本名やメールアドレスは使わないでください。ユーザー名は、同じ組織のメンバーに表示されます。
+            </p>
 
             <label className="mb-1 block text-sm font-medium" htmlFor="reg-display">
               表示名（任意）
@@ -289,4 +298,18 @@ export default function LoginPage() {
       </div>
     </main>
   );
+}
+
+function pendingInvite(): string | null {
+  try {
+    return sessionStorage.getItem("vulnix_invite");
+  } catch {
+    return null;
+  }
+}
+
+/** After signing in: back to a pending invitation, else the dashboard. */
+function afterLogin(): string {
+  const t = pendingInvite();
+  return t ? `/invite#${t}` : "/dashboard";
 }

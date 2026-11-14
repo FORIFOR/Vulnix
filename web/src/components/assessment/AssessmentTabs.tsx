@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { RunHistoryCard } from "./RunHistoryCard";
 import { useSearchParams } from "next/navigation";
 import { useState } from "react";
 import { getJSON, postJSON } from "@/lib/api";
@@ -224,7 +225,8 @@ export function AssessmentTabs({ id }: { id: string }) {
                   </ul>
                 </Card>
               )}
-              {hist && (
+              {snap.run_history && <RunHistoryCard runs={snap.run_history} />}
+              {hist && !snap.run_history && (
                 <Card>
                   <h2 className="mb-2 text-sm font-semibold">前回診断との履歴比較{hist.demo_fixture ? "（架空のデモ履歴）" : ""}</h2>
                   <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">

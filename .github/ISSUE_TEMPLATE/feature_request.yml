@@ -1,0 +1,17 @@
+name: 機能の提案
+description: 新しい機能や改善の提案
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes: {label: 解決したいこと, description: 誰が、どんな場面で困っているか}
+    validations: {required: true}
+  - type: textarea
+    id: proposal
+    attributes: {label: 提案}
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: 安全への影響
+      options:
+        - label: 所有確認・診断範囲・L2 承認・隔離・緊急停止・監査・組織間の分離を弱めない

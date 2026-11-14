@@ -5,6 +5,8 @@ import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { getJSON } from "@/lib/api";
 import { useSession } from "@/lib/useSession";
+import { OrgSwitcher } from "@/components/org/OrgSwitcher";
+import { ORG_ROLE_LABELS } from "@/lib/org";
 
 interface SystemStatus { unstopped_workers: { host: string; pids: number[] } | null }
 
@@ -51,6 +53,7 @@ export function AppSidebar() {
           <span className="hidden text-[11px] text-zinc-500 md:block">Find. Prove. Secure.</span>
         </span>
       </Link>
+      <OrgSwitcher />
       <UnstoppedWorkersAlert />
       {NAV.map((n) => {
         const active = path === n.href || (n.href !== "/dashboard" && path.startsWith(n.href.split("/").slice(0, 2).join("/")));
@@ -79,9 +82,12 @@ export function AppSidebar() {
 }
 
 function OperatorBadge() {
-  const { session, logout } = useSession();
+  const { session, logout, multiTenant, org } = useSession();
   if (!session) return null;
-  const role = session.roles.includes("approver") ? "承認責任者" : session.roles.includes("admin") ? "管理者" : "診断オペレーター";
+  // in an organization, what counts is the role there (the org switcher above shows it)
+  const role = multiTenant && org
+    ? org.roles.map((r) => ORG_ROLE_LABELS[r] ?? r).join("・")
+    : session.roles.includes("approver") ? "承認責任者" : session.roles.includes("admin") ? "管理者" : "診断オペレーター";
   return (
     <div className="rounded-lg border border-zinc-200 px-2.5 py-2 text-xs dark:border-zinc-800">
       <div className="truncate font-semibold">{session.operator}</div>

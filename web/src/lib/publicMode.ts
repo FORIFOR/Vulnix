@@ -27,5 +27,5 @@ export function publicDecision(rawPath: string): PublicDecision {
 
 /** Pages rendered without the login redirect and without the app chrome. */
 export function isPublicPage(path: string): boolean {
-  return path === "/" || path === "/welcome" || path === "/login";
+  return path === "/" || path === "/welcome" || path === "/login" || path === "/invite";
 }

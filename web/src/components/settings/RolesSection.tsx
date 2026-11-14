@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { getJSON, postJSON } from "@/lib/api";
-import { isAdmin, useSession } from "@/lib/useSession";
+import { isPlatformAdmin, useSession } from "@/lib/useSession";
 
 interface OperatorRow {
   name: string;
@@ -23,7 +23,7 @@ const GRANTABLE: { key: string; label: string; hint: string }[] = [
 /** Admin-only: grant or revoke roles. Roles are never self-assigned. */
 export function RolesSection() {
   const { session } = useSession();
-  const admin = isAdmin(session);
+  const admin = isPlatformAdmin(session);
   const [rows, setRows] = useState<OperatorRow[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);

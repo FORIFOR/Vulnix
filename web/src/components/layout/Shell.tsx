@@ -3,12 +3,13 @@
 import { usePathname } from "next/navigation";
 import { useSession } from "@/lib/useSession";
 import { AppSidebar } from "./AppSidebar";
+import { CreateOrgPanel } from "@/components/org/CreateOrgPanel";
 import { isPublicPage } from "@/lib/publicMode";
 
 /** App chrome: sidebar + content, except on the login page. */
 export function Shell({ children }: { children: React.ReactNode }) {
   const path = usePathname();
-  const { session, loading } = useSession();
+  const { session, loading, multiTenant, orgs } = useSession();
 
   if (isPublicPage(path)) return <>{children}</>;
 
@@ -20,6 +21,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
       </div>
     );
   }
+  if (multiTenant && orgs.length === 0) return <CreateOrgPanel />;
   return (
     <div className="flex min-h-dvh flex-col md:flex-row">
       <AppSidebar />

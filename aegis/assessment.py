@@ -83,8 +83,13 @@ class Assessment:
     stop_report: dict | None = None
     chat_messages: list[dict] = field(default_factory=list)
     defense_comparison: dict | None = None
+    # completed runs, newest first: {"at", "asset", "score", "label", "counts", "findings"}
+    run_history: list[dict] = field(default_factory=list)
     # why the assessment is in state "failed": {"reason", "kind", "at"[, "error"]}
     failure: dict | None = None
+
+
+MAX_RUN_HISTORY = 50
 
 
 class StopNotConfirmed(RuntimeError):
@@ -1321,6 +1326,7 @@ class AssessmentService:
                 "stop_report": self.a.stop_report,
                 "chat_messages": self.a.chat_messages,
                 "defense_comparison": self.a.defense_comparison,
+                "run_history": self.a.run_history,
                 "failure": self.a.failure,
                 # survivors of a stop/withdrawal outlive the control plane: so does their record
                 "unstopped_workers": [{"host": u["host"], "pids": u["pids"], "at": u["at"],
@@ -1488,6 +1494,8 @@ class AssessmentService:
             self.a.stop_report = dict(data["stop_report"])
         if isinstance(data.get("defense_comparison"), dict):
             self.a.defense_comparison = dict(data["defense_comparison"])
+        if isinstance(data.get("run_history"), list):
+            self.a.run_history = [dict(h) for h in data["run_history"] if isinstance(h, dict)][:MAX_RUN_HISTORY]
         saved_state = str(data.get("state", "idle"))
         if saved_state in ("idle", "completed", "stopped", "failed", "paused"):
             self.a.state = saved_state
@@ -2912,6 +2920,9 @@ class AssessmentService:
                 "chat_messages": list(self.a.chat_messages),
                 # the demo history is fictional; never attach it to a real service
                 "history": None if is_ext else self._history(risk),
+                # the open site's runs only: nothing of another site follows into this view
+                "run_history": [h for h in self.a.run_history
+                                if h.get("asset_id") == self.a.asset.get("id")],
                 "defense_comparison": self.a.defense_comparison,
                 "cve_status": self.cve_monitor.status(),
                 "artex_tasks": [
@@ -2935,7 +2946,8 @@ class AssessmentService:
             if self.a.state != "idle":
                 raise ValueError(f"cannot start from {self.a.state}")
             self._ensure_active_window_locked()
-            set_lab_mode("vulnerable")
+            if getattr(self, "_may_switch_lab", True):
+                set_lab_mode("vulnerable")
             self._set_state("running")
             self._thread = threading.Thread(target=self._run, args=(self._run_generation,),
                                             daemon=True, name="runner")
@@ -2963,7 +2975,8 @@ class AssessmentService:
                 # (an emergency stop, if there was one, is still in force)
                 raise ValueError("前の診断のWorkerの停止を確認できなかったため、新しい診断は開始できません")
             self._ensure_active_window_locked()
-            set_lab_mode("vulnerable")
+            if getattr(self, "_may_switch_lab", True):
+                set_lab_mode("vulnerable")
             self._set_state("running")
             self._thread = threading.Thread(target=self._run, args=(self._run_generation,),
                                             daemon=True, name="runner")
@@ -3468,6 +3481,16 @@ class AssessmentService:
             self._end_operation()
 
     def _verify_fix(self, actor: str) -> dict:
+        """The fix check. When the mock lab is shared with other organizations, it is put
+        back to its vulnerable mode afterwards, so their checks never run against a lab
+        left patched by this one."""
+        try:
+            return self._verify_fix_body(actor)
+        finally:
+            if getattr(self, "_restore_lab_after_fix", False) and getattr(self, "_may_switch_lab", True):
+                set_lab_mode("vulnerable")
+
+    def _verify_fix_body(self, actor: str) -> dict:
         with self._lock:
             if self.a.state not in ("completed", "idle"):
                 raise ValueError("診断完了後に修正後の再検証を実行してください")
@@ -3483,7 +3506,8 @@ class AssessmentService:
             }
 
         if not is_ext:
-            set_lab_mode("patched")
+            if getattr(self, "_may_switch_lab", True):
+                set_lab_mode("patched")
         self._think(
             "防御パッチ適用後の再検証を開始",
             "同一プローブの実HTTP応答で防御結果を確認します。",
@@ -4147,6 +4171,17 @@ class AssessmentService:
                                   "at": time.time()}
         elif state in ("idle", "running", "completed"):
             self.a.failure = None
+        if state == "completed" and self.a.state != "completed":
+            # a real history entry per completed run (counts only; no finding text)
+            risk = self._risk()
+            summary = evidence_summary(list(self.a.findings.values()))
+            self.a.run_history.insert(0, {
+                "at": time.time(), "asset_id": str(self.a.asset.get("id", "")),
+                "asset": str(self.a.asset.get("name", ""))[:253],
+                "score": risk.get("score"), "label": risk.get("label"),
+                "counts": {k: summary.get(k, 0) for k in ("detected", "proven", "not_reproduced", "incomplete")},
+                "findings": len(self._real_findings())})
+            del self.a.run_history[MAX_RUN_HISTORY:]
         self.a.state = state
         self._save_state_locked()
         if state == "completed" and self._persist_error:
@@ -4508,7 +4543,7 @@ class AssessmentService:
             "- **プラットフォーム**: Vulnix (Find. Prove. Secure. — AI Security Testing Platform)",
             f"- **診断ID**: `{s['id']}`",
             f"- **対象資産**: {s['asset']['name']} ({s['asset']['kind']} / {s['asset']['environment']})",
-            f"- **診断状態**: {_asset_status(s['state'])}" + ("" if s.get("is_external_service") else f"（ラボ防御状態: `{s.get('lab_mode', 'vulnerable')}`）"),
+            f"- **診断状態**: {_asset_status(s['state'])}" + ("" if s.get("is_external_service") else f"（ラボ防御状態: `{((s.get('defense_comparison') or {}).get('lab_mode')) or s.get('lab_mode', 'vulnerable')}`）"),
             f"- **書面許可**: `{auth['ref']}` (所有確認: {'確認済み' if auth['ownership_verified'] else '未確認'})",
             f"- **許可範囲**: Hosts={', '.join(auth['scope']['hosts'])} / CIDRs={', '.join(auth['scope']['cidrs'])} / Ports={', '.join(map(str, auth['scope']['ports']))}",
             "- **総合リスク**: 未診断（安全性は未評価）" if s["state"] == "idle" else f"- **総合リスク**: **{risk['score']}/100 ({risk['label']})** {'※暫定' if risk['provisional'] else ''}",

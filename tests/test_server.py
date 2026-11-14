@@ -106,7 +106,8 @@ class TestServer(unittest.TestCase):
         for path in ("/assets", "/assets/secrets-status", "/router/status", "/cve/status",
                      "/system/verify-controls", "/cve/real-software-verify", "/operators"):
             self.assertEqual(self._req(self.root + path)[0], 401, path)
-        self.assertEqual(self._req(f"{self.root}/auth/me"), (200, {"session": None, "self_registration": False}))
+        self.assertEqual(self._req(f"{self.root}/auth/me"), (200, {"session": None, "self_registration": False,
+                                                                 "real_service_diagnosis": True, "development": False}))
         self.assertEqual(self._req(f"{self.root}/health"), (200, {"ok": True}))
         self.login("op", "op-pw")
         self.assertEqual(self.get()["state"], "idle")

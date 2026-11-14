@@ -5,18 +5,27 @@ import { isPublicPage } from "@/lib/publicMode";
 import { useCallback, useEffect, useState } from "react";
 import { getJSON } from "@/lib/api";
 import { SessionContext, type SessionInfo } from "@/lib/useSession";
+import { activeOrg, getSelectedOrg, serviceRolesOf, type OrgInfo } from "@/lib/org";
 
 /** Loads the session, and redirects to /login when a protected page has none. */
 export function SessionProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [loading, setLoading] = useState(true);
+  const [orgs, setOrgs] = useState<OrgInfo[]>([]);
+  const [multiTenant, setMultiTenant] = useState(false);
   const path = usePathname();
   const router = useRouter();
 
   const refresh = useCallback(async () => {
     try {
-      const { session } = await getJSON<{ session: SessionInfo | null }>("/api/auth/me");
-      setSession(session);
+      const me = await getJSON<{ session: SessionInfo | null; orgs?: OrgInfo[]; multi_tenant?: boolean }>("/api/auth/me");
+      const current = me.multi_tenant ? activeOrg(me.orgs ?? [], getSelectedOrg()) : null;
+      // in an organization the workspace acts with the roles there, as the server does
+      setSession(me.session && current
+        ? { ...me.session, platform_roles: me.session.roles, roles: serviceRolesOf(current.roles) }
+        : me.session);
+      setOrgs(me.orgs ?? []);
+      setMultiTenant(Boolean(me.multi_tenant));
     } catch {
       setSession(null);
     } finally {
@@ -52,7 +61,8 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   }, [loading, session, path, router]);
 
   return (
-    <SessionContext.Provider value={{ session, loading, refresh, logout }}>
+    <SessionContext.Provider value={{ session, loading, refresh, logout, orgs, multiTenant,
+                                      org: activeOrg(orgs, typeof document === "undefined" ? null : getSelectedOrg()) }}>
       {children}
     </SessionContext.Provider>
   );

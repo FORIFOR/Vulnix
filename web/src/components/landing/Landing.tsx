@@ -25,7 +25,7 @@ const PRINCIPLES = [
   "AI の提案から直接、検証を実行することはありません。実行の権限は Gateway だけが持ちます。",
 ];
 
-export function Landing() {
+export function Landing({ app = false }: { app?: boolean }) {
   return (
     <div className="min-h-dvh bg-white text-zinc-900">
       <header className="sticky top-0 z-10 border-b border-zinc-100 bg-white/85 backdrop-blur">
@@ -33,13 +33,14 @@ export function Landing() {
           <a href="#top" className="flex items-center gap-2.5">
             <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-zinc-900 text-sm font-bold text-white">V</span>
             <span className="font-semibold tracking-tight">Vulnix</span>
-            <span className="rounded-full border border-zinc-200 px-2 py-0.5 text-[11px] text-zinc-500">クローズドβ</span>
+            <span className="rounded-full border border-zinc-200 px-2 py-0.5 text-[11px] text-zinc-500">{app ? "公開β" : "クローズドβ"}</span>
           </a>
           <nav className="hidden gap-6 text-sm text-zinc-600 sm:flex">
             <a href="#features" className="hover:text-zinc-900">特長</a>
             <a href="#how" className="hover:text-zinc-900">仕組み</a>
             <a href="#safety" className="hover:text-zinc-900">安全への取り組み</a>
             <a href="#beta" className="hover:text-zinc-900">β版について</a>
+            {app && <a href="/login" className="font-semibold text-zinc-900 hover:underline">ログイン</a>}
           </nav>
         </div>
       </header>
@@ -56,8 +57,17 @@ export function Landing() {
               結果を日本語でわかりやすく説明する Web セキュリティ診断サービスです。
             </p>
             <div className="mt-8 flex flex-wrap gap-3">
-              <a href="#demo" className="rounded-lg bg-zinc-900 px-5 py-2.5 text-sm font-semibold text-white hover:bg-zinc-700">デモ動画を見る</a>
-              <a href="#beta" className="rounded-lg border border-zinc-300 px-5 py-2.5 text-sm font-semibold text-zinc-800 hover:bg-zinc-50">β版の利用について</a>
+              {app ? (
+                <>
+                  <a href="/login" className="rounded-lg bg-zinc-900 px-5 py-2.5 text-sm font-semibold text-white hover:bg-zinc-700">無料で始める</a>
+                  <a href="#demo" className="rounded-lg border border-zinc-300 px-5 py-2.5 text-sm font-semibold text-zinc-800 hover:bg-zinc-50">デモ動画を見る</a>
+                </>
+              ) : (
+                <>
+                  <a href="#demo" className="rounded-lg bg-zinc-900 px-5 py-2.5 text-sm font-semibold text-white hover:bg-zinc-700">デモ動画を見る</a>
+                  <a href="#beta" className="rounded-lg border border-zinc-300 px-5 py-2.5 text-sm font-semibold text-zinc-800 hover:bg-zinc-50">β版の利用について</a>
+                </>
+              )}
             </div>
           </div>
           <div id="demo" className="scroll-mt-24 overflow-hidden rounded-2xl border border-zinc-200 shadow-[0_20px_60px_-20px_rgba(0,0,0,0.25)]">
@@ -123,11 +133,24 @@ export function Landing() {
         <section id="beta" className="scroll-mt-20">
           <div className="mx-auto max-w-3xl px-4 py-16 text-center sm:px-6">
             <h2 className="text-2xl font-bold tracking-tight sm:text-3xl">β版について</h2>
-            <p className="mt-5 leading-relaxed text-zinc-600">
-              Vulnix は現在、限られた参加者だけが使えるクローズドβです。
-              一般の方が自分のサイトを登録して診断できる機能は、認証と利用者ごとのデータ分離の検証が終わってから公開します。
-              このページから診断を始めることはできません。
-            </p>
+            {app ? (
+              <>
+                <p className="mt-5 leading-relaxed text-zinc-600">
+                  どなたでもアカウントを作り、自分の組織とサイトを登録して、模擬ラボで診断の流れ・証拠・AI の解説を試せます。
+                  チームのメンバーを招待して、役割（実行者・承認者・閲覧者など）を分けることもできます。
+                </p>
+                <p className="mt-3 text-sm leading-relaxed text-zinc-500">
+                  β版では、実在のサイトへの通信（所有確認の実行・診断）はまだ有効にしていません。サイトの登録と、所有確認に使う値の発行までお試しいただけます。
+                </p>
+                <a href="/login" className="mt-6 inline-block rounded-lg bg-zinc-900 px-6 py-2.5 text-sm font-semibold text-white hover:bg-zinc-700">アカウントを作成する</a>
+              </>
+            ) : (
+              <p className="mt-5 leading-relaxed text-zinc-600">
+                Vulnix は現在、限られた参加者だけが使えるクローズドβです。
+                一般の方が自分のサイトを登録して診断できる機能は、認証と利用者ごとのデータ分離の検証が終わってから公開します。
+                このページから診断を始めることはできません。
+              </p>
+            )}
           </div>
         </section>
       </main>

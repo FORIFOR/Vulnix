@@ -1,0 +1,21 @@
+name: バグ報告
+description: Vulnix の不具合を報告します（脆弱性は SECURITY.md の非公開の窓口へ）
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: "**脆弱性（他の組織のデータが見える、承認なしで L2 が動く など）は、ここに書かずに SECURITY.md の窓口から報告してください。** API キーや実在のホスト名を貼らないでください。"
+  - type: textarea
+    id: what
+    attributes: {label: 何が起きたか, description: 期待した動きと実際の動き}
+    validations: {required: true}
+  - type: textarea
+    id: steps
+    attributes: {label: 再現手順, description: 模擬ラボ（lab.test）で再現できる手順が理想です}
+    validations: {required: true}
+  - type: input
+    id: version
+    attributes: {label: コミット, description: "git rev-parse --short HEAD の結果"}
+  - type: textarea
+    id: logs
+    attributes: {label: ログ・画面, description: 秘密情報を消してから貼ってください}

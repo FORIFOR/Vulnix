@@ -1,0 +1,5 @@
+# Python static checks in CI: syntax errors and names that do not exist.
+# (The rule set is kept narrow on purpose; widen it in its own PR.)
+target-version = "py312"
+[lint]
+select = ["E9", "F63", "F7", "F82"]
