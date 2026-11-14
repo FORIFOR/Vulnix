@@ -244,6 +244,8 @@ export interface Snapshot {
   chat_messages?: ChatMessage[];
   /** null for a real service: the demo history is fictional and never attached to it. */
   history?: AssessmentHistory | null;
+  /** completed runs of this organization's workspace, newest first */
+  run_history?: RunHistoryEntry[];
   defense_comparison?: DefenseComparison | null;
   cve_status?: CveStatus;
   artex_plan?: ArtexPlanView | null;
@@ -328,4 +330,13 @@ export interface ArtexPlanView {
     }[];
     advisories: { intent_id: number; summary: string; reason: string }[];
   };
+}
+
+export interface RunHistoryEntry {
+  at: number;
+  asset: string;
+  score: number | null;
+  label: string | null;
+  counts: { detected?: number; proven?: number; not_reproduced?: number; incomplete?: number };
+  findings: number;
 }

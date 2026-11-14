@@ -83,8 +83,13 @@ class Assessment:
     stop_report: dict | None = None
     chat_messages: list[dict] = field(default_factory=list)
     defense_comparison: dict | None = None
+    # completed runs, newest first: {"at", "asset", "score", "label", "counts", "findings"}
+    run_history: list[dict] = field(default_factory=list)
     # why the assessment is in state "failed": {"reason", "kind", "at"[, "error"]}
     failure: dict | None = None
+
+
+MAX_RUN_HISTORY = 50
 
 
 class StopNotConfirmed(RuntimeError):
@@ -1321,6 +1326,7 @@ class AssessmentService:
                 "stop_report": self.a.stop_report,
                 "chat_messages": self.a.chat_messages,
                 "defense_comparison": self.a.defense_comparison,
+                "run_history": self.a.run_history,
                 "failure": self.a.failure,
                 # survivors of a stop/withdrawal outlive the control plane: so does their record
                 "unstopped_workers": [{"host": u["host"], "pids": u["pids"], "at": u["at"],
@@ -1488,6 +1494,8 @@ class AssessmentService:
             self.a.stop_report = dict(data["stop_report"])
         if isinstance(data.get("defense_comparison"), dict):
             self.a.defense_comparison = dict(data["defense_comparison"])
+        if isinstance(data.get("run_history"), list):
+            self.a.run_history = [dict(h) for h in data["run_history"] if isinstance(h, dict)][:MAX_RUN_HISTORY]
         saved_state = str(data.get("state", "idle"))
         if saved_state in ("idle", "completed", "stopped", "failed", "paused"):
             self.a.state = saved_state
@@ -2912,6 +2920,7 @@ class AssessmentService:
                 "chat_messages": list(self.a.chat_messages),
                 # the demo history is fictional; never attach it to a real service
                 "history": None if is_ext else self._history(risk),
+                "run_history": list(self.a.run_history),
                 "defense_comparison": self.a.defense_comparison,
                 "cve_status": self.cve_monitor.status(),
                 "artex_tasks": [
@@ -4160,6 +4169,16 @@ class AssessmentService:
                                   "at": time.time()}
         elif state in ("idle", "running", "completed"):
             self.a.failure = None
+        if state == "completed" and self.a.state != "completed":
+            # a real history entry per completed run (counts only; no finding text)
+            risk = self._risk()
+            summary = evidence_summary(list(self.a.findings.values()))
+            self.a.run_history.insert(0, {
+                "at": time.time(), "asset": str(self.a.asset.get("name", ""))[:253],
+                "score": risk.get("score"), "label": risk.get("label"),
+                "counts": {k: summary.get(k, 0) for k in ("detected", "proven", "not_reproduced", "incomplete")},
+                "findings": len(self._real_findings())})
+            del self.a.run_history[MAX_RUN_HISTORY:]
         self.a.state = state
         self._save_state_locked()
         if state == "completed" and self._persist_error:

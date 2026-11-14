@@ -579,3 +579,41 @@ class TestPublicDeploymentSwitches(TestTenantIsolationOverHttp):
             first = self.req(a, "/assessments/scan_001/artex/plan", {"llm_mode": "gateway-preview"})[0]
             self.assertNotEqual(first, 429)
             self.assertEqual(self.req(a, "/assessments/scan_001/artex/plan", {"llm_mode": "gateway-preview"})[0], 429)
+
+
+class TestRunHistory(unittest.TestCase):
+    """Real diagnosis history: every completed run is recorded, survives a restart and
+    belongs to its organization only (each org has its own service and state file)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        with patch.dict(os.environ, {}, clear=True):
+            self.svc = AssessmentService(Path(self.tmp.name), LAB_PORT, verify_seconds=30)
+        self.addCleanup(self.svc.close)
+
+    def complete(self):
+        with self.svc._lock:
+            self.svc.a.state = "running"
+            self.svc._set_state("completed")
+
+    def test_a_completed_run_is_recorded_and_kept(self):
+        self.assertEqual(self.svc.snapshot()["run_history"], [])
+        self.complete()
+        self.complete()
+        hist = self.svc.snapshot()["run_history"]
+        self.assertEqual(len(hist), 2)
+        for k in ("at", "asset", "score", "label", "counts"):
+            self.assertIn(k, hist[0])
+        self.assertGreaterEqual(hist[0]["at"], hist[1]["at"])                # newest first
+        self.svc.close()
+        with patch.dict(os.environ, {}, clear=True):
+            again = AssessmentService(Path(self.tmp.name), LAB_PORT, verify_seconds=30)
+        self.addCleanup(again.close)
+        self.assertEqual(len(again.snapshot()["run_history"]), 2)
+
+    def test_history_is_bounded(self):
+        from aegis.assessment import MAX_RUN_HISTORY
+        for _ in range(MAX_RUN_HISTORY + 5):
+            self.complete()
+        self.assertEqual(len(self.svc.snapshot()["run_history"]), MAX_RUN_HISTORY)
