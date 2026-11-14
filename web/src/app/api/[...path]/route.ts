@@ -4,6 +4,7 @@
 // authenticate the operator. The CSRF guard and the session cookie are
 // independent; neither replaces the other.
 import type { NextRequest } from "next/server";
+import { clientIp, IpLimiter } from "@/lib/ipLimit";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -26,6 +27,18 @@ function hostAllowed(host: string | null): boolean {
   // exactly  name  or  name:port  - nothing before, nothing after
   const m = /^(localhost|127\.0\.0\.1|\[::1\])(?::(\d{1,5}))?$/.exec(h);
   return m !== null && LOCAL_NAMES.has(m[1]);
+}
+
+// per-client limits for requests that came through Cloudflare (public beta)
+const limiter = new IpLimiter();
+
+function limited(req: NextRequest, method: string, path: string[]): Response | null {
+  const ip = clientIp(req.headers.get("cf-connecting-ip"));
+  if (!ip) return null;                       // local use: no per-client limit
+  const rule = limiter.check(ip, method, path.join("/"));
+  if (!rule) return null;
+  return Response.json({ error: "リクエストが多すぎます。少し時間をおいてからお試しください" },
+                       { status: 429, headers: { "Retry-After": "60" } });
 }
 
 function misdirected() {
@@ -53,6 +66,8 @@ function relay(res: Response, extra: Record<string, string>) {
 export async function GET(req: NextRequest, ctx: { params: Promise<{ path: string[] }> }) {
   if (!hostAllowed(req.headers.get("host"))) return misdirected();
   const { path } = await ctx.params;
+  const refused = limited(req, "GET", path);
+  if (refused) return refused;
   const headers: Record<string, string> = {};
   const lastId = req.headers.get("last-event-id");
   if (lastId) headers["Last-Event-ID"] = lastId;
@@ -91,6 +106,8 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ path: stri
     return Response.json({ error: "csrf check failed" }, { status: 403 });
   }
   const { path } = await ctx.params;
+  const refused = limited(req, "POST", path);
+  if (refused) return refused;
   try {
     const res = await fetch(upstreamUrl(req, path), {
       method: "POST",

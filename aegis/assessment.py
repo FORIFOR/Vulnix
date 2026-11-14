@@ -4521,7 +4521,7 @@ class AssessmentService:
             "- **プラットフォーム**: Vulnix (Find. Prove. Secure. — AI Security Testing Platform)",
             f"- **診断ID**: `{s['id']}`",
             f"- **対象資産**: {s['asset']['name']} ({s['asset']['kind']} / {s['asset']['environment']})",
-            f"- **診断状態**: {_asset_status(s['state'])}" + ("" if s.get("is_external_service") else f"（ラボ防御状態: `{s.get('lab_mode', 'vulnerable')}`）"),
+            f"- **診断状態**: {_asset_status(s['state'])}" + ("" if s.get("is_external_service") else f"（ラボ防御状態: `{((s.get('defense_comparison') or {}).get('lab_mode')) or s.get('lab_mode', 'vulnerable')}`）"),
             f"- **書面許可**: `{auth['ref']}` (所有確認: {'確認済み' if auth['ownership_verified'] else '未確認'})",
             f"- **許可範囲**: Hosts={', '.join(auth['scope']['hosts'])} / CIDRs={', '.join(auth['scope']['cidrs'])} / Ports={', '.join(map(str, auth['scope']['ports']))}",
             "- **総合リスク**: 未診断（安全性は未評価）" if s["state"] == "idle" else f"- **総合リスク**: **{risk['score']}/100 ({risk['label']})** {'※暫定' if risk['provisional'] else ''}",

@@ -58,9 +58,13 @@ SIGNUP_ATTEMPTS_PER_MINUTE = 30  # sign-up attempts that reach password hashing,
 SSE_PER_ACCOUNT = 4              # simultaneous event streams per account
 CHAT_PER_ORG_PER_HOUR = 30       # AI explanation questions per organization
 CHAT_PLATFORM_PER_HOUR = 300     # AI explanation questions, whole platform (one API key)
+CHAT_PLATFORM_PER_DAY = int(os.environ.get("VULNIX_CHAT_PER_DAY", "1000") or 1000)
+# Traffic to real (non-lab) sites: ownership checks over the network and diagnoses.
+# The public beta runs with this off until the owner approves real-site diagnosis.
+REAL_SERVICE_DIAGNOSIS = os.environ.get("VULNIX_REAL_SERVICE_DIAGNOSIS", "1") != "0"
 SSE_PLATFORM = 200               # simultaneous event streams, whole platform
 ARTEX_LLM_PLANS_PER_ORG_PER_HOUR = 3     # ARTEX plans that reach the real model
-ARTEX_LLM_PLANS_PLATFORM_PER_HOUR = 20
+ARTEX_LLM_PLANS_PLATFORM_PER_HOUR = int(os.environ.get("VULNIX_ARTEX_LLM_PLANS_PER_HOUR", "20") or 0)
 # Platform-wide POST routes: they act on this machine or on configuration shared by
 # every organization, so they are decided by the account's own (global) roles.
 PLATFORM_POST_ROUTES = frozenset({"/api/l2-profiles/accept", "/api/router/verify", "/api/cve/sync",
@@ -80,6 +84,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
     signup_attempts: list[float] = []
     chat_times: dict[str, list[float]] = {}
     chat_all: list[float] = []
+    chat_day: list[float] = []
     plan_times: dict[str, list[float]] = {}
     plan_all: list[float] = []
     sse_open: dict[str, int] = {}
@@ -177,6 +182,18 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             return {"operator": sess.operator, "roles": list(sess.roles),
                     "expires": sess.expires,
                     "mfa_enabled": ops.totp_enabled(sess.operator)} if sess else None
+
+        def _touches_real_site(self, p: str, osvc) -> bool:
+            """Requests that would send traffic to a registered real site."""
+            if p == "/api/assets/verify-ownership":
+                return True
+            base = f"/api/assessments/{osvc.a.id}"
+            if not p.startswith(base) or p.endswith(("/emergency-stop", "/pause", "/chat")):
+                return False
+            try:
+                return bool(osvc._is_external_service_asset())
+            except Exception:   # noqa: BLE001 - when in doubt, treat it as real
+                return True
 
         def _org_requested(self, query_org: str | None = None) -> str:
             """The organization the client says it is working in: header, query, or the
@@ -475,6 +492,10 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     if bound is None:
                         return None
                     osvc, osess = bound
+                    if not REAL_SERVICE_DIAGNOSIS and self._touches_real_site(p, osvc):
+                        paudit.record("tenancy.real_site_refused", actor=sess.operator, route=p[-60:])
+                        return self._json(403, {"error": "このβ版では、実サイトへの通信（所有確認の実行・診断）はまだ有効になっていません。"
+                                                         "模擬ラボで機能をお試しください"})
                     # viewers read; stopping things stays open to every member
                     if not ({"operator", "approver", "admin"} & set(osess.roles)) \
                             and not p.endswith(("/emergency-stop", "/pause")):
@@ -483,16 +504,21 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         with limits_lock:
                             mine = chat_times.setdefault(self._bound_org, [])
                             # both limits are checked before either is used: a refusal costs no quota
-                            ok = room(mine, 3600, CHAT_PER_ORG_PER_HOUR) and room(chat_all, 3600, CHAT_PLATFORM_PER_HOUR)
+                            ok = room(mine, 3600, CHAT_PER_ORG_PER_HOUR) and room(chat_all, 3600, CHAT_PLATFORM_PER_HOUR) \
+                                and room(chat_day, 86400, CHAT_PLATFORM_PER_DAY)
                             if ok:
                                 within(mine, 3600, CHAT_PER_ORG_PER_HOUR)
                                 within(chat_all, 3600, CHAT_PLATFORM_PER_HOUR)
+                                within(chat_day, 86400, CHAT_PLATFORM_PER_DAY)
                         if not ok:
                             return self._json(429, {"error": f"AI 解説は1つの組織につき1時間あたり {CHAT_PER_ORG_PER_HOUR} 回までです"},
                                               [("Retry-After", "600")])
                     # the mode as the service decides it (request value, else the configured one)
                     mode = (str(body.get("llm_mode") or "") or os.environ.get("VULNIX_ARTEX_LLM_MODE", "direct")).strip().lower()
-                    if p.endswith("/artex/plan") and mode != "direct" and mode != "gateway-preview":
+                    # counted only for a plan that can reach the real model: forward mode with an
+                    # approval (the service refuses forward without one, so it costs nothing)
+                    if p.endswith("/artex/plan") and mode != "direct" and mode != "gateway-preview" \
+                            and isinstance(body.get("llm_approval"), dict):
                         with limits_lock:
                             mine = plan_times.setdefault(self._bound_org, [])
                             ok = room(mine, 3600, ARTEX_LLM_PLANS_PER_ORG_PER_HOUR) \

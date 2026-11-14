@@ -481,10 +481,11 @@ class TestThirdReviewFixes(TestTenantIsolationOverHttp):
         from aegis import server as srvmod
         a = self.signup("alice")
         with patch.object(srvmod, "ARTEX_LLM_PLANS_PER_ORG_PER_HOUR", 0):
-            for body in ({"llm_mode": " gateway-forward"}, {"llm_mode": "GATEWAY-FORWARD "}):
+            appr = {"llm_approval": {"preview_id": "pv_x", "max_calls": 1, "first_request_sha256": "0" * 64}}
+            for body in ({"llm_mode": " gateway-forward", **appr}, {"llm_mode": "GATEWAY-FORWARD ", **appr}):
                 self.assertEqual(self.req(a, "/assessments/scan_001/artex/plan", body)[0], 429, body)
             with patch.dict(os.environ, {"VULNIX_ARTEX_LLM_MODE": "gateway-forward"}):
-                self.assertEqual(self.req(a, "/assessments/scan_001/artex/plan", {})[0], 429)
+                self.assertEqual(self.req(a, "/assessments/scan_001/artex/plan", appr)[0], 429)
 
     def test_parallel_signups_cannot_exceed_the_limit(self):
         from aegis import server as srvmod
@@ -523,3 +524,50 @@ class TestThirdReviewFixes(TestTenantIsolationOverHttp):
             out = self.svc._verify_fix("padmin")
         self.assertEqual(out["defense_comparison"]["lab_mode"], "patched")   # recorded during the check
         self.assertEqual(get_lab_mode(), "vulnerable")                       # shared lab put back
+
+
+class TestFourthReviewLows(TestTenantIsolationOverHttp):
+    def test_a_forward_plan_without_an_approval_uses_no_quota(self):
+        from aegis import server as srvmod
+        a = self.signup("alice")
+        with patch.object(srvmod, "ARTEX_LLM_PLANS_PER_ORG_PER_HOUR", 1):
+            for _ in range(3):        # refused by the service (no approval): never 429
+                self.assertNotEqual(self.req(a, "/assessments/scan_001/artex/plan", {"llm_mode": "gateway-forward"})[0], 429)
+
+    def test_the_report_shows_the_lab_state_the_fix_check_used(self):
+        self.svc.a.defense_comparison = {"lab_mode": "patched", "items": [], "before_score": 1, "after_score": 0}
+        from aegis.lab import set_lab_mode
+        set_lab_mode("vulnerable")
+        self.assertIn("ラボ防御状態: `patched`", self.svc.report_markdown())
+
+
+class TestPublicDeploymentSwitches(TestTenantIsolationOverHttp):
+    """Switches for the public beta: no traffic to real sites, bounded AI spending."""
+
+    def test_real_site_traffic_is_refused_when_switched_off(self):
+        from aegis import server as srvmod
+        a = self.signup("alice")
+        with patch.object(srvmod, "REAL_SERVICE_DIAGNOSIS", False):
+            code, body = self.req(a, "/assets/challenge", {"url": "https://shop.example.com/"})
+            self.assertEqual(code, 200)                                   # registering and the proof value: allowed
+            code, body = self.req(a, "/assets/verify-ownership", {"host": "shop.example.com", "method": "dns_txt"})
+            self.assertEqual(code, 403)
+            self.assertIn("実サイト", body["error"])
+            # the lab still works
+            self.assertEqual(self.add_site(a, "alice-shop.lab.test")[0], 200)
+
+    def test_a_daily_ai_cap(self):
+        from aegis import server as srvmod
+        a = self.signup("alice")
+        with patch.object(srvmod, "CHAT_PLATFORM_PER_DAY", 1):
+            self.assertEqual(self.req(a, "/assessments/scan_001/chat", {"question": "x"})[0], 200)
+            self.assertEqual(self.req(a, "/assessments/scan_001/chat", {"question": "x"})[0], 429)
+
+    def test_limits_come_from_the_environment(self):
+        import importlib
+        from aegis import server as srvmod
+        with patch.dict(os.environ, {"VULNIX_ARTEX_LLM_PLANS_PER_HOUR": "0", "VULNIX_CHAT_PER_DAY": "7",
+                                     "VULNIX_REAL_SERVICE_DIAGNOSIS": "0"}):
+            m = importlib.reload(srvmod)
+            self.assertEqual((m.ARTEX_LLM_PLANS_PLATFORM_PER_HOUR, m.CHAT_PLATFORM_PER_DAY, m.REAL_SERVICE_DIAGNOSIS), (0, 7, False))
+        importlib.reload(srvmod)
