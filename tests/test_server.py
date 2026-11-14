@@ -520,7 +520,11 @@ class TestServer(unittest.TestCase):
         self.assertTrue(rep["proof_sha256"])
 
         st = self._req(f"{self.root}/router/status")[1]
-        self.assertTrue(st["connection_verified"])
+        # No model is configured here: the check ran against a temporary loopback
+        # stand-in, which proves the adapter works but is not a connection to a model.
+        self.assertEqual(rep["abliteration_api"]["endpoint_mode"], "local_openai_server")
+        self.assertFalse(st["connection_verified"])
+        self.assertEqual(st["connection_state"], "unconfigured")
         self.assertTrue(st["artex_cli_verified"])
 
     def test_real_software_cve_before_after_verification_endpoint(self):

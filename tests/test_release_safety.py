@@ -636,7 +636,8 @@ class TestFailedStartDoesNotHold(unittest.TestCase):
         p = subprocess.run([sys.executable, "-m", "aegis.server", "--port", str(busy.getsockname()[1]),
                             "--lab-port", "19431", "--data-dir", str(data)],
                            cwd=str(REPO), capture_output=True, text=True, timeout=120,
-                           env={**os.environ, "VULNIX_REVOCATION_MARKER_DIR": str(markers)})
+                           env={**os.environ, "VULNIX_REVOCATION_MARKER_DIR": str(markers),
+                                "VULNIX_NO_ENV_LOCAL": "1"})
         self.assertNotEqual(p.returncode, 0)
         self.assertFalse((data / "session.open").exists(), p.stderr[-1500:])
 
@@ -981,7 +982,8 @@ class TestFailedStartAfterAnUncleanRun(unittest.TestCase):
     def run_server(self, data, markers, port):
         return subprocess.run([sys.executable, "-m", "aegis.server", "--port", str(port), "--lab-port", "19432",
                                "--data-dir", str(data)], cwd=str(REPO), capture_output=True, text=True,
-                              timeout=120, env={**os.environ, "VULNIX_REVOCATION_MARKER_DIR": str(markers)})
+                              timeout=120, env={**os.environ, "VULNIX_REVOCATION_MARKER_DIR": str(markers),
+                                                "VULNIX_NO_ENV_LOCAL": "1"})
 
     def test_the_unclean_record_survives_a_failed_start_until_sessions_are_revoked(self):
         import socket

@@ -8,6 +8,7 @@ import { failureHeadline, statusNotices, stoppedHeadline } from "@/lib/statusNot
 import { canApprove, useSession } from "@/lib/useSession";
 import type { AegisEvent, Approval, AuditEntry, Snapshot } from "@/lib/types";
 import { HelpPopover } from "../learning/HelpPopover";
+import { SafeMarkdown } from "../SafeMarkdown";
 import { Card, Pill } from "../ui";
 import { ReasoningTrace } from "./ReasoningTrace";
 
@@ -228,7 +229,7 @@ export function AgentActivity({
 
       {(snap.chat_messages ?? []).map((m) => (
         <Bubble key={m.id} actor={m.actor} isUser={m.role === "user"}>
-          {m.text}
+          {m.source === "external_model" ? <SafeMarkdown text={m.text} /> : m.text}
         </Bubble>
       ))}
 

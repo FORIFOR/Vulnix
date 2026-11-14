@@ -683,7 +683,55 @@ def _build_server(svc, a, data, first, seed, env_opt_out):
     return srv
 
 
+_ENV_KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _load_env_local(path: Path | None = None) -> int:
+    """Load `KEY=VALUE` lines from `<project root>/.env.local` into os.environ at startup,
+    WITHOUT overriding variables already set in the real environment (explicit env wins).
+
+    This file is git-ignored and holds local secrets such as VULNIX_ABLITERATION_KEY. It is
+    read only here, only at startup, and its VALUES are never printed or logged. Blank values
+    (a placeholder the operator has not filled yet) are skipped. Returns the count loaded."""
+    if path is None:
+        # Tests (and anyone who wants a clean environment) opt out, so a developer's
+        # real key can never reach a test run or a server a test starts.
+        if os.environ.get("VULNIX_NO_ENV_LOCAL") == "1":
+            return 0
+        path = Path(__file__).resolve().parents[1] / ".env.local"
+    if not path.is_file():
+        return 0
+    loaded = 0
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, ValueError):            # unreadable or not UTF-8: start without it
+        return 0
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        key = key.strip()
+        if key.startswith("export "):
+            key = key[len("export "):].strip()
+        if not _ENV_KEY.fullmatch(key):
+            continue
+        val = val.strip()
+        if len(val) >= 2 and val[0] == val[-1] and val[0] in "\"'":
+            val = val[1:-1]                  # one matching pair of quotes, nothing more
+        else:
+            val = re.split(r"\s+#", val, maxsplit=1)[0].strip()   # trailing comment
+        if not val or "\x00" in val or key in os.environ:   # keep already-set env; skip blanks
+            continue
+        os.environ[key] = val
+        loaded += 1
+    return loaded
+
+
 def main() -> None:
+    loaded = _load_env_local()
+    if loaded:
+        print(f".env.local から {loaded} 件の設定を読み込みました（値は表示しません）。")
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8787)
     ap.add_argument("--lab-port", type=int, default=18081)

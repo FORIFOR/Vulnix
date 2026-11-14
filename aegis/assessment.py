@@ -43,7 +43,7 @@ from .policy import ArgSpec, Budget, PolicyError, Tool
 from .remotion_export import build_remotion_export
 from .router import (AbliterationBackend, ArtexEngine, ArtexplannerBackend,
                      ArtexSubprocessBackend, HttpModelBackend, ProposalRouter,
-                     verify_planner_connections)
+                     verify_planner_connections, redact_verification_report)
 from .artex_bridge import (CATALOG_BY_ID, ArtexBridgeError, command_from_env, reconstruct,
                            run_artex_planner)
 from .runtime import WorkerPool
@@ -306,7 +306,12 @@ class AssessmentService:
             backends.append(ext_model)
         self._external_model_configured = ext_model is not None
         self._chat_backend = AbliterationBackend.from_env()
-        self._model_response_verified = False
+        # Configured is not connected: only an answer actually received from the
+        # external model marks it verified; a failed call marks it failed.
+        self._model_conn: dict = {"state": "configured" if self._chat_backend else "unconfigured",
+                                  "checked_at": None, "error": None, "seq": 0}
+        # a new process restarts the numbering: the boot id tells a view it is a new series
+        self._model_boot_id = secrets.token_hex(6)
         self._artex_cli_verified = False
         self._last_planner_verification: dict | None = None
         self.router = ProposalRouter(self.gateway, self.audit, backends)
@@ -1478,7 +1483,8 @@ class AssessmentService:
             self.gateway._state = State.STOPPED
         self._artex_cli_verified = bool(data.get("artex_cli_verified", False))
         if isinstance(data.get("last_planner_verification"), dict):
-            self._last_planner_verification = dict(data["last_planner_verification"])
+            # written by an older version, it may hold the endpoint URL and model text
+            self._last_planner_verification = redact_verification_report(data["last_planner_verification"])
 
     def verify_planner_connections(self, actor: str = "operator") -> dict:
         """Run a live end-to-end connection verification of external ARTEX CLI and
@@ -1486,8 +1492,11 @@ class AssessmentService:
         rep = verify_planner_connections()
         with self._lock:
             self._artex_cli_verified = bool(rep["artex_cli"]["verified"])
-            if rep["abliteration_api"]["verified"]:
-                self._model_response_verified = True
+            # Only a check of the CONFIGURED endpoint says anything about its connection;
+            # a run against the temporary loopback stand-in (nothing configured) does not.
+            if rep["abliteration_api"].get("endpoint_mode") == "external":
+                ok = bool(rep["abliteration_api"]["verified"])
+                self._note_model_outcome_locked(ok, None if ok else "verification_failed")
             self._last_planner_verification = rep
             self._save_state_locked()
         self.audit.record(
@@ -2789,20 +2798,36 @@ class AssessmentService:
 
     def planner_status(self) -> dict:
         """Report loaded configuration, never pretend configuration proves connectivity."""
+        conn = dict(self._model_conn)
+        verified = conn["state"] == "verified"
         return {
             "mode": "external_configured" if self._external_model_configured else "builtin",
             "external_model_configured": self._external_model_configured,
-            "connection_verified": self._model_response_verified,
-            "connected": self._model_response_verified,
+            "connection_state": conn["state"],
+            "connection_verified": verified,
+            "connected": verified,
+            "connection_checked_at": conn["checked_at"],
+            "connection_error": conn["error"],
+            "status_seq": conn["seq"],
+            "boot_id": self._model_boot_id,
             "artex_cli_verified": self._artex_cli_verified,
             "last_verification": self._last_planner_verification,
             "model_name": self._chat_backend._model if self._chat_backend else None,
             "backends": self.router.backends,
             "artex_engine": "ready",
             "autonomous_execution": False,
-            "note": ("外部モデルから解説応答を確認済み。内蔵プランナーも有効です。" if self._model_response_verified else "外部モデルは設定済み・疎通未確認。内蔵プランナーも有効です。")
-                    if self._external_model_configured else "内蔵 ARTEX プランナーで動作中。外部 AI モデルは未設定です。",
+            "note": _PLANNER_NOTES[conn["state"]] if self._external_model_configured
+                    else "内蔵 ARTEX プランナーで動作中。外部 AI モデルは未設定です。",
         }
+
+    def _note_model_outcome_locked(self, ok: bool, error: str | None = None) -> None:
+        """Record the result of a real exchange with the external model. Only the
+        error's kind is kept (never a message, URL, key or response body)."""
+        if self._chat_backend is None:
+            return
+        self._model_conn = {"state": "verified" if ok else "failed", "checked_at": time.time(),
+                            "error": None if ok else str(error or "no_answer")[:60],
+                            "seq": self._model_conn["seq"] + 1}
 
     def snapshot(self) -> dict:
         with self._lock:
@@ -4202,7 +4227,9 @@ class AssessmentService:
             }
         # Inference can be slow. Never hold the control-plane lock while waiting:
         # snapshots, worker updates and emergency stop must remain responsive.
-        source, answer_text = self._answer_question(q, term=term, finding_id=finding_id)
+        outcome: dict = {"model_attempted": False, "model_error": None}
+        source, answer_text = self._answer_question(q, term=term, finding_id=finding_id, outcome=outcome)
+        model_attempted = outcome["model_attempted"]
         # A model's answer is outside text too: make sure it can always be stored
         # (an unpaired surrogate would otherwise make every later save fail).
         answer_text = str(answer_text).encode("utf-8", "replace").decode("utf-8")[:20000]
@@ -4220,9 +4247,14 @@ class AssessmentService:
             self.a.chat_messages.extend([user_msg, ai_msg])
             self._save_state_locked()
             self.audit.record("chat.asked", actor=actor, term=term or "", finding_id=finding_id or "",
-                              answered_by=source, sent_to_external_model=(source == "external_model"))
-            self.bus.publish(self.a.id, "chat.message", messages=[user_msg, ai_msg])
-            return {"message": ai_msg, "chat_messages": list(self.a.chat_messages), "planner": self.planner_status()}
+                              answered_by=source, sent_to_external_model=model_attempted,
+                              model_error=outcome["model_error"] or "")
+            planner = self.planner_status()
+            # every open view learns the new connection state - and nothing else of the
+            # planner status (no verification report, endpoint or model text in events)
+            self.bus.publish(self.a.id, "chat.message", messages=[user_msg, ai_msg],
+                             planner={k: planner[k] for k in _PLANNER_EVENT_FIELDS})
+            return {"message": ai_msg, "chat_messages": list(self.a.chat_messages), "planner": planner}
 
     def _finding_touches_real_service(self, finding: dict | None) -> bool:
         """Whether a finding may NOT be shown to an external model. Allow-list: only
@@ -4241,7 +4273,8 @@ class AssessmentService:
                 return True
         return False
 
-    def _answer_question(self, q: str, term: str | None = None, finding_id: str | None = None) -> tuple[str, str]:
+    def _answer_question(self, q: str, term: str | None = None, finding_id: str | None = None,
+                         outcome: dict | None = None) -> tuple[str, str]:
         with self._lock:
             real = self._real_findings()
             all_f = list(self.a.findings.values())
@@ -4274,10 +4307,18 @@ class AssessmentService:
         # ownership challenge, names) never leave this machine: the external model
         # is used for the local lab only.
         if ext is not None and external_ok:
-            ans = ext.chat(q, context)
+            if hasattr(ext, "chat_with_status"):
+                ans, err = ext.chat_with_status(q, context)
+            else:
+                ans = ext.chat(q, context)
+                err = None if ans else "no_answer"
+            with self._lock:
+                if self._chat_backend is ext:      # not a backend swapped out meanwhile
+                    self._note_model_outcome_locked(bool(ans), err)
+            if outcome is not None:
+                outcome["model_attempted"] = True
+                outcome["model_error"] = None if ans else str(err or "no_answer")[:60]
             if ans:
-                with self._lock:
-                    self._model_response_verified = True
                 return "external_model", ans
 
         ql = q.lower()
@@ -4426,6 +4467,17 @@ class AssessmentService:
 
 class _Stopped(Exception):
     pass
+
+
+_PLANNER_EVENT_FIELDS = ("connection_state", "connection_verified", "connected", "connection_checked_at",
+                         "connection_error", "status_seq", "boot_id", "note")
+
+_PLANNER_NOTES = {
+    "configured": "外部モデルは設定済み・疎通未確認。内蔵プランナーも有効です。",
+    "verified": "外部モデルから解説応答を確認済み。内蔵プランナーも有効です。",
+    "failed": "外部モデルへの直近の問い合わせは失敗しました（内蔵解説で回答）。内蔵プランナーも有効です。",
+    "unconfigured": "外部 AI モデルは未設定です。",
+}
 
 
 def _asset_status(state: str) -> str:

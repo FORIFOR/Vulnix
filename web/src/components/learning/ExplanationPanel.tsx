@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { command } from "@/lib/api";
 import { GLOSSARY } from "@/lib/glossary";
 import { recordLearning, type LearnLevel } from "@/lib/learningHistory";
+import { SafeMarkdown } from "../SafeMarkdown";
 
 const LEVELS: { key: LearnLevel; label: string }[] = [
   { key: "easy", label: "かんたん" },
@@ -25,6 +26,7 @@ export function ExplanationPanel({
   const [level, setLevel] = useState<LearnLevel>("easy");
   const [aiAnswer, setAiAnswer] = useState<string | null>(null);
   const [answerActor, setAnswerActor] = useState("診断コンテキスト解説");
+  const [fromModel, setFromModel] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const t = GLOSSARY[term];
@@ -43,8 +45,9 @@ export function ExplanationPanel({
         question: `「${t.title}」について、この診断でなぜ検出されたのか、どの証拠から判断したのか、修正後にどう確認するのかを教えてください。`,
         term,
         finding_id: findingId,
-      })) as { message?: { text: string; actor?: string } };
+      })) as { message?: { text: string; actor?: string; source?: string } };
       setAnswerActor(res.message?.actor ?? "診断コンテキスト解説");
+      setFromModel(res.message?.source === "external_model");
       setAiAnswer(res.message?.text ?? "回答を取得しました。診断タブのチャット欄でも確認できます。");
       recordLearning(term, t.title, level, true);
     } catch (e) {
@@ -83,9 +86,9 @@ export function ExplanationPanel({
         </p>
       )}
       {aiAnswer && (
-        <div className="mt-3 whitespace-pre-wrap rounded-lg border border-violet-200 bg-violet-50/70 p-2.5 text-xs leading-relaxed text-zinc-800 dark:border-violet-800 dark:bg-violet-950/40 dark:text-zinc-200">
+        <div className="mt-3 rounded-lg border border-violet-200 bg-violet-50/70 p-2.5 text-xs leading-relaxed text-zinc-800 dark:border-violet-800 dark:bg-violet-950/40 dark:text-zinc-200">
           <div className="mb-1 font-semibold text-violet-900 dark:text-violet-300">{answerActor}</div>
-          {aiAnswer}
+          {fromModel ? <SafeMarkdown text={aiAnswer} /> : <div className="whitespace-pre-wrap">{aiAnswer}</div>}
         </div>
       )}
       {err && <p role="alert" className="mt-2 text-xs text-red-700 dark:text-red-300">{err}</p>}
