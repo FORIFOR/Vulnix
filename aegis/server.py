@@ -56,6 +56,10 @@ MAX_BODY_BYTES = 1_000_000
 SIGNUPS_PER_MINUTE = 10          # self-registrations, whole platform
 SSE_PER_ACCOUNT = 4              # simultaneous event streams per account
 CHAT_PER_ORG_PER_HOUR = 30       # AI explanation questions per organization
+CHAT_PLATFORM_PER_HOUR = 300     # AI explanation questions, whole platform (one API key)
+SSE_PLATFORM = 200               # simultaneous event streams, whole platform
+ARTEX_LLM_PLANS_PER_ORG_PER_HOUR = 3     # ARTEX plans that reach the real model
+ARTEX_LLM_PLANS_PLATFORM_PER_HOUR = 20
 # Platform-wide POST routes: they act on this machine or on configuration shared by
 # every organization, so they are decided by the account's own (global) roles.
 PLATFORM_POST_ROUTES = frozenset({"/api/l2-profiles/accept", "/api/router/verify", "/api/cve/sync",
@@ -73,7 +77,11 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
     limits_lock = threading.Lock()
     signup_times: list[float] = []
     chat_times: dict[str, list[float]] = {}
+    chat_all: list[float] = []
+    plan_times: dict[str, list[float]] = {}
+    plan_all: list[float] = []
     sse_open: dict[str, int] = {}
+    signup_lock = threading.Lock()
 
     def within(times: list[float], window: float, cap: int) -> bool:
         """Sliding-window limit: records this use and says whether it is allowed."""
@@ -317,6 +325,9 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             with limits_lock:
                 if key and sse_open.get(key, 0) >= SSE_PER_ACCOUNT:
                     return self._json(429, {"error": "同時に開ける更新の受信が上限に達しています。ほかのタブを閉じてください"})
+                if sum(sse_open.values()) >= SSE_PLATFORM:
+                    return self._json(429, {"error": "ただいま混み合っています。しばらくしてから再読み込みしてください"},
+                                      [("Retry-After", "30")])
                 if key:
                     sse_open[key] = sse_open.get(key, 0) + 1
             org = getattr(self, "_bound_org", None)
@@ -462,9 +473,17 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         return self._json(403, {"error": "閲覧者の権限では操作できません"})
                     if p.endswith("/chat"):
                         with limits_lock:
-                            ok = within(chat_times.setdefault(self._bound_org, []), 3600, CHAT_PER_ORG_PER_HOUR)
+                            ok = within(chat_times.setdefault(self._bound_org, []), 3600, CHAT_PER_ORG_PER_HOUR) \
+                                and within(chat_all, 3600, CHAT_PLATFORM_PER_HOUR)
                         if not ok:
                             return self._json(429, {"error": f"AI 解説は1つの組織につき1時間あたり {CHAT_PER_ORG_PER_HOUR} 回までです"},
+                                              [("Retry-After", "600")])
+                    if p.endswith("/artex/plan") and str(body.get("llm_mode", "")).startswith("gateway-forward"):
+                        with limits_lock:
+                            ok = within(plan_times.setdefault(self._bound_org, []), 3600, ARTEX_LLM_PLANS_PER_ORG_PER_HOUR) \
+                                and within(plan_all, 3600, ARTEX_LLM_PLANS_PLATFORM_PER_HOUR)
+                        if not ok:
+                            return self._json(429, {"error": "実モデルを使う ARTEX の計画は、利用上限に達しています。時間をおいてください"},
                                               [("Retry-After", "600")])
                     return self._dispatch(p, body, osess, osvc)
             return self._dispatch(p, body, sess)
@@ -519,7 +538,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
         def _drain_recovery_events(self):
             while ops.recovery_events:
                 ev = ops.recovery_events.pop(0)
-                svc.audit.record(ev.pop("event"), **ev)
+                paudit.record(ev.pop("event"), **ev)
 
         def _login(self, body):
             try:
@@ -567,28 +586,42 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             if tenancy is not None and invite and not tenancy.store.invite_valid(invite):
                 # checked before the account exists: a bad link leaves no orphan account
                 return self._json(400, {"error": "招待が無効です（使用済み・取り消し済み・期限切れ・誤り）"})
+            if tenancy is not None and not invite and tenancy.store.at_capacity():
+                return self._json(503, {"error": "現在、新しい登録を受け付けていません（β版の受け入れ上限に達しました）"})
             with limits_lock:
-                allowed = within(signup_times, 60, SIGNUPS_PER_MINUTE)
+                now = time.monotonic()
+                signup_times[:] = [t for t in signup_times if now - t < 60]
+                allowed = len(signup_times) < SIGNUPS_PER_MINUTE      # only successful sign-ups count
             if not allowed:
                 paudit.record("auth.registration_throttled", name=name[:32])
                 return self._json(429, {"error": "ただいま登録が混み合っています。少し時間をおいてお試しください"},
                                   [("Retry-After", "60")])
+            # one sign-up at a time: the invite check, the account and the membership
+            # happen together (two sign-ups racing on one invite cannot both pass)
+            signup_lock.acquire()
             try:
-                sess = ops.register(name, password, display=display)
-            except AuthError as e:
-                return self._json(400, {"error": str(e)})
-            if tenancy is not None:
-                # the new account sees only its own organization (or the one it was invited to)
+                if tenancy is not None and invite and not tenancy.store.invite_valid(invite):
+                    return self._json(400, {"error": "招待が無効です（使用済み・取り消し済み・期限切れ・誤り）"})
                 try:
-                    if invite:
-                        org_id, roles = tenancy.store.accept_invite(invite, sess.operator)
-                        tenancy.service(org_id).audit.record("tenancy.invite_accepted", actor=sess.operator,
-                                                             roles=roles)
-                    else:
-                        org_id = tenancy.store.create_org(f"{display or sess.operator} の組織", sess.operator)
-                        tenancy.service(org_id).audit.record("tenancy.org_created", actor=sess.operator)
-                except TenancyError as e:
-                    tenancy_warning = str(e)     # signed in all the same; no organization yet
+                    sess = ops.register(name, password, display=display)
+                except AuthError as e:
+                    return self._json(400, {"error": str(e)})
+                with limits_lock:
+                    signup_times.append(time.monotonic())
+                if tenancy is not None:
+                    # the new account sees only its own organization (or the one it was invited to)
+                    try:
+                        if invite:
+                            org_id, roles = tenancy.store.accept_invite(invite, sess.operator)
+                            tenancy.service(org_id).audit.record("tenancy.invite_accepted", actor=sess.operator,
+                                                                 roles=roles)
+                        else:
+                            org_id = tenancy.store.create_org(f"{display or sess.operator} の組織", sess.operator)
+                            tenancy.service(org_id).audit.record("tenancy.org_created", actor=sess.operator)
+                    except TenancyError as e:
+                        tenancy_warning = str(e)     # signed in all the same; no organization yet
+            finally:
+                signup_lock.release()
             paudit.record("auth.registered", actor=sess.operator, roles=list(sess.roles),
                              self_registered=True,
                              requested_roles_ignored=[r for r in asked if r not in sess.roles])
@@ -799,28 +832,28 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     return self._json(200, {"assets": svc.assets(), "snapshot": snap})
                 elif p == "/api/l2-profiles/accept":
                     if "admin" not in sess.roles:
-                        svc.audit.record("l2.profile_accept_denied", actor=actor, profile=str(body.get("id", ""))[:64])
+                        paudit.record("l2.profile_accept_denied", actor=actor, profile=str(body.get("id", ""))[:64])
                         return self._json(403, {"error": "プロファイルの承認には管理者の権限が必要です"})
                     return self._json(200, svc.accept_l2_profile(
                         str(body.get("id", "")), str(body.get("sha256", "")), actor))
                 elif p in ("/api/router/verify", "/api/cve/sync") and not ({"approver", "admin"} & set(sess.roles)):
                     # one spawns the planner CLI and an outbound model call, the other replaces feed data
-                    svc.audit.record("system.job_denied", actor=actor, job=p)
+                    paudit.record("system.job_denied", actor=actor, job=p)
                     return self._json(403, {"error": "この操作には承認責任者または管理者の権限が必要です"})
                 elif p == "/api/router/verify":
                     rep = svc.verify_planner_connections(actor)
                     return self._json(200, rep)
                 elif p in JOB_ROUTES:
                     if not ({"approver", "admin"} & set(sess.roles)):
-                        svc.audit.record("system.job_denied", actor=actor, job=p)
+                        paudit.record("system.job_denied", actor=actor, job=p)
                         return self._json(403, {"error": "検証ジョブの実行には承認責任者または管理者の権限が必要です"})
-                    svc.audit.record("system.job_started", actor=actor, job=p)
+                    paudit.record("system.job_started", actor=actor, job=p)
                     if p == "/api/system/verify-controls":
                         rep = run_live_control_verification()
-                        svc.audit.record("system.controls_verified", actor=actor, all_passed=rep["all_passed"])
+                        paudit.record("system.controls_verified", actor=actor, all_passed=rep["all_passed"])
                     else:
                         rep = run_real_software_cve_comparison()
-                        svc.audit.record("cve.real_software_verified", actor=actor, all_passed=rep["all_passed"])
+                        paudit.record("cve.real_software_verified", actor=actor, all_passed=rep["all_passed"])
                     return self._json(200, rep)
                 elif p == "/api/cve/sync":
                     st = svc.cve_monitor.ingest_payloads(
@@ -828,7 +861,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         kev_obj=body.get("kev") if isinstance(body.get("kev"), dict) else None,
                         source=str(body.get("source", "operator_sync")),
                     )
-                    svc.audit.record("cve.synced", actor=actor, cve_count=st["cve_count"], kev_count=st["kev_count"],
+                    paudit.record("cve.synced", actor=actor, cve_count=st["cve_count"], kev_count=st["kev_count"],
                                      source=str(body.get("source", "operator_sync"))[:64],
                                      payload_sha256=hashlib.sha256(
                                          json.dumps({"nvd": body.get("nvd"), "kev": body.get("kev")},

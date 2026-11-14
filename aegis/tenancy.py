@@ -45,7 +45,7 @@ SERVICE_ROLES = {
     "viewer": (),
 }
 DEFAULT_ORG = "default"
-MAX_ORGS_PER_ACCOUNT = 5
+MAX_ORGS_PER_ACCOUNT = 3
 INVITE_TTL_S = 7 * 24 * 3600
 MAX_INVITE_TTL_S = 30 * 24 * 3600
 MAX_ACTIVE_INVITES = 20                      # per organization
@@ -143,6 +143,10 @@ class OrgStore:
             return [{"id": iid, "roles": list(i["roles"]), "created_by": i["created_by"],
                      "expires_at": i["expires_at"], "expired": i["expires_at"] <= now}
                     for iid, i in self._data["invites"].items() if i["org"] == org_id]
+
+    def at_capacity(self) -> bool:
+        with self._lock:
+            return len(self._data["orgs"]) >= self._max_orgs
 
     def org_name(self, org_id: str) -> str:
         return self._require(org_id)["name"]
@@ -252,6 +256,9 @@ class OrgStore:
                 with self._tx():
                     del self._data["invites"][iid]
                 raise TenancyError("招待の有効期限が切れています。新しい招待を依頼してください")
+            if inv.get("created_by") == account:
+                # an admin accepting their own invitation would hand themselves roles
+                raise TenancyError("自分が作成した招待は使えません（自分の権限を増やすことはできません）")
             with self._tx():
                 del self._data["invites"][iid]
                 org = self._require(inv["org"])
@@ -310,6 +317,10 @@ class TenantRegistry:
                 d.mkdir(parents=True, exist_ok=True)
                 os.chmod(d, 0o700)
                 svc = self._factory(d)
+                # the mock lab is one process-wide service: only the default organization's
+                # service may switch it (start / restart / verify-fix would otherwise change
+                # what every other organization's checks see)
+                svc._may_switch_lab = False
                 self._services[org_id] = svc
             return svc
 

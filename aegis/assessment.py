@@ -2935,7 +2935,8 @@ class AssessmentService:
             if self.a.state != "idle":
                 raise ValueError(f"cannot start from {self.a.state}")
             self._ensure_active_window_locked()
-            set_lab_mode("vulnerable")
+            if getattr(self, "_may_switch_lab", True):
+                set_lab_mode("vulnerable")
             self._set_state("running")
             self._thread = threading.Thread(target=self._run, args=(self._run_generation,),
                                             daemon=True, name="runner")
@@ -2963,7 +2964,8 @@ class AssessmentService:
                 # (an emergency stop, if there was one, is still in force)
                 raise ValueError("前の診断のWorkerの停止を確認できなかったため、新しい診断は開始できません")
             self._ensure_active_window_locked()
-            set_lab_mode("vulnerable")
+            if getattr(self, "_may_switch_lab", True):
+                set_lab_mode("vulnerable")
             self._set_state("running")
             self._thread = threading.Thread(target=self._run, args=(self._run_generation,),
                                             daemon=True, name="runner")
@@ -3483,7 +3485,8 @@ class AssessmentService:
             }
 
         if not is_ext:
-            set_lab_mode("patched")
+            if getattr(self, "_may_switch_lab", True):
+                set_lab_mode("patched")
         self._think(
             "防御パッチ適用後の再検証を開始",
             "同一プローブの実HTTP応答で防御結果を確認します。",

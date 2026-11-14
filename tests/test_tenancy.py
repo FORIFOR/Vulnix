@@ -411,3 +411,64 @@ class TestReviewFixesOverHttp(TestTenantIsolationOverHttp):
         for c, _ in conns:
             c.close()
         self.assertEqual(codes, [200, 200, 429])
+
+
+class TestSecondReviewFixes(TestTenantIsolationOverHttp):
+    """Second independent review: what the first round of fixes left open."""
+
+    def test_other_orgs_never_switch_the_shared_lab(self):
+        from unittest.mock import MagicMock
+        import aegis.assessment as am
+        a = self.signup("alice")
+        sw = MagicMock()
+        with patch.object(am, "set_lab_mode", sw):
+            for path in ("/assessments/scan_001/restart", "/assessments/scan_001/verify-fix"):
+                self.req(a, path, {})
+            self.req(a, "/assessments/scan_001/emergency-stop", {})
+            self.req(a, "/assessments/scan_001/start", {})
+            self.req(a, "/assessments/scan_001/emergency-stop", {})
+        sw.assert_not_called()
+
+    def test_accepting_your_own_invite_is_refused(self):
+        a = self.signup("alice")
+        token = self.req(a, "/orgs/invites", {"roles": ["approver"]})[1]["token"]
+        self.assertEqual(self.req(a, "/invites/accept", {"token": token})[0], 403)
+        self.assertEqual(a["orgs"][0]["roles"], ["owner"])
+        self.assertEqual(self.reg.store.roles_in(a["orgs"][0]["id"], "alice"), ("owner",))
+
+    def test_failed_signup_attempts_do_not_use_up_the_limit(self):
+        from aegis import server as srvmod
+        with patch.object(srvmod, "SIGNUPS_PER_MINUTE", 1):
+            for _ in range(5):
+                self.assertEqual(self.req({}, "/auth/register", {"name": "x", "password": "short"})[0], 400)
+            self.signup("realuser")
+
+    def test_signup_is_refused_before_the_account_exists_when_orgs_are_full(self):
+        self.reg.store._max_orgs = len(self.reg.store._data["orgs"])
+        code, _ = self.req({}, "/auth/register", {"name": "late", "password": "late-Passw0rd!"})
+        self.assertEqual(code, 503)
+        self.assertEqual(self.req({}, "/auth/login", {"name": "late", "password": "late-Passw0rd!"})[0], 401)
+
+    def test_platform_wide_ai_cap(self):
+        from aegis import server as srvmod
+        a, b = self.signup("alice"), self.signup("bobby")
+        with patch.object(srvmod, "CHAT_PLATFORM_PER_HOUR", 1):
+            self.assertEqual(self.req(a, "/assessments/scan_001/chat", {"question": "なぜ？"})[0], 200)
+            self.assertEqual(self.req(b, "/assessments/scan_001/chat", {"question": "なぜ？"})[0], 429)
+
+    def test_platform_wide_stream_cap(self):
+        import http.client
+        from aegis import server as srvmod
+        a, b = self.signup("alice"), self.signup("bobby")
+        held = []
+        with patch.object(srvmod, "SSE_PLATFORM", 1):
+            codes = []
+            for who in (a, b):
+                c = http.client.HTTPConnection("127.0.0.1", self.srv.server_port, timeout=10)
+                c.request("GET", "/api/assessments/scan_001/events", headers={"Cookie": who["cookie"]})
+                r = c.getresponse()
+                codes.append(r.status)
+                held.append((c, r))
+        for c, _ in held:
+            c.close()
+        self.assertEqual(codes, [200, 429])
