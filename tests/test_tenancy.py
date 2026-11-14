@@ -189,7 +189,7 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
             self.assertEqual(self.req(b, path, body, org=a_org)[0], 403, path)
         self.assertEqual(self.req(b, "/assets", org="org_000000000000")[0], 403)
         self.assertEqual(self.req(b, "/assets", org="../../etc")[0], 403)
-        denied = [e for e in self.svc.audit.entries() if e["event"] == "tenancy.access_denied"]
+        denied = [e for e in self.reg.platform_audit.entries() if e["event"] == "tenancy.access_denied"]
         who = [(e["fields"].get("actor"), e["fields"].get("org")) for e in denied]
         self.assertIn(("alice", "default"), who)
         self.assertGreaterEqual(sum(1 for actor, org in who if actor == "bobby"), 9)
@@ -281,3 +281,133 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestReviewFixes(unittest.TestCase):
+    """Independent review of the tenancy branch (store level)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.now = [1000.0]
+        self.st = OrgStore(Path(self.tmp.name) / "orgs.json", clock=lambda: self.now[0])
+        self.oid = self.st.create_org("A社", "alice")
+        _, t = self.st.create_invite(self.oid, "alice", ["admin"])
+        self.st.accept_invite(t, "adam")
+
+    def test_nobody_adds_roles_to_themselves(self):
+        with self.assertRaises(TenancyError):
+            self.st.set_roles(self.oid, "adam", "adam", ["admin", "approver"])
+        self.st.set_roles(self.oid, "adam", "adam", ["runner"])          # lowering one's own roles is fine
+        self.assertEqual(self.st.roles_in(self.oid, "adam"), ("runner",))
+
+    def test_active_invites_per_org_are_capped_and_expired_ones_purged(self):
+        from aegis.tenancy import MAX_ACTIVE_INVITES
+        for _ in range(MAX_ACTIVE_INVITES):
+            self.st.create_invite(self.oid, "alice", ["viewer"], ttl_s=600)
+        with self.assertRaises(TenancyError):
+            self.st.create_invite(self.oid, "alice", ["viewer"])
+        self.now[0] += 601                                               # all expired: purged on the next create
+        self.st.create_invite(self.oid, "alice", ["viewer"])
+        self.assertEqual(len(self.st.invites(self.oid)), 1)
+
+    def test_total_orgs_are_capped(self):
+        st = OrgStore(Path(self.tmp.name) / "o2.json", max_orgs=3)
+        st.create_org("a", "u1")
+        st.create_org("b", "u2")                                         # + the default org = 3
+        with self.assertRaises(TenancyError):
+            st.create_org("c", "u3")
+
+    def test_a_failed_save_changes_nothing(self):
+        _, token = self.st.create_invite(self.oid, "alice", ["viewer"])
+        with patch.object(OrgStore, "_save", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                self.st.accept_invite(token, "bob")
+        self.assertEqual(self.st.roles_in(self.oid, "bob"), ())
+        self.assertEqual(self.st.accept_invite(token, "bob")[0], self.oid)   # still usable after the failure
+
+    def test_an_invite_can_be_checked_without_using_it(self):
+        _, token = self.st.create_invite(self.oid, "alice", ["viewer"])
+        self.assertTrue(self.st.invite_valid(token))
+        self.assertFalse(self.st.invite_valid("inv_nope"))
+        self.st.accept_invite(token, "bob")
+        self.assertFalse(self.st.invite_valid(token))
+
+
+class TestReviewFixesOverHttp(TestTenantIsolationOverHttp):
+    """Independent review of the tenancy branch (server level)."""
+
+    def test_a_removed_member_loses_the_event_stream(self):
+        import http.client
+        a, b = self.signup("alice"), self.signup("bobby")
+        token = self.req(a, "/orgs/invites", {"roles": ["viewer"]})[1]["token"]
+        a_org = self.req(b, "/invites/accept", {"token": token})[1]["org"]["id"]
+        conn = http.client.HTTPConnection("127.0.0.1", self.srv.server_port, timeout=30)
+        conn.request("GET", "/api/assessments/scan_001/events", headers={"Cookie": b["cookie"], "X-Vulnix-Org": a_org})
+        resp = conn.getresponse()
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(self.req(a, "/orgs/members/remove", {"name": "bobby"})[0], 200)
+        import time as _t
+        start = _t.time()
+        data = resp.read()                      # returns when the server ends the stream
+        self.assertLess(_t.time() - start, 25)
+        conn.close()
+        self.assertNotIn(b"bobby", data.split(b"tenancy.member_removed")[-1] if b"tenancy.member_removed" in data else b"")
+
+    def test_the_shared_lab_mode_is_platform_admin_only(self):
+        a = self.signup("alice")                                   # owner of her own org
+        self.assertEqual(self.req(a, "/assessments/scan_001/lab-mode", {"mode": "patched"})[0], 403)
+        p = self.login("padmin", "padmin-pw-1")
+        self.assertNotEqual(self.req(p, "/assessments/scan_001/lab-mode", {"mode": "vulnerable"})[0], 403)
+
+    def test_system_status_is_the_callers_own_org(self):
+        p = self.login("padmin", "padmin-pw-1")
+        self.svc._authority_notice = {"text": "legacy-secret-host.example の診断許可の期限が切れました"} \
+            if hasattr(self.svc, "_authority_notice") else None
+        a = self.signup("alice")
+        st = json.dumps(self.req(a, "/system/status")[1], ensure_ascii=False)
+        self.assertNotIn("legacy-secret-host", st)
+        self.assertEqual(self.req(p, "/system/status")[0], 200)
+
+    def test_account_events_go_to_the_platform_audit_not_the_default_org(self):
+        self.signup("alice")
+        default_events = {e["event"] for e in self.svc.audit.entries()}
+        self.assertNotIn("auth.registered", default_events)
+        self.assertIn("auth.registered", {e["event"] for e in self.reg.platform_audit.entries()})
+
+    def test_signup_with_a_bad_invite_creates_nothing(self):
+        code, body = self.req({}, "/auth/register", {"name": "mallory", "password": "mallory-Passw0rd!", "invite": "inv_bogus"})
+        self.assertEqual(code, 400)
+        self.assertEqual(self.req({}, "/auth/login", {"name": "mallory", "password": "mallory-Passw0rd!"})[0], 401)
+
+    def test_public_signups_are_rate_limited(self):
+        from aegis import server as srvmod
+        with patch.object(srvmod, "SIGNUPS_PER_MINUTE", 2):
+            self.signup("user01")
+            self.signup("user02")
+            code, body = self.req({}, "/auth/register", {"name": "user03", "password": "user03-Passw0rd!"})
+        self.assertEqual(code, 429)
+
+    def test_chat_is_rate_limited_per_org(self):
+        from aegis import server as srvmod
+        a = self.signup("alice")
+        with patch.object(srvmod, "CHAT_PER_ORG_PER_HOUR", 1):
+            self.assertEqual(self.req(a, "/assessments/scan_001/chat", {"question": "なぜ？"})[0], 200)
+            self.assertEqual(self.req(a, "/assessments/scan_001/chat", {"question": "なぜ？"})[0], 429)
+
+    def test_event_streams_per_account_are_capped(self):
+        import http.client
+        from aegis import server as srvmod
+        a = self.signup("alice")
+        conns = []
+        with patch.object(srvmod, "SSE_PER_ACCOUNT", 2):
+            codes = []
+            for _ in range(3):
+                c = http.client.HTTPConnection("127.0.0.1", self.srv.server_port, timeout=10)
+                c.request("GET", "/api/assessments/scan_001/events", headers={"Cookie": a["cookie"]})
+                r = c.getresponse()
+                codes.append(r.status)
+                conns.append((c, r))
+        for c, _ in conns:
+            c.close()
+        self.assertEqual(codes, [200, 200, 429])

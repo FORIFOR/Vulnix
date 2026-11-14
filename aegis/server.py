@@ -52,6 +52,10 @@ def development_mode() -> bool:
 
 
 MAX_BODY_BYTES = 1_000_000
+# Limits for a publicly reachable beta (per process).
+SIGNUPS_PER_MINUTE = 10          # self-registrations, whole platform
+SSE_PER_ACCOUNT = 4              # simultaneous event streams per account
+CHAT_PER_ORG_PER_HOUR = 30       # AI explanation questions per organization
 # Platform-wide POST routes: they act on this machine or on configuration shared by
 # every organization, so they are decided by the account's own (global) roles.
 PLATFORM_POST_ROUTES = frozenset({"/api/l2-profiles/accept", "/api/router/verify", "/api/cve/sync",
@@ -64,6 +68,21 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                  allow_self_registration: bool | None = None, tenancy: TenantRegistry | None = None,
                  public_signup: bool | None = None):
     default_svc = svc
+    # where account-level events go: a platform log when there are organizations
+    paudit = tenancy.platform_audit if tenancy is not None else svc.audit
+    limits_lock = threading.Lock()
+    signup_times: list[float] = []
+    chat_times: dict[str, list[float]] = {}
+    sse_open: dict[str, int] = {}
+
+    def within(times: list[float], window: float, cap: int) -> bool:
+        """Sliding-window limit: records this use and says whether it is allowed."""
+        now = time.monotonic()
+        times[:] = [t for t in times if now - t < window]
+        if len(times) >= cap:
+            return False
+        times.append(now)
+        return True
 
     def self_registration_allowed() -> bool:
         # Anyone who can reach the port could otherwise mint themselves a session
@@ -89,7 +108,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
     if not enforce_read_auth:
         svc.audit.record("config.read_auth_disabled", development_mode=development_mode())
     if ops.legacy_sessions_revoked:
-        svc.audit.record("auth.legacy_sessions_revoked", count=ops.legacy_sessions_revoked,
+        paudit.record("auth.legacy_sessions_revoked", count=ops.legacy_sessions_revoked,
                          reason="session file held bearer tokens in plaintext; sessions must sign in again")
         ops.legacy_sessions_revoked = 0
 
@@ -98,7 +117,8 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
         account's approver role. Accounts that became approvers before roles
         were admin-granted have no such record and should be reviewed."""
         latest = None
-        for e in svc.audit.entries():
+        logs = [svc.audit] + ([paudit] if paudit is not svc.audit else [])
+        for e in (x for log in logs for x in log.entries()):
             if e["event"] == "operator.roles_changed" and e["fields"].get("target") == name:
                 latest = e["fields"]
         return bool(latest and "approver" in (latest.get("after") or []))
@@ -168,7 +188,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 wanted = orgs[0]["id"]
             roles = tenancy.store.roles_in(wanted, sess.operator) if valid_org_id(wanted) else ()
             if not roles:
-                default_svc.audit.record("tenancy.access_denied", actor=sess.operator, org=wanted)
+                paudit.record("tenancy.access_denied", actor=sess.operator, org=wanted)
                 self._json(403, {"error": "この組織のメンバーではありません"})
                 return None
             try:
@@ -176,6 +196,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             except TenancyError as e:
                 self._json(404, {"error": str(e)})
                 return None
+            self._bound_org = wanted
             return osvc, dataclasses.replace(sess, roles=service_roles(roles))
 
         def _host_ok(self) -> bool:
@@ -225,6 +246,12 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                      "needs_role_review": "approver" in o.roles and not approver_grant_recorded(o.name)}
                     for o in ops.operators()]})
             if p == "/api/system/status":
+                if tenancy is not None:
+                    # each tenant sees its own conditions (stuck workers, notices name hosts)
+                    bound = self._bind(sess)
+                    if bound is None:
+                        return None
+                    return self._json(200, bound[0].system_status())
                 return self._json(200, svc.system_status())
             if tenancy is not None and p.startswith("/api/orgs"):
                 return self._tenancy_get(p, u, sess)
@@ -281,11 +308,36 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 q = parse_qs(u.query)
                 after = self.headers.get("Last-Event-ID") or (q.get("after") or ["0"])[0]
                 after = int(re.sub(r"\D", "", after) or 0)
-                return self._sse(after, svc)
+                return self._sse(after, svc, sess)
             return self._json(404, {"error": "not found"})
 
-        def _sse(self, after: int, svc=None) -> None:
+        def _sse(self, after: int, svc=None, sess=None) -> None:
             svc = svc or default_svc
+            key = sess.operator if sess else ""
+            with limits_lock:
+                if key and sse_open.get(key, 0) >= SSE_PER_ACCOUNT:
+                    return self._json(429, {"error": "同時に開ける更新の受信が上限に達しています。ほかのタブを閉じてください"})
+                if key:
+                    sse_open[key] = sse_open.get(key, 0) + 1
+            org = getattr(self, "_bound_org", None)
+            token = sess.token if sess else None
+
+            def still_allowed() -> bool:
+                """A stream ends when its session ends, or when the account leaves the organization."""
+                if token is None:
+                    return True
+                now = ops.resolve(token)
+                if now is None:
+                    return False
+                return tenancy is None or org is None or bool(tenancy.store.roles_in(org, now.operator))
+            try:
+                return self._sse_loop(after, svc, still_allowed)
+            finally:
+                if key:
+                    with limits_lock:
+                        sse_open[key] -= 1
+
+        def _sse_loop(self, after: int, svc, still_allowed) -> None:
             self.close_connection = True   # never reuse a socket after a stream ends
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")
@@ -293,13 +345,22 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             self.send_header("X-Accel-Buffering", "no")
             self.send_header("Connection", "keep-alive")
             self.end_headers()
+            # send_header("Connection", "keep-alive") turns close_connection back off: set
+            # it again, so a stream that ends here closes its socket instead of waiting
+            # for another request on it
+            self.close_connection = True
             seq = after
             last_ping = time.monotonic()
             try:
                 self.wfile.write(b"retry: 2000\n\n")
                 self.wfile.flush()
                 while True:
-                    for ev in svc.bus.wait(seq, timeout=10):
+                    events = svc.bus.wait(seq, timeout=5)
+                    # checked after waiting and before writing: nothing that happened after
+                    # a removal, logout or expiry reaches the stream
+                    if not still_allowed():
+                        return
+                    for ev in events:
                         data = json.dumps(ev, ensure_ascii=False)
                         self.wfile.write(f"id: {ev['event_id']}\ndata: {data}\n\n".encode())
                         seq = ev["seq"]
@@ -346,7 +407,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 sess = self._session()
                 if sess:
                     try:
-                        svc.audit.record("auth.logout", actor=sess.operator)
+                        paudit.record("auth.logout", actor=sess.operator)
                     except Exception:
                         pass        # an audit log that cannot be written must not keep a session alive
                 try:
@@ -386,6 +447,10 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             if tenancy is not None:
                 if p.startswith("/api/orgs") or p == "/api/invites/accept":
                     return self._tenancy_post(p, body, sess)
+                if p.endswith("/lab-mode") and "admin" not in sess.roles:
+                    # the mock lab is one process-wide service shared by every organization
+                    paudit.record("tenancy.lab_mode_denied", actor=sess.operator)
+                    return self._json(403, {"error": "模擬ラボの設定は全組織で共有のため、プラットフォーム管理者だけが変更できます"})
                 if p not in PLATFORM_POST_ROUTES:
                     bound = self._bind(sess)
                     if bound is None:
@@ -395,6 +460,12 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     if not ({"operator", "approver", "admin"} & set(osess.roles)) \
                             and not p.endswith(("/emergency-stop", "/pause")):
                         return self._json(403, {"error": "閲覧者の権限では操作できません"})
+                    if p.endswith("/chat"):
+                        with limits_lock:
+                            ok = within(chat_times.setdefault(self._bound_org, []), 3600, CHAT_PER_ORG_PER_HOUR)
+                        if not ok:
+                            return self._json(429, {"error": f"AI 解説は1つの組織につき1時間あたり {CHAT_PER_ORG_PER_HOUR} 回までです"},
+                                              [("Retry-After", "600")])
                     return self._dispatch(p, body, osess, osvc)
             return self._dispatch(p, body, sess)
 
@@ -406,7 +477,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 return self._locked(e, sess.operator)
             except AuthError as e:
                 return self._json(400, {"error": str(e)})
-            svc.audit.record("auth.password_changed", actor=sess.operator)
+            paudit.record("auth.password_changed", actor=sess.operator)
             return self._json(200, {"ok": True})
 
         def _totp_enroll(self, sess):
@@ -416,7 +487,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 return self._json(400, {"error": str(e)})
             # The secret/URI are shown once to the operator to add to their
             # authenticator; they are not recorded in the audit log.
-            svc.audit.record("auth.mfa_enroll_started", actor=sess.operator)
+            paudit.record("auth.mfa_enroll_started", actor=sess.operator)
             return self._json(200, {"secret": secret, "uri": uri})
 
         def _totp_confirm(self, body, sess):
@@ -424,7 +495,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 ops.confirm_totp(sess.operator, str(body.get("code", "")))
             except AuthError as e:
                 return self._json(400, {"error": str(e)})
-            svc.audit.record("auth.mfa_enabled", actor=sess.operator)
+            paudit.record("auth.mfa_enabled", actor=sess.operator)
             return self._json(200, {"ok": True, "mfa_enabled": True})
 
         def _totp_disable(self, body, sess):
@@ -434,14 +505,14 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 return self._locked(e, sess.operator)
             except AuthError as e:
                 return self._json(400, {"error": str(e)})
-            svc.audit.record("auth.mfa_disabled", actor=sess.operator)
+            paudit.record("auth.mfa_disabled", actor=sess.operator)
             return self._json(200, {"ok": True, "mfa_enabled": False})
 
         def _locked(self, e: LockedOut, name: str):
             """429 for a paused sign-in. The same answer is given for names that do
             not exist, so it does not reveal which accounts are real."""
             if e.just_locked:
-                svc.audit.record("auth.locked", name=name[:32], seconds=int(e.retry_after))
+                paudit.record("auth.locked", name=name[:32], seconds=int(e.retry_after))
             return self._json(429, {"error": str(e), "locked": True, "retry_after": int(e.retry_after)},
                               [("Retry-After", str(int(e.retry_after)))])
 
@@ -462,10 +533,10 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 return self._json(401, {"error": str(e), "mfa_required": True})
             except AuthError as e:
                 time.sleep(0.2)   # uniform-ish delay on failure
-                svc.audit.record("auth.login_failed", name=str(body.get("name", ""))[:32])
+                paudit.record("auth.login_failed", name=str(body.get("name", ""))[:32])
                 return self._json(401, {"error": str(e)})
             self._drain_recovery_events()
-            svc.audit.record("auth.login", actor=sess.operator, roles=list(sess.roles))
+            paudit.record("auth.login", actor=sess.operator, roles=list(sess.roles))
             cookie = (f"{COOKIE}={sess.token}; HttpOnly; SameSite=Strict; Path=/; "
                       f"Max-Age={int(sess.expires - time.time())}")
             return self._json(200, {"session": self._public_session(sess)},
@@ -484,15 +555,24 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     op = ops.create_account(name, password, display=display, actor=caller.operator)
                 except AuthError as e:
                     return self._json(400, {"error": str(e)})
-                svc.audit.record("operator.created", actor=caller.operator, target=op.name, roles=list(op.roles),
+                paudit.record("operator.created", actor=caller.operator, target=op.name, roles=list(op.roles),
                                  requested_roles_ignored=[r for r in asked if r not in op.roles])
                 return self._json(200, {"created": {"name": op.name, "display": op.display, "roles": list(op.roles)}})
             if not self_registration_allowed():
-                svc.audit.record("auth.registration_refused", name=name[:32])
+                paudit.record("auth.registration_refused", name=name[:32])
                 return self._json(403, {"error": "アカウントの作成は管理者が行います（設定 → アカウントとロール）。"
                                                  "自己登録は開発モードでのみ利用できます"})
             invite = str(body.get("invite", "") or "")
             tenancy_warning = None
+            if tenancy is not None and invite and not tenancy.store.invite_valid(invite):
+                # checked before the account exists: a bad link leaves no orphan account
+                return self._json(400, {"error": "招待が無効です（使用済み・取り消し済み・期限切れ・誤り）"})
+            with limits_lock:
+                allowed = within(signup_times, 60, SIGNUPS_PER_MINUTE)
+            if not allowed:
+                paudit.record("auth.registration_throttled", name=name[:32])
+                return self._json(429, {"error": "ただいま登録が混み合っています。少し時間をおいてお試しください"},
+                                  [("Retry-After", "60")])
             try:
                 sess = ops.register(name, password, display=display)
             except AuthError as e:
@@ -509,7 +589,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         tenancy.service(org_id).audit.record("tenancy.org_created", actor=sess.operator)
                 except TenancyError as e:
                     tenancy_warning = str(e)     # signed in all the same; no organization yet
-            svc.audit.record("auth.registered", actor=sess.operator, roles=list(sess.roles),
+            paudit.record("auth.registered", actor=sess.operator, roles=list(sess.roles),
                              self_registered=True,
                              requested_roles_ignored=[r for r in asked if r not in sess.roles])
             cookie = (f"{COOKIE}={sess.token}; HttpOnly; SameSite=Strict; Path=/; "
@@ -523,7 +603,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
 
         def _set_roles(self, body, sess):
             if "admin" not in sess.roles:
-                svc.audit.record("operator.roles_change_denied", actor=sess.operator,
+                paudit.record("operator.roles_change_denied", actor=sess.operator,
                                  target=str(body.get("name", ""))[:64])
                 return self._json(403, {"error": "ロールの変更には管理者の権限が必要です"})
             raw = body.get("roles")
@@ -532,10 +612,10 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             try:
                 before, after = ops.set_roles(target, roles, actor=sess.operator)
             except AuthError as e:
-                svc.audit.record("operator.roles_change_failed", actor=sess.operator, target=target[:64],
+                paudit.record("operator.roles_change_failed", actor=sess.operator, target=target[:64],
                                  requested=roles[:8], error=str(e)[:200])
                 return self._json(409, {"error": str(e)})
-            svc.audit.record("operator.roles_changed", actor=sess.operator, target=target,
+            paudit.record("operator.roles_changed", actor=sess.operator, target=target,
                              before=list(before), after=list(after),
                              attested_unchanged=set(before) == set(after))
             return self._json(200, {"name": target, "roles": list(after)})
@@ -544,15 +624,15 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             """Recovery actions an admin performs for a legitimate user."""
             target = str(body.get("name", "")).strip()
             if "admin" not in sess.roles:
-                svc.audit.record("operator.recovery_denied", actor=sess.operator, target=target[:64], action=p)
+                paudit.record("operator.recovery_denied", actor=sess.operator, target=target[:64], action=p)
                 return self._json(403, {"error": "この操作には管理者の権限が必要です"})
             try:
                 if p == "/api/operators/unlock":
                     changed = ops.unlock(target, actor=sess.operator)
-                    svc.audit.record("operator.unlocked", actor=sess.operator, target=target[:64], was_locked=changed)
+                    paudit.record("operator.unlocked", actor=sess.operator, target=target[:64], was_locked=changed)
                 else:
                     changed = ops.reset_totp(target, actor=sess.operator)
-                    svc.audit.record("operator.mfa_reset", actor=sess.operator, target=target[:64], had_mfa=changed)
+                    paudit.record("operator.mfa_reset", actor=sess.operator, target=target[:64], had_mfa=changed)
             except AuthError as e:
                 return self._json(409, {"error": str(e)})
             return self._json(200, {"name": target, "changed": changed})

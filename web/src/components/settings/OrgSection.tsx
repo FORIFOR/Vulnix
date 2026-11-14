@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { Card } from "@/components/ui";
 import { getJSON, postJSON } from "@/lib/api";
 import { fmtTime } from "@/lib/labels";
-import { ORG_ROLE_HELP, ORG_ROLE_LABELS, ORG_ROLES, selectOrg, type OrgInfo } from "@/lib/org";
+import { canRemove, canToggleRole, ORG_ROLE_HELP, ORG_ROLE_LABELS, ORG_ROLES, selectOrg, type OrgInfo } from "@/lib/org";
 import { useSession } from "@/lib/useSession";
 
 interface Member { name: string; roles: string[] }
@@ -39,6 +39,7 @@ export function OrgSection() {
   }, [multiTenant, org, manager, tick]);
 
   if (!multiTenant || !org) return null;
+  const ownerCount = members.filter((m) => m.roles.includes("owner")).length;
 
   const run = async (fn: () => Promise<unknown>) => {
     setErr(null);
@@ -81,7 +82,7 @@ export function OrgSection() {
             <tr className="text-left text-xs text-zinc-500">
               <th className="py-1.5 pr-3 font-medium">メンバー</th>
               {ORG_ROLES.map((r) => <th key={r} className="px-1.5 py-1.5 text-center font-medium" title={ORG_ROLE_HELP[r]}>{ORG_ROLE_LABELS[r]}</th>)}
-              {manager && <th />}
+              <th />
             </tr>
           </thead>
           <tbody>
@@ -92,15 +93,15 @@ export function OrgSection() {
                   <td key={r} className="px-1.5 text-center">
                     <input type="checkbox" aria-label={`${m.name} の ${ORG_ROLE_LABELS[r]}`}
                       checked={m.roles.includes(r)}
-                      disabled={!manager || (r === "owner" && !owner)}
+                      disabled={!canToggleRole(session?.operator ?? "", org.roles, m, r, ownerCount)}
                       onChange={() => toggleRole(m, r)} />
                   </td>
                 ))}
-                {manager && (
+                {(manager || m.name === session?.operator) && (
                   <td className="pl-2 text-right">
-                    {m.name !== session?.operator && (
+                    {canRemove(session?.operator ?? "", org.roles, m, ownerCount) && (
                       <button type="button" onClick={() => run(() => postJSON("/api/orgs/members/remove", { name: m.name }))}
-                        className="text-xs text-red-700 hover:underline dark:text-red-300">外す</button>
+                        className="text-xs text-red-700 hover:underline dark:text-red-300">{m.name === session?.operator ? "退出する" : "外す"}</button>
                     )}
                   </td>
                 )}

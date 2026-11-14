@@ -63,3 +63,39 @@ export function inviteTokenFromHash(hash: string): string | null {
   const t = hash.replace(/^#/, "").trim();
   return /^inv_[A-Za-z0-9_-]{16,64}$/.test(t) ? t : null;
 }
+
+// ---- the server's membership rules (aegis/tenancy.py), so the UI offers only what works ----
+const SERVICE_ROLES: Record<string, string[]> = {
+  owner: ["admin", "operator", "approver"],
+  admin: ["admin", "operator"],
+  runner: ["operator"],
+  approver: ["approver"],
+  viewer: [],
+};
+const serviceRoles = (roles: string[]) => new Set(roles.flatMap((r) => SERVICE_ROLES[r] ?? []));
+const isManager = (roles: string[]) => roles.includes("owner") || roles.includes("admin");
+
+export interface MemberRow { name: string; roles: string[] }
+
+/** Whether `actor` (with `actorRoles`) may switch `role` on or off for `member`. */
+export function canToggleRole(actor: string, actorRoles: string[], member: MemberRow, role: string, ownerCount: number): boolean {
+  if (!isManager(actorRoles)) return false;
+  const next = member.roles.includes(role) ? member.roles.filter((r) => r !== role) : [...member.roles, role];
+  if (next.length === 0) return false;                                          // at least one role
+  const ownerInvolved = member.roles.includes("owner") || next.includes("owner");
+  if (ownerInvolved && !actorRoles.includes("owner")) return false;             // owners decide about owners
+  if (member.roles.includes("owner") && !next.includes("owner") && ownerCount <= 1) return false;  // last owner
+  if (member.name === actor) {                                                  // never more power for oneself
+    const now = serviceRoles(member.roles);
+    if ([...serviceRoles(next)].some((s) => !now.has(s))) return false;
+  }
+  return true;
+}
+
+/** Whether `actor` may remove `member` (leaving oneself is allowed, except as the last owner). */
+export function canRemove(actor: string, actorRoles: string[], member: MemberRow, ownerCount: number): boolean {
+  if (member.roles.includes("owner") && ownerCount <= 1) return false;
+  if (member.name === actor) return true;
+  if (!isManager(actorRoles)) return false;
+  return !member.roles.includes("owner") || actorRoles.includes("owner");
+}

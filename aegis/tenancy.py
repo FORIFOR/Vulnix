@@ -22,6 +22,8 @@ its members with roles derived from their global roles.
 """
 from __future__ import annotations
 
+import contextlib
+import copy
 import hashlib
 import json
 import os
@@ -31,6 +33,8 @@ import threading
 import time
 from pathlib import Path
 from typing import Callable, Iterable
+
+from .audit import AuditLog
 
 ORG_ROLES = ("owner", "admin", "runner", "approver", "viewer")
 SERVICE_ROLES = {
@@ -44,6 +48,8 @@ DEFAULT_ORG = "default"
 MAX_ORGS_PER_ACCOUNT = 5
 INVITE_TTL_S = 7 * 24 * 3600
 MAX_INVITE_TTL_S = 30 * 24 * 3600
+MAX_ACTIVE_INVITES = 20                      # per organization
+MAX_ORGS = int(os.environ.get("VULNIX_MAX_ORGS", "500") or 500)   # whole platform, default included
 _ORG_ID_RE = re.compile(r"org_[0-9a-f]{12}|default")
 
 
@@ -80,10 +86,11 @@ class OrgStore:
     previous file in place."""
 
     def __init__(self, path: Path, *, bootstrap_members: Callable[[], dict] | None = None,
-                 clock: Callable[[], float] = time.time):
+                 clock: Callable[[], float] = time.time, max_orgs: int | None = None):
         self.path = Path(path)
         self._lock = threading.RLock()
         self._clock = clock
+        self._max_orgs = MAX_ORGS if max_orgs is None else max_orgs
         if self.path.exists():
             self._data = json.loads(self.path.read_text(encoding="utf-8"))
         else:
@@ -93,6 +100,18 @@ class OrgStore:
             self._save()
 
     # ---- persistence ---------------------------------------------------------
+    @contextlib.contextmanager
+    def _tx(self):
+        """A write either reaches the disk or changes nothing (memory included)."""
+        with self._lock:
+            before = copy.deepcopy(self._data)
+            try:
+                yield
+                self._save()
+            except BaseException:
+                self._data = before
+                raise
+
     def _save(self) -> None:
         tmp = self.path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(self._data, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -139,14 +158,15 @@ class OrgStore:
         name = str(name or "").strip()[:60]
         if not name:
             raise TenancyError("組織名を入力してください")
-        with self._lock:
+        with self._tx():
             owned = sum(1 for o in self._data["orgs"].values() if "owner" in o["members"].get(owner, ()))
             if owned >= MAX_ORGS_PER_ACCOUNT:
                 raise TenancyError(f"所有できる組織は {MAX_ORGS_PER_ACCOUNT} 件までです")
+            if len(self._data["orgs"]) >= self._max_orgs:
+                raise TenancyError("現在、新しい組織を作成できません（β版の受け入れ上限に達しました）")
             oid = "org_" + secrets.token_hex(6)
             self._data["orgs"][oid] = {"name": name, "created_at": self._clock(), "created_by": owner,
                                        "members": {owner: ["owner"]}}
-            self._save()
             return oid
 
     def _check_manager(self, org: dict, actor: str, roles: Iterable[str] = ()) -> None:
@@ -158,21 +178,24 @@ class OrgStore:
 
     def set_roles(self, org_id: str, actor: str, account: str, roles) -> list[str]:
         roles = _clean_roles(roles)
-        with self._lock:
+        with self._tx():
             org = self._require(org_id)
             if account not in org["members"]:
                 raise TenancyError("この組織のメンバーではありません")
             before = list(org["members"][account])
+            if actor == account and not set(service_roles(roles)) <= set(service_roles(before)):
+                # like the account roles: nobody grants themselves more (an admin making
+                # themselves approver would approve their own L2 requests)
+                raise TenancyError("自分の権限を増やすことはできません。ほかの管理者・オーナーに依頼してください")
             # granting or taking away owner is an owner's decision
             self._check_manager(org, actor, ["owner"] if ("owner" in before or "owner" in roles) else [])
             if "owner" in before and "owner" not in roles and self._owners(org) == [account]:
                 raise TenancyError("最後のオーナーは外せません。先に別のメンバーをオーナーにしてください")
             org["members"][account] = roles
-            self._save()
             return before
 
     def remove_member(self, org_id: str, actor: str, account: str) -> None:
-        with self._lock:
+        with self._tx():
             org = self._require(org_id)
             if account not in org["members"]:
                 raise TenancyError("この組織のメンバーではありません")
@@ -182,31 +205,40 @@ class OrgStore:
             if "owner" in roles and self._owners(org) == [account]:
                 raise TenancyError("最後のオーナーは外せません")
             del org["members"][account]
-            self._save()
 
     def create_invite(self, org_id: str, actor: str, roles, ttl_s: float = INVITE_TTL_S) -> tuple[str, str]:
         roles = _clean_roles(roles)
         ttl_s = max(300.0, min(float(ttl_s), MAX_INVITE_TTL_S))
-        with self._lock:
+        with self._tx():
             org = self._require(org_id)
             self._check_manager(org, actor, roles)
+            now = self._clock()
+            # expired invitations are dropped; live ones are capped per organization
+            self._data["invites"] = {k: v for k, v in self._data["invites"].items() if v["expires_at"] > now}
+            if sum(1 for v in self._data["invites"].values() if v["org"] == org_id) >= MAX_ACTIVE_INVITES:
+                raise TenancyError(f"有効な招待は1つの組織につき {MAX_ACTIVE_INVITES} 件までです。不要な招待を取り消してください")
             token = "inv_" + secrets.token_urlsafe(24)
             iid = "invid_" + secrets.token_hex(6)
             self._data["invites"][iid] = {"org": org_id, "roles": roles, "hash": _hash(token),
                                           "created_by": actor, "created_at": self._clock(),
                                           "expires_at": self._clock() + ttl_s}
-            self._save()
             return iid, token
 
     def revoke_invite(self, org_id: str, actor: str, invite_id: str) -> None:
-        with self._lock:
+        with self._tx():
             org = self._require(org_id)
             inv = self._data["invites"].get(invite_id)
             if inv is None or inv["org"] != org_id:
                 raise TenancyError("招待が見つかりません")
             self._check_manager(org, actor, inv["roles"])
             del self._data["invites"][invite_id]
-            self._save()
+
+    def invite_valid(self, token: str) -> bool:
+        """Whether an invitation would be accepted now (it is not used up by asking)."""
+        h = _hash(str(token or ""))
+        with self._lock:
+            return any(secrets.compare_digest(v["hash"], h) and v["expires_at"] > self._clock()
+                       for v in self._data["invites"].values())
 
     def accept_invite(self, token: str, account: str) -> tuple[str, list[str]]:
         """Single use: the invitation is removed whether it is accepted or found expired."""
@@ -216,14 +248,15 @@ class OrgStore:
                              if secrets.compare_digest(v["hash"], h)), (None, None))
             if inv is None:
                 raise TenancyError("招待が無効です（使用済み・取り消し済み・誤り）")
-            del self._data["invites"][iid]
             if inv["expires_at"] <= self._clock():
-                self._save()
+                with self._tx():
+                    del self._data["invites"][iid]
                 raise TenancyError("招待の有効期限が切れています。新しい招待を依頼してください")
-            org = self._require(inv["org"])
-            current = set(org["members"].get(account, ()))
-            org["members"][account] = sorted(current | set(inv["roles"]), key=ORG_ROLES.index)
-            self._save()
+            with self._tx():
+                del self._data["invites"][iid]
+                org = self._require(inv["org"])
+                current = set(org["members"].get(account, ()))
+                org["members"][account] = sorted(current | set(inv["roles"]), key=ORG_ROLES.index)
             return inv["org"], list(inv["roles"])
 
     @staticmethod
@@ -261,6 +294,9 @@ class TenantRegistry:
         self._dir = Path(data_dir) / "orgs"
         self._services: dict[str, object] = {}
         self._lock = threading.Lock()
+        # account-level events (sign-up, sign-in, MFA, roles, refused org access) of every
+        # tenant: never in an organization's own audit log or event stream
+        self.platform_audit = AuditLog(Path(data_dir) / "platform-audit.jsonl")
 
     def service(self, org_id: str):
         if org_id == DEFAULT_ORG:

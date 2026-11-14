@@ -222,8 +222,12 @@ export default function LoginPage() {
               placeholder="例: sec-admin"
               autoComplete="username"
               autoFocus
-              className="mb-3 w-full rounded-lg border border-zinc-300 px-3 py-2 text-sm dark:border-zinc-600 dark:bg-zinc-950"
+              aria-describedby="reg-name-hint"
+              className="mb-1 w-full rounded-lg border border-zinc-300 px-3 py-2 text-sm dark:border-zinc-600 dark:bg-zinc-950"
             />
+            <p id="reg-name-hint" className="mb-3 text-xs text-zinc-500">
+              本名やメールアドレスは使わないでください。ユーザー名は、同じ組織のメンバーに表示されます。
+            </p>
 
             <label className="mb-1 block text-sm font-medium" htmlFor="reg-display">
               表示名（任意）
