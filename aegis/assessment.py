@@ -1762,8 +1762,9 @@ class AssessmentService:
             allowed = set(self._allowed_hosts) | {"lab.test"}
         model = os.environ.get("VULNIX_ARTEX_LLM_MODEL") or os.environ.get("VULNIX_ABLITERATION_MODEL") or "mock"
         may_forward = (lambda: self._artex_may_start(gen))
+        first_tool = os.environ.get("VULNIX_PLANNER_FIRST_TOOL", "").strip() or None
         common = dict(model=model, budget=budget, allowed_hosts=allowed, denied_hosts=denied, audit=self.audit,
-                      may_forward=may_forward)
+                      may_forward=may_forward, first_turn_tool=first_tool)
         if mode == "gateway-preview":
             return PlannerLLMGateway(mode="preview", responder=_preview_responder,
                                      api_key=os.environ.get("VULNIX_ABLITERATION_KEY", ""), **common)

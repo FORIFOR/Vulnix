@@ -343,6 +343,40 @@ class TestResponseShapeIsAudited(unittest.TestCase):
         self.assertEqual(f["tool_names_in_text"], [])
 
 
+class TestFirstTurnTool(unittest.TestCase):
+    """Opt-in: the first planner turn (no model turn yet) must call the named tool, so a
+    model that answers in prose still proposes something. Later turns stay ARTEX's choice."""
+
+    def gw(self, tool=None):
+        return PlannerLLMGateway(mode="preview", model="m", responder=canned, allowed_hosts={"lab.test"},
+                                 first_turn_tool=tool)
+
+    def test_forced_only_on_the_first_turn_and_only_when_offered(self):
+        forced = {"type": "function", "function": {"name": "add_intent"}}
+        g = self.gw("add_intent")
+        self.assertEqual(g.inspect(chat(tools=("graph_overview", "add_intent")))["tool_choice"], forced)
+        self.assertEqual(g.inspect(chat(tools=("add_intent",), tool_choice="auto"))["tool_choice"], forced)
+        later = chat(tools=("add_intent",))
+        later["messages"] += [{"role": "assistant", "content": "x"}, {"role": "user", "content": "y"}]
+        self.assertNotIn("tool_choice", g.inspect(later))
+        self.assertNotIn("tool_choice", g.inspect(chat(tools=("graph_overview",))))
+        self.assertNotIn("tool_choice", self.gw().inspect(chat(tools=("add_intent",))))
+
+    def test_only_add_intent_can_be_forced(self):
+        for bad in ("prove_goal", "goal_met", "graph_overview", "shell", ""):
+            with self.assertRaises(ValueError):
+                self.gw(bad)
+
+    def test_the_service_reads_the_setting(self):
+        from aegis.assessment import AssessmentService
+        from tests import TEST_CONFINEMENT
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.dict(os.environ, {"VULNIX_PLANNER_FIRST_TOOL": "add_intent"}):
+            svc = AssessmentService(Path(tmp), 18096, l2_confinement=TEST_CONFINEMENT)
+            gw = svc._planner_gateway("someone", None, (), 0, "gateway-preview")
+            self.assertEqual(gw.first_turn_tool, "add_intent")
+
+
 class TestServiceApprovalFlow(unittest.TestCase):
     """plan_with_artex with the gateway (the stand-in planner; it makes no model call,
     so the preview's first request is planted to exercise the approval flow)."""
