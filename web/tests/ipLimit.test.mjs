@@ -58,3 +58,8 @@ test("sign-ups through the entrance have an overall cap too", () => {
   for (let i = 0; i < 40 && !refused; i++) refused = l.check(`2001:db8:${i}::1`, "POST", "auth/register", 0);
   assert.equal(refused, "register-all");
 });
+
+test("an IPv4-mapped IPv6 address counts as its IPv4 address", () => {
+  assert.equal(mod.limitKey("::ffff:203.0.113.7"), "203.0.113.7");
+  assert.notEqual(mod.limitKey("::ffff:203.0.113.7"), mod.limitKey("::ffff:198.51.100.1"));
+});

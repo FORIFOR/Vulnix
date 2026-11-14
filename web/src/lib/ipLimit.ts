@@ -20,6 +20,8 @@ export const GLOBAL_RULES: Rule[] = [
  *  (one IPv6 subscriber usually holds a whole /64 and could rotate through it). */
 export function limitKey(ip: string): string {
   if (!ip.includes(":")) return ip;
+  const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(ip);
+  if (mapped) return mapped[1];                        // IPv4-mapped: the IPv4 address itself
   const [head, tail = ""] = ip.toLowerCase().split("::");
   const h = head ? head.split(":") : [];
   const t = tail ? tail.split(":") : [];
