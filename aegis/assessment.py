@@ -91,6 +91,19 @@ class Assessment:
     failure: dict | None = None
 
 
+def _libpq_env(dsn: str) -> dict:
+    """A postgres:// DSN as libpq environment variables (libpq does not expand a URI held in
+    PGDATABASE, so each part has its own variable; the password never reaches argv)."""
+    u = urllib.parse.urlsplit(dsn)
+    q = urllib.parse.parse_qs(u.query)
+    env = {"PGHOST": u.hostname or "", "PGPORT": str(u.port or 5432),
+           "PGUSER": urllib.parse.unquote(u.username or ""), "PGPASSWORD": urllib.parse.unquote(u.password or ""),
+           "PGDATABASE": urllib.parse.unquote((u.path or "/").lstrip("/"))}
+    if q.get("sslmode"):
+        env["PGSSLMODE"] = q["sslmode"][0]
+    return env
+
+
 MAX_RUN_HISTORY = 50
 # ARTEX runs that start from an emptied, shared working database must not overlap
 _ARTEX_DB_LOCK = threading.Lock()
@@ -3506,8 +3519,7 @@ class AssessmentService:
             [psql, "-X", "-q", "-v", "ON_ERROR_STOP=1", "-c",
              "DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;"],
             capture_output=True, text=True, timeout=30,
-            env={"PATH": "/usr/bin:/bin", "LC_ALL": "C", "PGDATABASE": self._artex_pg_dsn,
-                 "PGCONNECT_TIMEOUT": "10"})
+            env={"PATH": "/usr/bin:/bin", "LC_ALL": "C", "PGCONNECT_TIMEOUT": "10", **_libpq_env(self._artex_pg_dsn)})
         if proc.returncode != 0:
             self.audit.record("artex.db_reset_failed", rc=proc.returncode)
             raise ValueError("ARTEX の作業用 DB を初期化できませんでした（計画は実行していません）")

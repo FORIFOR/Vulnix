@@ -696,7 +696,11 @@ class TestArtexFreshDatabase(unittest.TestCase):
         argv, kw = calls[0]
         self.assertEqual(argv[0], "/usr/bin/psql")
         self.assertNotIn("SECRET-PW", " ".join(argv))
-        self.assertEqual(kw["env"]["PGDATABASE"], self.svc._artex_pg_dsn)
+        env = kw["env"]
+        # libpq does not expand a URI held in PGDATABASE: the parts go in their own variables
+        self.assertEqual((env["PGHOST"], env["PGPORT"], env["PGUSER"], env["PGDATABASE"], env["PGSSLMODE"]),
+                         ("127.0.0.1", "5432", "artex_planner", "artex_planner_public", "disable"))
+        self.assertEqual(env["PGPASSWORD"], "SECRET-PW")
         self.assertIn("DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;", argv)
 
     def test_off_by_default(self):
