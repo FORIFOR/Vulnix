@@ -211,6 +211,8 @@ export interface Snapshot {
   planner: {
     mode: "builtin" | "external_configured";
     external_model_configured: boolean;
+    /** the explanation (chat) model; configured independently of external proposals */
+    explanation_model_configured?: boolean;
     connection_verified: boolean;
     /** configured ≠ connected: "verified" only after a real answer, "failed" after a failed call */
     connection_state?: "unconfigured" | "configured" | "verified" | "failed";

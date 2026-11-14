@@ -318,3 +318,53 @@ class GuardInService(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExplanationModelIsReportedSeparately(unittest.TestCase):
+    """With external proposals off, the chat (explanation) model is still in use: the
+    planner status must say so instead of "外部 AI モデル未設定"."""
+
+    def test_explanation_model_configured_while_proposals_are_off(self):
+        with tempfile.TemporaryDirectory() as d:
+            env = {"VULNIX_ABLITERATION_URL": "http://127.0.0.1:9/v1/chat/completions",
+                   "VULNIX_ABLITERATION_MODEL": "abliterated-model", "VULNIX_EXTERNAL_PROPOSALS": "0"}
+            with patch.dict(os.environ, env, clear=True):
+                svc = AssessmentService(Path(d), 19987)
+            st = svc.planner_status()
+            self.assertFalse(st["external_model_configured"])        # proposals stay built-in
+            self.assertTrue(st["explanation_model_configured"])
+            self.assertEqual(st["model_name"], "abliterated-model")
+            self.assertNotIn("未設定", st["note"])
+            self.assertIn("AI解説", st["note"])
+
+    def test_nothing_configured(self):
+        with tempfile.TemporaryDirectory() as d:
+            with patch.dict(os.environ, {}, clear=True):
+                svc = AssessmentService(Path(d), 19986)
+            st = svc.planner_status()
+            self.assertFalse(st["explanation_model_configured"])
+            self.assertIn("未設定", st["note"])
+
+
+class RegistrationSaysWhetherTheWorkspaceSwitched(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(); self.addCleanup(self._tmp.cleanup)
+        with patch.dict(os.environ, {}, clear=True):
+            self.svc = AssessmentService(Path(self._tmp.name), 19985)
+
+    def reg(self, name):
+        return self.svc.register_asset(name=name, kind="Webアプリケーション", environment="検証環境",
+                                       authorization_ref="SOW-T-1", ownership_verified=True,
+                                       activate_workspace=True, actor="tester")
+
+    def test_not_switched_while_a_diagnosis_runs(self):
+        self.svc.a.state = "running"
+        rec = self.reg("e2e-lab-running")
+        self.assertFalse(rec["workspace_activated"])
+        self.assertEqual(rec["activation_skipped"], "running")
+        self.assertNotIn("workspace_activated", self.svc._extra_assets[0])   # not stored
+
+    def test_switched_when_idle(self):
+        rec = self.reg("e2e-lab-idle")
+        self.assertTrue(rec["workspace_activated"])
+        self.assertEqual(self.svc.a.asset["name"], "e2e-lab-idle")

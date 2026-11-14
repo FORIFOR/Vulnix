@@ -275,7 +275,7 @@ export function AgentActivity({
             value={question}
             onChange={(e) => setQuestion(e.target.value)}
             disabled={chatBusy}
-            placeholder={snap.planner.external_model_configured ? "AIに質問する…（原因・証拠・対策）" : "内蔵解説に質問する…（原因・証拠・対策）"}
+            placeholder={snap.planner.external_model_configured || snap.planner.explanation_model_configured ? "AIに質問する…（原因・証拠・対策）" : "内蔵解説に質問する…（原因・証拠・対策）"}
             className="flex-1 rounded-2xl border border-zinc-300 bg-white px-4 py-2.5 text-sm dark:border-zinc-700 dark:bg-zinc-900"
           />
           <button

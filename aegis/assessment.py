@@ -2086,8 +2086,11 @@ class AssessmentService:
                 raise ValueError("この資産は実サービスとして登録されています。所有確認（DNS TXT / 検証ファイル）の手順で登録してください")
             if authorized:
                 self._allowed_hosts.add(clean_name)
+            # whether the workspace switched to this asset (reported, never stored)
+            activated, skipped = False, None
             # Check if updating the current primary asset
             if self.a.asset["name"].lower() == clean_name:
+                activated = authorized
                 self.a.asset = {
                     **self.a.asset,
                     "kind": clean_kind,
@@ -2140,6 +2143,9 @@ class AssessmentService:
 
                 if activate_workspace and authorized and self.a.state != "running":
                     self._activate_asset_locked(asset_record, clean_ref)
+                    activated = True
+                elif activate_workspace:
+                    skipped = "running" if authorized else "not_authorized"
             self._save_state_locked()
 
         self.audit.record(
@@ -2151,7 +2157,7 @@ class AssessmentService:
             authorized=authorized,
             authorization_ref=clean_ref,
         )
-        return asset_record
+        return {**asset_record, "workspace_activated": activated, "activation_skipped": skipped}
 
     def _activate_asset_locked(self, asset_record: dict, auth_ref: str) -> None:
         # the single place where the active asset changes: never during a verification
@@ -2803,6 +2809,8 @@ class AssessmentService:
         return {
             "mode": "external_configured" if self._external_model_configured else "builtin",
             "external_model_configured": self._external_model_configured,
+            # the explanation (chat) model is configured independently of external proposals
+            "explanation_model_configured": self._chat_backend is not None,
             "connection_state": conn["state"],
             "connection_verified": verified,
             "connected": verified,
@@ -2817,7 +2825,9 @@ class AssessmentService:
             "artex_engine": "ready",
             "autonomous_execution": False,
             "note": _PLANNER_NOTES[conn["state"]] if self._external_model_configured
-                    else "内蔵 ARTEX プランナーで動作中。外部 AI モデルは未設定です。",
+                    else (f"提案は内蔵 ARTEX プランナー（外部モデルからの提案は無効）。AI解説に "
+                          f"{self._chat_backend._model or '外部モデル'} を使用します。" if self._chat_backend is not None
+                          else "内蔵 ARTEX プランナーで動作中。外部 AI モデルは未設定です。"),
         }
 
     def _note_model_outcome_locked(self, ok: bool, error: str | None = None) -> None:
