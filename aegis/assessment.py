@@ -52,6 +52,7 @@ from .runtime import WorkerPool
 from .secrets_store import EncryptedSecretStore
 from .l2_rules import BUILTIN_PROFILE_DIR, L2RuleSet, site_profile_dirs
 from .service_diag import analyze_l1_service_response, build_l2_candidates, clean_target_text
+from .google_ownership import METHOD as GOOGLE_METHOD
 
 SEVERITY_WEIGHT = {"critical": 40, "high": 25, "medium": 10, "low": 3, "info": 0}
 VERDICT_FACTOR = {"proven": 1.0, "detected": 0.6, "unverified": 0.6, "aborted": 0.6,
@@ -997,7 +998,17 @@ class AssessmentService:
         method = str(ext.get("proof_method") or "dns_txt")
         ok, detail, address_bound = False, "", False
         try:
-            if method == "well_known":
+            if method == GOOGLE_METHOD:
+                # Google cannot be asked again (no token is kept). The first use, while
+                # the proof is fresh, binds the name like a DNS proof does; any later new
+                # or stale address needs a new proof made by the owner.
+                proof = self._ownership_proofs.get(host) or {}
+                fresh = isinstance(proof.get("verified_at"), (int, float)) and \
+                    0 <= time.time() - float(proof["verified_at"]) <= OWNERSHIP_PROOF_MAX_AGE_S
+                ok = bool(first_use and fresh and proof.get("method") == GOOGLE_METHOD)
+                detail = ("Google での所有確認（初回の接続先を記録）" if ok else
+                          "Google での確認は再実行できないため、所有確認のやり直しが必要です")
+            elif method == "well_known":
                 # binds the ADDRESS: the file is fetched from each address itself
                 fetch = self._proof_file_fetch or fetch_proof_file_pinned
                 ok = all(proof_file_matches(fetch(host, a), token) for a in (new or addrs))
@@ -2522,9 +2533,14 @@ class AssessmentService:
         dns_lookup=None,
         http_fetch=None,
         roles=None,
+        google_property: str | None = None,
+        google_endpoint: tuple[str, int] | None = None,
     ) -> dict:
-        """Step 2 of the 5-step registration flow: verify ownership via DNS TXT or
-        /.well-known/vulnix-verify.txt. Ownership verification NEVER auto-approves L2."""
+        """Step 2 of the 5-step registration flow: verify ownership via DNS TXT,
+        /.well-known/vulnix-verify.txt, or (method ``google_search_console``) a Google
+        Search Console property the caller already checked covers this host
+        (aegis/google_ownership.py; ``google_property`` None = Google did not confirm).
+        Ownership verification NEVER auto-approves L2."""
         parsed = parse_service_target(url_or_host)
         host = parsed["host"]
         self._require_working_store()
@@ -2537,14 +2553,36 @@ class AssessmentService:
                 raise ValueError("先に対象URLを登録して検証トークンを発行してください")
         ch = challenge_for_host(host, self._ownership_secret)
 
-        res = verify_ownership_challenge(
-            host,
-            method,
-            expected_token=ch["token"],
-            txt_lookup=dns_lookup,
-            http_fetcher=http_fetch,
-        )
+        if method == GOOGLE_METHOD:
+            # Google's answer was obtained by the HTTP layer (OAuth, server side); the
+            # site itself is not contacted. The result is recorded like the others.
+            ok_g = bool(google_property)
+            res = {
+                "verified": ok_g, "method": GOOGLE_METHOD,
+                "checked_target": google_property or "Google Search Console",
+                "verified_at": time.time() if ok_g else None,
+                "detail": (f"Google Search Console で所有者として確認されています（{google_property}）。"
+                           if ok_g else
+                           "Google Search Console で、このサイトの所有者として確認されたプロパティが見つかりませんでした。"),
+            }
+        else:
+            res = verify_ownership_challenge(
+                host,
+                method,
+                expected_token=ch["token"],
+                txt_lookup=dns_lookup,
+                http_fetcher=http_fetch,
+            )
         verified = bool(res.get("verified"))
+        if method == GOOGLE_METHOD and not verified:
+            # Google not confirming is "not proven this way", not a failed re-check: an
+            # existing proof (DNS / file) or scope is left as it is
+            self.audit.record("asset.ownership_failed", actor=actor, host=host, method=method,
+                              verified=False, detail=res["detail"])
+            with self._lock:
+                asset = self._asset_record(host)
+            return {"host": host, "verified": False, "verification": res, "l2_auto_approved": False,
+                    "asset": dict(asset) if asset else None}
 
         with self._lock:
             target_asset = next(
@@ -2553,6 +2591,13 @@ class AssessmentService:
             )
             if target_asset is None and self.a.asset.get("name", "").lower() == host:
                 target_asset = self.a.asset
+            if method == GOOGLE_METHOD and google_endpoint is not None and (
+                    target_asset is None
+                    or (str(target_asset.get("scheme") or "https"), int(target_asset.get("port") or 0))
+                    != google_endpoint):
+                # the registration changed while Google was being asked: the property was
+                # checked against the old scheme / port, so nothing is recorded
+                raise ValueError("確認中にサイトの登録内容が変わりました。もう一度お試しください")
             if (not verified and roles is not None and "approver" not in roles
                     and (host in self._ownership_proofs or host in self._verified_external_hosts)):
                 # Decided now, under the lock, and BEFORE anything is changed: someone
@@ -2665,7 +2710,7 @@ class AssessmentService:
             proof_ok = (
                 isinstance(proof, dict) and proof.get("verified") is True
                 and not proof.get("held_since")          # held after an unclean shutdown: prove again
-                and proof.get("method") in ("dns_txt", "well_known")
+                and proof.get("method") in ("dns_txt", "well_known", GOOGLE_METHOD)
                 and proof.get("host") == host
                 and hmac.compare_digest(str(proof.get("token_sha256") or ""), expected)
                 and isinstance(proof.get("verified_at"), (int, float))

@@ -18,6 +18,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import signal
 import threading
 import tempfile
@@ -26,6 +27,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
+from . import google_ownership
 from .assessment import ApproverRequired, AssessmentService, StopNotConfirmed
 from .control_verification import run_live_control_verification
 from .lab import set_lab_mode, start_lab
@@ -105,6 +107,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
     run_times: dict[str, list[float]] = {}
     run_all: list[float] = []
     verify_times: dict[str, list[float]] = {}
+    google_states: dict[str, dict] = {}     # OAuth state -> {at, account, org, host, verifier}
     verify_all: list[float] = []
     real_run_times: dict[str, list[float]] = {}
     real_run_all: list[float] = []
@@ -303,6 +306,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 me = {"session": self._public_session(sess), "self_registration": self_registration_allowed()}
                 me["real_service_diagnosis"] = REAL_SERVICE_DIAGNOSIS
                 me["real_site_read_only"] = REAL_SITE_L1_ONLY
+                me["google_ownership"] = google_ownership.config() is not None
                 me["development"] = development_mode()
                 if tenancy is not None:
                     me["multi_tenant"] = True
@@ -917,6 +921,66 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         kind=str(body.get("kind", "Webアプリケーション")),
                         environment=str(body.get("environment", "ステージング環境")),
                     )
+                    return self._json(200, {**res, "assets": svc.assets()})
+                elif p == "/api/assets/google/start":
+                    # Step 2 through Google: a one-time, short-lived state bound to this
+                    # account, organization and host; the browser goes to Google with it
+                    cfg = google_ownership.config()
+                    if cfg is None:
+                        return self._json(404, {"error": "Google での所有確認は設定されていません"})
+                    g_host = parse_service_target(str(body.get("url") or body.get("host") or ""))["host"]
+                    g_asset = svc._asset_record(g_host)
+                    if g_asset is None or not svc._in_ownership_flow(g_host):
+                        return self._json(400, {"error": "先にサイトの URL を登録してください"})
+                    bound_org = getattr(self, "_bound_org", None) or ""
+                    with limits_lock:
+                        now = time.time()
+                        for k in [k for k, v in google_states.items() if now - v["at"] > google_ownership.STATE_TTL_S]:
+                            google_states.pop(k, None)
+                        mine_g = verify_times.setdefault(bound_org, [])
+                        ok = (len(google_states) < 5000 and room(mine_g, 3600, OWNERSHIP_CHECKS_PER_ORG_PER_HOUR)
+                              and room(verify_all, 3600, OWNERSHIP_CHECKS_PLATFORM_PER_HOUR))
+                        if ok:
+                            within(mine_g, 3600, OWNERSHIP_CHECKS_PER_ORG_PER_HOUR)
+                            within(verify_all, 3600, OWNERSHIP_CHECKS_PLATFORM_PER_HOUR)
+                    if not ok:
+                        return self._json(429, {"error": "所有確認は1時間あたりの上限に達しました。時間をおいてお試しください"},
+                                          [("Retry-After", "600")])
+                    state = secrets.token_urlsafe(32)
+                    verifier, challenge = google_ownership.new_pkce()
+                    with limits_lock:
+                        google_states[state] = {"at": time.time(), "account": actor, "org": bound_org,
+                                                "host": g_host, "verifier": verifier,
+                                                "scheme": str(g_asset.get("scheme") or "https"),
+                                                "port": int(g_asset.get("port") or 443)}
+                    return self._json(200, {"url": google_ownership.authorization_url(cfg, state, challenge)})
+                elif p == "/api/assets/google/finish":
+                    cfg = google_ownership.config()
+                    if cfg is None:
+                        return self._json(404, {"error": "Google での所有確認は設定されていません"})
+                    bound_org = getattr(self, "_bound_org", None) or ""
+                    with limits_lock:
+                        key = str(body.get("state") or "")
+                        st = google_states.get(key)
+                        if st is not None and st["account"] == actor and st["org"] == bound_org:
+                            google_states.pop(key, None)                     # single use
+                        else:
+                            st = None                                        # someone else's: left alone
+                    if st is None or time.time() - st["at"] > google_ownership.STATE_TTL_S:
+                        return self._json(400, {"error": "確認の有効期限が切れたか、別の操作で開始されています。もう一度お試しください"})
+                    g_host = st["host"]
+                    if svc.real_service_has_authority(g_host) and "approver" not in sess.roles:
+                        return self._json(403, {"error": "所有確認済みの対象の再確認には承認責任者の権限が必要です"})
+                    try:
+                        sites = google_ownership.owned_sites(cfg, str(body.get("code") or ""), st["verifier"])
+                    except google_ownership.GoogleOwnershipError as e:
+                        return self._json(502, {"error": str(e), "host": g_host})
+                    # checked against the scheme / port registered when the check started;
+                    # the service refuses (under its lock) if the registration changed since
+                    prop = google_ownership.covering_property(sites, g_host, st["scheme"], st["port"])
+                    res = svc.verify_asset_ownership(url_or_host=g_host, method=google_ownership.METHOD,
+                                                     actor=actor, roles=tuple(sess.roles), google_property=prop,
+                                                     google_endpoint=(st["scheme"], st["port"]))
                     return self._json(200, {**res, "assets": svc.assets()})
                 elif p == "/api/assets/verify-ownership":
                     v_host = ""

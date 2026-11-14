@@ -89,6 +89,20 @@ scripts/public-app.sh stop
 2. `colima ssh -p vulnix-artex -- sh ~/vmscripts/start_public.sh` で公開用のコントロールプレーンを起動します。
 3. `scripts/public-app.sh start` を実行し、新しく表示された URL を共有し直します（Quick Tunnel の URL は起動するたびに変わります）。
 
+## Google での所有確認（任意）
+サイトの所有者が Google Search Console ですでに所有権を確認している場合、画面の「Google で確認する」を押すだけで所有確認が終わります。設定がないあいだは、このボタンは表示されず、DNS・確認用ファイルの方法だけが使えます。
+
+- 求める権限は Search Console の読み取り専用（`webmasters.readonly`）だけです。アクセストークンはサーバーで1回だけ使って捨て、保存・記録・ブラウザへの送信はしません。
+- 所有者（`siteOwner`）として確認されたプロパティだけを認めます。「ドメイン」プロパティ（`sc-domain:example.com`）はサブドメインも含み、URL プレフィックスのプロパティはスキーム・ホスト・ポートが完全に一致するときだけ認めます。
+- IP アドレスが変わったときや一定時間が経ったときは Google に再確認できないため、所有確認のやり直しを求めます。
+
+有効にする手順（所有者が行います）：
+1. 固定のドメインで公開します（Quick Tunnel の URL は起動ごとに変わるため、Google に登録できません）。
+2. Google Cloud Console で「Google Search Console API」を有効にし、OAuth 同意画面を作ります（スコープ `https://www.googleapis.com/auth/webmasters.readonly`）。公開前は「テスト」モードで、使う Google アカウントをテストユーザーに追加します。一般公開には Google の審査が必要です。
+3. OAuth クライアント（ウェブ アプリケーション）を作り、承認済みのリダイレクト URI に `https://<公開ドメイン>/verify/google` を登録します。
+4. VM の `/opt/vulnix-public/.env.local`（0600）に次を書き、`~/vmscripts/start_public.sh` で再起動します：
+   `VULNIX_GOOGLE_CLIENT_ID`、`VULNIX_GOOGLE_CLIENT_SECRET`、`VULNIX_GOOGLE_REDIRECT_URI=https://<公開ドメイン>/verify/google`
+
 ## 既知の制約
 - **Quick Tunnel は、更新の受信（SSE）を途中で溜め込みます。** そのため画面は、受信が途切れているあいだ、4 秒ごとに状態を読み直します（表示が数秒遅れることがあります）。固定ドメインの名前付きトンネルを使えば、この制約はなくなります。
 - Mac がスリープしたり停止したりすると、利用できなくなります。常時稼働させるには、別途ホスティングを検討する必要があります。

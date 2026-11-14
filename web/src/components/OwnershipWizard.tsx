@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { postJSON } from "@/lib/api";
 import type { Asset, OwnershipChallenge, Snapshot } from "@/lib/types";
+import { useSession } from "@/lib/useSession";
 
 interface Props {
   open: boolean;
@@ -11,6 +12,8 @@ interface Props {
   onAssetsChanged: (assets: Asset[]) => void;
   /** Resume the flow for an asset that already has a challenge. */
   initialAsset?: Asset | null;
+  /** shown on the ownership step (e.g. Google could not confirm this site) */
+  notice?: string | null;
 }
 
 type Method = "dns_txt" | "well_known";
@@ -66,8 +69,10 @@ function CopyRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset }: Props) {
+export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, notice }: Props) {
   const router = useRouter();
+  const { googleOwnership } = useSession();
+  const [otherWays, setOtherWays] = useState(Boolean(notice));
   const resumeAt = initialAsset?.challenge ? (initialAsset.ownership_verified ? 2 : 1) : 0;
   const [step, setStep] = useState(resumeAt);
   const [url, setUrl] = useState(initialAsset?.target_url ?? (initialAsset?.name ? `https://${initialAsset.name}` : ""));
@@ -102,6 +107,12 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset }
       onAssetsChanged(res.assets);
       // An already-verified asset keeps its proof; skip straight to scope confirmation.
       setStep(res.asset.ownership_verified ? 2 : 1);
+    });
+
+  const viaGoogle = () =>
+    run(async () => {
+      const res = await postJSON<{ url: string }>("/api/assets/google/start", { url: url.trim() });
+      window.location.assign(res.url);       // Google, then back to /verify/google
     });
 
   const verify = () =>
@@ -195,15 +206,37 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset }
 
         {step === 1 && challenge && (
           <div className="space-y-3 text-sm">
+            {notice && (
+              <p role="status" className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
+                {notice}
+              </p>
+            )}
+            {googleOwnership && (
+              <div className="rounded-xl border border-zinc-900 p-3 dark:border-white">
+                <p className="mb-2 text-xs text-zinc-600 dark:text-zinc-300">
+                  Google Search Console でこのサイトの所有者になっている Google アカウントで確認できます（読み取りのみ）。
+                </p>
+                <button type="button" disabled={busy} onClick={viaGoogle}
+                  className="w-full rounded-lg bg-zinc-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-white dark:text-zinc-900">
+                  {busy ? "Google に移動しています…" : "Google で確認する"}
+                </button>
+              </div>
+            )}
+            {googleOwnership && !otherWays ? (
+              <button type="button" onClick={() => setOtherWays(true)} className="text-xs text-zinc-500 underline hover:text-zinc-800 dark:hover:text-zinc-200">
+                ほかの方法で確認する（DNS・確認用ファイル）
+              </button>
+            ) : (
+              <>
             <p className="text-xs text-zinc-600 dark:text-zinc-300">
-              サイトの管理者であることを確認します。次のどちらかを設定してから「確認する」を押してください（DNS の場合、反映まで数分かかることがあります）。
+              次のどちらかを設定してから「確認する」を押してください（DNS の場合、反映まで数分かかることがあります）。
             </p>
             <fieldset className="space-y-2">
               <legend className="sr-only">確認方法</legend>
               <label className={`block cursor-pointer rounded-xl border p-3 ${method === "dns_txt" ? "border-zinc-900 dark:border-white" : "border-zinc-200 dark:border-zinc-800"}`}>
                 <span className="flex items-center gap-2 text-xs font-semibold">
                   <input type="radio" name="own-method" checked={method === "dns_txt"} onChange={() => setMethod("dns_txt")} />
-                  DNS に TXT レコードを追加（おすすめ）
+                  DNS に TXT レコードを追加
                 </span>
                 <dl className="mt-2 space-y-1.5">
                   <CopyRow label="名前" value={challenge.dns_txt_name} />
@@ -226,12 +259,16 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset }
                 {verifyDetail}
               </p>
             )}
-            <div className="flex justify-between gap-2">
-              <button type="button" onClick={() => setStep(0)} className="rounded-lg border border-zinc-300 px-3 py-2 text-xs hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800">
-                ← URLを修正
-              </button>
+            <div className="flex justify-end">
               <button type="button" disabled={busy} onClick={verify} className="rounded-lg bg-zinc-900 px-4 py-2 text-xs font-semibold text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-white dark:text-zinc-900">
                 {busy ? "確認中…" : "確認する"}
+              </button>
+            </div>
+              </>
+            )}
+            <div>
+              <button type="button" onClick={() => setStep(0)} className="rounded-lg border border-zinc-300 px-3 py-2 text-xs hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800">
+                ← URLを修正
               </button>
             </div>
           </div>

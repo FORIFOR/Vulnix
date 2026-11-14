@@ -18,6 +18,8 @@ export interface SessionCtx {
   /** organizations of this account (multi-tenant control plane only) */
   orgs: OrgInfo[];
   multiTenant: boolean;
+  /** the control plane can prove site ownership through Google Search Console */
+  googleOwnership: boolean;
   org: OrgInfo | null;
   refresh: () => Promise<void>;
   logout: () => Promise<void>;
@@ -28,6 +30,7 @@ export const SessionContext = createContext<SessionCtx>({
   loading: true,
   orgs: [],
   multiTenant: false,
+  googleOwnership: false,
   org: null,
   refresh: async () => {},
   logout: async () => {},

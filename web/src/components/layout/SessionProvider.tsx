@@ -13,12 +13,13 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [orgs, setOrgs] = useState<OrgInfo[]>([]);
   const [multiTenant, setMultiTenant] = useState(false);
+  const [googleOwnership, setGoogleOwnership] = useState(false);
   const path = usePathname();
   const router = useRouter();
 
   const refresh = useCallback(async () => {
     try {
-      const me = await getJSON<{ session: SessionInfo | null; orgs?: OrgInfo[]; multi_tenant?: boolean }>("/api/auth/me");
+      const me = await getJSON<{ session: SessionInfo | null; orgs?: OrgInfo[]; multi_tenant?: boolean; google_ownership?: boolean }>("/api/auth/me");
       const current = me.multi_tenant ? activeOrg(me.orgs ?? [], getSelectedOrg()) : null;
       // in an organization the workspace acts with the roles there, as the server does
       setSession(me.session && current
@@ -26,6 +27,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
         : me.session);
       setOrgs(me.orgs ?? []);
       setMultiTenant(Boolean(me.multi_tenant));
+      setGoogleOwnership(Boolean(me.google_ownership));
     } catch {
       setSession(null);
     } finally {
@@ -61,7 +63,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   }, [loading, session, path, router]);
 
   return (
-    <SessionContext.Provider value={{ session, loading, refresh, logout, orgs, multiTenant,
+    <SessionContext.Provider value={{ session, loading, refresh, logout, orgs, multiTenant, googleOwnership,
                                       org: activeOrg(orgs, typeof document === "undefined" ? null : getSelectedOrg()) }}>
       {children}
     </SessionContext.Provider>
