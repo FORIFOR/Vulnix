@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { getJSON, postJSON } from "@/lib/api";
-import { isAdmin, useSession } from "@/lib/useSession";
+import { isPlatformAdmin, useSession } from "@/lib/useSession";
 
 interface ProfileRow {
   id: string;
@@ -48,7 +48,7 @@ interface ProfilesStatus {
  *  has to accept their exact content (identified by its SHA-256). */
 export function ProfilesSection() {
   const { session } = useSession();
-  const admin = isAdmin(session);
+  const admin = isPlatformAdmin(session);
   const [status, setStatus] = useState<ProfilesStatus | null>(null);
   const [version, setVersion] = useState(0);
   const [busy, setBusy] = useState(false);

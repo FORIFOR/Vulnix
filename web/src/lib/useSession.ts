@@ -8,6 +8,8 @@ export interface SessionInfo {
   roles: string[];
   expires: number;
   mfa_enabled?: boolean;
+  /** the account's own roles (platform functions); `roles` are those in the current organization */
+  platform_roles?: string[];
 }
 
 export interface SessionCtx {
@@ -34,3 +36,6 @@ export const SessionContext = createContext<SessionCtx>({
 export const useSession = () => useContext(SessionContext);
 export const canApprove = (s: SessionInfo | null) => !!s?.roles.includes("approver");
 export const isAdmin = (s: SessionInfo | null) => !!s?.roles.includes("admin");
+/** Platform functions (accounts, site profiles, control self-tests) use the account's own roles. */
+export const platformRoles = (s: SessionInfo | null): string[] => s?.platform_roles ?? s?.roles ?? [];
+export const isPlatformAdmin = (s: SessionInfo | null) => platformRoles(s).includes("admin");

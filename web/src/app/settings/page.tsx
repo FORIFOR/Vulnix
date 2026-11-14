@@ -18,7 +18,7 @@ import {
 import { getThemeServerSnapshot, getThemeSnapshot, setTheme, subscribeTheme, type Theme } from "@/lib/theme";
 import type { ControlVerificationReport } from "@/lib/types";
 import { useAssessment } from "@/lib/useAssessment";
-import { useSession } from "@/lib/useSession";
+import { platformRoles, useSession } from "@/lib/useSession";
 
 const THEMES: { key: Theme; label: string }[] = [
   { key: "system", label: "システムに合わせる" },
@@ -114,7 +114,7 @@ export default function Settings() {
               <dt className="text-zinc-500">ユーザー名</dt><dd>{session.operator}</dd>
               <dt className="text-zinc-500">権限</dt>
               <dd className="flex gap-1">
-                {session.roles.map((r) => (
+                {platformRoles(session).map((r) => (
                   <Pill key={r} className="bg-zinc-200 text-zinc-800 dark:bg-zinc-700 dark:text-zinc-100">
                     {r === "approver" ? "承認責任者" : r === "admin" ? "管理者" : "診断オペレーター"}
                   </Pill>
@@ -140,7 +140,7 @@ export default function Settings() {
         </Card>
       )}
 
-      {session && (session.roles.includes("admin") || session.roles.includes("approver")) && (
+      {session && (platformRoles(session).includes("admin") || platformRoles(session).includes("approver")) && (
         <Card>
           <h2 className="mb-2 text-sm font-semibold">L2判定プロファイル</h2>
           <ProfilesSection />

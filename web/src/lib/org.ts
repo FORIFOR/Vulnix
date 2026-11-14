@@ -73,6 +73,8 @@ const SERVICE_ROLES: Record<string, string[]> = {
   viewer: [],
 };
 const serviceRoles = (roles: string[]) => new Set(roles.flatMap((r) => SERVICE_ROLES[r] ?? []));
+/** What an organization role lets the account do in that organization's workspace. */
+export const serviceRolesOf = (roles: string[]): string[] => [...serviceRoles(roles)];
 const isManager = (roles: string[]) => roles.includes("owner") || roles.includes("admin");
 
 export interface MemberRow { name: string; roles: string[] }
