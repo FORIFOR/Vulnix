@@ -558,6 +558,24 @@ class TestSwallowedDeadline(unittest.TestCase):
         self.assertLess(float(took), 5)
 
 
+class TestHalfBuiltResponse(unittest.TestCase):
+    """The alarm can land inside HTTPResponse.__init__ before `fp` is set; finalizing that
+    half-built object then reports AttributeError ("Exception ignored while finalizing file")."""
+
+    def test_a_half_built_response_closes_quietly_and_the_probe_uses_that_class(self):
+        import http.client
+        from aegis.workers import http_probe as hp
+        plain = http.client.HTTPResponse.__new__(http.client.HTTPResponse)   # __init__ never ran: no fp
+        with self.assertRaises(AttributeError):                              # the stderr noise, reproduced
+            plain.close()
+        plain.fp = None                                                      # quiet its own finalizer
+        half = hp._Response.__new__(hp._Response)
+        half.close()                                                         # no AttributeError
+        self.assertTrue(half.closed)
+        src = Path(hp.__file__).read_text()
+        self.assertIn("conn.response_class = _Response", src)
+
+
 @unittest.skipUnless(hasattr(__import__("signal"), "setitimer"), "the SIGALRM deadline exists only where setitimer does")
 class TestAlarmRaces(unittest.TestCase):
     """The socket timeout of a stage is cut to the time left, so near the deadline it and SIGALRM

@@ -64,6 +64,14 @@ def _extract_tls_info(sock: socket.socket, scheme: str) -> dict | None:
     }
 
 
+class _Response(http.client.HTTPResponse):
+    """HTTPResponse that a half-built instance can still close. The alarm can land inside
+    __init__ before `fp` is set; that object is finalized later (possibly after the probe
+    returned) and close() would report AttributeError on stderr. A class-level `fp = None`
+    makes it close quietly; a fully built response sets its own `fp` as usual."""
+    fp = None
+
+
 class DeadlineExceeded(Exception):
     """Raised by SIGALRM when the overall deadline passes, whatever the worker is blocked in.
 
@@ -215,6 +223,7 @@ def probe(a: argparse.Namespace, clock=time.monotonic) -> dict:
 
         def send(lim: float):
             conn = http.client.HTTPConnection(a.host, a.port)
+            conn.response_class = _Response
             conn.sock = sock
             sock.settimeout(lim)
             conn.request(a.method, a.path, headers=req_headers)
