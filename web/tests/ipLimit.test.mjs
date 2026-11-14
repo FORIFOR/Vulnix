@@ -33,3 +33,28 @@ test("only address-like header values are used", () => {
   assert.equal(clientIp("1.2.3.4, 5.6.7.8"), null);
   assert.equal(clientIp(null), null);
 });
+
+const mod = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`);
+
+test("IPv6 addresses of one /64 share a limit", () => {
+  const l = new mod.IpLimiter();
+  for (let i = 0; i < 3; i++) assert.equal(l.check(`2001:db8:1:2::${i + 1}`, "POST", "auth/register", 0), null);
+  assert.equal(l.check("2001:db8:1:2:ffff::9", "POST", "auth/register", 0), "register");
+  assert.equal(l.check("2001:db8:1:3::1", "POST", "auth/register", 0), null);   // another /64
+  assert.equal(mod.limitKey("2001:db8:1:2::1"), mod.limitKey("2001:0db8:0001:0002:abcd::5"));
+  assert.equal(mod.limitKey("203.0.113.7"), "203.0.113.7");
+});
+
+test("a flood of addresses does not reset everyone's limits", () => {
+  const l = new mod.IpLimiter(undefined, 100);
+  for (let i = 0; i < 3; i++) l.check("198.51.100.1", "POST", "auth/register", 1000);
+  for (let i = 0; i < 500; i++) l.check(`10.0.${i >> 8}.${i & 255}`, "GET", "assets", 1000 + i);
+  assert.equal(l.check("198.51.100.1", "POST", "auth/register", 2000), "register");      // still limited
+});
+
+test("sign-ups through the entrance have an overall cap too", () => {
+  const l = new mod.IpLimiter();
+  let refused = null;
+  for (let i = 0; i < 40 && !refused; i++) refused = l.check(`2001:db8:${i}::1`, "POST", "auth/register", 0);
+  assert.equal(refused, "register-all");
+});

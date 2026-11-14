@@ -617,3 +617,17 @@ class TestRunHistory(unittest.TestCase):
         for _ in range(MAX_RUN_HISTORY + 5):
             self.complete()
         self.assertEqual(len(self.svc.snapshot()["run_history"]), MAX_RUN_HISTORY)
+
+
+
+class TestFifthReviewFixes(TestTenantIsolationOverHttp):
+    def test_switching_to_a_real_site_is_refused_and_the_switch_is_visible(self):
+        from aegis import server as srvmod
+        a = self.signup("alice")
+        with patch.object(srvmod, "REAL_SERVICE_DIAGNOSIS", False):
+            self.req(a, "/assets/challenge", {"url": "https://shop.example.com/"})
+            real = next(x for x in self.req(a, "/assets")[1] if x.get("name") == "shop.example.com")
+            self.assertEqual(self.req(a, "/assets/select", {"id": real["id"]})[0], 403)
+            me = self.req(a, "/auth/me")[1]
+            self.assertIs(me["real_service_diagnosis"], False)
+            self.assertIs(me["development"], False)

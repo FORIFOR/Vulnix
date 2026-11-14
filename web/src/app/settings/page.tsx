@@ -31,6 +31,8 @@ const LEVEL_LABEL = { easy: "かんたん", detail: "詳しく", expert: "専門
 export default function Settings() {
   const { snap, error, refetch } = useAssessment("scan_001");
   const { session, logout } = useSession();
+  // control self-tests and feed sync are platform functions: the account's own roles decide
+  const platformOps = platformRoles(session).some((r) => r === "admin" || r === "approver");
   const theme = useSyncExternalStore(subscribeTheme, getThemeSnapshot, getThemeServerSnapshot);
   const learning = useSyncExternalStore(subscribeLearning, getLearningSnapshot, getLearningServerSnapshot);
   const [verifyReport, setVerifyReport] = useState<ControlVerificationReport | null>(null);
@@ -72,14 +74,14 @@ export default function Settings() {
               実プロセス（egress_sentinel）・実ソケット・Gateway を駆動し、通信遮断・権限詐称剥離・承認強制・緊急停止SIGKILLを実機検証します。
             </p>
           </div>
-          <button
+          {platformOps && <button
             type="button"
             disabled={verifyBusy}
             onClick={runVerifyControls}
             className="rounded-lg bg-zinc-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-white dark:text-zinc-900"
           >
             {verifyBusy ? "実機検証を実行中…" : "▶ 6層制御の実機検証を実行"}
-          </button>
+          </button>}
         </div>
         {verifyReport && (
           <div className="mt-3 space-y-2">
@@ -202,14 +204,14 @@ export default function Settings() {
       <Card>
         <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
           <h2 className="text-sm font-semibold">モデルと脅威情報（ARTEX × Abliteration / NVD + CISA KEV）</h2>
-          <button
+          {platformOps && <button
             type="button"
             disabled={cveBusy}
             onClick={syncCve}
             className="rounded-lg border border-zinc-300 px-2.5 py-1 text-xs font-medium hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-600 dark:hover:bg-zinc-800"
           >
             {cveBusy ? "同期中…" : "↻ CVE / CISA KEV フィード同期"}
-          </button>
+          </button>}
         </div>
         <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
           <dt className="text-zinc-500">診断エージェント</dt><dd>ARTEX 実行エンジン — タスク計画・ProposalRouter 統合済み</dd>

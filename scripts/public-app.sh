@@ -24,6 +24,8 @@ start)
   curl -s -o /dev/null "$API/api/health" || { echo "コントロールプレーン（$API）が起動していません"; exit 1; }
   me=$(curl -s "$API/api/auth/me")
   echo "$me" | grep -q '"multi_tenant": true' || { echo "組織分離が無効なコントロールプレーンは公開しません"; exit 1; }
+  echo "$me" | grep -q '"real_service_diagnosis": false' || { echo "実サイトへの通信が有効なコントロールプレーンは公開しません（VULNIX_REAL_SERVICE_DIAGNOSIS=0 が必要）"; exit 1; }
+  echo "$me" | grep -q '"development": false' || { echo "開発モードのコントロールプレーンは公開しません"; exit 1; }
   if ! running tunnel; then
     nohup cloudflared tunnel --no-autoupdate --url "http://127.0.0.1:$PORT" >"$RUN/tunnel.log" 2>&1 &
     echo $! >"$RUN/tunnel.pid"

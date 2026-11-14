@@ -191,6 +191,13 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             """Requests that would send traffic to a registered real site."""
             if p == "/api/assets/verify-ownership":
                 return True
+            if p == "/api/assets/select":
+                # switching the workspace onto a real site is the step before diagnosing it
+                body_id = getattr(self, "_select_target", "")
+                try:
+                    return bool(osvc.asset_is_real_service(asset_id=body_id))
+                except Exception:   # noqa: BLE001 - when in doubt, treat it as real
+                    return True
             base = f"/api/assessments/{osvc.a.id}"
             if not p.startswith(base) or p.endswith(("/emergency-stop", "/pause", "/chat")):
                 return False
@@ -262,6 +269,8 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             sess = self._session()
             if p == "/api/auth/me":
                 me = {"session": self._public_session(sess), "self_registration": self_registration_allowed()}
+                me["real_service_diagnosis"] = REAL_SERVICE_DIAGNOSIS
+                me["development"] = development_mode()
                 if tenancy is not None:
                     me["multi_tenant"] = True
                     me["orgs"] = tenancy.store.orgs_of(sess.operator) if sess else []
@@ -496,6 +505,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     if bound is None:
                         return None
                     osvc, osess = bound
+                    self._select_target = str(body.get("id", "")) if p == "/api/assets/select" else ""
                     if not REAL_SERVICE_DIAGNOSIS and self._touches_real_site(p, osvc):
                         paudit.record("tenancy.real_site_refused", actor=sess.operator, route=p[-60:])
                         return self._json(403, {"error": "このβ版では、実サイトへの通信（所有確認の実行・診断）はまだ有効になっていません。"
