@@ -43,7 +43,7 @@ class ApiBase(RealServiceBase):
         super().setUp()
         self.svc.workers.kill_all()
         self.svc = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT, verify_seconds=0.1, l2_profile_dirs=PROFILE_DIRS,
-                                     separate_l2_approver=self.SEPARATE)
+                                     separate_l2_approver=self.SEPARATE, real_site_read_only=False)
         self.svc._custom_resolver = lambda h: ["127.0.0.1"] if h == HOST else []
         self.ops = OperatorStore(seed(self.dir))
         self.srv = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(self.svc, self.ops))

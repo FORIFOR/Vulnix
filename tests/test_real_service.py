@@ -433,12 +433,18 @@ class RealServiceBase(unittest.TestCase):
 
     def setUp(self):
         set_lab_mode("vulnerable")
+        # This fixture also exercises the explicitly enabled legacy L2 controls.
+        # The application default remains read-only; each API fixture opts in here.
+        from aegis import server as srvmod
+        legacy_mode = patch.multiple(srvmod, REAL_SERVICE_DIAGNOSIS=True, REAL_SITE_L1_ONLY=False)
+        legacy_mode.start()
+        self.addCleanup(legacy_mode.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.dir = Path(self.tmp.name)
-        self.svc = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT, verify_seconds=0.1, l2_profile_dirs=PROFILE_DIRS)
         # These tests also exercise the separately gated legacy L2 path. Public-beta
         # callers start read-only and must opt into that test path explicitly.
-        self.svc.real_site_read_only = False
+        self.svc = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT, verify_seconds=0.1,
+                                     l2_profile_dirs=PROFILE_DIRS, real_site_read_only=False)
         self.fake = FakeService()
         threading.Thread(target=self.fake.serve_forever, daemon=True).start()
         self.url = f"http://{HOST}:{self.fake.server_port}"
@@ -866,8 +872,8 @@ class TestUnconfirmedRulesCannotRun(RealServiceBase):
         self.svc.workers.kill_all()
         (self.dir / "l2_profiles").chmod(0o700)
         (self.dir / "l2_profiles" / "sample_api.json").chmod(0o600)
-        self.svc = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT, verify_seconds=0.1)       # default profile dirs
-        self.svc.real_site_read_only = False  # this case exercises an explicitly enabled legacy L2 profile
+        self.svc = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT, verify_seconds=0.1,
+                                     real_site_read_only=False)  # default profile dirs; legacy L2 test
         # a site profile is listed but nothing in it runs until an admin accepts its exact content
         self.assertEqual(self.svc.l2.runnable_check_ids(), ())
         status = self.svc.l2_profiles_status()["profiles"]
@@ -1140,10 +1146,6 @@ class TestRealServiceApi(RealServiceBase):
 
     def setUp(self):
         super().setUp()
-        from aegis import server as srvmod
-        legacy_mode = patch.multiple(srvmod, REAL_SERVICE_DIAGNOSIS=True, REAL_SITE_L1_ONLY=False)
-        legacy_mode.start()
-        self.addCleanup(legacy_mode.stop)
         from http.server import ThreadingHTTPServer
         from aegis.operators import OperatorStore, hash_password
         from aegis.server import make_handler

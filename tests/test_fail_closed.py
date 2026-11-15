@@ -44,7 +44,8 @@ class PersistenceBase(RealServiceBase):
     def open(self, **kw):
         svc = AssessmentService(self.dir, LAB_PORT, verify_seconds=0.1, l2_profile_dirs=PROFILE_DIRS,
                                 l2_confinement=kw.pop("l2_confinement", TEST_CONFINEMENT),
-                                revocation_marker_dirs=kw.pop("markers", [self.markers]), **kw)
+                                revocation_marker_dirs=kw.pop("markers", [self.markers]),
+                                real_site_read_only=kw.pop("real_site_read_only", False), **kw)
         svc._custom_resolver = lambda h: ["127.0.0.1"] if h == HOST else []
         return svc
 
