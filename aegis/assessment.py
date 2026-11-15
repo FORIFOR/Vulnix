@@ -28,7 +28,7 @@ from pathlib import Path
 
 from . import cve
 from .audit import AuditLog
-from .authz import ApprovalStore, Engagement, Target, TokenAuthority
+from .authz import ApprovalStore, AuthzError, Engagement, Target, TokenAuthority
 from .events import EventBus
 from .evidence import (EVIDENCE_LABELS, enforce_verdict, evidence_status,
                        evidence_summary, reproduction_note, reproduction_verdict)
@@ -1610,12 +1610,16 @@ class AssessmentService:
             self._refuse_after_stop_locked()
             self._refuse_artex_on_real_service_locked()
             real_site = self._is_external_service_asset()
-            if real_site and (llm_mode or os.environ.get("VULNIX_ARTEX_LLM_MODE", "direct")) not in ("direct", "gateway-preview"):
+            if real_site and (llm_mode or os.environ.get("VULNIX_ARTEX_LLM_MODE", "direct")) not in (
+                    "direct", "gateway-preview", "gateway-forward"):
                 raise ValueError("実サイトのARTEX計画はローカルモデルだけで作成できます")
             if self._unstopped_now_locked():
                 # while anything is not confirmed stopped, nothing new launches
                 raise ValueError("停止を確認できていないプロセスがあるため、ARTEX を起動しません")
-            self._ensure_active_window_locked()
+            if real_site:
+                self._ensure_artex_authority_locked()
+            else:
+                self._ensure_active_window_locked()
             if real_site and self.a.state != "completed":
                 raise ValueError("初回診断が完了してから、実測結果に基づく追加確認を計画してください")
             if real_site:
@@ -1662,7 +1666,7 @@ class AssessmentService:
             raise ValueError("ARTEX プランナーを OS レベルで隔離して起動できないため実行しません"
                              f"（{str(st.get('reason', ''))[:200]}）")
         self.audit.record("artex.plan_requested", actor=actor, targets=len(targets), confined=confinement is not None)
-        gateway = self._planner_gateway(actor, llm_approval, roles, gen, llm_mode)
+        gateway = self._planner_gateway(actor, llm_approval, roles, gen, llm_mode, real_site=real_site)
         llm_url, llm_key = self._artex_llm_url, ""
         if gateway is not None:
             try:
@@ -1718,6 +1722,8 @@ class AssessmentService:
             if gen != self._run_generation:
                 raise ValueError("停止またはリセットされたため、ARTEX 計画を破棄しました")
             self._refuse_after_stop_locked()
+            if real_site:
+                self._ensure_artex_authority_locked()
             if any(r["item"].status == "running" for r in self._artex_items.values()):
                 raise ValueError("ARTEX 計画の項目を実行中です。完了してから再計画してください")
             # the previous plan's tasks leave the plan view with it
@@ -1727,6 +1733,8 @@ class AssessmentService:
         with self._lock:
             if gen != self._run_generation:
                 raise ValueError("停止またはリセットされたため、ARTEX 計画を破棄しました")
+            if real_site:
+                self._ensure_artex_authority_locked()
             # a new plan replaces the previous one: its items can no longer run
             self._artex_items = {}
             for item in rec.items:
@@ -1771,11 +1779,14 @@ class AssessmentService:
 
     PREVIEW_TTL_S = 30 * 60
 
-    def _planner_gateway(self, actor: str, approval: dict | None, roles, gen: int, mode: str | None):
+    def _planner_gateway(self, actor: str, approval: dict | None, roles, gen: int, mode: str | None,
+                         *, real_site: bool = False):
         """The Planner LLM Gateway for this run. Mode: the request's `llm_mode`, else
         VULNIX_ARTEX_LLM_MODE: direct (none) | gateway-preview | gateway-forward."""
         configured = os.environ.get("VULNIX_ARTEX_LLM_MODE", "direct").strip()
         mode = (mode or configured).strip()
+        if real_site and mode == "gateway-forward" and configured != "gateway-forward":
+            raise ValueError("実サイトのモデル転送はサーバー設定で明示された場合だけ許可します")
         if mode == "direct" and configured != "direct":
             # a request may narrow the mode (to preview), never bypass the gateway
             raise ValueError("Planner LLM Gateway が設定されているため、direct には切り替えられません")
@@ -1801,8 +1812,12 @@ class AssessmentService:
 
         def denied():                                   # looked up on every request
             with self._lock:
+                # The original synthetic lab moves to _extra_assets when a real
+                # site becomes active. If it was ever registered as a real service,
+                # _real_service_hosts still denies it.
                 return set(self._real_service_hosts) | {
-                    str(x.get("name") or "").lower() for x in self._extra_assets if x.get("name")}
+                    str(x.get("name") or "").lower() for x in self._extra_assets
+                    if x.get("name") and str(x.get("name")).lower() != "lab.test"}
         with self._lock:
             allowed = set(self._allowed_hosts) | {"lab.test"}
         model = os.environ.get("VULNIX_ARTEX_LLM_MODEL") or os.environ.get("VULNIX_ABLITERATION_MODEL") or "mock"
@@ -1814,8 +1829,14 @@ class AssessmentService:
                                      api_key=os.environ.get("VULNIX_ABLITERATION_KEY", ""), **common)
         if mode != "gateway-forward":
             raise ValueError("llm_mode は direct / gateway-preview / gateway-forward のいずれかです")
-        upstream = os.environ.get("VULNIX_ARTEX_LLM_UPSTREAM_URL") or os.environ.get("VULNIX_ABLITERATION_URL", "")
+        upstream = os.environ.get("VULNIX_ARTEX_LLM_UPSTREAM_URL", "")
+        if not real_site:
+            upstream = upstream or os.environ.get("VULNIX_ABLITERATION_URL", "")
+        if real_site and not upstream:
+            raise ValueError("実サイトのモデル転送には専用のローカルURL設定が必要です")
         host = (urllib.parse.urlsplit(upstream).hostname or "")
+        if real_site and host not in ("127.0.0.1", "::1"):
+            raise ValueError("実サイトのARTEX計画はローカルモデルだけで作成できます（ループバックIP必須）")
         real = host not in ("127.0.0.1", "::1", "localhost")
         bound = None
         if real:
@@ -1932,8 +1953,33 @@ class AssessmentService:
             self._artex_live.add(sess)
 
     def _artex_may_start_locked(self, gen: int) -> bool:
-        return (gen == self._run_generation and self.gateway.state is not State.STOPPED
-                and self.a.state != "stopped" and not self._unstopped_now_locked())
+        if not (gen == self._run_generation and self.gateway.state is not State.STOPPED
+                and self.a.state != "stopped" and not self._unstopped_now_locked()):
+            return False
+        try:
+            self._ensure_artex_authority_locked()
+        except ValueError:
+            return False
+        return True
+
+    def _ensure_artex_authority_locked(self) -> None:
+        name = self.a.asset.get("name")
+        if not self._in_ownership_flow(name):
+            return
+        # Planning must recheck authority without replenishing Gateway's Worker
+        # budget. _ensure_active_window_locked updates that budget for a new run.
+        if self._persist_error:
+            raise ValueError("状態を保存できないため、ARTEX 計画を破棄しました")
+        ext = self._external_entry(name)
+        if ext is None:
+            raise ValueError("診断範囲の確認が失効または取り消されたため、ARTEX 計画を破棄しました")
+        e = self.a.engagement
+        effective = Engagement(e.id, True, e.authorization_ref, e.not_before,
+                               min(e.not_after, float(ext["not_after"])), e.targets, e.allowed_actions)
+        try:
+            effective.check_active(time.time())
+        except AuthzError:
+            raise ValueError("診断範囲の確認が失効したため、ARTEX 計画を破棄しました") from None
 
     def _artex_may_start(self, gen: int) -> bool:
         with self._lock:

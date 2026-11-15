@@ -342,6 +342,136 @@ class TestThePlanThroughTheGateway(ServiceBase):
         plan = self.plan()
         self.assertEqual([item["catalog_id"] for item in plan["items"]], ["l1_http_probe"])
 
+    def test_real_site_can_use_budgeted_gateway_only_with_literal_loopback_upstream(self):
+        from aegis import assessment as assessment_module
+
+        self.svc._real_site_local_artex = True
+        self.svc.issue_ownership_challenge(url="https://site.test/")
+        self.svc.verify_asset_ownership(
+            url_or_host="site.test", method="google_search_console",
+            google_property="sc-domain:site.test", google_endpoint=("https", 443))
+        self.svc.confirm_asset_scope(url_or_host="site.test", confirmed_prohibited=True,
+                                     activate_workspace=True)
+        self.svc.a.state = "completed"
+        from aegis.policy import Budget
+        remaining = Budget(2)
+        remaining.spend()
+        self.svc.gateway.budget = remaining
+
+        with patch.dict(os.environ, {"VULNIX_ARTEX_LLM_MODE": "gateway-forward",
+                                  "VULNIX_ARTEX_LLM_UPSTREAM_URL": "http://127.0.0.1:9/v1/chat/completions"}):
+            from aegis.planner_llm_gateway import GatewayRefused
+            gateway = self.svc._planner_gateway("op", None, (), self.svc._run_generation,
+                                                "gateway-forward", real_site=True)
+            gateway.inspect({"model": "mock", "messages": [
+                {"role": "user", "content": "Synthetic target http://lab.test/"}]})
+            with self.assertRaises(GatewayRefused):
+                gateway.inspect({"model": "mock", "messages": [
+                    {"role": "user", "content": "Real target https://site.test/"}]})
+            self.assertTrue(self.svc._artex_may_start(self.svc._run_generation))
+            self.assertIs(self.svc.gateway.budget, remaining)
+            self.assertEqual(remaining._left, 1)
+            self.svc._real_service_hosts.add("lab.test")
+            try:
+                with self.assertRaises(GatewayRefused):
+                    gateway.inspect({"model": "mock", "messages": [
+                        {"role": "user", "content": "Now-real target http://lab.test/"}]})
+            finally:
+                self.svc._real_service_hosts.discard("lab.test")
+            plan = self.plan()
+        self.assertIs(self.svc.gateway.budget, remaining)
+        self.assertEqual(remaining._left, 1)
+        self.assertEqual(plan["llm_gateway"]["mode"], "forward")
+        self.assertEqual(plan["llm_gateway"]["upstream"], "127.0.0.1")
+
+        for upstream in ("https://api.example.test/v1/chat/completions",
+                         "http://localhost:9/v1/chat/completions",
+                         "http://127.0.0.1.evil.test/v1/chat/completions"):
+            with self.subTest(upstream=upstream), \
+                    patch.dict(os.environ, {"VULNIX_ARTEX_LLM_MODE": "gateway-forward",
+                                         "VULNIX_ARTEX_LLM_UPSTREAM_URL": upstream}), \
+                    patch.object(assessment_module, "run_artex_planner") as runner:
+                with self.assertRaisesRegex(ValueError, "ローカルモデル"):
+                    self.svc.plan_with_artex("op")
+                runner.assert_not_called()
+
+        with patch.dict(os.environ, {"VULNIX_ARTEX_LLM_MODE": "direct",
+                                  "VULNIX_ARTEX_LLM_UPSTREAM_URL": "http://127.0.0.1:9/v1/chat/completions"}), \
+                patch.object(assessment_module, "run_artex_planner") as runner:
+            with self.assertRaisesRegex(ValueError, "サーバー設定"):
+                self.svc.plan_with_artex("op", llm_mode="gateway-forward")
+            runner.assert_not_called()
+
+        with patch.dict(os.environ, {"VULNIX_ARTEX_LLM_MODE": "gateway-forward",
+                                  "VULNIX_ARTEX_LLM_UPSTREAM_URL": "",
+                                  "VULNIX_ABLITERATION_URL": "http://127.0.0.1:9/v1/chat/completions"}), \
+                patch.object(assessment_module, "run_artex_planner") as runner:
+            with self.assertRaisesRegex(ValueError, "専用"):
+                self.svc.plan_with_artex("op")
+            runner.assert_not_called()
+
+    def test_real_site_plan_discarded_if_scope_expires_during_model_run(self):
+        from aegis import assessment as assessment_module
+
+        self.svc._real_site_local_artex = True
+        self.svc.issue_ownership_challenge(url="https://site.test/")
+        self.svc.verify_asset_ownership(
+            url_or_host="site.test", method="google_search_console",
+            google_property="sc-domain:site.test", google_endpoint=("https", 443))
+        self.svc.confirm_asset_scope(url_or_host="site.test", confirmed_prohibited=True,
+                                     activate_workspace=True)
+        self.svc.a.state = "completed"
+
+        with patch.dict(os.environ, {"VULNIX_ARTEX_LLM_MODE": "gateway-forward",
+                                  "VULNIX_ARTEX_LLM_UPSTREAM_URL": "http://127.0.0.1:9/v1/chat/completions"}):
+            gateway = self.svc._planner_gateway("op", None, (), self.svc._run_generation,
+                                                "gateway-forward", real_site=True)
+            self.assertTrue(gateway._may())
+            self.svc._verified_external_hosts["site.test"]["not_after"] = time.time() - 1
+            self.assertFalse(gateway._may())
+
+        self.svc._verified_external_hosts["site.test"]["not_after"] = time.time() + 300
+        original = assessment_module.run_artex_planner
+        def expire_after(*args, **kwargs):
+            result = original(*args, **kwargs)
+            self.svc._verified_external_hosts["site.test"]["not_after"] = time.time() - 1
+            return result
+        with patch.object(assessment_module, "run_artex_planner", side_effect=expire_after):
+            with self.assertRaises(ValueError):
+                self.svc.plan_with_artex("op")
+        self.assertIsNone(self.svc._artex_plan)
+
+    def test_real_site_plan_discarded_if_ownership_is_revoked_during_model_run(self):
+        from aegis import assessment as assessment_module
+
+        self.svc._real_site_local_artex = True
+        self.svc.issue_ownership_challenge(url="https://site.test/")
+        self.svc.verify_asset_ownership(
+            url_or_host="site.test", method="google_search_console",
+            google_property="sc-domain:site.test", google_endpoint=("https", 443))
+        self.svc.confirm_asset_scope(url_or_host="site.test", confirmed_prohibited=True,
+                                     activate_workspace=True)
+        self.svc.a.state = "completed"
+        record = self.svc._verified_external_hosts["site.test"]
+
+        with patch.dict(os.environ, {"VULNIX_ARTEX_LLM_MODE": "gateway-forward",
+                                  "VULNIX_ARTEX_LLM_UPSTREAM_URL": "http://127.0.0.1:9/v1/chat/completions"}):
+            gateway = self.svc._planner_gateway("op", None, (), self.svc._run_generation,
+                                                "gateway-forward", real_site=True)
+            self.svc._verified_external_hosts.pop("site.test")
+            self.assertFalse(gateway._may())
+            self.svc._verified_external_hosts["site.test"] = record
+
+        original = assessment_module.run_artex_planner
+        def revoke_after(*args, **kwargs):
+            result = original(*args, **kwargs)
+            self.svc._verified_external_hosts.pop("site.test")
+            return result
+        with patch.object(assessment_module, "run_artex_planner", side_effect=revoke_after):
+            with self.assertRaises(ValueError):
+                self.svc.plan_with_artex("op")
+        self.assertIsNone(self.svc._artex_plan)
+
     def test_real_site_planner_refuses_an_expired_scope(self):
         self.svc._real_site_local_artex = True
         self.svc.issue_ownership_challenge(url="https://site.test/")
@@ -1364,6 +1494,36 @@ class TestRealArtexThroughThePlannerGateway(TestRealArtexPlanner):
             Path(out + ".forward.json").write_text(json.dumps(
                 {"llm_gateway": gw, "isolation_confined": plan["isolation"].get("confined"),
                  "items": [(i["catalog_id"], i["status"]) for i in plan["items"]]}, ensure_ascii=False, indent=2))
+
+    def test_owned_site_real_artex_uses_budgeted_local_gateway_without_host_leak(self):
+        self.svc._real_site_local_artex = True
+        self.svc.issue_ownership_challenge(url="https://site.test/")
+        self.svc.verify_asset_ownership(
+            url_or_host="site.test", method="google_search_console",
+            google_property="sc-domain:site.test", google_endpoint=("https", 443))
+        self.svc.confirm_asset_scope(url_or_host="site.test", confirmed_prohibited=True,
+                                     activate_workspace=True)
+        self.svc.a.state = "completed"  # no target request; this test isolates planning
+        self.svc.a.findings["f_headers"] = {
+            "id": "f_headers", "category": "設定不備", "severity": "medium",
+            "verdict": "detected", "verdict_basis": "l1_observation", "demo_fixture": False,
+            "evidence": [{"audit_hash": "local-evidence", "saved_at": 1,
+                          "body": "private response text"}],
+        }
+        with patch.dict(os.environ, {"VULNIX_ARTEX_LLM_MODE": "gateway-forward",
+                                  "VULNIX_ARTEX_LLM_UPSTREAM_URL": self.mock.url + "/chat/completions"}):
+            plan = self.plan()
+        report = plan["llm_gateway"]
+        self.assertEqual((report["mode"], report["upstream"], report["refused"]),
+                         ("forward", "127.0.0.1", 0))
+        self.assertGreater(report["calls"], 0)
+        self.assertLessEqual(report["calls"], report["budget"]["max_calls"])
+        self.assertTrue(self.mock.requests)
+        sent = json.dumps(self.mock.requests, ensure_ascii=False)
+        self.assertIn("f_headers", sent)
+        self.assertNotIn("site.test", sent)
+        self.assertNotIn("private response text", sent)
+        self.assertTrue(all(item["level"] == "L1" for item in plan["items"]))
 
     def test_preview_mode_sends_nothing_and_shows_what_would_be_sent(self):
         with patch.dict(os.environ, {"VULNIX_ARTEX_LLM_MODE": "gateway-preview",
