@@ -12,6 +12,17 @@
 
 機械抽出ではバックエンド関数789、Web関数197、ARTEX overlayのGo関数27・通信関連箇所7、API分岐条件75、通信・プロセス起動箇所32、バックグラウンド起動箇所26、WebのAPI参照62を列挙した。`REQUEST_FLOW.md` に文字列として現れない固定APIパスは29件、動的な評価式は6件あった。未記載は主にアカウント/MFA/組織招待、資産削除・選択、CVE同期、全体の制御検証、監査ログ・イベント・レポート出力である。これらを「未使用」とみなして削除してはいけない。URLを構成する経路（例: `/api/assessments/{id}/...`）は機械抽出だけでは網羅判定できない。
 
+固定パス39件のうち、`REQUEST_FLOW.md`の通常操作表に文字列として現れない29件を処理IDへ割り当てた。これは**処理漏れの候補一覧**であり、APIが未実装・未使用という意味ではない。特にURLを動的に構成する経路は下表の件数に含まれない。
+
+| 処理ID | 通常操作表にない固定APIパス | 役割 |
+|---|---|---|
+| P01 | `/api/auth/logout`, `/api/auth/password`, `/api/auth/totp/enroll`, `/api/auth/totp/confirm`, `/api/auth/totp/disable`, `/api/operators`, `/api/operators/roles`, `/api/operators/reset-mfa`, `/api/operators/unlock` | セッション・MFA・操作者の管理 |
+| P02 | `/api/orgs`, `/api/orgs/invites`, `/api/orgs/invites/revoke`, `/api/orgs/members`, `/api/orgs/members/remove`, `/api/orgs/members/roles`, `/api/invites/accept` | 組織の加入・離脱・権限 |
+| P03/P13 | `/api/assets/select`, `/api/assets/delete` | 対象の選択・取消 |
+| P06/P07 | `/api/assets/secrets`, `/api/assets/secrets-status`, `/api/l2-profiles`, `/api/l2-profiles/accept` | 模擬ラボまたは個別承認対象の検証設定。公開βの実サイトL2は無効 |
+| P09/P14 | `/api/router/status`, `/api/router/verify`, `/api/cve/status`, `/api/cve/sync` | 計画制御の状態・自己検証とCVE資料 |
+| P13/P14/P15 | `/api/health`, `/api/system/status`, `/api/system/verify-controls` | 稼働・停止・安全制御の状態 |
+
 | ID | 利用者・内部操作 → API | 主なコード | 主要テスト・状態 |
 |---|---|---|---|
 | P01 | 登録・ログイン・ログアウト、MFA・パスワード → `/api/auth/*` | `server.py` `do_POST` / `_register` / `_login`、`operators.py`、`SessionProvider` | `test_server.py`, `test_tenancy.py`; ログイン画面の重複取得を本PRで削減 |
