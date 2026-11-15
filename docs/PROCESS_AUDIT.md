@@ -1,10 +1,10 @@
 # 処理系統監査と段階的な最適化
 
-対象: `codex/process-chain-optimization`。起点は [REQUEST_FLOW.md](REQUEST_FLOW.md)。実コードの機械抽出結果は [PROCESS_INVENTORY.json](PROCESS_INVENTORY.json)、再生成は `python3 scripts/flow_inventory.py > docs/PROCESS_INVENTORY.json`。この抽出は**ソースの条件式・定義・呼び出し箇所の一覧**であり、動的に構成するパスと環境変数の実行先をすべて解決した呼び出しグラフではない。以下の手動追跡と組み合わせて読む。
+対象: `codex/flow-inventory-refresh`（基礎監査は`codex/process-chain-optimization`）。起点は [REQUEST_FLOW.md](REQUEST_FLOW.md)。実コードの機械抽出結果は [PROCESS_INVENTORY.json](PROCESS_INVENTORY.json)、再生成は `python3 scripts/flow_inventory.py > docs/PROCESS_INVENTORY.json`。この抽出は**ソースの条件式・定義・呼び出し箇所の一覧**であり、動的に構成するパスと環境変数の実行先をすべて解決した呼び出しグラフではない。以下の手動追跡と組み合わせて読む。
 
 ## 調査の範囲と漏れ
 
-機械抽出ではバックエンド関数774、Web関数197、ARTEX overlayのGo関数27・通信関連箇所7、API分岐条件75、通信・プロセス起動箇所32、バックグラウンド起動箇所26、WebのAPI参照62を列挙した。`REQUEST_FLOW.md` に文字列として現れない固定APIパスは29件、動的な評価式は6件あった。未記載は主にアカウント/MFA/組織招待、資産削除・選択、CVE同期、全体の制御検証、監査ログ・イベント・レポート出力である。これらを「未使用」とみなして削除してはいけない。URLを構成する経路（例: `/api/assessments/{id}/...`）は機械抽出だけでは網羅判定できない。
+機械抽出ではバックエンド関数775、Web関数197、ARTEX overlayのGo関数27・通信関連箇所7、API分岐条件75、通信・プロセス起動箇所32、バックグラウンド起動箇所26、WebのAPI参照62を列挙した。`REQUEST_FLOW.md` に文字列として現れない固定APIパスは29件、動的な評価式は6件あった。未記載は主にアカウント/MFA/組織招待、資産削除・選択、CVE同期、全体の制御検証、監査ログ・イベント・レポート出力である。これらを「未使用」とみなして削除してはいけない。URLを構成する経路（例: `/api/assessments/{id}/...`）は機械抽出だけでは網羅判定できない。
 
 | ID | 利用者・内部操作 → API | 主なコード | 主要テスト・状態 |
 |---|---|---|---|
