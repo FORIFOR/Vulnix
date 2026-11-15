@@ -6,10 +6,11 @@ import dataclasses
 import json
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from aegis import ai_advisor as adv
 from aegis.abliteration_server import start_abliteration_server
-from aegis.router import sanitize_proposal
+from aegis.router import AbliterationBackend, sanitize_proposal
 from tests.test_real_service import HOST, RealServiceBase
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -150,6 +151,30 @@ class TestPhaseOneIsMockOnly(unittest.TestCase):
                 adv.AbliterationAdvisor(url)
         adv.AbliterationAdvisor("http://127.0.0.1:1/v1/chat/completions")
         adv.AbliterationAdvisor("http://[::1]:1/v1/chat/completions")
+
+    def test_external_adapter_requires_https_key_and_explicit_type(self):
+        for url in ("http://api.abliteration.ai/v1/chat/completions",
+                    "https://user:pw@api.abliteration.ai/v1/chat/completions",
+                    "https://provider.example/v1/chat/completions",
+                    "https://api.abliteration.ai.attacker.example/v1/chat/completions",
+                    "https://api.abliteration.ai:8443/v1/chat/completions",
+                    "https://api.abliteration.ai/v1/other"):
+            with self.assertRaises(adv.AdvisorError):
+                adv.ExternalAbliterationAdvisor(url, api_key="test-only-key")
+        with self.assertRaises(adv.AdvisorError):
+            adv.ExternalAbliterationAdvisor("https://api.abliteration.ai/v1/chat/completions")
+        seen = []
+        advisor = adv.ExternalAbliterationAdvisor(
+            "https://api.abliteration.ai/v1/chat/completions", api_key="test-only-key",
+            transport=lambda url, headers, body: seen.append((url, headers, body)) or json.dumps(
+                {"choices": [{"message": {"content": '{"advice": []}'}}]}).encode(),
+        )
+        advisor.advise([_leaky_finding()])
+        self.assertEqual(seen[0][1]["Authorization"], "Bearer test-only-key")
+        self.assertNotIn(HOST, seen[0][2].decode())
+        request = json.loads(seen[0][2])
+        self.assertLessEqual(request["max_tokens"], 2048)
+        self.assertEqual(request["response_format"], {"type": "json_object"})
 
     def test_the_adapter_takes_no_api_key_and_sends_no_authorization(self):
         fields = {f.name for f in dataclasses.fields(adv.AbliterationAdvisor)}
@@ -325,6 +350,114 @@ class TestNoPathFromAdviceToAWorker(unittest.TestCase):
 
 
 class TestServiceIntegration(RealServiceBase):
+    def test_real_site_uses_only_allowlisted_finding_for_requested_ai_explanation(self):
+        self.onboard()
+        self.run_l1()
+        with _MockServer() as mock:
+            self.svc._chat_backend = AbliterationBackend(mock.url, model="mock")
+            self.svc._real_site_safe_ai = True
+            executed = []
+            original = self.svc.gateway.execute
+            self.svc.gateway.execute = lambda *a, **k: executed.append(a) or original(*a, **k)
+            try:
+                out = self.svc.ask_chat("AIで解説", "appr", finding_id="f_headers", safe_advice=True)
+            finally:
+                self.svc.gateway.execute = original
+            self.assertEqual(out["message"]["source"], "external_model")
+            self.assertIn("mock", out["message"]["actor"])
+            self.assertTrue(out["message"]["text"])
+            self.assertEqual(executed, [])
+            self.assertEqual(len(mock.srv.received), 1)
+            sent = json.dumps(mock.srv.received[0], ensure_ascii=False)
+            for private in (HOST, self.url, "evidence_id", "audit_hash", "target_url", "body_prefix", "Set-Cookie"):
+                self.assertNotIn(private, sent)
+            finding = json.loads(mock.srv.received[0]["messages"][1]["content"])["findings"][0]
+            self.assertEqual((finding["ref"], finding["rule"], finding["verdict"]),
+                             ("F1", "f_headers", "detected"))
+
+    def test_real_site_never_sends_arbitrary_chat_text_to_ai(self):
+        self.onboard()
+        self.run_l1()
+        with _MockServer() as mock:
+            self.svc._chat_backend = AbliterationBackend(mock.url, model="mock")
+            self.svc._real_site_safe_ai = True
+            out = self.svc.ask_chat("秘密の値は private-12345 です", "appr", finding_id="f_headers")
+            self.assertEqual(out["message"]["source"], "builtin")
+            self.assertEqual(mock.srv.received, [])
+            safe = self.svc.ask_chat("秘密の値は private-12345 です", "appr",
+                                     finding_id="f_headers", safe_advice=True)
+            self.assertEqual(safe["message"]["source"], "external_model")
+            self.assertNotIn("private-12345", json.dumps(mock.srv.received, ensure_ascii=False))
+
+    def test_real_site_ai_requires_operator_opt_in_and_rejects_overclaim(self):
+        self.onboard()
+        self.run_l1()
+        with _MockServer(_advice_reply([_ok_item(
+                risk_explanation="この脆弱性は実証済みで、悪用に成功しました。")])) as mock:
+            self.svc._chat_backend = AbliterationBackend(mock.url, model="mock")
+            self.svc._real_site_safe_ai = False
+            off = self.svc.ask_chat("AIで解説", "appr", finding_id="f_headers", safe_advice=True)
+            self.assertEqual(off["message"]["source"], "builtin")
+            self.assertEqual(mock.srv.received, [])
+            self.svc._real_site_safe_ai = True
+            rejected = self.svc.ask_chat("AIで解説", "appr", finding_id="f_headers", safe_advice=True)
+            self.assertEqual(rejected["message"]["source"], "builtin")
+            self.assertEqual(len(mock.srv.received), 1)
+
+    def test_real_site_ai_never_sends_when_pre_send_audit_fails(self):
+        self.onboard()
+        self.run_l1()
+        with _MockServer() as mock:
+            self.svc._chat_backend = AbliterationBackend(mock.url, model="mock")
+            self.svc._real_site_safe_ai = True
+            original = self.svc.audit.record
+
+            def fail_send(event, **fields):
+                if event == "advisor.safe_send_requested":
+                    raise OSError("audit unavailable")
+                return original(event, **fields)
+
+            with patch.object(self.svc.audit, "record", side_effect=fail_send):
+                with self.assertRaises(OSError):
+                    self.svc.ask_chat("AIで解説", "appr", finding_id="f_headers", safe_advice=True)
+            self.assertEqual(mock.srv.received, [])
+
+    def test_real_site_ai_reply_cannot_be_saved_after_workspace_switch(self):
+        self.onboard()
+        self.run_l1()
+        with _MockServer() as mock:
+            self.svc._chat_backend = AbliterationBackend(mock.url, model="mock")
+            self.svc._real_site_safe_ai = True
+            original = adv.AbliterationAdvisor.advise
+
+            def switch_during_reply(advisor, findings):
+                result = original(advisor, findings)
+                self.svc.select_asset("lab")
+                return result
+
+            with patch.object(adv.AbliterationAdvisor, "advise", switch_during_reply):
+                with self.assertRaisesRegex(ValueError, "変更"):
+                    self.svc.ask_chat("AIで解説", "appr", finding_id="f_headers", safe_advice=True)
+            self.assertEqual(self.svc.snapshot()["chat_messages"], [])
+
+    def test_real_site_ai_reply_names_the_model_that_answered(self):
+        self.onboard()
+        self.run_l1()
+        with _MockServer() as mock:
+            self.svc._chat_backend = AbliterationBackend(mock.url, model="original-model")
+            self.svc._real_site_safe_ai = True
+            original = adv.AbliterationAdvisor.advise
+
+            def replace_backend(advisor, findings):
+                result = original(advisor, findings)
+                self.svc._chat_backend = AbliterationBackend(mock.url, model="later-model")
+                return result
+
+            with patch.object(adv.AbliterationAdvisor, "advise", replace_backend):
+                out = self.svc.ask_chat("AIで解説", "appr", finding_id="f_headers", safe_advice=True)
+            self.assertIn("original-model", out["message"]["actor"])
+            self.assertNotIn("later-model", out["message"]["actor"])
+
     def test_real_service_findings_never_reach_the_advisor_and_nothing_runs(self):
         with _MockServer() as m:
             advisor = adv.AbliterationAdvisor(m.url)

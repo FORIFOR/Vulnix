@@ -1130,7 +1130,8 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         return self._json(400, {"error": "質問を入力してください"})
                     term = str(body.get("term") or "") or None
                     finding_id = str(body.get("finding_id") or "") or None
-                    return self._json(200, svc.ask_chat(q, actor, term=term, finding_id=finding_id))
+                    return self._json(200, svc.ask_chat(q, actor, term=term, finding_id=finding_id,
+                                                       safe_advice=body.get("safe_advice") is True))
                 elif m := re.fullmatch(base + r"/approvals/(req_[0-9a-f]+)", p):
                     decision = body.get("decision")
                     if decision not in ("approve", "reject"):
