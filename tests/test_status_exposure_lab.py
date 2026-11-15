@@ -4,12 +4,21 @@ import os
 import subprocess
 import sys
 import threading
+import tempfile
+import time
 import unittest
 import urllib.error
 import urllib.request
 from pathlib import Path
 
 from tests.fixtures.status_exposure_lab import StatusExposureLab
+from unittest.mock import patch
+
+from aegis.assessment import AssessmentService
+from aegis import assessment as assessment_module
+from tests import TEST_CONFINEMENT
+from tests.test_artex_bridge import FAKE, LOOPBACK_LLM
+from tests.artex_mock_llm import MockLLM
 
 
 class TestStatusExposureLab(unittest.TestCase):
@@ -49,3 +58,72 @@ class TestStatusExposureLab(unittest.TestCase):
                 finally:
                     server.shutdown()
                     server.server_close()
+
+
+class TestStatusPlanToEvidence(unittest.TestCase):
+    def test_owned_lab_plan_gateway_worker_and_verdict(self):
+        for mode, expected, consent in (("vulnerable", "detected", True),
+                                        ("patched", "not_reproduced", True),
+                                        ("generic_200", "not_reproduced", True),
+                                        ("vulnerable", None, False),
+                                        ("non_apache", None, True)):
+            with self.subTest(mode=mode, consent=consent):
+                site = StatusExposureLab(mode)
+                thread = threading.Thread(target=site.serve_forever, daemon=True)
+                thread.start()
+                try:
+                    with tempfile.TemporaryDirectory() as tmp:
+                        with patch.dict(os.environ, {"AEGIS_ENV": "development"}):
+                            svc = AssessmentService(Path(tmp), 18081,
+                                l2_confinement=TEST_CONFINEMENT, real_site_read_only=True)
+                            try:
+                                host = "owned-status.example.test"
+                                svc._custom_resolver = lambda name: ["127.0.0.1"] if name == host else []
+                                svc._real_site_local_artex = True
+                                svc._artex_real_cmd = FAKE
+                                svc._artex_llm_url = LOOPBACK_LLM
+                                url = f"http://{host}:{site.server_port}"
+                                challenge = svc.issue_ownership_challenge(url=url)["challenge"]
+                                svc.verify_asset_ownership(url_or_host=url, method="dns_txt",
+                                    dns_lookup=lambda name: [f'{name} text = "{challenge["dns_txt_value"]}"'])
+                                svc.confirm_asset_scope(url_or_host=url, activate_workspace=True,
+                                    allow_loopback_test=True, allow_status_probe=consent)
+                                original = assessment_module.run_artex_planner
+
+                                def propose_status(command, request, **kwargs):
+                                    request = {**request, "fake_intents": [{
+                                        "summary": "Check Apache mod_status exposure",
+                                        "asset_ids": [1], "priority": 5}]}
+                                    return original(command, request, **kwargs)
+
+                                with MockLLM() as model, patch.dict(os.environ, {
+                                        "VULNIX_REAL_SITE_INITIAL_ARTEX": "1",
+                                        "VULNIX_ARTEX_LLM_MODE": "gateway-forward",
+                                        "VULNIX_ARTEX_LLM_UPSTREAM_URL": model.url + "/chat/completions"}), \
+                                        patch.object(assessment_module, "run_artex_planner",
+                                                     side_effect=propose_status):
+                                    svc.start()
+                                    deadline = time.monotonic() + 20
+                                    while svc.snapshot()["state"] == "running" and time.monotonic() < deadline:
+                                        time.sleep(0.02)
+                                snap = svc.snapshot()
+                                self.assertEqual(snap["state"], "completed", snap.get("failure"))
+                                plan = snap["artex_plan"]["plan"]
+                                item = next(i for i in plan["items"]
+                                            if i["catalog_id"] == "l1_apache_mod_status")
+                                selected = consent and mode != "non_apache"
+                                self.assertEqual(item["status"], "completed" if selected else "unsupported")
+                                self.assertEqual(site.seen, ["/", "/server-status?auto"] if selected else ["/"])
+                                found = [f for f in snap["findings"]
+                                         if f["id"] == "f_l1_apache_mod_status"]
+                                if selected:
+                                    self.assertEqual(found[0]["evidence_status"], expected)
+                                    self.assertTrue(found[0]["evidence"][0]["audit_hash"])
+                                else:
+                                    self.assertEqual(found, [])
+                            finally:
+                                svc.close()
+                finally:
+                    site.shutdown()
+                    site.server_close()
+                    thread.join(timeout=2)

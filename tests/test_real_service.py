@@ -590,6 +590,29 @@ class TestOwnershipGate(RealServiceBase):
 
 
 class TestL1Diagnosis(RealServiceBase):
+    def test_status_marker_is_forbidden_in_non_read_only_real_site_mode(self):
+        self.onboard(allow_status_probe=True)
+        marker_url = self.url + "/server-status?auto"
+        marker = self.svc.gateway.egress.check(marker_url, self.svc.a.engagement.targets["lab"])
+        with self.assertRaises(PolicyError):
+            self.svc._launch_guard("status_marker", {"url": marker_url}, marker)
+        self.assertEqual(self.fake.seen, [])
+
+    def test_status_result_is_not_adopted_after_scope_regrant(self):
+        self.svc.real_site_read_only = True
+        self.onboard(allow_status_probe=True)
+        self.assertEqual(self.run_l1()["state"], "completed")
+        marker_url = self.url + "/server-status?auto"
+        marker = self.svc.gateway.egress.check(marker_url, self.svc.a.engagement.targets["lab"])
+        self.svc._launch_guard("status_marker", {"url": marker_url}, marker)
+        self.svc.confirm_asset_scope(url_or_host=self.url, approver="appr",
+                                     allow_loopback_test=True, allow_status_probe=True)
+        with self.svc._lock:
+            self.assertFalse(self.svc._record_status_result_locked(
+                {"tool": "status_marker", "audit_hash": "old-result"}))
+        self.assertNotIn("status_result_audit_hash", self.svc.ledger.scan_usage[HOST])
+        self.assertEqual([path for path, _ in self.fake.seen], ["/"])
+
     def test_second_fixed_get_requires_separate_signed_consent(self):
         self.svc.real_site_read_only = True
         self.onboard()
@@ -748,7 +771,7 @@ class TestL1Diagnosis(RealServiceBase):
                                        "VULNIX_ARTEX_LLM_UPSTREAM_URL": "http://127.0.0.1:19991/v1/chat/completions"}), \
                 patch.object(self.svc, "_plan_with_artex", side_effect=AssertionError("unexpected model")) as plan:
             snap = self.run_l1()
-        self.assertEqual(snap["state"], "completed")
+        self.assertEqual(snap["state"], "completed", snap.get("failure"))
         self.assertEqual([path for path, _ in self.fake.seen], ["/"])
         plan.assert_not_called()
 
@@ -797,7 +820,7 @@ class TestL1Diagnosis(RealServiceBase):
                                        "VULNIX_ARTEX_LLM_UPSTREAM_URL": "http://127.0.0.1:19991/v1/chat/completions"}), \
                 patch.object(self.svc, "_plan_with_artex", create=True, side_effect=plan):
             snap = self.run_l1()
-        self.assertEqual(snap["state"], "completed")
+        self.assertEqual(snap["state"], "completed", snap.get("failure"))
         self.assertEqual([path for path, _ in self.fake.seen], ["/"])
         self.assertEqual(len(seen), 1)
         self.assertEqual(seen[0][0], "running")

@@ -7,12 +7,31 @@ from aegis.gateway import _validate_status_marker_report, status_marker_tool
 from aegis.policy import PolicyError, validate_proposal
 from aegis.network import PinnedDestination
 from aegis.runtime import WorkerResult
+from aegis.service_diag import analyze_status_marker_report
 from aegis.workers.http_probe import probe
 from tests.fixtures.status_exposure_lab import StatusExposureLab
 from tests.test_gateway import Base
 
 
 class TestStatusMarkerReport(unittest.TestCase):
+    def test_only_measured_markers_create_detected_finding(self):
+        evidence = {"evidence_id": "ev_test", "tool": "status_marker",
+                    "audit_hash": "signed-result", "content": "fixed fields only"}
+        for status, markers, detected in (
+            (200, {"total_accesses": True, "uptime_seconds": True}, True),
+            (403, {"total_accesses": False, "uptime_seconds": False}, False),
+            (200, {"total_accesses": False, "uptime_seconds": False}, False),
+        ):
+            with self.subTest(status=status, detected=detected):
+                report = {"check_id": "apache_mod_status", "elapsed_ms": 1,
+                          "status": status, "markers": markers, "detected": detected}
+                finding = analyze_status_marker_report(report, evidence)
+                self.assertEqual(finding["id"], "f_l1_apache_mod_status")
+                self.assertEqual(finding["verdict"], "detected" if detected else "not_reproduced")
+                self.assertEqual("公開露出" in finding["title"], detected)
+                self.assertEqual(finding["evidence"], [evidence])
+                self.assertEqual(finding["risk_score"] > 0, detected)
+
     def test_catalog_tool_accepts_only_fixed_endpoint(self):
         tool = status_marker_tool()
         proposal = {"tool": "status_marker", "target_id": "lab", "action": "read_only_probe",
