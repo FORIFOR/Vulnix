@@ -104,6 +104,8 @@ class TestLabAccuracy(unittest.TestCase):
                 self.assertIsNone(svc.a.defense_comparison)
                 svc.a.defense_comparison = {"lab_mode": "vulnerable", "before_score": 94, "after_score": 94}
                 self.assertIsNone(svc.snapshot()["defense_comparison"])
+                svc.a.defense_comparison["lab_mode"] = "patched"
+                self.assertIsNone(svc.snapshot()["defense_comparison"])
             finally:
                 svc.close()
         self.assertEqual("vulnerable", self.lab.lab_state.mode)

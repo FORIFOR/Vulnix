@@ -3007,8 +3007,10 @@ class AssessmentService:
                 # the open site's runs only: nothing of another site follows into this view
                 "run_history": [h for h in self.a.run_history
                                 if h.get("asset_id") == self.a.asset.get("id")],
-                "defense_comparison": (self.a.defense_comparison if is_ext or not self.a.defense_comparison
-                                       or self.a.defense_comparison.get("lab_mode") == "patched" else None),
+                "defense_comparison": (self.a.defense_comparison if is_ext
+                                       or (getattr(self, "_may_switch_lab", True)
+                                           and self.a.defense_comparison
+                                           and self.a.defense_comparison.get("lab_mode") == "patched") else None),
                 "cve_status": self.cve_monitor.status(),
                 "artex_tasks": [
                     {"id": tk.id, "phase": tk.phase, "title": clean_target_text(tk.title, 200),
