@@ -40,7 +40,7 @@ export function ArtexPlanPanel({ snap, onUpdate }: {
     }
   };
 
-  const verified = plan?.engine.kind === "artex-binary";
+  const verified = plan?.engine.kind === "artex-binary" && plan.engine.pinned === true;
   return (
     <Card className="mb-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
