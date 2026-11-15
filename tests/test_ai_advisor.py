@@ -115,6 +115,7 @@ class TestPayloadIsAnAllowList(unittest.TestCase):
             result = adv.AbliterationAdvisor(mock.url).advise([finding])
             sent = json.loads(mock.srv.received[0]["messages"][1]["content"])
         self.assertEqual(sent["findings"][0]["verdict"], "candidate")
+        self.assertTrue(result.advice, result.rejected)
         self.assertTrue(all(a.claim_level in {"suspected", "inconclusive"} for a in result.advice))
 
     def test_a_payload_that_still_leaks_is_refused_before_sending(self):
