@@ -386,6 +386,83 @@ class TestThePlanThroughTheGateway(ServiceBase):
                     self.svc.plan_with_artex("op")
                 runner.assert_not_called()
 
+        with patch.dict(os.environ, {"VULNIX_ARTEX_LLM_MODE": "direct",
+                                  "VULNIX_ARTEX_LLM_UPSTREAM_URL": "http://127.0.0.1:9/v1/chat/completions"}), \
+                patch.object(assessment_module, "run_artex_planner") as runner:
+            with self.assertRaisesRegex(ValueError, "サーバー設定"):
+                self.svc.plan_with_artex("op", llm_mode="gateway-forward")
+            runner.assert_not_called()
+
+        with patch.dict(os.environ, {"VULNIX_ARTEX_LLM_MODE": "gateway-forward",
+                                  "VULNIX_ARTEX_LLM_UPSTREAM_URL": "",
+                                  "VULNIX_ABLITERATION_URL": "http://127.0.0.1:9/v1/chat/completions"}), \
+                patch.object(assessment_module, "run_artex_planner") as runner:
+            with self.assertRaisesRegex(ValueError, "専用"):
+                self.svc.plan_with_artex("op")
+            runner.assert_not_called()
+
+    def test_real_site_plan_discarded_if_scope_expires_during_model_run(self):
+        from aegis import assessment as assessment_module
+
+        self.svc._real_site_local_artex = True
+        self.svc.issue_ownership_challenge(url="https://site.test/")
+        self.svc.verify_asset_ownership(
+            url_or_host="site.test", method="google_search_console",
+            google_property="sc-domain:site.test", google_endpoint=("https", 443))
+        self.svc.confirm_asset_scope(url_or_host="site.test", confirmed_prohibited=True,
+                                     activate_workspace=True)
+        self.svc.a.state = "completed"
+
+        with patch.dict(os.environ, {"VULNIX_ARTEX_LLM_MODE": "gateway-forward",
+                                  "VULNIX_ARTEX_LLM_UPSTREAM_URL": "http://127.0.0.1:9/v1/chat/completions"}):
+            gateway = self.svc._planner_gateway("op", None, (), self.svc._run_generation,
+                                                "gateway-forward", real_site=True)
+            self.assertTrue(gateway._may())
+            self.svc._verified_external_hosts["site.test"]["not_after"] = time.time() - 1
+            self.assertFalse(gateway._may())
+
+        self.svc._verified_external_hosts["site.test"]["not_after"] = time.time() + 300
+        original = assessment_module.run_artex_planner
+        def expire_after(*args, **kwargs):
+            result = original(*args, **kwargs)
+            self.svc._verified_external_hosts["site.test"]["not_after"] = time.time() - 1
+            return result
+        with patch.object(assessment_module, "run_artex_planner", side_effect=expire_after):
+            with self.assertRaises(ValueError):
+                self.svc.plan_with_artex("op")
+        self.assertIsNone(self.svc._artex_plan)
+
+    def test_real_site_plan_discarded_if_ownership_is_revoked_during_model_run(self):
+        from aegis import assessment as assessment_module
+
+        self.svc._real_site_local_artex = True
+        self.svc.issue_ownership_challenge(url="https://site.test/")
+        self.svc.verify_asset_ownership(
+            url_or_host="site.test", method="google_search_console",
+            google_property="sc-domain:site.test", google_endpoint=("https", 443))
+        self.svc.confirm_asset_scope(url_or_host="site.test", confirmed_prohibited=True,
+                                     activate_workspace=True)
+        self.svc.a.state = "completed"
+        record = self.svc._verified_external_hosts["site.test"]
+
+        with patch.dict(os.environ, {"VULNIX_ARTEX_LLM_MODE": "gateway-forward",
+                                  "VULNIX_ARTEX_LLM_UPSTREAM_URL": "http://127.0.0.1:9/v1/chat/completions"}):
+            gateway = self.svc._planner_gateway("op", None, (), self.svc._run_generation,
+                                                "gateway-forward", real_site=True)
+            self.svc._verified_external_hosts.pop("site.test")
+            self.assertFalse(gateway._may())
+            self.svc._verified_external_hosts["site.test"] = record
+
+        original = assessment_module.run_artex_planner
+        def revoke_after(*args, **kwargs):
+            result = original(*args, **kwargs)
+            self.svc._verified_external_hosts.pop("site.test")
+            return result
+        with patch.object(assessment_module, "run_artex_planner", side_effect=revoke_after):
+            with self.assertRaises(ValueError):
+                self.svc.plan_with_artex("op")
+        self.assertIsNone(self.svc._artex_plan)
+
     def test_real_site_planner_refuses_an_expired_scope(self):
         self.svc._real_site_local_artex = True
         self.svc.issue_ownership_challenge(url="https://site.test/")
