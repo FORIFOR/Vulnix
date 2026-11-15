@@ -304,8 +304,9 @@ class TenantRegistry:
         # account-level events (sign-up, sign-in, MFA, roles, refused org access) of every
         # tenant: never in an organization's own audit log or event stream
         self.platform_audit = AuditLog(Path(data_dir) / "platform-audit.jsonl")
-        # the default service shares the mock lab with every organization
-        default_svc._restore_lab_after_fix = True
+        # Every organization, including the legacy default one, shares this
+        # process-wide lab. No tenant may change its mode during another run.
+        default_svc._may_switch_lab = False
 
     def service(self, org_id: str):
         if org_id == DEFAULT_ORG:
@@ -319,9 +320,8 @@ class TenantRegistry:
                 d.mkdir(parents=True, exist_ok=True)
                 os.chmod(d, 0o700)
                 svc = self._factory(d)
-                # the mock lab is one process-wide service: only the default organization's
-                # service may switch it (start / restart / verify-fix would otherwise change
-                # what every other organization's checks see)
+                # The mock lab is one process-wide service. A mode change would
+                # change what another organization's running check observes.
                 svc._may_switch_lab = False
                 self._services[org_id] = svc
             return svc

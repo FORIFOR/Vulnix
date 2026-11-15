@@ -533,10 +533,11 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             if tenancy is not None:
                 if p.startswith("/api/orgs") or p == "/api/invites/accept":
                     return self._tenancy_post(p, body, sess)
-                if p.endswith("/lab-mode") and "admin" not in sess.roles:
-                    # the mock lab is one process-wide service shared by every organization
+                if p.endswith("/lab-mode"):
+                    # the mock lab is shared even with the default organization;
+                    # a platform admin could change another tenant's run mid-probe
                     paudit.record("tenancy.lab_mode_denied", actor=sess.operator)
-                    return self._json(403, {"error": "模擬ラボの設定は全組織で共有のため、プラットフォーム管理者だけが変更できます"})
+                    return self._json(403, {"error": "模擬ラボは全組織で共有されているため、公開版では設定を変更できません"})
                 if p not in PLATFORM_POST_ROUTES:
                     bound = self._bind(sess)
                     if bound is None:

@@ -355,11 +355,11 @@ class TestReviewFixesOverHttp(TestTenantIsolationOverHttp):
         conn.close()
         self.assertNotIn(b"bobby", data.split(b"tenancy.member_removed")[-1] if b"tenancy.member_removed" in data else b"")
 
-    def test_the_shared_lab_mode_is_platform_admin_only(self):
+    def test_the_shared_lab_mode_cannot_be_changed_while_tenants_share_it(self):
         a = self.signup("alice")                                   # owner of her own org
         self.assertEqual(self.req(a, "/assessments/scan_001/lab-mode", {"mode": "patched"})[0], 403)
         p = self.login("padmin", "padmin-pw-1")
-        self.assertNotEqual(self.req(p, "/assessments/scan_001/lab-mode", {"mode": "vulnerable"})[0], 403)
+        self.assertEqual(self.req(p, "/assessments/scan_001/lab-mode", {"mode": "patched"})[0], 403)
 
     def test_system_status_is_the_callers_own_org(self):
         p = self.login("padmin", "padmin-pw-1")
@@ -512,19 +512,15 @@ class TestThirdReviewFixes(TestTenantIsolationOverHttp):
         with patch.object(srvmod, "CHAT_PER_ORG_PER_HOUR", 1):
             self.assertEqual(self.req(a, "/assessments/scan_001/chat", {"question": "x"})[0], 200)
 
-    def test_the_default_orgs_fix_check_puts_the_shared_lab_back(self):
-        import aegis.assessment as am
+    def test_the_default_org_cannot_claim_a_patched_comparison_on_a_shared_lab(self):
         from aegis.lab import get_lab_mode, set_lab_mode
         set_lab_mode("vulnerable")
-        self.assertTrue(getattr(self.svc, "_restore_lab_after_fix", False))
-
-        def body(actor):                 # stands in for the real check: it switches the lab
-            am.set_lab_mode("patched")
-            return {"defense_comparison": {"lab_mode": get_lab_mode()}}
-        with patch.object(self.svc, "_verify_fix_body", side_effect=body):
-            out = self.svc._verify_fix("padmin")
-        self.assertEqual(out["defense_comparison"]["lab_mode"], "patched")   # recorded during the check
-        self.assertEqual(get_lab_mode(), "vulnerable")                       # shared lab put back
+        self.assertFalse(getattr(self.svc, "_may_switch_lab", True))
+        self.svc.a.state = "completed"
+        with self.assertRaisesRegex(ValueError, "共有"):
+            self.svc.verify_fix("padmin")
+        self.assertIsNone(self.svc.a.defense_comparison)
+        self.assertEqual(get_lab_mode(), "vulnerable")
 
 
 class TestFourthReviewLows(TestTenantIsolationOverHttp):
