@@ -2082,7 +2082,12 @@ class AssessmentService:
                 ok = _proofs() > before          # this run recorded evidence for this finding
             else:
                 with self._lock:
-                    self._ensure_active_window_locked()
+                    if self._is_external_service_asset():
+                        # An ARTEX item belongs to the current run. Rechecking its
+                        # authority must not refill the Gateway's spent Worker budget.
+                        self._ensure_artex_authority_locked()
+                    else:
+                        self._ensure_active_window_locked()
                 res, ev = self._exec(entry.tool, entry.action, entry.args_for(url),
                                      approval_actor=f"artex-L1:{actor}")
                 if res is not None:
