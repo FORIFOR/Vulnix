@@ -505,6 +505,7 @@ class TestAnonymousRealSitePlannerInput(unittest.TestCase):
         request = anonymous_real_site_request([finding])
         self.assertEqual(request["targets"], [{"asset_id": 1, "target_id": "site", "url": "http://lab.test/"}])
         self.assertEqual(len(request["observations"]), 1)
+        self.assertIn("f_headers", request["observations"][0]["title"])
         detail = request["observations"][0]["detail"]
         self.assertIn("f_headers", detail)
         self.assertIn("detected", detail)

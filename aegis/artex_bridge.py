@@ -133,10 +133,12 @@ def anonymous_real_site_request(findings: list[dict]) -> dict:
         if (item["rule"] == "other" or item["verdict"] not in ("detected", "proven")
                 or item["verdict_basis"] == "demo_fixture"):
             continue
-        observations.append({
-            "title": f"Measured finding {item['ref']}",
-            "detail": json.dumps(item, ensure_ascii=False, sort_keys=True),
-        })
+        safe_fact = json.dumps(item, ensure_ascii=False, sort_keys=True)
+        # ARTEX puts fact summaries in the planner's first prompt; the detail is
+        # available only if the model later calls node_detail. Both use the same
+        # fixed fields so the initial plan can respond to the measured finding.
+        observations.append({"title": f"Measured finding {item['ref']}: {safe_fact}",
+                             "detail": safe_fact})
     return {
         "goal": "匿名化された実サイトの実測所見を基に、低負荷・読み取り専用の確認だけを計画する。未確認の候補を検出済みと扱わない。",
         "targets": [{"asset_id": 1, "target_id": "site", "url": "http://lab.test/"}],
