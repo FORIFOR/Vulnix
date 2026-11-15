@@ -235,6 +235,11 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 return ""
             if p.endswith(_L1_ONLY_ROUTES):
                 return ""
+            base = f"/api/assessments/{osvc.a.id}"
+            if getattr(osvc, "_real_site_local_artex", False) and (
+                    p == base + "/artex/plan"
+                    or re.fullmatch(base + r"/artex/items/[A-Za-z0-9_]{1,80}/execute", p)):
+                return ""
             return ("実在するサイトに対しては、読み取り専用の診断（ページを1回取得して設定を調べる）だけを行います。"
                     "この操作は実在するサイトでは使えません")
 
@@ -559,7 +564,10 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         return self._json(403, {"error": "閲覧者の権限では操作できません"})
                     # L1-only mode: traffic to real sites is bounded per organization and platform-wide
                     limited = None
-                    if REAL_SITE_L1_ONLY and not real_site_traffic and p.endswith(("/start", "/restart", "/resume")):
+                    artex_item = bool(re.fullmatch(
+                        f"/api/assessments/{osvc.a.id}" + r"/artex/items/[A-Za-z0-9_]{1,80}/execute", p))
+                    if REAL_SITE_L1_ONLY and not real_site_traffic and (
+                            p.endswith(("/start", "/restart", "/resume")) or artex_item):
                         # the workspace can be switched onto a proven site between this check and
                         # the run: every run of an organization holding one is counted
                         try:
@@ -571,7 +579,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                             limited = (verify_times, verify_all, OWNERSHIP_CHECKS_PER_ORG_PER_HOUR,
                                        OWNERSHIP_CHECKS_PLATFORM_PER_HOUR,
                                        "所有確認は1時間あたりの上限に達しました。DNS の設定が反映されるまで少し待ってからお試しください")
-                        elif p.endswith(("/start", "/restart", "/resume")):
+                        elif p.endswith(("/start", "/restart", "/resume")) or artex_item:
                             limited = (real_run_times, real_run_all, REAL_SITE_RUNS_PER_ORG_PER_HOUR,
                                        REAL_SITE_RUNS_PLATFORM_PER_HOUR,
                                        "このサイトの診断は1時間あたりの上限に達しました。時間をおいてお試しください")

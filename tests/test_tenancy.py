@@ -857,6 +857,36 @@ class TestPublicReadOnlyRealSitesReview(TestPublicReadOnlyRealSites):
                 self.assertNotEqual(self.req(a, f"/assessments/{aid}{route}", {})[0], 403, route)
         self.assertNotEqual(self.req(a, f"/assessments/{aid}/chat", {"question": "x"})[0], 403)
 
+    def test_opted_in_anonymous_artex_plan_and_l1_item_reach_only_their_organization(self):
+        a, b = self.signup("alice"), self.signup("bobby")
+        aid = self._proven(a)
+        osvc = self.reg.service(a["orgs"][0]["id"])
+        osvc._real_site_local_artex = True
+        plan = f"/assessments/{aid}/artex/plan"
+        item = f"/assessments/{aid}/artex/items/ax_test_1/execute"
+        with patch.object(osvc, "plan_with_artex", return_value={"ok": True}) as planned, \
+                patch.object(osvc, "execute_artex_item", return_value={"ok": True}) as executed:
+            self.assertEqual(self.req(a, plan, {})[0], 200)
+            self.assertEqual(self.req(a, item, {})[0], 200)
+            a_org = a["orgs"][0]["id"]
+            self.assertEqual(self.req(b, plan, {}, org=a_org)[0], 403)
+            self.assertEqual(self.req(b, item, {}, org=a_org)[0], 403)
+        planned.assert_called_once()
+        executed.assert_called_once()
+
+    def test_opted_in_artex_l1_item_is_counted_against_real_site_run_limit(self):
+        from aegis import server as srvmod
+        a = self.signup("alice")
+        aid = self._proven(a)
+        osvc = self.reg.service(a["orgs"][0]["id"])
+        osvc._real_site_local_artex = True
+        item = f"/assessments/{aid}/artex/items/ax_test_1/execute"
+        with patch.object(srvmod, "REAL_SITE_RUNS_PER_ORG_PER_HOUR", 1), \
+                patch.object(osvc, "execute_artex_item", return_value={"ok": True}) as executed:
+            self.assertEqual(self.req(a, item, {})[0], 200)
+            self.assertEqual(self.req(a, item, {})[0], 429)
+        executed.assert_called_once()
+
     def test_real_site_runs_are_capped_per_org(self):
         from aegis import server as srvmod
         a = self.signup("alice")
