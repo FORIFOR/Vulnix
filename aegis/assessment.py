@@ -1610,7 +1610,8 @@ class AssessmentService:
             self._refuse_after_stop_locked()
             self._refuse_artex_on_real_service_locked()
             real_site = self._is_external_service_asset()
-            if real_site and (llm_mode or os.environ.get("VULNIX_ARTEX_LLM_MODE", "direct")) not in ("direct", "gateway-preview"):
+            if real_site and (llm_mode or os.environ.get("VULNIX_ARTEX_LLM_MODE", "direct")) not in (
+                    "direct", "gateway-preview", "gateway-forward"):
                 raise ValueError("実サイトのARTEX計画はローカルモデルだけで作成できます")
             if self._unstopped_now_locked():
                 # while anything is not confirmed stopped, nothing new launches
@@ -1662,7 +1663,7 @@ class AssessmentService:
             raise ValueError("ARTEX プランナーを OS レベルで隔離して起動できないため実行しません"
                              f"（{str(st.get('reason', ''))[:200]}）")
         self.audit.record("artex.plan_requested", actor=actor, targets=len(targets), confined=confinement is not None)
-        gateway = self._planner_gateway(actor, llm_approval, roles, gen, llm_mode)
+        gateway = self._planner_gateway(actor, llm_approval, roles, gen, llm_mode, real_site=real_site)
         llm_url, llm_key = self._artex_llm_url, ""
         if gateway is not None:
             try:
@@ -1771,7 +1772,8 @@ class AssessmentService:
 
     PREVIEW_TTL_S = 30 * 60
 
-    def _planner_gateway(self, actor: str, approval: dict | None, roles, gen: int, mode: str | None):
+    def _planner_gateway(self, actor: str, approval: dict | None, roles, gen: int, mode: str | None,
+                         *, real_site: bool = False):
         """The Planner LLM Gateway for this run. Mode: the request's `llm_mode`, else
         VULNIX_ARTEX_LLM_MODE: direct (none) | gateway-preview | gateway-forward."""
         configured = os.environ.get("VULNIX_ARTEX_LLM_MODE", "direct").strip()
@@ -1816,6 +1818,8 @@ class AssessmentService:
             raise ValueError("llm_mode は direct / gateway-preview / gateway-forward のいずれかです")
         upstream = os.environ.get("VULNIX_ARTEX_LLM_UPSTREAM_URL") or os.environ.get("VULNIX_ABLITERATION_URL", "")
         host = (urllib.parse.urlsplit(upstream).hostname or "")
+        if real_site and host not in ("127.0.0.1", "::1"):
+            raise ValueError("実サイトのARTEX計画はローカルモデルだけで作成できます（ループバックIP必須）")
         real = host not in ("127.0.0.1", "::1", "localhost")
         bound = None
         if real:
