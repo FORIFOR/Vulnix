@@ -65,10 +65,10 @@ KNOWN_RULES = frozenset({
 })
 KNOWN_CATEGORIES = frozenset({
     "暗号・TLS設定", "設定不備", "セッション・Cookie設定", "CORS・オリジン境界", "既知の脆弱性（CVE）",
-    "情報露出", "APIアクセス制御", "アクセス制御", "入力検証",
+    "情報露出", "APIアクセス制御", "アクセス制御", "入力検証", "インジェクション",
 })
 SEVERITIES = ("critical", "high", "medium", "low", "info")
-VERDICTS = ("detected", "proven", "not_reproduced", "unverified", "fixed")
+VERDICTS = ("candidate", "detected", "proven", "not_reproduced", "unverified", "fixed")
 VERDICT_BASES = ("l1_observation", "l2_reproduction", "demo_fixture")
 _CVE_RE = re.compile(r"^CVE-\d{4}-\d{4,7}$")
 MAX_FINDINGS = 20
@@ -88,7 +88,7 @@ def finding_to_payload_item(ref: str, finding: dict) -> dict:
         "rule": _enum(finding.get("id"), KNOWN_RULES, "other"),
         "category": _enum(finding.get("category"), KNOWN_CATEGORIES, "その他"),
         "severity": _enum(finding.get("severity"), SEVERITIES, "medium"),
-        "verdict": _enum(finding.get("verdict"), VERDICTS, "detected"),
+        "verdict": _enum(finding.get("verdict"), VERDICTS, "unverified"),
         "verdict_basis": _enum(finding.get("verdict_basis"), VERDICT_BASES, "l1_observation"),
         "cve": cves,
         "risk_score": risk if risk is None or 0 <= risk <= 100 else None,

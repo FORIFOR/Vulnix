@@ -26,6 +26,7 @@ CLAIM_LEVELS = MappingProxyType({
     "fixed_verified": "修正後の再検証で再現しなかった",
 })
 CLAIMS_BY_VERDICT = MappingProxyType({
+    "candidate": frozenset({"suspected", "inconclusive"}),
     "detected": frozenset({"observed", "suspected", "inconclusive"}),
     "unverified": frozenset({"suspected", "inconclusive"}),
     "proven": frozenset({"reproduced", "observed"}),

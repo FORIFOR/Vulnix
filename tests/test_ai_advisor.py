@@ -93,7 +93,24 @@ class TestPayloadIsAnAllowList(unittest.TestCase):
         item = adv.finding_to_payload_item("F1", {"id": "f_site_specific_rule", "category": "社内システムXの分類",
                                                   "severity": "urgent", "verdict": "pwned", "risk_score": float("nan")})
         self.assertEqual((item["rule"], item["category"], item["severity"], item["verdict"], item["risk_score"]),
-                         ("other", "その他", "medium", "detected", None))
+                         ("other", "その他", "medium", "unverified", None))
+
+    def test_candidate_is_never_sent_or_explained_as_detected(self):
+        finding = _leaky_finding("f_sqli", verdict="candidate")
+        item = adv.finding_to_payload_item("F1", finding)
+        self.assertEqual(item["verdict"], "candidate")
+        self.assertEqual(adv.finding_to_payload_item("F1", {"id": "f_sqli", "category": "インジェクション"})["category"],
+                         "インジェクション")
+        observed = _ok_item("F1", claim_level="observed",
+                            remediation=[_rem("入力値をパラメータ化する", "parameterize_queries")], next_checks=[])
+        accepted, rejected = adv.validate_advice({"advice": [observed]}, {"F1": finding})
+        self.assertEqual(accepted, [])
+        self.assertTrue(any(r["where"] == "claim_level" for r in rejected))
+        suspected = _ok_item("F1", claim_level="suspected",
+                             remediation=[_rem("入力値をパラメータ化する", "parameterize_queries")], next_checks=[])
+        accepted, rejected = adv.validate_advice({"advice": [suspected]}, {"F1": finding})
+        self.assertEqual(len(accepted), 1)
+        self.assertEqual(rejected, [])
 
     def test_a_payload_that_still_leaks_is_refused_before_sending(self):
         calls = []
