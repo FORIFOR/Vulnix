@@ -3098,7 +3098,8 @@ class AssessmentService:
             }
 
     def logs(self) -> dict:
-        return {"entries": self.audit.entries(), "chain_valid": self.audit.verify()}
+        entries, valid = self.audit.verified_entries()
+        return {"entries": entries, "chain_valid": valid}
 
     # ---- commands -----------------------------------------------------------
     def set_verify_seconds(self, seconds: float) -> None:
