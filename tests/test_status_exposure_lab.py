@@ -1,16 +1,26 @@
 """Fixed truth labels for the independent mod_status fixture."""
+import json
+import os
+import subprocess
+import sys
 import threading
 import unittest
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 from tests.fixtures.status_exposure_lab import StatusExposureLab
-from scripts.bench_status_exposure_baseline import measure_safety
 
 
 class TestStatusExposureLab(unittest.TestCase):
     def test_expired_or_revoked_scope_never_launches_a_worker(self):
-        checks = measure_safety()
+        result = subprocess.run(
+            [sys.executable, "-m", "scripts.bench_status_exposure_baseline"],
+            cwd=Path(__file__).resolve().parents[1],
+            env={**os.environ, "VULNIX_NO_ENV_LOCAL": "1"},
+            check=True, capture_output=True, text=True, timeout=30,
+        )
+        checks = json.loads(result.stdout)["safety"]
         self.assertEqual(set(checks), {"expired_scope", "revoked_ownership"})
         self.assertTrue(all(row["refused"] for row in checks.values()))
         self.assertTrue(all(row["worker_launches"] == 0 for row in checks.values()))
