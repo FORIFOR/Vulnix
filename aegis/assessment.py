@@ -1616,7 +1616,10 @@ class AssessmentService:
             if self._unstopped_now_locked():
                 # while anything is not confirmed stopped, nothing new launches
                 raise ValueError("停止を確認できていないプロセスがあるため、ARTEX を起動しません")
-            self._ensure_active_window_locked()
+            if real_site:
+                self._ensure_artex_authority_locked()
+            else:
+                self._ensure_active_window_locked()
             if real_site and self.a.state != "completed":
                 raise ValueError("初回診断が完了してから、実測結果に基づく追加確認を計画してください")
             if real_site:
@@ -1960,11 +1963,21 @@ class AssessmentService:
         return True
 
     def _ensure_artex_authority_locked(self) -> None:
-        if not self._in_ownership_flow(self.a.asset.get("name")):
+        name = self.a.asset.get("name")
+        if not self._in_ownership_flow(name):
             return
-        self._ensure_active_window_locked()
+        # Planning must recheck authority without replenishing Gateway's Worker
+        # budget. _ensure_active_window_locked updates that budget for a new run.
+        if self._persist_error:
+            raise ValueError("状態を保存できないため、ARTEX 計画を破棄しました")
+        ext = self._external_entry(name)
+        if ext is None:
+            raise ValueError("診断範囲の確認が失効または取り消されたため、ARTEX 計画を破棄しました")
+        e = self.a.engagement
+        effective = Engagement(e.id, True, e.authorization_ref, e.not_before,
+                               min(e.not_after, float(ext["not_after"])), e.targets, e.allowed_actions)
         try:
-            self.a.engagement.check_active(time.time())
+            effective.check_active(time.time())
         except AuthzError:
             raise ValueError("診断範囲の確認が失効したため、ARTEX 計画を破棄しました") from None
 

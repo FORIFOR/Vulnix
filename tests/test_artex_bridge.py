@@ -353,6 +353,10 @@ class TestThePlanThroughTheGateway(ServiceBase):
         self.svc.confirm_asset_scope(url_or_host="site.test", confirmed_prohibited=True,
                                      activate_workspace=True)
         self.svc.a.state = "completed"
+        from aegis.policy import Budget
+        remaining = Budget(2)
+        remaining.spend()
+        self.svc.gateway.budget = remaining
 
         with patch.dict(os.environ, {"VULNIX_ARTEX_LLM_MODE": "gateway-forward",
                                   "VULNIX_ARTEX_LLM_UPSTREAM_URL": "http://127.0.0.1:9/v1/chat/completions"}):
@@ -364,6 +368,9 @@ class TestThePlanThroughTheGateway(ServiceBase):
             with self.assertRaises(GatewayRefused):
                 gateway.inspect({"model": "mock", "messages": [
                     {"role": "user", "content": "Real target https://site.test/"}]})
+            self.assertTrue(self.svc._artex_may_start(self.svc._run_generation))
+            self.assertIs(self.svc.gateway.budget, remaining)
+            self.assertEqual(remaining._left, 1)
             self.svc._real_service_hosts.add("lab.test")
             try:
                 with self.assertRaises(GatewayRefused):
@@ -372,6 +379,8 @@ class TestThePlanThroughTheGateway(ServiceBase):
             finally:
                 self.svc._real_service_hosts.discard("lab.test")
             plan = self.plan()
+        self.assertIs(self.svc.gateway.budget, remaining)
+        self.assertEqual(remaining._left, 1)
         self.assertEqual(plan["llm_gateway"]["mode"], "forward")
         self.assertEqual(plan["llm_gateway"]["upstream"], "127.0.0.1")
 
