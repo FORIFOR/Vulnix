@@ -531,11 +531,12 @@ class TestFourthReviewLows(TestTenantIsolationOverHttp):
             for _ in range(3):        # refused by the service (no approval): never 429
                 self.assertNotEqual(self.req(a, "/assessments/scan_001/artex/plan", {"llm_mode": "gateway-forward"})[0], 429)
 
-    def test_the_report_shows_the_lab_state_the_fix_check_used(self):
+    def test_report_does_not_trust_old_shared_lab_comparison(self):
         self.svc.a.defense_comparison = {"lab_mode": "patched", "items": [], "before_score": 1, "after_score": 0}
         from aegis.lab import set_lab_mode
         set_lab_mode("vulnerable")
-        self.assertIn("ラボ防御状態: `patched`", self.svc.report_markdown())
+        self.assertNotIn("ラボ防御状態: `patched`", self.svc.report_markdown())
+        self.assertIn("ラボ防御状態: `vulnerable`", self.svc.report_markdown())
 
 
 class TestPublicDeploymentSwitches(TestTenantIsolationOverHttp):
