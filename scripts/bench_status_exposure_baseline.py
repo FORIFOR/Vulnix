@@ -46,10 +46,12 @@ def measure(mode: str) -> dict:
                 svc.confirm_asset_scope(url_or_host=url, confirmed_prohibited=True,
                                         activate_workspace=True, allow_loopback_test=True)
                 assert site.seen == [], "scope confirmation contacted the target"
-                counts = {"gateway_calls": 0, "worker_launches": 0, "state_saves": 0}
+                counts = {"gateway_calls": 0, "worker_launches": 0, "state_saves": 0,
+                          "ledger_commits": 0}
                 for obj, attr, key in ((svc.gateway, "execute", "gateway_calls"),
                                        (svc.workers, "run", "worker_launches"),
-                                       (svc, "_save_state_locked", "state_saves")):
+                                       (svc, "_save_state_locked", "state_saves"),
+                                       (svc.ledger, "commit", "ledger_commits")):
                     original = getattr(obj, attr)
                     def count(*args, _original=original, _key=key, **kwargs):
                         counts[_key] += 1
@@ -89,7 +91,7 @@ def measure(mode: str) -> dict:
         thread.join(timeout=2)
 
 
-def measure_safety() -> dict:
+def measure_safety(*, allow_status_probe: bool = False) -> dict:
     """Count denied starts after proof expiry/revocation, with zero target traffic."""
     checks = {}
     for case in ("expired_scope", "revoked_ownership"):
@@ -108,7 +110,8 @@ def measure_safety() -> dict:
                         dns_lookup=lambda name: [f'{name} text = "{challenge["dns_txt_value"]}"'],
                     )
                     svc.confirm_asset_scope(url_or_host=url, confirmed_prohibited=True,
-                                            activate_workspace=True, allow_loopback_test=True)
+                                            activate_workspace=True, allow_loopback_test=True,
+                                            allow_status_probe=allow_status_probe)
                     if case == "expired_scope":
                         svc._verified_external_hosts[HOST]["not_after"] = time.time() - 1
                     else:
