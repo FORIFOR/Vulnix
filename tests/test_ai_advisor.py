@@ -153,14 +153,19 @@ class TestPhaseOneIsMockOnly(unittest.TestCase):
         adv.AbliterationAdvisor("http://[::1]:1/v1/chat/completions")
 
     def test_external_adapter_requires_https_key_and_explicit_type(self):
-        for url in ("http://provider.example/v1/chat/completions", "https://user:pw@provider.example/v1/chat/completions"):
+        for url in ("http://api.abliteration.ai/v1/chat/completions",
+                    "https://user:pw@api.abliteration.ai/v1/chat/completions",
+                    "https://provider.example/v1/chat/completions",
+                    "https://api.abliteration.ai.attacker.example/v1/chat/completions",
+                    "https://api.abliteration.ai:8443/v1/chat/completions",
+                    "https://api.abliteration.ai/v1/other"):
             with self.assertRaises(adv.AdvisorError):
                 adv.ExternalAbliterationAdvisor(url, api_key="test-only-key")
         with self.assertRaises(adv.AdvisorError):
-            adv.ExternalAbliterationAdvisor("https://provider.example/v1/chat/completions")
+            adv.ExternalAbliterationAdvisor("https://api.abliteration.ai/v1/chat/completions")
         seen = []
         advisor = adv.ExternalAbliterationAdvisor(
-            "https://provider.example/v1/chat/completions", api_key="test-only-key",
+            "https://api.abliteration.ai/v1/chat/completions", api_key="test-only-key",
             transport=lambda url, headers, body: seen.append((url, headers, body)) or json.dumps(
                 {"choices": [{"message": {"content": '{"advice": []}'}}]}).encode(),
         )

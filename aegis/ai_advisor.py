@@ -541,10 +541,16 @@ class ExternalAbliterationAdvisor(AbliterationAdvisor):
     api_key: str = field(default="", repr=False)
 
     def _require_endpoint(self) -> None:
-        parts = urllib.parse.urlsplit(self.url)
-        if (parts.scheme != "https" or not parts.hostname or parts.username is not None
-                or parts.password is not None or parts.query or parts.fragment or not self.api_key):
-            raise AdvisorError("external advisor requires an HTTPS endpoint and API key")
+        try:
+            parts = urllib.parse.urlsplit(self.url)
+            official = (parts.scheme == "https" and parts.hostname == "api.abliteration.ai"
+                        and parts.port in (None, 443) and parts.path == "/v1/chat/completions"
+                        and parts.username is None and parts.password is None
+                        and not parts.query and not parts.fragment)
+        except ValueError:
+            official = False
+        if not official or not self.api_key:
+            raise AdvisorError("external advisor requires the official Abliteration HTTPS endpoint and API key")
 
     def _headers(self) -> dict[str, str]:
         return {"Content-Type": "application/json", "Authorization": f"Bearer {self.api_key}"}
