@@ -1803,8 +1803,12 @@ class AssessmentService:
 
         def denied():                                   # looked up on every request
             with self._lock:
+                # The original synthetic lab moves to _extra_assets when a real
+                # site becomes active. If it was ever registered as a real service,
+                # _real_service_hosts still denies it.
                 return set(self._real_service_hosts) | {
-                    str(x.get("name") or "").lower() for x in self._extra_assets if x.get("name")}
+                    str(x.get("name") or "").lower() for x in self._extra_assets
+                    if x.get("name") and str(x.get("name")).lower() != "lab.test"}
         with self._lock:
             allowed = set(self._allowed_hosts) | {"lab.test"}
         model = os.environ.get("VULNIX_ARTEX_LLM_MODEL") or os.environ.get("VULNIX_ABLITERATION_MODEL") or "mock"

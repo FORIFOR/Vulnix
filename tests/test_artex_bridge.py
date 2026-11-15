@@ -356,6 +356,21 @@ class TestThePlanThroughTheGateway(ServiceBase):
 
         with patch.dict(os.environ, {"VULNIX_ARTEX_LLM_MODE": "gateway-forward",
                                   "VULNIX_ARTEX_LLM_UPSTREAM_URL": "http://127.0.0.1:9/v1/chat/completions"}):
+            from aegis.planner_llm_gateway import GatewayRefused
+            gateway = self.svc._planner_gateway("op", None, (), self.svc._run_generation,
+                                                "gateway-forward", real_site=True)
+            gateway.inspect({"model": "mock", "messages": [
+                {"role": "user", "content": "Synthetic target http://lab.test/"}]})
+            with self.assertRaises(GatewayRefused):
+                gateway.inspect({"model": "mock", "messages": [
+                    {"role": "user", "content": "Real target https://site.test/"}]})
+            self.svc._real_service_hosts.add("lab.test")
+            try:
+                with self.assertRaises(GatewayRefused):
+                    gateway.inspect({"model": "mock", "messages": [
+                        {"role": "user", "content": "Now-real target http://lab.test/"}]})
+            finally:
+                self.svc._real_service_hosts.discard("lab.test")
             plan = self.plan()
         self.assertEqual(plan["llm_gateway"]["mode"], "forward")
         self.assertEqual(plan["llm_gateway"]["upstream"], "127.0.0.1")
