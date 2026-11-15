@@ -1658,7 +1658,7 @@ class AssessmentService:
 
     def _root_probe_observed_locked(self) -> bool:
         """Only an audited successful probe in this signed run can satisfy a plan item."""
-        if (not self.real_site_read_only or self.a.state != "completed"
+        if (not self.real_site_read_only or self.a.state not in ("running", "completed")
                 or self._persist_error or self.ledger.error or self.ledger.dirty()):
             return False
         host = (self.a.asset.get("name") or "").lower()
@@ -1682,6 +1682,11 @@ class AssessmentService:
 
     def plan_with_artex(self, actor: str, *, llm_approval: dict | None = None, roles=None,
                         llm_mode: str | None = None) -> dict:
+        return self._plan_with_artex(actor, llm_approval=llm_approval, roles=roles,
+                                     llm_mode=llm_mode)
+
+    def _plan_with_artex(self, actor: str, *, llm_approval: dict | None = None, roles=None,
+                         llm_mode: str | None = None, fingerprint: dict | None = None) -> dict:
         """Ask the real ARTEX planner for a plan, then rebuild every item from Vulnix's
         own registered targets and allowed catalog. Nothing is executed here.
 
@@ -1705,10 +1710,13 @@ class AssessmentService:
             else:
                 self._ensure_active_window_locked()
             if real_site and self.a.state != "completed":
-                raise ValueError("初回診断が完了してから、実測結果に基づく追加確認を計画してください")
+                if (fingerprint is None or self.a.state != "running"
+                        or not self._root_probe_observed_locked()):
+                    raise ValueError("初回診断が完了してから、実測結果に基づく追加確認を計画してください")
             if real_site:
                 targets = [{"asset_id": 1, "target_id": "lab", "url": self.a.target_url}]
-                request = anonymous_real_site_request(list(self.a.findings.values()))
+                request = anonymous_real_site_request(list(self.a.findings.values()),
+                                                      fingerprint=fingerprint)
             else:
                 targets = self._artex_targets_locked()
                 observations = [{"title": clean_target_text(f["title"], 200), "detail": clean_target_text(f.get("summary", ""), 400)}
@@ -2044,8 +2052,8 @@ class AssessmentService:
             self._artex_live.add(sess)
 
     def _artex_may_start_locked(self, gen: int) -> bool:
-        if not (gen == self._run_generation and self.gateway.state is not State.STOPPED
-                and self.a.state != "stopped" and not self._unstopped_now_locked()):
+        if not (gen == self._run_generation and self.gateway.state is State.RUNNING
+                and self.a.state not in ("stopped", "paused") and not self._unstopped_now_locked()):
             return False
         try:
             self._ensure_artex_authority_locked()
@@ -4104,6 +4112,33 @@ class AssessmentService:
             tool="cve_engine",
             level="L1",
         )
+        try:
+            local_planner_host = urllib.parse.urlsplit(
+                os.environ.get("VULNIX_ARTEX_LLM_UPSTREAM_URL", "")).hostname in ("127.0.0.1", "::1")
+        except ValueError:
+            local_planner_host = False
+            if is_ext and os.environ.get("VULNIX_REAL_SITE_INITIAL_ARTEX", "0") == "1":
+                self.audit.record("artex.initial_fallback", reason="bad_local_upstream")
+        if (is_ext and self.real_site_read_only and self._real_site_local_artex
+                and os.environ.get("VULNIX_REAL_SITE_INITIAL_ARTEX", "0") == "1"
+                and self._artex_real_cmd
+                and os.environ.get("VULNIX_ARTEX_LLM_MODE", "").strip() == "gateway-forward"
+                and local_planner_host):
+            # The first observation is already signed. The planner sees only
+            # allowlisted enums; it cannot launch a Worker or add a target GET.
+            from .artex_bridge import safe_public_fingerprint
+            fingerprint = safe_public_fingerprint(res, scheme=urllib.parse.urlsplit(url).scheme)
+            self._checkpoint()
+            try:
+                self._plan_with_artex("policy:initial", llm_mode="gateway-forward",
+                                      fingerprint=fingerprint)
+            except ValueError:
+                # A local model failure keeps the measured L1 result. Revocation,
+                # stop, or persistence failure must still stop the diagnosis.
+                self._checkpoint()
+                with self._lock:
+                    self._ensure_artex_authority_locked()
+                self.audit.record("artex.initial_fallback", reason="planner_failure")
         if "AI agent:" in res.get("body_prefix", ""):
             self.bus.publish(self.a.id, "agent.note",
                              message="ページ内にAI向けの指示文を検出しました。ProposalRouterにより無害化され実行権限には影響しません。")
