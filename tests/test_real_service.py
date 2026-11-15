@@ -462,13 +462,14 @@ class RealServiceBase(unittest.TestCase):
     def _token_lookup(self, challenge):
         return lambda name: [f'{name} text = "{challenge["dns_txt_value"]}"']
 
-    def onboard(self, *, loopback=True):
+    def onboard(self, *, loopback=True, allow_status_probe=False):
         ch = self.svc.issue_ownership_challenge(url=self.url, approver="appr")["challenge"]
         res = self.svc.verify_asset_ownership(url_or_host=self.url, method="dns_txt", actor="appr",
                                               dns_lookup=self._token_lookup(ch))
         self.assertTrue(res["verified"])
         return self.svc.confirm_asset_scope(url_or_host=self.url, approver="appr",
-                                            activate_workspace=True, allow_loopback_test=loopback)
+                                            activate_workspace=True, allow_loopback_test=loopback,
+                                            allow_status_probe=allow_status_probe)
 
     def run_l1(self):
         self.svc.start()
@@ -589,6 +590,154 @@ class TestOwnershipGate(RealServiceBase):
 
 
 class TestL1Diagnosis(RealServiceBase):
+    def test_second_fixed_get_requires_separate_signed_consent(self):
+        self.svc.real_site_read_only = True
+        self.onboard()
+        self.assertEqual(self.run_l1()["state"], "completed")
+        marker_url = self.url + "/server-status?auto"
+        marker = self.svc.gateway.egress.check(marker_url, self.svc.a.engagement.targets["lab"])
+        with self.assertRaises(PolicyError):
+            self.svc._launch_guard("status_marker", {"url": marker_url}, marker)
+        self.assertEqual(self.svc.ledger.scan_usage[HOST]["paths"], ["/"])
+        self.assertEqual([p for p, _ in self.fake.seen], ["/"])
+
+    def test_explicit_status_consent_allows_one_ordered_fixed_reservation(self):
+        self.svc.real_site_read_only = True
+        self.onboard(allow_status_probe=True)
+        with self.svc._lock:
+            self.svc._new_scan_usage_locked()
+        marker_url = self.url + "/server-status?auto"
+        marker = self.svc.gateway.egress.check(marker_url, self.svc.a.engagement.targets["lab"])
+        with self.assertRaises(PolicyError):
+            self.svc._launch_guard("status_marker", {"url": marker_url}, marker)
+        root = self.svc.gateway.egress.check(self.url, self.svc.a.engagement.targets["lab"])
+        self.svc._launch_guard("http_probe", {"url": self.url, "method": "GET"}, root)
+        with self.assertRaises(PolicyError):
+            self.svc._launch_guard("status_marker", {"url": marker_url}, marker)
+        self.assertEqual(self.run_l1()["state"], "completed")
+        self.svc._launch_guard("status_marker", {"url": marker_url}, marker)
+        with self.assertRaises(PolicyError):
+            self.svc._launch_guard("status_marker", {"url": marker_url}, marker)
+        usage = dict(self.svc.ledger.scan_usage[HOST])
+        self.assertEqual(usage["paths"], ["/", "/server-status?auto"])
+        self.assertTrue(usage["status_probe_allowed"])
+        self.assertTrue(any(e["event"] == "asset.scope_confirmed" and
+                            e["fields"].get("allow_status_probe") is True
+                            for e in self.svc.audit.entries()))
+        reopened = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT,
+                                     real_site_read_only=True)
+        try:
+            self.assertEqual(reopened.ledger.scan_usage[HOST], usage)
+            self.assertTrue(reopened.ledger.verified_external_hosts[HOST]["allow_status_probe"])
+        finally:
+            reopened.close()
+        self.assertEqual([p for p, _ in self.fake.seen], ["/"])
+
+    def test_late_scope_reconfirmation_cannot_upgrade_existing_run(self):
+        self.svc.real_site_read_only = True
+        self.onboard()
+        self.assertEqual(self.run_l1()["state"], "completed")
+        marker_url = self.url + "/server-status?auto"
+        marker = self.svc.gateway.egress.check(marker_url, self.svc.a.engagement.targets["lab"])
+        self.svc.confirm_asset_scope(url_or_host=self.url, approver="appr",
+                                     allow_status_probe=True, allow_loopback_test=True)
+        with self.assertRaises(PolicyError):
+            self.svc._launch_guard("status_marker", {"url": marker_url}, marker)
+        self.assertEqual(self.svc.ledger.scan_usage[HOST]["paths"], ["/"])
+        self.assertEqual([p for p, _ in self.fake.seen], ["/"])
+
+    def test_reconfirmed_scope_cannot_revive_old_consented_run(self):
+        self.svc.real_site_read_only = True
+        self.onboard(allow_status_probe=True)
+        self.assertEqual(self.run_l1()["state"], "completed")
+        old_usage = dict(self.svc.ledger.scan_usage[HOST])
+        old_ref = self.svc._verified_external_hosts[HOST]["authorization_ref"]
+        self.svc.confirm_asset_scope(url_or_host=self.url, approver="appr",
+                                     sow_id=old_ref, allow_status_probe=True,
+                                     allow_loopback_test=True)
+        self.assertEqual(self.svc._verified_external_hosts[HOST]["authorization_ref"], old_ref)
+        marker_url = self.url + "/server-status?auto"
+        marker = self.svc.gateway.egress.check(marker_url, self.svc.a.engagement.targets["lab"])
+        with self.assertRaises(PolicyError):
+            self.svc._launch_guard("status_marker", {"url": marker_url}, marker)
+        self.assertEqual(self.svc.ledger.scan_usage[HOST], old_usage)
+        self.assertEqual([p for p, _ in self.fake.seen], ["/"])
+
+    def test_existing_signed_scope_without_nonce_can_start_new_root_run(self):
+        self.svc.real_site_read_only = True
+        self.onboard()
+        self.svc._verified_external_hosts[HOST].pop("scope_nonce")
+        self.assertTrue(self.svc.ledger.commit())
+        self.assertEqual(self.run_l1()["state"], "completed")
+        self.assertEqual([p for p, _ in self.fake.seen], ["/"])
+
+    def test_concurrent_status_reservations_allow_only_one(self):
+        self.svc.real_site_read_only = True
+        self.onboard(allow_status_probe=True)
+        self.assertEqual(self.run_l1()["state"], "completed")
+        marker_url = self.url + "/server-status?auto"
+        marker = self.svc.gateway.egress.check(marker_url, self.svc.a.engagement.targets["lab"])
+        gate = threading.Barrier(3)
+        outcomes = []
+
+        def reserve():
+            gate.wait()
+            try:
+                self.svc._launch_guard("status_marker", {"url": marker_url}, marker)
+                outcomes.append("allowed")
+            except PolicyError:
+                outcomes.append("denied")
+
+        threads = [threading.Thread(target=reserve) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        gate.wait()
+        for thread in threads:
+            thread.join(timeout=5)
+        self.assertEqual(sorted(outcomes), ["allowed", "denied"])
+        self.assertEqual([p for p, _ in self.fake.seen], ["/"])
+
+    def test_status_reservation_refuses_wrong_path_or_expired_scope(self):
+        self.svc.real_site_read_only = True
+        self.onboard(allow_status_probe=True)
+        self.assertEqual(self.run_l1()["state"], "completed")
+        marker_url = self.url + "/server-status?auto"
+        marker = self.svc.gateway.egress.check(marker_url, self.svc.a.engagement.targets["lab"])
+        wrong = self.svc.gateway.egress.check(marker_url + "&more=1",
+                                              self.svc.a.engagement.targets["lab"])
+        with self.assertRaises(PolicyError):
+            self.svc._launch_guard("status_marker", {"url": marker_url + "&more=1"}, wrong)
+        with self.assertRaises(PolicyError):
+            self.svc._launch_guard("status_marker", {"url": marker_url, "method": "GET"}, marker)
+        self.svc._verified_external_hosts[HOST]["not_after"] = time.time() - 1
+        with self.assertRaises(PolicyError):
+            self.svc._launch_guard("status_marker", {"url": marker_url}, marker)
+        self.assertEqual(self.svc.ledger.scan_usage[HOST]["paths"], ["/"])
+        self.assertEqual([p for p, _ in self.fake.seen], ["/"])
+
+    def test_status_reservation_write_failure_cannot_launch(self):
+        from aegis import authority_ledger
+
+        self.svc.real_site_read_only = True
+        self.onboard(allow_status_probe=True)
+        self.assertEqual(self.run_l1()["state"], "completed")
+        marker_url = self.url + "/server-status?auto"
+        marker = self.svc.gateway.egress.check(marker_url, self.svc.a.engagement.targets["lab"])
+        original = authority_ledger._write_durable
+
+        def fail_marker(path, body):
+            if path.name == "authority.ledger" and "/server-status?auto" in body:
+                raise OSError("mock disk full")
+            return original(path, body)
+
+        with patch.object(authority_ledger, "_write_durable", side_effect=fail_marker), \
+                patch.object(self.svc.workers, "run") as worker:
+            with self.assertRaises(PolicyError):
+                self.svc._launch_guard("status_marker", {"url": marker_url}, marker)
+            worker.assert_not_called()
+        self.assertIsNotNone(self.svc._persist_error)
+        self.assertEqual([p for p, _ in self.fake.seen], ["/"])
+
     def test_manual_real_site_artex_setting_does_not_auto_plan_by_default(self):
         self.svc.real_site_read_only = True
         self.svc._real_site_local_artex = True
