@@ -410,6 +410,54 @@ class TestThePlanThroughTheGateway(ServiceBase):
                 self.svc.plan_with_artex("op")
             runner.assert_not_called()
 
+    def test_real_site_artex_item_does_not_replenish_worker_budget(self):
+        from aegis.policy import Budget
+
+        self.svc._real_site_local_artex = True
+        self.svc.issue_ownership_challenge(url="https://site.test/")
+        self.svc.verify_asset_ownership(
+            url_or_host="site.test", method="google_search_console",
+            google_property="sc-domain:site.test", google_endpoint=("https", 443))
+        self.svc.confirm_asset_scope(url_or_host="site.test", confirmed_prohibited=True,
+                                     activate_workspace=True)
+        self.svc.a.state = "completed"
+        plan = self.plan()
+        remaining = Budget(2)
+        remaining.spend()
+        self.svc.gateway.budget = remaining
+        with patch.object(self.svc, "_exec", return_value=(None, None)) as worker:
+            self.svc.execute_artex_item(plan["items"][0]["id"], "op", roles=("operator",))
+        worker.assert_called_once()
+        self.assertIs(self.svc.gateway.budget, remaining)
+        self.assertEqual(remaining._left, 1)
+
+    def test_exhausted_budget_blocks_real_site_artex_worker(self):
+        from aegis.policy import Budget
+        from tests.test_real_service import FakeService, HOST
+
+        site = FakeService()
+        threading.Thread(target=site.serve_forever, daemon=True).start()
+        self.addCleanup(site.server_close)
+        self.addCleanup(site.shutdown)
+        url = f"http://{HOST}:{site.server_port}"
+        self.svc._custom_resolver = lambda host: ["127.0.0.1"] if host == HOST else []
+        self.svc._real_site_local_artex = True
+        challenge = self.svc.issue_ownership_challenge(url=url)["challenge"]
+        self.svc.verify_asset_ownership(
+            url_or_host=url, method="dns_txt",
+            dns_lookup=lambda name: [f'{name} text = "{challenge["dns_txt_value"]}"'])
+        self.svc.confirm_asset_scope(url_or_host=url, confirmed_prohibited=True,
+                                     activate_workspace=True, allow_loopback_test=True)
+        self.svc.a.state = "completed"
+        plan = self.plan()
+        exhausted = Budget(1)
+        exhausted.spend()
+        self.svc.gateway.budget = exhausted
+        self.svc.execute_artex_item(plan["items"][0]["id"], "op", roles=("operator",))
+        self.assertIs(self.svc.gateway.budget, exhausted)
+        self.assertEqual(site.seen, [])
+        self.assertEqual(self.svc.artex_plan_view()["plan"]["items"][0]["status"], "failed")
+
     def test_real_site_plan_discarded_if_scope_expires_during_model_run(self):
         from aegis import assessment as assessment_module
 
