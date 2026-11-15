@@ -1541,16 +1541,16 @@ class AssessmentService:
         if isinstance(data.get("run_history"), list):
             self.a.run_history = [dict(h) for h in data["run_history"] if isinstance(h, dict)][:MAX_RUN_HISTORY]
         saved_state = str(data.get("state", "idle"))
-        if saved_state in ("idle", "completed", "stopped", "failed", "paused"):
+        if saved_state in ("idle", "completed", "stopped", "failed"):
             self.a.state = saved_state
             if saved_state == "stopped":
                 self.gateway._state = State.STOPPED
-            elif saved_state == "paused":
-                self.gateway._state = State.PAUSED
-        elif saved_state == "running":
-            # A process restart interrupted an in-flight thread; preserve progress as paused
-            self.a.state = "paused"
-            self.gateway._state = State.PAUSED
+        elif saved_state in ("running", "paused"):
+            # No runner survives a process restart. Preserve its partial evidence,
+            # but show a failed run so the existing one-click restart is available.
+            self.a.state = "failed"
+            self.a.failure = {"reason": "診断処理が中断されました。再診断を開始してください",
+                              "kind": "interrupted"}
         if self._stop_flag().exists():
             # an emergency stop was begun and never ended by a new run - whatever
             # state.json managed to record about it
@@ -3210,6 +3210,12 @@ class AssessmentService:
         with self._lock:
             if self.a.state != "paused":
                 raise ValueError(f"cannot resume from {self.a.state}")
+            runner = getattr(self, "_thread", None)
+            if runner is None or not runner.is_alive():
+                # A process restart restores a running scan as paused, but its
+                # runner thread is gone. Resume would otherwise report running
+                # forever without executing or completing any remaining work.
+                raise ValueError("中断された診断の処理は復元できません。再診断を開始してください")
             self._ensure_active_window_locked()
             self.gateway.resume(actor)   # re-validates engagement window
             self._set_state("running")
