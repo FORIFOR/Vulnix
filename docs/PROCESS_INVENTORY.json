@@ -674,487 +674,492 @@
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1774,
+      "line": 1782,
       "name": "AssessmentService._planner_gateway"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1791,
+      "line": 1802,
       "name": "AssessmentService._planner_gateway.num"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1802,
+      "line": 1813,
       "name": "AssessmentService._planner_gateway.denied"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1827,
+      "line": 1848,
       "name": "AssessmentService._previews_path"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1830,
+      "line": 1851,
       "name": "AssessmentService._load_previews_locked"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1836,
+      "line": 1857,
       "name": "AssessmentService._save_previews_locked"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1844,
+      "line": 1865,
       "name": "AssessmentService._take_preview_approval"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1875,
+      "line": 1896,
       "name": "AssessmentService._note_gateway_run"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1897,
+      "line": 1918,
       "name": "AssessmentService.artex_llm_preview"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1902,
+      "line": 1923,
       "name": "AssessmentService._close_planner_gateways_locked"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1909,
+      "line": 1930,
       "name": "AssessmentService.artex_plan_view"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1927,
+      "line": 1948,
       "name": "AssessmentService._artex_session_started"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1934,
+      "line": 1955,
       "name": "AssessmentService._artex_may_start_locked"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1938,
+      "line": 1965,
+      "name": "AssessmentService._ensure_artex_authority_locked"
+    },
+    {
+      "file": "aegis/assessment.py",
+      "line": 1984,
       "name": "AssessmentService._artex_may_start"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1942,
+      "line": 1988,
       "name": "AssessmentService._artex_session_finished"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1946,
+      "line": 1992,
       "name": "AssessmentService._kill_artex_planner_locked"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1975,
+      "line": 2021,
       "name": "AssessmentService._claim_artex_item_locked"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1992,
+      "line": 2038,
       "name": "AssessmentService.execute_artex_item"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2065,
+      "line": 2116,
       "name": "AssessmentService._sync_artex_item"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2075,
+      "line": 2126,
       "name": "AssessmentService._set_artex_item_status"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2085,
+      "line": 2136,
       "name": "AssessmentService._default_phases"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2094,
+      "line": 2145,
       "name": "AssessmentService._ensure_active_window_locked"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2122,
+      "line": 2173,
       "name": "AssessmentService._sync_scope_for_host"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2160,
+      "line": 2211,
       "name": "AssessmentService.assets"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2179,
+      "line": 2230,
       "name": "AssessmentService.register_asset"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2276,
+      "line": 2327,
       "name": "AssessmentService._activate_asset_locked"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2318,
+      "line": 2369,
       "name": "AssessmentService.select_asset"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2337,
+      "line": 2388,
       "name": "AssessmentService.asset_is_real_service"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2345,
+      "line": 2396,
       "name": "AssessmentService.real_service_has_authority"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2351,
+      "line": 2402,
       "name": "AssessmentService._refuse_after_stop_locked"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2357,
+      "line": 2408,
       "name": "AssessmentService._refuse_while_verifying_locked"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2361,
+      "line": 2412,
       "name": "AssessmentService._begin_operation"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2365,
+      "line": 2416,
       "name": "AssessmentService._end_operation"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2369,
+      "line": 2420,
       "name": "AssessmentService.delete_asset"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2429,
+      "line": 2480,
       "name": "AssessmentService._withdraw_deleted_locked"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2444,
+      "line": 2495,
       "name": "AssessmentService._covering_google_domain_proof_locked"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2467,
+      "line": 2518,
       "name": "AssessmentService.issue_ownership_challenge"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2603,
+      "line": 2654,
       "name": "AssessmentService.verify_asset_ownership"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2752,
+      "line": 2803,
       "name": "AssessmentService.confirm_asset_scope"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2885,
+      "line": 2936,
       "name": "AssessmentService.configure_asset_secrets"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2930,
+      "line": 2981,
       "name": "AssessmentService.secrets_status"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2940,
+      "line": 2991,
       "name": "AssessmentService.remotion_export"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2953,
+      "line": 3004,
       "name": "AssessmentService._stop_flag"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2956,
+      "line": 3007,
       "name": "AssessmentService._reset_workspace_locked"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2995,
+      "line": 3046,
       "name": "AssessmentService.planner_status"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3023,
+      "line": 3074,
       "name": "AssessmentService._note_model_outcome_locked"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3032,
+      "line": 3083,
       "name": "AssessmentService.snapshot"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3100,
+      "line": 3151,
       "name": "AssessmentService.logs"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3105,
+      "line": 3156,
       "name": "AssessmentService.set_verify_seconds"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3108,
+      "line": 3159,
       "name": "AssessmentService.start"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3120,
+      "line": 3171,
       "name": "AssessmentService.restart"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3151,
+      "line": 3202,
       "name": "AssessmentService.pause"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3158,
+      "line": 3209,
       "name": "AssessmentService.resume"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3166,
+      "line": 3223,
       "name": "AssessmentService.emergency_stop"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3212,
+      "line": 3269,
       "name": "AssessmentService._refuse_read_only_real_locked"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3223,
+      "line": 3280,
       "name": "AssessmentService.decide_approval"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3233,
+      "line": 3290,
       "name": "AssessmentService._think"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3246,
+      "line": 3303,
       "name": "AssessmentService.request_l2_run"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3265,
+      "line": 3322,
       "name": "AssessmentService._take_l2_request"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3278,
+      "line": 3335,
       "name": "AssessmentService.finding_requires_human_l2_approval"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3286,
+      "line": 3343,
       "name": "AssessmentService.verify_finding"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3307,
+      "line": 3364,
       "name": "AssessmentService._verify_finding"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3648,
+      "line": 3705,
       "name": "AssessmentService.verify_fix"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3664,
+      "line": 3721,
       "name": "AssessmentService._reset_artex_db"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3682,
+      "line": 3739,
       "name": "AssessmentService._verify_fix"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3692,
+      "line": 3749,
       "name": "AssessmentService._verify_fix_body"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3858,
+      "line": 3915,
       "name": "AssessmentService._plan"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3875,
+      "line": 3932,
       "name": "AssessmentService._stale_runner"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3880,
+      "line": 3937,
       "name": "AssessmentService._run"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3889,
+      "line": 3946,
       "name": "AssessmentService._run_inner"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3922,
+      "line": 3979,
       "name": "AssessmentService._run_inner._is_the_executed_probe"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 4165,
+      "line": 4222,
       "name": "AssessmentService._exec"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 4235,
+      "line": 4292,
       "name": "AssessmentService._analyze"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 4330,
+      "line": 4387,
       "name": "AssessmentService._request_approval"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 4348,
+      "line": 4405,
       "name": "AssessmentService._decide"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 4361,
+      "line": 4418,
       "name": "AssessmentService._publish_approval"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 4364,
+      "line": 4421,
       "name": "AssessmentService._checkpoint"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 4372,
+      "line": 4429,
       "name": "AssessmentService._phase"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 4382,
+      "line": 4439,
       "name": "AssessmentService._activity"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 4389,
+      "line": 4446,
       "name": "AssessmentService._set_state"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 4436,
+      "line": 4493,
       "name": "AssessmentService._worker_failure_text"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 4449,
+      "line": 4506,
       "name": "AssessmentService._worker_failure_detail"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 4476,
+      "line": 4533,
       "name": "AssessmentService._upsert_finding"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 4488,
+      "line": 4545,
       "name": "AssessmentService._mark_verifying"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 4493,
+      "line": 4550,
       "name": "AssessmentService._fail"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 4505,
+      "line": 4562,
       "name": "AssessmentService._real_findings"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 4508,
+      "line": 4565,
       "name": "AssessmentService._risk"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 4527,
+      "line": 4584,
       "name": "AssessmentService._on_audit"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 4532,
+      "line": 4589,
       "name": "AssessmentService._safe_real_ai_explanation"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 4591,
+      "line": 4648,
       "name": "AssessmentService.ask_chat"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 4658,
+      "line": 4715,
       "name": "AssessmentService.advise_findings"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 4691,
+      "line": 4748,
       "name": "AssessmentService._finding_touches_real_service"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 4708,
+      "line": 4765,
       "name": "AssessmentService._answer_question"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 4833,
+      "line": 4890,
       "name": "AssessmentService._history"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 4855,
+      "line": 4912,
       "name": "AssessmentService.report_markdown"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 4939,
+      "line": 4996,
       "name": "_asset_status"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 4944,
+      "line": 5001,
       "name": "_fixture_findings"
     },
     {
@@ -4619,7 +4624,7 @@
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3673,
+      "line": 3730,
       "function": "AssessmentService._reset_artex_db",
       "call": "subprocess.run"
     },
@@ -4825,25 +4830,25 @@
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3116,
+      "line": 3167,
       "function": "AssessmentService.start",
       "call": "threading.Thread"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3118,
+      "line": 3169,
       "function": "AssessmentService.start",
       "call": "self._thread.start"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3145,
+      "line": 3196,
       "function": "AssessmentService.restart",
       "call": "threading.Thread"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3147,
+      "line": 3198,
       "function": "AssessmentService.restart",
       "call": "self._thread.start"
     },
