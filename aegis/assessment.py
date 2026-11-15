@@ -46,8 +46,8 @@ from .remotion_export import build_remotion_export
 from .router import (AbliterationBackend, ArtexEngine, ArtexplannerBackend,
                      ArtexSubprocessBackend, HttpModelBackend, ProposalRouter,
                      verify_planner_connections, redact_verification_report)
-from .artex_bridge import (CATALOG_BY_ID, ArtexBridgeError, command_from_env, reconstruct,
-                           run_artex_planner)
+from .artex_bridge import (CATALOG_BY_ID, ArtexBridgeError, anonymous_real_site_request,
+                           command_from_env, reconstruct, run_artex_planner)
 from .runtime import WorkerPool
 from .secrets_store import EncryptedSecretStore
 from .l2_rules import BUILTIN_PROFILE_DIR, L2RuleSet, site_profile_dirs
@@ -359,6 +359,9 @@ class AssessmentService:
         # Explicit operator opt-in; the real-site explanation path sends only the
         # advisor's fixed enum payload, never the ordinary chat question or context.
         self._real_site_safe_ai = os.environ.get("VULNIX_REAL_SITE_SAFE_AI", "0") == "1"
+        # A real-site planner can only receive the anonymous input and a local model.
+        # This remains off unless the operator has explicitly provisioned one.
+        self._real_site_local_artex = os.environ.get("VULNIX_REAL_SITE_LOCAL_ARTEX", "0") == "1"
         # Configured is not connected: only an answer actually received from the
         # external model marks it verified; a failed call marks it failed.
         self._model_conn: dict = {"state": "configured" if self._chat_backend else "unconfigured",
@@ -1587,7 +1590,9 @@ class AssessmentService:
         return [{"asset_id": 1, "target_id": "lab", "url": self.a.target_url}]
 
     def _refuse_artex_on_real_service_locked(self) -> None:
-        if self._is_external_service_asset() or self._in_ownership_flow(self.a.asset.get("name")):
+        scoped_real_site = self._is_external_service_asset()
+        if ((self._in_ownership_flow(self.a.asset.get("name")) and not scoped_real_site)
+                or (scoped_real_site and not self._real_site_local_artex)):
             raise ValueError("ARTEX 計画は登録済みのローカル検証ラボでのみ使用できます"
                              "（実サービスの情報は ARTEX に渡しません）")
 
@@ -1604,16 +1609,23 @@ class AssessmentService:
         with self._lock:
             self._refuse_after_stop_locked()
             self._refuse_artex_on_real_service_locked()
+            real_site = self._is_external_service_asset()
+            if real_site and (llm_mode or os.environ.get("VULNIX_ARTEX_LLM_MODE", "direct")) not in ("direct", "gateway-preview"):
+                raise ValueError("実サイトのARTEX計画はローカルモデルだけで作成できます")
             if self._unstopped_now_locked():
                 # while anything is not confirmed stopped, nothing new launches
                 raise ValueError("停止を確認できていないプロセスがあるため、ARTEX を起動しません")
             self._ensure_active_window_locked()
-            targets = self._artex_targets_locked()
-            observations = [{"title": clean_target_text(f["title"], 200), "detail": clean_target_text(f.get("summary", ""), 400)}
-                            for f in self.a.findings.values() if f.get("id") in ("f_banner", "f_idor", "f_sqli")]
+            if real_site:
+                targets = [{"asset_id": 1, "target_id": "lab", "url": self.a.target_url}]
+                request = anonymous_real_site_request(list(self.a.findings.values()))
+            else:
+                targets = self._artex_targets_locked()
+                observations = [{"title": clean_target_text(f["title"], 200), "detail": clean_target_text(f.get("summary", ""), 400)}
+                                for f in self.a.findings.values() if f.get("id") in ("f_banner", "f_idor", "f_sqli")]
+                request = {"goal": "登録済みの検証対象について、許可された非破壊の検証で確認すべき脆弱性の方向を計画する",
+                           "targets": targets, "observations": observations, "max_turns": 6}
             gen = self._run_generation
-        request = {"goal": "登録済みの検証対象について、許可された非破壊の検証で確認すべき脆弱性の方向を計画する",
-                   "targets": targets, "observations": observations, "max_turns": 6}
         canary = os.environ.get("VULNIX_ARTEX_EGRESS_CANARY", "")
         if re.fullmatch(r"127\.0\.0\.1:\d{1,5}", canary):
             request["egress_canary"] = canary      # proves the confinement around ARTEX itself
@@ -1639,7 +1651,7 @@ class AssessmentService:
         if st.get("ok"):
             confinement = self._l2_confinement
             protected = sorted(str(p) for p in self.data_dir.iterdir() if p.is_file())
-        elif (os.environ.get("VULNIX_ARTEX_ALLOW_UNCONFINED") == "1"
+        elif (not real_site and os.environ.get("VULNIX_ARTEX_ALLOW_UNCONFINED") == "1"
               and os.environ.get("AEGIS_ENV", "").strip().lower() in ("development", "dev")):
             confinement, protected = None, ()
             self.audit.record("artex.unconfined_dev_run", actor=actor, reason=str(st.get("reason", ""))[:200])
@@ -1695,7 +1707,8 @@ class AssessmentService:
                               reason=f"upstream_http_{status}" if status else "upstream_failure")
             raise ValueError(f"Planner LLM の上流 API がエラーを返したため、計画を破棄しました（HTTP {status}）")
         run_id = "ax" + secrets.token_hex(4)
-        rec = reconstruct(run.intents, targets, run_id)
+        rec = reconstruct(run.intents, targets, run_id,
+                          allowed_levels=frozenset({"L1"}) if real_site else frozenset({"L1", "L2"}))
         # The rebuilt proposals still pass ProposalRouter (sanitized, audited) and appear
         # as tasks in the existing plan view; the Gateway alone decides what may run.
         router = ProposalRouter(self.gateway, self.audit, [_StaticProposals("artex-oss", [i.proposal for i in rec.items])])
@@ -1977,10 +1990,16 @@ class AssessmentService:
         claimed = False
         try:
             with self._lock:
-                self._refuse_read_only_real_locked()
                 rec = self._claim_artex_item_locked(item_id)
                 item = rec["item"]
                 entry = CATALOG_BY_ID[item.catalog_id]
+                # The opt-in real-site path permits only the catalog's one read-only
+                # GET. Every L2 item remains blocked even if stored state is changed.
+                if self._is_external_service_asset():
+                    if not self._real_site_local_artex or entry.level != "L1":
+                        raise ValueError("実サイトのARTEX計画からL2検証は実行できません")
+                else:
+                    self._refuse_read_only_real_locked()
                 if entry.level == "L2":
                     if not actor or str(actor).startswith("policy:"):
                         raise ValueError("L2 検証には人間の個別承認が必要です（自動承認不可）")

@@ -113,6 +113,40 @@ CATALOG: tuple[CatalogEntry, ...] = (
 CATALOG_BY_ID = {c.id: c for c in CATALOG}
 
 
+def anonymous_real_site_request(findings: list[dict]) -> dict:
+    """Give ARTEX only a synthetic target and code-defined measured finding fields.
+
+    The ARTEX overlay records each observation as an observed fact. Candidate and
+    demo findings therefore cannot be observations here. The real URL is supplied
+    later by Vulnix when it reconstructs a proposal; it never enters this request.
+    """
+    from .ai_advisor import finding_to_payload_item
+    from .evidence import enforce_verdict, evidence_status
+
+    observations = []
+    for finding in findings[:20]:
+        if not isinstance(finding, dict):
+            continue
+        if evidence_status(finding) not in ("detected", "proven"):
+            continue
+        item = finding_to_payload_item(f"F{len(observations) + 1}", enforce_verdict(finding))
+        if (item["rule"] == "other" or item["verdict"] not in ("detected", "proven")
+                or item["verdict_basis"] == "demo_fixture"):
+            continue
+        safe_fact = json.dumps(item, ensure_ascii=False, sort_keys=True)
+        # ARTEX puts fact summaries in the planner's first prompt; the detail is
+        # available only if the model later calls node_detail. Both use the same
+        # fixed fields so the initial plan can respond to the measured finding.
+        observations.append({"title": f"Measured finding {item['ref']}: {safe_fact}",
+                             "detail": safe_fact})
+    return {
+        "goal": "匿名化された実サイトの実測所見を基に、低負荷・読み取り専用の確認だけを計画する。未確認の候補を検出済みと扱わない。",
+        "targets": [{"asset_id": 1, "target_id": "site", "url": "http://lab.test/"}],
+        "observations": observations,
+        "max_turns": 6,
+    }
+
+
 class ArtexBridgeError(RuntimeError):
     """The ARTEX run could not be used (not started, failed, or its output was refused)."""
 
@@ -490,7 +524,8 @@ def classify(summary: str) -> tuple[CatalogEntry | None, str]:
     return None, "許可済みの検証カタログに該当しないため実行しません"
 
 
-def reconstruct(intents: list[dict], targets: list[dict], run_id: str) -> Reconstruction:
+def reconstruct(intents: list[dict], targets: list[dict], run_id: str,
+                *, allowed_levels: frozenset[str] = frozenset({"L1", "L2"})) -> Reconstruction:
     """`targets`: Vulnix's registered, in-scope targets as handed to ARTEX
     ({asset_id, target_id, url}). Only these can ever be a target."""
     by_asset = {t["asset_id"]: t for t in targets}
@@ -501,6 +536,9 @@ def reconstruct(intents: list[dict], targets: list[dict], run_id: str) -> Recons
         entry, why = classify(summary)
         if entry is None:
             out.advisories.append(Advisory(iid, summary, why))
+            continue
+        if entry.level not in allowed_levels:
+            out.advisories.append(Advisory(iid, summary, "この対象では許可されていない検証のため実行しません"))
             continue
         if it.get("unmapped"):
             out.advisories.append(Advisory(iid, summary, "登録されていない対象を含むため実行しません"))

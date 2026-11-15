@@ -255,6 +255,105 @@ class ServiceBase(unittest.TestCase):
 
 
 class TestThePlanThroughTheGateway(ServiceBase):
+    def test_registered_and_scoped_real_site_can_reach_the_anonymous_planner(self):
+        self.svc._real_site_local_artex = True
+        self.svc.issue_ownership_challenge(url="https://site.test/")
+        self.svc.verify_asset_ownership(
+            url_or_host="site.test", method="google_search_console",
+            google_property="sc-domain:site.test", google_endpoint=("https", 443))
+        self.svc.confirm_asset_scope(url_or_host="site.test", confirmed_prohibited=True,
+                                     activate_workspace=True)
+        plan = self.plan()
+        self.assertEqual([item["catalog_id"] for item in plan["items"]], ["l1_http_probe"])
+
+    def test_real_site_planner_refuses_an_expired_scope(self):
+        self.svc._real_site_local_artex = True
+        self.svc.issue_ownership_challenge(url="https://site.test/")
+        self.svc.verify_asset_ownership(
+            url_or_host="site.test", method="google_search_console",
+            google_property="sc-domain:site.test", google_endpoint=("https", 443))
+        self.svc.confirm_asset_scope(url_or_host="site.test", confirmed_prohibited=True,
+                                     activate_workspace=True)
+        self.svc._verified_external_hosts["site.test"]["not_after"] = 0
+        with self.assertRaises(ValueError):
+            self.svc.plan_with_artex("op")
+
+    def test_real_site_planner_cannot_use_the_unconfined_dev_exception(self):
+        from aegis.confinement import KernelConfinement
+
+        self.svc._real_site_local_artex = True
+        self.svc.issue_ownership_challenge(url="https://site.test/")
+        self.svc.verify_asset_ownership(
+            url_or_host="site.test", method="google_search_console",
+            google_property="sc-domain:site.test", google_endpoint=("https", 443))
+        self.svc.confirm_asset_scope(url_or_host="site.test", confirmed_prohibited=True,
+                                     activate_workspace=True)
+        self.svc._l2_confinement = KernelConfinement(platform="darwin")
+        with patch.dict(os.environ, {"VULNIX_ARTEX_ALLOW_UNCONFINED": "1", "AEGIS_ENV": "development"}):
+            with self.assertRaisesRegex(ValueError, "隔離"):
+                self.svc.plan_with_artex("op")
+
+    def test_real_site_direct_planner_refuses_an_external_model_endpoint(self):
+        self.svc._real_site_local_artex = True
+        self.svc._artex_llm_url = "https://external-model.example/v1"
+        with patch.object(self.svc, "_is_external_service_asset", return_value=True):
+            with self.assertRaisesRegex(ValueError, "ループバック"):
+                self.svc.plan_with_artex("op")
+
+    def test_opted_in_real_site_plan_gets_only_anonymous_input_and_l1_items(self):
+        from aegis import assessment as assessment_module
+
+        self.svc._real_site_local_artex = True
+        self.svc.a.target_url = "https://next-standards.com/"
+        self.svc.a.findings["f_headers"] = {
+            "id": "f_headers", "category": "設定不備", "severity": "medium",
+            "verdict": "detected", "verdict_basis": "l1_observation", "demo_fixture": False,
+            "evidence": [{"audit_hash": "local-evidence", "saved_at": 1,
+                          "body": "private response"}],
+        }
+        captured = []
+        original = assessment_module.run_artex_planner
+
+        def record(command, request, **kwargs):
+            captured.append(request)
+            return original(command, request, **kwargs)
+
+        with patch.object(self.svc, "_is_external_service_asset", return_value=True), \
+                patch.object(assessment_module, "run_artex_planner", side_effect=record):
+            plan = self.plan()
+        self.assertEqual(len(captured), 1)
+        request = json.dumps(captured[0], ensure_ascii=False)
+        self.assertIn("f_headers", request)
+        self.assertNotIn("next-standards.com", request)
+        self.assertNotIn("private response", request)
+        self.assertTrue(all(item["level"] == "L1" for item in plan["items"]))
+        self.assertTrue(any("許可" in advisory["reason"] for advisory in plan["advisories"]))
+
+    def test_opted_in_real_site_l1_item_uses_gateway_worker_and_l2_has_no_item(self):
+        self.svc._real_site_local_artex = True
+        with patch.object(self.svc, "_is_external_service_asset", return_value=True):
+            plan = self.plan()
+            self.assertEqual([item["catalog_id"] for item in plan["items"]], ["l1_http_probe"])
+            item_id = plan["items"][0]["id"]
+            before = len(self.events("allow"))
+            self.svc.execute_artex_item(item_id, "op", roles=("operator",))
+            self.assertEqual(len(self.events("allow")), before + 1)
+            self.assertEqual(self.svc.artex_plan_view()["plan"]["items"][0]["status"], "completed")
+
+    def test_a_tampered_real_site_plan_cannot_turn_an_l1_item_into_l2(self):
+        self.svc._real_site_local_artex = True
+        self.svc.real_site_read_only = False  # even the extended mode must not admit ARTEX L2
+        with patch.object(self.svc, "_is_external_service_asset", return_value=True):
+            plan = self.plan()
+            item_id = plan["items"][0]["id"]
+            self.svc._artex_items[item_id]["item"].catalog_id = "l2_sqli"
+            before = len(self.events("allow"))
+            with patch.object(self.svc, "verify_finding") as verify:
+                with self.assertRaisesRegex(ValueError, "実サイト.*L2"):
+                    self.svc.execute_artex_item(item_id, "appr", roles=("operator", "approver"))
+                verify.assert_not_called()
+            self.assertEqual(len(self.events("allow")), before)
+
     def test_plan_items_advisories_and_provenance(self):
         plan = self.plan()
         self.assertEqual({i["catalog_id"] for i in plan["items"]}, {"l2_sqli", "l2_idor", "l1_http_probe"})
@@ -396,6 +495,82 @@ class TestThePlanThroughTheGateway(ServiceBase):
         with patch.object(AssessmentService, "_is_external_service_asset", return_value=True):
             with self.assertRaises(ValueError):
                 self.svc.plan_with_artex("op")
+
+
+class TestAnonymousRealSitePlannerInput(unittest.TestCase):
+    def test_only_fixed_measured_fields_reach_artex(self):
+        from aegis.artex_bridge import anonymous_real_site_request
+
+        finding = {
+            "id": "f_headers", "category": "設定不備", "severity": "medium",
+            "verdict": "detected", "verdict_basis": "l1_observation",
+            "title": "https://private.example.com/", "summary": "user@example.com",
+            "evidence": [{"audit_hash": "local-evidence", "saved_at": 1,
+                          "body": "secret response", "authorization": "Bearer secret-value"}],
+            "risk_score": 42.2,
+        }
+        request = anonymous_real_site_request([finding])
+        self.assertEqual(request["targets"], [{"asset_id": 1, "target_id": "site", "url": "http://lab.test/"}])
+        self.assertEqual(len(request["observations"]), 1)
+        self.assertIn("f_headers", request["observations"][0]["title"])
+        detail = request["observations"][0]["detail"]
+        self.assertIn("f_headers", detail)
+        self.assertIn("detected", detail)
+        self.assertIn("42", detail)
+        serialized = json.dumps(request, ensure_ascii=False)
+        for forbidden in ("private.example.com", "user@example.com", "secret response", "Bearer secret-value"):
+            self.assertNotIn(forbidden, serialized)
+
+    def test_unverified_candidates_are_not_seeded_as_observed_facts(self):
+        from aegis.artex_bridge import anonymous_real_site_request
+
+        candidate = {"id": "f_sqli", "verdict": "candidate", "summary": "unverified SQLi"}
+        detected = {"id": "f_l1_tls", "verdict": "detected", "verdict_basis": "l1_observation",
+                    "evidence": [{"audit_hash": "local-evidence", "saved_at": 1}]}
+        only_candidate = anonymous_real_site_request([candidate])
+        with_detected = anonymous_real_site_request([candidate, detected])
+        self.assertEqual(only_candidate["observations"], [])
+        self.assertEqual(len(with_detected["observations"]), 1)
+        self.assertIn("f_l1_tls", with_detected["observations"][0]["detail"])
+        self.assertNotIn("f_sqli", json.dumps(with_detected))
+        self.assertNotEqual(only_candidate, with_detected)
+
+    def test_unsupported_or_demo_findings_are_not_seeded(self):
+        from aegis.artex_bridge import anonymous_real_site_request
+
+        request = anonymous_real_site_request([
+            {"id": "f_l1_tls", "verdict": "proven", "verdict_basis": "demo_fixture"},
+            {"id": "invented", "verdict": "detected", "verdict_basis": "l1_observation"},
+        ])
+        self.assertEqual(request["observations"], [])
+
+    def test_a_detected_label_without_recorded_evidence_is_only_a_candidate(self):
+        from aegis.artex_bridge import anonymous_real_site_request
+
+        finding = {"id": "f_headers", "verdict": "detected", "verdict_basis": "l1_observation"}
+        self.assertEqual(anonymous_real_site_request([finding])["observations"], [])
+
+    def test_a_proven_label_without_l2_evidence_is_downgraded(self):
+        from aegis.artex_bridge import anonymous_real_site_request
+
+        finding = {"id": "f_headers", "verdict": "proven", "verdict_basis": "l2_reproduction",
+                   "evidence": [{"audit_hash": "local-evidence", "saved_at": 1, "tool": "http_probe"}]}
+        request = anonymous_real_site_request([finding])
+        self.assertIn('"verdict": "detected"', request["observations"][0]["detail"])
+        self.assertNotIn('"verdict": "proven"', request["observations"][0]["detail"])
+
+    def test_real_site_reconstruction_keeps_l2_as_an_inert_advisory(self):
+        from aegis.artex_bridge import reconstruct
+
+        intents = [
+            {"id": 1, "summary": "Inspect security headers", "asset_ids": [1]},
+            {"id": 2, "summary": "Test SQL injection", "asset_ids": [1]},
+        ]
+        targets = [{"asset_id": 1, "target_id": "lab", "url": "https://private.example.com/"}]
+        result = reconstruct(intents, targets, "run1", allowed_levels=frozenset({"L1"}))
+        self.assertEqual([item.catalog_id for item in result.items], ["l1_http_probe"])
+        self.assertEqual(len(result.advisories), 1)
+        self.assertIn("許可", result.advisories[0].reason)
 
 
 class TestArtexRunsOnlyUnderOsConfinement(ServiceBase):
@@ -674,6 +849,30 @@ class TestRealArtexPlanner(ServiceBase):
             env = patch.dict(os.environ, {"VULNIX_ARTEX_EGRESS_CANARY": f"127.0.0.1:{self.canary.getsockname()[1]}"})
             env.start()
             self.addCleanup(env.stop)
+
+    def test_the_real_planner_accepts_a_scoped_site_without_receiving_its_hostname(self):
+        self.svc._real_site_local_artex = True
+        self.svc.issue_ownership_challenge(url="https://site.test/")
+        self.svc.verify_asset_ownership(
+            url_or_host="site.test", method="google_search_console",
+            google_property="sc-domain:site.test", google_endpoint=("https", 443))
+        self.svc.confirm_asset_scope(url_or_host="site.test", confirmed_prohibited=True,
+                                     activate_workspace=True)
+        self.svc.a.findings["f_headers"] = {
+            "id": "f_headers", "category": "設定不備", "severity": "medium",
+            "verdict": "detected", "verdict_basis": "l1_observation", "demo_fixture": False,
+            "evidence": [{"audit_hash": "local-evidence", "saved_at": 1,
+                          "body": "private response text"}],
+        }
+        plan = self.plan()
+        self.assertEqual(plan["engine"]["kind"], "artex-binary")
+        self.assertTrue(self.mock.requests)
+        requests = json.dumps(self.mock.requests, ensure_ascii=False)
+        self.assertIn("f_headers", requests)  # real ARTEX receives a measured, site-specific feature
+        self.assertNotIn("site.test", requests)
+        self.assertNotIn("private response text", requests)
+        self.assertTrue(all(item["level"] == "L1" for item in plan["items"]))
+        self.assertTrue(any(item["catalog_id"] == "l1_http_probe" for item in plan["items"]))
 
     def test_the_real_planner_plans_and_the_gateway_decides(self):
         plan = self.plan()
