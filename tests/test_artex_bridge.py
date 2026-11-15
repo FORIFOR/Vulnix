@@ -255,6 +255,21 @@ class ServiceBase(unittest.TestCase):
 
 
 class TestThePlanThroughTheGateway(ServiceBase):
+    def test_real_site_plan_waits_for_a_completed_baseline(self):
+        from aegis import assessment as assessment_module
+
+        self.svc._real_site_local_artex = True
+        self.svc.issue_ownership_challenge(url="https://site.test/")
+        self.svc.verify_asset_ownership(
+            url_or_host="site.test", method="google_search_console",
+            google_property="sc-domain:site.test", google_endpoint=("https", 443))
+        self.svc.confirm_asset_scope(url_or_host="site.test", confirmed_prohibited=True,
+                                     activate_workspace=True)
+        with patch.object(assessment_module, "run_artex_planner") as runner:
+            with self.assertRaisesRegex(ValueError, "初回診断"):
+                self.svc.plan_with_artex("op")
+            runner.assert_not_called()
+
     def test_owned_mock_site_runs_l1_then_anonymous_plan_then_gateway_worker(self):
         from aegis import assessment as assessment_module
         from tests.test_real_service import FakeService, HOST
@@ -315,7 +330,7 @@ class TestThePlanThroughTheGateway(ServiceBase):
         self.svc._verified_external_hosts["site.test"]["not_after"] = 0
         self.assertFalse(self.svc.artex_plan_view()["configured"])
 
-    def test_registered_and_scoped_real_site_can_reach_the_anonymous_planner(self):
+    def test_completed_and_scoped_real_site_can_reach_the_anonymous_planner(self):
         self.svc._real_site_local_artex = True
         self.svc.issue_ownership_challenge(url="https://site.test/")
         self.svc.verify_asset_ownership(
@@ -323,6 +338,7 @@ class TestThePlanThroughTheGateway(ServiceBase):
             google_property="sc-domain:site.test", google_endpoint=("https", 443))
         self.svc.confirm_asset_scope(url_or_host="site.test", confirmed_prohibited=True,
                                      activate_workspace=True)
+        self.svc.a.state = "completed"  # the live baseline is covered by the end-to-end test above
         plan = self.plan()
         self.assertEqual([item["catalog_id"] for item in plan["items"]], ["l1_http_probe"])
 
@@ -348,6 +364,7 @@ class TestThePlanThroughTheGateway(ServiceBase):
             google_property="sc-domain:site.test", google_endpoint=("https", 443))
         self.svc.confirm_asset_scope(url_or_host="site.test", confirmed_prohibited=True,
                                      activate_workspace=True)
+        self.svc.a.state = "completed"
         self.svc._l2_confinement = KernelConfinement(platform="darwin")
         with patch.dict(os.environ, {"VULNIX_ARTEX_ALLOW_UNCONFINED": "1", "AEGIS_ENV": "development"}):
             with self.assertRaisesRegex(ValueError, "隔離"):
@@ -356,6 +373,7 @@ class TestThePlanThroughTheGateway(ServiceBase):
     def test_real_site_direct_planner_refuses_an_external_model_endpoint(self):
         self.svc._real_site_local_artex = True
         self.svc._artex_llm_url = "https://external-model.example/v1"
+        self.svc.a.state = "completed"
         with patch.object(self.svc, "_is_external_service_asset", return_value=True):
             with self.assertRaisesRegex(ValueError, "ループバック"):
                 self.svc.plan_with_artex("op")
@@ -365,6 +383,7 @@ class TestThePlanThroughTheGateway(ServiceBase):
 
         self.svc._real_site_local_artex = True
         self.svc.a.target_url = "https://next-standards.com/"
+        self.svc.a.state = "completed"
         self.svc.a.findings["f_headers"] = {
             "id": "f_headers", "category": "設定不備", "severity": "medium",
             "verdict": "detected", "verdict_basis": "l1_observation", "demo_fixture": False,
@@ -391,6 +410,7 @@ class TestThePlanThroughTheGateway(ServiceBase):
 
     def test_opted_in_real_site_l1_item_uses_gateway_worker_and_l2_has_no_item(self):
         self.svc._real_site_local_artex = True
+        self.svc.a.state = "completed"
         with patch.object(self.svc, "_is_external_service_asset", return_value=True):
             plan = self.plan()
             self.assertEqual([item["catalog_id"] for item in plan["items"]], ["l1_http_probe"])
@@ -402,6 +422,7 @@ class TestThePlanThroughTheGateway(ServiceBase):
 
     def test_a_tampered_real_site_plan_cannot_turn_an_l1_item_into_l2(self):
         self.svc._real_site_local_artex = True
+        self.svc.a.state = "completed"
         self.svc.real_site_read_only = False  # even the extended mode must not admit ARTEX L2
         with patch.object(self.svc, "_is_external_service_asset", return_value=True):
             plan = self.plan()
@@ -919,6 +940,7 @@ class TestRealArtexPlanner(ServiceBase):
             google_property="sc-domain:site.test", google_endpoint=("https", 443))
         self.svc.confirm_asset_scope(url_or_host="site.test", confirmed_prohibited=True,
                                      activate_workspace=True)
+        self.svc.a.state = "completed"  # prompt/privacy test; live L1 completion is tested above
         self.svc.a.findings["f_headers"] = {
             "id": "f_headers", "category": "設定不備", "severity": "medium",
             "verdict": "detected", "verdict_basis": "l1_observation", "demo_fixture": False,

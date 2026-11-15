@@ -1616,6 +1616,8 @@ class AssessmentService:
                 # while anything is not confirmed stopped, nothing new launches
                 raise ValueError("停止を確認できていないプロセスがあるため、ARTEX を起動しません")
             self._ensure_active_window_locked()
+            if real_site and self.a.state != "completed":
+                raise ValueError("初回診断が完了してから、実測結果に基づく追加確認を計画してください")
             if real_site:
                 targets = [{"asset_id": 1, "target_id": "lab", "url": self.a.target_url}]
                 request = anonymous_real_site_request(list(self.a.findings.values()))
