@@ -23,6 +23,7 @@ from aegis.evidence import reproduction_verdict
 from aegis.l2_rules import BUILTIN_PROFILE_DIR, L2RuleSet, RuleError, validate_profile
 from aegis.lab import set_lab_mode, start_lab
 from aegis.network import NetworkError
+from aegis.policy import PolicyError
 from aegis.ownership import parse_service_target, verify_ownership_challenge
 from aegis.remotion_export import build_remotion_export
 from aegis.secrets_store import EncryptedSecretStore
@@ -588,6 +589,119 @@ class TestOwnershipGate(RealServiceBase):
 
 
 class TestL1Diagnosis(RealServiceBase):
+    def test_concurrent_read_only_requests_share_one_signed_allowance(self):
+        self.svc.real_site_read_only = True
+        self.onboard()
+        with self.svc._lock:
+            self.svc._new_scan_usage_locked()
+        dest = self.svc.gateway.egress.check(self.url, self.svc.a.engagement.targets["lab"])
+        gate = threading.Barrier(3)
+        outcomes = []
+
+        def reserve():
+            gate.wait()
+            try:
+                self.svc._launch_guard("http_probe", {"url": self.url, "method": "GET"}, dest)
+                outcomes.append("allowed")
+            except PolicyError:
+                outcomes.append("denied")
+
+        threads = [threading.Thread(target=reserve) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        gate.wait()
+        for thread in threads:
+            thread.join(timeout=5)
+        self.assertEqual(sorted(outcomes), ["allowed", "denied"])
+        self.assertEqual(self.svc.ledger.scan_usage[HOST]["paths"], ["/"])
+        self.assertEqual(self.fake.seen, [])
+
+    def test_scan_reservation_failure_starts_no_worker(self):
+        from aegis import authority_ledger
+
+        self.svc.real_site_read_only = True
+        self.onboard()
+        with self.svc._lock:
+            self.svc._new_scan_usage_locked()
+        dest = self.svc.gateway.egress.check(self.url, self.svc.a.engagement.targets["lab"])
+        original = authority_ledger._write_durable
+
+        def fail_scan_reservation(path, body):
+            if path.name == "authority.ledger":
+                raise OSError("mock disk full")
+            return original(path, body)
+
+        with patch.object(authority_ledger, "_write_durable", side_effect=fail_scan_reservation), \
+                patch.object(self.svc.workers, "run") as worker:
+            with self.assertRaises(PolicyError):
+                self.svc._launch_guard("http_probe", {"url": self.url, "method": "GET"}, dest)
+            worker.assert_not_called()
+        self.assertEqual(self.fake.seen, [])
+        self.assertIsNotNone(self.svc._persist_error)
+
+    def test_root_result_is_not_observed_when_signed_result_save_fails(self):
+        from aegis import authority_ledger
+
+        self.svc.real_site_read_only = True
+        self.onboard()
+        original = authority_ledger._write_durable
+
+        def fail_result(path, body):
+            if path.name == "authority.ledger" and '"result_audit_hash"' in body:
+                raise OSError("mock disk full")
+            return original(path, body)
+
+        with patch.object(authority_ledger, "_write_durable", side_effect=fail_result):
+            self.svc.start()
+            end = time.time() + 20
+            while time.time() < end and self.svc.snapshot()["state"] == "running":
+                time.sleep(0.02)
+        self.assertEqual(self.svc.snapshot()["state"], "failed")
+        self.assertEqual([p for p, _ in self.fake.seen], ["/"])
+        with self.svc._lock:
+            self.svc.a.state = "completed"  # unsigned display state cannot bless an uncommitted result
+            self.assertFalse(self.svc._root_probe_observed_locked())
+        self.assertIsNotNone(self.svc._persist_error)
+
+    def test_public_run_uses_one_signed_root_probe_and_rejects_duplicate(self):
+        self.svc.real_site_read_only = True
+        self.onboard()
+        self.assertEqual(self.run_l1()["state"], "completed")
+        first = dict(self.svc.ledger.scan_usage[HOST])
+        self.assertEqual(first["paths"], ["/"])
+        self.assertTrue(first["result_audit_hash"])
+        self.assertEqual([p for p, _ in self.fake.seen], ["/"])
+        with self.svc._lock:
+            self.svc._ensure_active_window_locked()  # even a reset of the in-memory Budget cannot refill it
+        with patch.object(self.svc.workers, "run") as worker:
+            result, evidence = self.svc._exec("http_probe", "read_only_probe",
+                                              {"url": self.url, "method": "GET"},
+                                              approval_actor="artex-L1:op")
+        self.assertIsNone(result)
+        self.assertIsNone(evidence)
+        worker.assert_not_called()
+        self.assertEqual([p for p, _ in self.fake.seen], ["/"])
+
+        # A process restart must restore the spent cap from the signed ledger.
+        reopened = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT,
+                                     real_site_read_only=True)
+        try:
+            self.assertEqual(reopened.ledger.scan_usage[HOST], first)
+        finally:
+            reopened.close()
+
+        # Only a new explicit diagnosis receives a new run allowance.
+        self.svc.restart("op")
+        end = time.time() + 20
+        while time.time() < end and self.svc.snapshot()["state"] == "running":
+            time.sleep(0.02)
+        self.assertEqual(self.svc.snapshot()["state"], "completed")
+        self.assertEqual([p for p, _ in self.fake.seen], ["/", "/"])
+        second = self.svc.ledger.scan_usage[HOST]
+        self.assertNotEqual(second["run_nonce"], first["run_nonce"])
+        self.assertEqual(second["paths"], ["/"])
+        self.assertNotEqual(second["result_audit_hash"], first["result_audit_hash"])
+
     def test_new_service_defaults_to_read_only_on_real_sites(self):
         with tempfile.TemporaryDirectory() as data_dir:
             svc = AssessmentService(Path(data_dir), LAB_PORT, l2_confinement=TEST_CONFINEMENT,

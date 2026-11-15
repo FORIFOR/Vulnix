@@ -312,10 +312,42 @@ class TestThePlanThroughTheGateway(ServiceBase):
         self.assertEqual(site.seen, [("/", None)])
         self.assertEqual([item["catalog_id"] for item in plan["items"]], ["l1_http_probe"])
 
-        self.svc.execute_artex_item(plan["items"][0]["id"], "op", roles=("operator",))
-        self.assertEqual(site.seen, [("/", None), ("/", None)])
-        self.assertEqual(self.svc.artex_plan_view()["plan"]["items"][0]["status"], "completed")
-        self.assertTrue(self.events("allow"))
+        self.assertEqual(plan["items"][0]["status"], "observed")
+        before = len(self.events("allow"))
+        with self.assertRaises(ValueError):
+            self.svc.execute_artex_item(plan["items"][0]["id"], "op", roles=("operator",))
+        self.assertEqual(site.seen, [("/", None)])
+        self.assertEqual(len(self.events("allow")), before)
+
+    def test_clean_baseline_without_findings_satisfies_root_plan_item(self):
+        from aegis import assessment as assessment_module
+        from tests.test_real_service import FakeService, HOST
+
+        site = FakeService()
+        threading.Thread(target=site.serve_forever, daemon=True).start()
+        self.addCleanup(site.server_close)
+        self.addCleanup(site.shutdown)
+        url = f"http://{HOST}:{site.server_port}"
+        self.svc._custom_resolver = lambda host: ["127.0.0.1"] if host == HOST else []
+        self.svc._real_site_local_artex = True
+        challenge = self.svc.issue_ownership_challenge(url=url)["challenge"]
+        self.svc.verify_asset_ownership(
+            url_or_host=url, method="dns_txt",
+            dns_lookup=lambda name: [f'{name} text = "{challenge["dns_txt_value"]}"'])
+        self.svc.confirm_asset_scope(url_or_host=url, confirmed_prohibited=True,
+                                     activate_workspace=True, allow_loopback_test=True)
+        self.svc.a.findings = {}
+        with patch.object(assessment_module, "analyze_l1_service_response", return_value=[]), \
+                patch.object(self.svc, "_l2_candidates", return_value=[]):
+            self.svc.start()
+            end = time.monotonic() + 20
+            while time.monotonic() < end and self.svc.snapshot()["state"] == "running":
+                time.sleep(0.02)
+        self.assertEqual(self.svc.snapshot()["state"], "completed")
+        self.assertEqual(self.svc.snapshot()["findings"], [])
+        plan = self.plan()
+        self.assertEqual(plan["items"][0]["status"], "observed")
+        self.assertEqual(site.seen, [("/", None)])
 
     def test_real_site_plan_is_shown_only_when_scoped_and_opted_in(self):
         self.svc.issue_ownership_challenge(url="https://site.test/")
@@ -338,9 +370,10 @@ class TestThePlanThroughTheGateway(ServiceBase):
             google_property="sc-domain:site.test", google_endpoint=("https", 443))
         self.svc.confirm_asset_scope(url_or_host="site.test", confirmed_prohibited=True,
                                      activate_workspace=True)
-        self.svc.a.state = "completed"  # the live baseline is covered by the end-to-end test above
+        self.svc.a.state = "completed"  # inconsistent old state: no audited baseline in this fixture
         plan = self.plan()
         self.assertEqual([item["catalog_id"] for item in plan["items"]], ["l1_http_probe"])
+        self.assertEqual(plan["items"][0]["status"], "unsupported")
 
     def test_real_site_can_use_budgeted_gateway_only_with_literal_loopback_upstream(self):
         from aegis import assessment as assessment_module
@@ -414,6 +447,7 @@ class TestThePlanThroughTheGateway(ServiceBase):
         from aegis.policy import Budget
 
         self.svc._real_site_local_artex = True
+        self.svc.real_site_read_only = False  # exercise the optional legacy item without a completed baseline
         self.svc.issue_ownership_challenge(url="https://site.test/")
         self.svc.verify_asset_ownership(
             url_or_host="site.test", method="google_search_console",
@@ -442,6 +476,7 @@ class TestThePlanThroughTheGateway(ServiceBase):
         url = f"http://{HOST}:{site.server_port}"
         self.svc._custom_resolver = lambda host: ["127.0.0.1"] if host == HOST else []
         self.svc._real_site_local_artex = True
+        self.svc.real_site_read_only = False  # no baseline in this budget-specific fixture
         challenge = self.svc.issue_ownership_challenge(url=url)["challenge"]
         self.svc.verify_asset_ownership(
             url_or_host=url, method="dns_txt",

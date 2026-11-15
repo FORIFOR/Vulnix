@@ -11,6 +11,8 @@ const STATUS: Record<string, { label: string; cls: string }> = {
   awaiting_approval: { label: "承認待ち（L2）", cls: "bg-amber-100 text-amber-900 dark:bg-amber-900/50 dark:text-amber-100" },
   running: { label: "実行中", cls: "bg-sky-100 text-sky-900 dark:bg-sky-900/50 dark:text-sky-100" },
   completed: { label: "完了", cls: "bg-emerald-100 text-emerald-900 dark:bg-emerald-900/50 dark:text-emerald-100" },
+  observed: { label: "初回診断で確認済み", cls: "bg-emerald-100 text-emerald-900 dark:bg-emerald-900/50 dark:text-emerald-100" },
+  unsupported: { label: "この診断では実行不可", cls: "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300" },
   failed: { label: "失敗・拒否", cls: "bg-red-100 text-red-900 dark:bg-red-900/50 dark:text-red-100" },
 };
 
@@ -95,7 +97,7 @@ export function ArtexPlanPanel({ snap, onUpdate }: {
             {plan.items.map((it) => {
               const st = STATUS[it.status] ?? STATUS.planned;
               const needsApprover = it.level === "L2" && !approver;
-              const done = it.status === "completed" || it.status === "running";
+              const done = it.status === "completed" || it.status === "observed" || it.status === "unsupported" || it.status === "running";
               return (
                 <li key={it.id} className="flex flex-wrap items-center justify-between gap-2 p-3">
                   <div className="min-w-0 flex-1">
@@ -108,7 +110,7 @@ export function ArtexPlanPanel({ snap, onUpdate }: {
                       <span className="font-medium">ARTEX の原文</span>（AI出力・未翻訳。実行内容は上の検証項目のとおりで、この文では決まりません）#{it.intent_id}：{it.intent_summary}
                     </p>}
                   </div>
-                  <button
+                  {it.status !== "observed" && it.status !== "unsupported" && <button
                     type="button"
                     disabled={busy !== null || done || needsApprover}
                     title={needsApprover ? "L2 は承認責任者のみ実行できます" : undefined}
@@ -116,7 +118,7 @@ export function ArtexPlanPanel({ snap, onUpdate }: {
                     className="rounded-lg border border-zinc-300 px-2.5 py-1 text-xs font-semibold hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
                   >
                     {busy === it.id ? "実行中…" : realSite ? "この確認を実行" : it.level === "L2" ? (needsApprover ? "承認者のみ" : "承認して Gateway で実行") : "Gateway で実行"}
-                  </button>
+                  </button>}
                 </li>
               );
             })}
