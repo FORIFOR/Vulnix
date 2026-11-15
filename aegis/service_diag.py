@@ -26,6 +26,44 @@ EXECUTOR_DEFAULT = {
 SEVERITY_BASE_SCORE = {"critical": 90, "high": 75, "medium": 50, "low": 25}
 
 
+def analyze_status_marker_report(report: dict, evidence: dict) -> dict:
+    """Turn one audited fixed Worker report into an L1 finding."""
+    if (report.get("check_id") != "apache_mod_status"
+            or type(report.get("detected")) is not bool
+            or not isinstance(evidence.get("audit_hash"), str)
+            or evidence.get("tool") != "status_marker"):
+        raise ValueError("status marker result has no auditable fixed verdict")
+    detected = report["detected"]
+    verdict = "detected" if detected else "not_reproduced"
+    score, rationale = compute_finding_risk_score("medium", verdict)
+    return {
+        "id": "f_l1_apache_mod_status",
+        "title": ("Apache mod_status の公開露出" if detected
+                  else "Apache mod_status の公開は確認できず"),
+        "category": "情報公開設定",
+        "severity": "medium",
+        "risk_level": "L1",
+        "verdict": verdict,
+        "verdict_basis": "l1_observation",
+        "risk_score": score,
+        "risk_rationale": rationale,
+        "cve": [],
+        "help_term": "security_headers",
+        "summary": ("固定パスでApache mod_status固有の応答マーカーを観測しました。" if detected
+                    else "固定パスではApache mod_status固有の応答マーカーを確認できませんでした。"),
+        "why_detected": ("HTTP 200とTotal Accesses、Uptimeの両マーカーを確認しました。" if detected
+                         else "この検査では露出を確認できませんでした。"),
+        "what_was_established": ("固定パスで状態情報の公開を観測しました。" if detected else None),
+        "evidence": [evidence],
+        "remediation": {
+            "steps": ["Apache mod_status を公開範囲から外すか、管理者だけにアクセスを制限する"],
+            "how_to_verify": "同じ固定パスを再診断し、状態情報が公開されないことを確認します。",
+        },
+        "executor": {**EXECUTOR_DEFAULT, "tool": "status_marker"},
+        "demo_fixture": False,
+    }
+
+
 def compute_finding_risk_score(
     severity: str,
     verdict: str,

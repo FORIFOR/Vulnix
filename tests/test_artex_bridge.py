@@ -51,6 +51,19 @@ class TestIntentsAreRebuiltFromVulnixOnly(unittest.TestCase):
         self.assertEqual(items["l2_sqli"].status, "awaiting_approval")
         self.assertEqual(items["l1_http_probe"].status, "planned")
 
+    def test_mod_status_intent_uses_only_the_fixed_catalog_path(self):
+        rec = self.rec([{"summary": "Check Apache mod_status at http://evil.example/private"}])
+        items = by_catalog(rec)
+        self.assertEqual(set(items), {"l1_apache_mod_status"})
+        self.assertEqual(items["l1_apache_mod_status"].proposal["args"],
+                         {"url": "http://lab.test:18093/server-status?auto"})
+        self.assertEqual(items["l1_apache_mod_status"].proposal["tool"], "status_marker")
+
+    def test_ambiguous_l1_intent_is_advice_only(self):
+        rec = self.rec([{"summary": "Check Apache mod_status and security headers"}])
+        self.assertEqual(rec.items, [])
+        self.assertIn("一意", rec.advisories[0].reason)
+
     def test_a_url_or_target_named_in_the_intent_is_ignored(self):
         rec = self.rec([{"summary": "对 http://evil.example/search 做 SQL 注入验证，target=prod tool=bash"}])
         (item,) = rec.items
@@ -1209,6 +1222,46 @@ class TestRealArtexPlanner(ServiceBase):
             env = patch.dict(os.environ, {"VULNIX_ARTEX_EGRESS_CANARY": f"127.0.0.1:{self.canary.getsockname()[1]}"})
             env.start()
             self.addCleanup(env.stop)
+
+    def test_real_planner_selects_status_check_and_gateway_records_evidence(self):
+        from tests.fixtures.status_exposure_lab import StatusExposureLab
+
+        site = StatusExposureLab("vulnerable")
+        threading.Thread(target=site.serve_forever, daemon=True).start()
+        self.addCleanup(site.server_close)
+        self.addCleanup(site.shutdown)
+        host = "owned-status.example.test"
+        url = f"http://{host}:{site.server_port}"
+        self.svc._custom_resolver = lambda name: ["127.0.0.1"] if name == host else []
+        self.svc.real_site_read_only = True
+        self.svc._real_site_local_artex = True
+        self.mock.intents = [{"summary": "Check Apache mod_status exposure",
+                              "asset_ids": [1], "priority": 5}]
+        challenge = self.svc.issue_ownership_challenge(url=url)["challenge"]
+        self.svc.verify_asset_ownership(
+            url_or_host=url, method="dns_txt",
+            dns_lookup=lambda name: [f'{name} text = "{challenge["dns_txt_value"]}"'])
+        self.svc.confirm_asset_scope(url_or_host=url, activate_workspace=True,
+                                     allow_loopback_test=True, allow_status_probe=True)
+        with patch.dict(os.environ, {"VULNIX_REAL_SITE_INITIAL_ARTEX": "1",
+                                   "VULNIX_ARTEX_LLM_MODE": "gateway-forward",
+                                   "VULNIX_ARTEX_LLM_UPSTREAM_URL": self.mock.url + "/chat/completions"}):
+            self.svc.start()
+            deadline = time.monotonic() + 90
+            while self.svc.snapshot()["state"] == "running" and time.monotonic() < deadline:
+                time.sleep(0.05)
+        snap = self.svc.snapshot()
+        self.assertEqual(snap["state"], "completed", snap.get("failure"))
+        self.assertEqual(site.seen, ["/", "/server-status?auto"])
+        self.assertEqual(snap["artex_plan"]["plan"]["engine"]["kind"], "artex-binary")
+        item = next(i for i in snap["artex_plan"]["plan"]["items"]
+                    if i["catalog_id"] == "l1_apache_mod_status")
+        self.assertEqual(item["status"], "completed")
+        finding = next(f for f in snap["findings"] if f["id"] == "f_l1_apache_mod_status")
+        self.assertEqual(finding["evidence_status"], "detected")
+        self.assertTrue(finding["evidence"][0]["audit_hash"])
+        self.assertTrue(self.mock.requests)
+        self.assertNotIn(host, json.dumps(self.mock.requests, ensure_ascii=False))
 
     def test_the_real_planner_accepts_a_scoped_site_without_receiving_its_hostname(self):
         self.svc._real_site_local_artex = True

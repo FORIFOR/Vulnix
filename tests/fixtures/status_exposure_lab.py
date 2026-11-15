@@ -12,10 +12,11 @@ class StatusExposureLab(http.server.ThreadingHTTPServer):
     daemon_threads = True
 
     def __init__(self, mode: str):
-        if mode not in {"vulnerable", "patched", "generic_200"}:
+        if mode not in {"vulnerable", "patched", "generic_200", "non_apache"}:
             raise ValueError("unknown fixture mode")
         super().__init__(("127.0.0.1", 0), _Handler)
         self.mode = mode
+        self.banner = "nginx" if mode == "non_apache" else "Apache/2.4.62"
         self.seen: list[str] = []
 
 
@@ -24,7 +25,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     sys_version = ""
 
     def version_string(self):
-        return self.server_version
+        return self.server.banner
 
     def log_message(self, *_args):
         pass

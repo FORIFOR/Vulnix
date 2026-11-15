@@ -88,6 +88,10 @@ class CatalogEntry:
     def args_for(self, url: str) -> dict:
         if self.tool == "http_probe":
             return {"url": url, "method": "GET"}
+        if self.tool == "status_marker":
+            target = urllib.parse.urlsplit(url)
+            return {"url": urllib.parse.urlunsplit(
+                (target.scheme, target.netloc, "/server-status", "auto", ""))}
         return {"url": url, "check": self.check}
 
 
@@ -109,6 +113,9 @@ CATALOG: tuple[CatalogEntry, ...] = (
                  "公開設定・応答ヘッダーの非破壊GET（1回）",
                  ("header", "headers", "响应头", "ヘッダー", "banner", "バナー", "fingerprint", "指纹", "フィンガープリント",
                   "server version", "服务器版本", "信息收集", "recon", "偵察", "公開設定", "security header")),
+    CatalogEntry("l1_apache_mod_status", "status_marker", "read_only_probe", "L1",
+                 "Apache mod_status の固定マーカー確認（追加GET 1回）",
+                 ("mod_status", "mod-status", "server-status?auto", "server status module")),
 )
 CATALOG_BY_ID = {c.id: c for c in CATALOG}
 
@@ -555,6 +562,8 @@ def classify(summary: str) -> tuple[CatalogEntry | None, str]:
     if l2:
         return l2[0], ""
     l1 = [c for c in CATALOG if c.level == "L1" and any(k in text for k in c.keywords)]
+    if len(l1) > 1:
+        return None, "複数の検証項目に該当し一意に決められないため実行しません"
     if l1:
         return l1[0], ""
     return None, "許可済みの検証カタログに該当しないため実行しません"

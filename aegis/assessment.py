@@ -33,7 +33,7 @@ from .events import EventBus
 from .evidence import (EVIDENCE_LABELS, enforce_verdict, evidence_status,
                        evidence_summary, reproduction_note, reproduction_verdict)
 from .gateway import (LAB_REPRODUCTION_CHECKS, Gateway, State, http_probe_tool,
-                      reproduction_probe_tool)
+                      reproduction_probe_tool, status_marker_tool)
 from .lab import get_lab_mode, set_lab_mode
 from .network import EgressGuard, NetworkError, system_resolver
 from .ownership import (PROHIBITED_ACTIONS_SUMMARY, fetch_proof_file_pinned, proof_file_matches, public_address,
@@ -51,7 +51,8 @@ from .artex_bridge import (CATALOG_BY_ID, ArtexBridgeError, anonymous_real_site_
 from .runtime import WorkerPool
 from .secrets_store import EncryptedSecretStore
 from .l2_rules import BUILTIN_PROFILE_DIR, L2RuleSet, site_profile_dirs
-from .service_diag import analyze_l1_service_response, build_l2_candidates, clean_target_text
+from .service_diag import (analyze_l1_service_response, analyze_status_marker_report,
+                           build_l2_candidates, clean_target_text)
 from .google_ownership import METHOD as GOOGLE_METHOD, covering_property
 
 SEVERITY_WEIGHT = {"critical": 40, "high": 25, "medium": 10, "low": 3, "info": 0}
@@ -331,6 +332,7 @@ class AssessmentService:
             workers=self.workers, audit=self.audit,
             tools={
                 "http_probe": http_probe_tool(),
+                "status_marker": status_marker_tool(),
                 "reproduction_probe": reproduction_probe_tool(self.l2),
                 "demo_verify": demo_verify_tool(verify_seconds),
             },
@@ -1133,6 +1135,8 @@ class AssessmentService:
                 raise PolicyError(f"{host} の送信先 {dest.ip} は所有確認済みのアドレスではありません")
             if self._persist_error:
                 raise PolicyError("状態を保存できないため、送信を中止しました")
+            if tool_name == "status_marker" and not self.real_site_read_only:
+                raise PolicyError("追加の固定検査は読み取り専用の診断だけに許可されます")
             if self.real_site_read_only:
                 # Reserve only a consented fixed request in signed state before
                 # launch. Failed, stopped, and interrupted requests are not refunded.
@@ -1211,6 +1215,30 @@ class AssessmentService:
         if not self.ledger.commit():
             self._persist_error = self.ledger.error or "LedgerError"
             self._fail("診断の監査証拠を保存できません")
+            return False
+        return True
+
+    def _record_status_result_locked(self, evidence: dict) -> bool:
+        """Adopt a fixed marker report only for the same signed scope and run."""
+        if not self.real_site_read_only:
+            return True
+        host = (self.a.asset.get("name") or "").lower()
+        ext = self._external_entry(host)
+        usage = self.ledger.scan_usage.get(host)
+        if (ext is None or not isinstance(usage, dict)
+                or usage.get("asset_id") != self.a.asset.get("id")
+                or usage.get("authorization_ref") != ext.get("authorization_ref")
+                or usage.get("scope_generation") != self._scope_generation(ext)
+                or usage.get("paths") != ["/", "/server-status?auto"]
+                or evidence.get("tool") != "status_marker"
+                or not evidence.get("audit_hash") or self._stale_runner()
+                or self.gateway.state is State.STOPPED):
+            self._fail("追加検査の監査証拠を現在の診断許可と照合できません")
+            return False
+        usage["status_result_audit_hash"] = evidence["audit_hash"]
+        if not self.ledger.commit():
+            self._persist_error = self.ledger.error or "LedgerError"
+            self._fail("追加検査の監査証拠を保存できません")
             return False
         return True
 
@@ -1687,7 +1715,7 @@ class AssessmentService:
         if (ext is None or usage.get("asset_id") != self.a.asset.get("id")
                 or usage.get("authorization_ref") != ext.get("authorization_ref")
                 or usage.get("scope_generation") != self._scope_generation(ext)
-                or usage.get("paths") != ["/"]):
+                or usage.get("paths") not in (["/"], ["/", "/server-status?auto"])):
             return False
         entries, valid = self.audit.verified_entries()
         if not valid:
@@ -1862,6 +1890,17 @@ class AssessmentService:
                     # old or inconsistent run without auditable evidence must
                     # not advertise another GET that the signed cap will reject.
                     item.status = "observed" if root_observed else "unsupported"
+                elif real_site and self.real_site_read_only and item.catalog_id == "l1_apache_mod_status":
+                    host = (self.a.asset.get("name") or "").lower()
+                    ext = self._external_entry(host) or {}
+                    usage = self.ledger.scan_usage.get(host) or {}
+                    if (not root_observed or (fingerprint or {}).get("server_family") != "apache"
+                            or ext.get("allow_status_probe") is not True
+                            or usage.get("status_probe_allowed") is not True
+                            or usage.get("paths") != ["/"]):
+                        item.status = "unsupported"
+                elif real_site and item.catalog_id == "l1_apache_mod_status":
+                    item.status = "unsupported"
                 if tk is not None:
                     tk.id = item.id                  # unique across plans
                     tk.status = item.status
@@ -2212,7 +2251,13 @@ class AssessmentService:
                                      approval_actor=f"artex-L1:{actor}")
                 if res is not None:
                     with self._lock:
-                        self._analyze(res, ev)
+                        if entry.tool == "status_marker":
+                            if self._record_status_result_locked(ev):
+                                self._upsert_finding(analyze_status_marker_report(res, ev))
+                            else:
+                                res = None
+                        else:
+                            self._analyze(res, ev)
                 ok = res is not None
             self._set_artex_item_status(item_id, "completed" if ok else "failed")
             claimed = False
@@ -4156,8 +4201,8 @@ class AssessmentService:
             fingerprint = safe_public_fingerprint(res, scheme=urllib.parse.urlsplit(url).scheme)
             self._checkpoint()
             try:
-                self._plan_with_artex("policy:initial", llm_mode="gateway-forward",
-                                      fingerprint=fingerprint)
+                planned = self._plan_with_artex("policy:initial", llm_mode="gateway-forward",
+                                                fingerprint=fingerprint)
             except ValueError:
                 # A local model failure keeps the measured L1 result. Revocation,
                 # stop, or persistence failure must still stop the diagnosis.
@@ -4165,6 +4210,12 @@ class AssessmentService:
                 with self._lock:
                     self._ensure_artex_authority_locked()
                 self.audit.record("artex.initial_fallback", reason="planner_failure")
+            else:
+                for item in ((planned.get("artex_plan") or {}).get("plan") or {}).get("items", []):
+                    if (item.get("catalog_id") == "l1_apache_mod_status"
+                            and item.get("status") == "planned"):
+                        self._checkpoint()
+                        self.execute_artex_item(item["id"], "policy:initial")
         if "AI agent:" in res.get("body_prefix", ""):
             self.bus.publish(self.a.id, "agent.note",
                              message="ページ内にAI向けの指示文を検出しました。ProposalRouterにより無害化され実行権限には影響しません。")

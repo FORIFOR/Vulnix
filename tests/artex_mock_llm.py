@@ -63,10 +63,13 @@ def intents_for(asset_id: int) -> list[dict]:
     return out
 
 
-def _tool_calls(asset_id: int = 1) -> list[dict]:
+def _tool_calls(asset_id: int = 1, intents: list[dict] | None = None) -> list[dict]:
+    chosen = (intents_for(asset_id) if intents is None else
+              [{**it, "asset_ids": [asset_id if a == 1 else a for a in it.get("asset_ids", [])]}
+               for it in intents])
     calls = [{"id": "call_add_intent", "type": "function",
               "function": {"name": "add_intent",
-                           "arguments": json.dumps({"intents": intents_for(asset_id)}, ensure_ascii=False)}}]
+                           "arguments": json.dumps({"intents": chosen}, ensure_ascii=False)}}]
     for i, (name, args) in enumerate(FORBIDDEN_CALLS):
         calls.append({"id": f"call_forbidden_{i}", "type": "function",
                       "function": {"name": name, "arguments": json.dumps(args)}})
@@ -103,9 +106,11 @@ class MockLLM:
     `fail_at` / `fail_status`: answer the Nth request with that HTTP error (its body
     carries a secret-looking string, to prove the gateway never logs or shows it)."""
 
-    def __init__(self, port: int = 0, *, strict: bool = False, fail_at: int | None = None, fail_status: int = 402):
+    def __init__(self, port: int = 0, *, strict: bool = False, fail_at: int | None = None,
+                 fail_status: int = 402, intents: list[dict] | None = None):
         self.requests: list[dict] = []
         self.strict, self.fail_at, self.fail_status = strict, fail_at, fail_status
+        self.intents = intents
         mock = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -138,7 +143,7 @@ class MockLLM:
                     finish = "stop"
                 else:
                     message = {"role": "assistant", "content": "",
-                               "tool_calls": _tool_calls(_seeded_asset_id(msgs))}
+                               "tool_calls": _tool_calls(_seeded_asset_id(msgs), mock.intents)}
                     finish = "tool_calls"
                 if req.get("stream"):
                     self._stream(message, finish)
