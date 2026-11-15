@@ -625,6 +625,7 @@ class TestL1Diagnosis(RealServiceBase):
         self.assertNotIn("承認", verification["detail"])
         thoughts = [e for e in self.svc.audit.entries() if e["event"] == "agent.thought"]
         self.assertFalse(any("承認待ち" in json.dumps(e, ensure_ascii=False) for e in thoughts))
+        self.assertFalse(any("ARTEX" in json.dumps(e, ensure_ascii=False) for e in thoughts))
 
     def test_snapshot_reports_the_mode_outside_the_public_beta_too(self):
         self.assertFalse(self.svc.snapshot()["real_site_read_only"])

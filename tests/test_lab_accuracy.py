@@ -11,6 +11,7 @@ from aegis.lab import set_lab_mode, start_lab
 
 
 LAB_PORT = 18194
+PATCHED_LAB_PORT = 18195
 CHECKS = ("f_banner", "f_idor", "f_sqli")
 ALL_CHECKS = CHECKS + ("f_headers", "f_powered")
 
@@ -19,16 +20,23 @@ class TestLabAccuracy(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.lab = start_lab(LAB_PORT)
+        cls.patched_lab = start_lab(PATCHED_LAB_PORT)
+        set_lab_mode("vulnerable", cls.lab)
+        set_lab_mode("patched", cls.patched_lab)
 
     @classmethod
     def tearDownClass(cls):
         cls.lab.shutdown()
         cls.lab.server_close()
+        cls.patched_lab.shutdown()
+        cls.patched_lab.server_close()
 
     def run_mode(self, mode, approve):
-        set_lab_mode(mode, self.lab)
+        lab_port = LAB_PORT if mode == "vulnerable" else PATCHED_LAB_PORT
+        lab = self.lab if mode == "vulnerable" else self.patched_lab
+        self.assertEqual(lab.lab_state.mode, mode)
         with tempfile.TemporaryDirectory() as tmp:
-            svc = AssessmentService(Path(tmp), LAB_PORT, verify_seconds=0.01)
+            svc = AssessmentService(Path(tmp), lab_port, verify_seconds=0.01)
             svc._may_switch_lab = False
             try:
                 svc.start()
@@ -111,6 +119,8 @@ class TestLabAccuracy(unittest.TestCase):
         self.assertEqual("vulnerable", self.lab.lab_state.mode)
 
     def test_measured_accuracy_for_the_five_known_lab_conditions(self):
+        self.assertIsNot(self.lab, self.patched_lab)
+        self.assertNotEqual(self.lab.server_port, self.patched_lab.server_port)
         for approve, expected in ((False, (3, 0, 2, 2, 3)),
                                   (True, (5, 0, 0, 5, 0))):
             vulnerable_l1, vulnerable = self.run_mode("vulnerable", approve)
@@ -125,3 +135,9 @@ class TestLabAccuracy(unittest.TestCase):
             tn = sum(negative_by_id.get(fid) in (None, "not_reproduced") for fid in ALL_CHECKS)
             unverified = sum(negative_by_id.get(fid) == "candidate" for fid in ALL_CHECKS)
             self.assertEqual((tp, fp, fn, tn, unverified), expected)
+            precision = tp / (tp + fp)
+            recall = tp / (tp + fn)
+            false_positive_rate = fp / (fp + tn)
+            self.assertEqual(precision, 1.0)
+            self.assertEqual(recall, 1.0 if approve else 0.6)
+            self.assertEqual(false_positive_rate, 0.0)

@@ -3829,7 +3829,7 @@ class AssessmentService:
         self._phase("scope", "done", f"{url} は許可範囲内（{scope_desc}）")
 
         self._checkpoint()
-        self._phase("config", "running", "ARTEX が公開設定の非破壊プローブを提案・実行しています")
+        self._phase("config", "running", "内蔵の診断手順で公開設定を確認しています")
         self._activity("公開設定を検査（GET 1回・非破壊）", "http_probe", "L1")
         self._think(
             "非破壊HTTPプローブの計画とサニタイズ",
