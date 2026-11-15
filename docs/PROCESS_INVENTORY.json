@@ -4589,6 +4589,18 @@
   ],
   "network_process_calls": [
     {
+      "file": "aegis/ai_advisor.py",
+      "line": 455,
+      "function": "_loopback_transport",
+      "call": "opener.open"
+    },
+    {
+      "file": "aegis/ai_advisor.py",
+      "line": 530,
+      "function": "_external_transport",
+      "call": "opener.open"
+    },
+    {
       "file": "aegis/artex_bridge.py",
       "line": 390,
       "function": "run_artex_planner",
@@ -4691,6 +4703,24 @@
       "call": "socket.create_connection"
     },
     {
+      "file": "aegis/ownership.py",
+      "line": 161,
+      "function": "fetch_proof_file_pinned",
+      "call": "http.client.HTTPConnection"
+    },
+    {
+      "file": "aegis/ownership.py",
+      "line": 164,
+      "function": "fetch_proof_file_pinned",
+      "call": "conn.request"
+    },
+    {
+      "file": "aegis/router.py",
+      "line": 144,
+      "function": "_open_model_url",
+      "call": "urllib.request.build_opener(_NoRedirect).open"
+    },
+    {
       "file": "aegis/router.py",
       "line": 455,
       "function": "ArtexSubprocessBackend.version_info",
@@ -4716,6 +4746,18 @@
     },
     {
       "file": "aegis/workers/http_probe.py",
+      "line": 225,
+      "function": "probe",
+      "call": "http.client.HTTPConnection"
+    },
+    {
+      "file": "aegis/workers/http_probe.py",
+      "line": 229,
+      "function": "probe",
+      "call": "conn.request"
+    },
+    {
+      "file": "aegis/workers/http_probe.py",
       "line": 206,
       "function": "probe",
       "call": "socket.create_connection"
@@ -4725,6 +4767,18 @@
       "line": 79,
       "function": "_fetch",
       "call": "socket.create_connection"
+    },
+    {
+      "file": "aegis/workers/reproduction_probe.py",
+      "line": 83,
+      "function": "_fetch",
+      "call": "http.client.HTTPConnection"
+    },
+    {
+      "file": "aegis/workers/reproduction_probe.py",
+      "line": 86,
+      "function": "_fetch",
+      "call": "conn.request"
     }
   ],
   "background_jobs": [

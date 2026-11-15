@@ -17,7 +17,8 @@ FRONTEND = sorted((ROOT / "web/src").rglob("*.ts")) + sorted((ROOT / "web/src").
 ARTEX_GO = sorted((ROOT / "integrations/artex/overlay").rglob("*.go"))
 ROUTE_METHODS = {"do_GET": "GET", "_get_org": "GET", "_tenancy_get": "GET",
                  "do_POST": "POST", "_dispatch": "POST", "_tenancy_post": "POST"}
-NETWORK_CALLS = {"urlopen", "getaddrinfo", "create_connection", "Popen", "run", "fetch"}
+NETWORK_CALLS = {"urlopen", "getaddrinfo", "create_connection", "HTTPConnection",
+                 "HTTPSConnection", "connect", "request", "open", "Popen", "run", "fetch"}
 
 
 def node_text(node: ast.AST) -> str:
@@ -64,7 +65,11 @@ def inventory_python(path: Path) -> tuple[list[dict], list[dict], list[dict], li
                         continue
                     call = node_text(child.func)
                     last = call.rsplit(".", 1)[-1]
-                    if last in NETWORK_CALLS and last != "run":
+                    if last in NETWORK_CALLS and last not in {"run", "open", "connect"}:
+                        network.append({"file": rel, "line": child.lineno, "function": name, "call": call})
+                    elif last == "open" and ("opener." in call or "url" in call.lower()):
+                        network.append({"file": rel, "line": child.lineno, "function": name, "call": call})
+                    elif last == "connect" and ("socket" in call or "sock" in call or "conn." in call):
                         network.append({"file": rel, "line": child.lineno, "function": name, "call": call})
                     elif last == "run" and ("subprocess" in call or rel.endswith("runtime.py")):
                         network.append({"file": rel, "line": child.lineno, "function": name, "call": call})
