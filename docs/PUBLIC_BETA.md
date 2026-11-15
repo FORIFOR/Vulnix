@@ -99,10 +99,16 @@ scripts/public-app.sh stop
 - IP アドレスが変わったときや一定時間が経ったときは Google に再確認できないため、所有確認のやり直しを求めます。
 
 有効にする手順（所有者の設定と、別途承認される公開作業）：
-1. 所有または利用許可のある固定 HTTPS ホスト名を公開βに用意します。Quick Tunnel の `trycloudflare.com` ホスト名は起動で変わり、Vulnix 所有のドメインでもないため OAuth のリダイレクト先に使いません（[Google のポリシー](https://developers.google.com/identity/protocols/oauth2/policies)）。
+1. 所有または利用許可のある固定 HTTPS ホスト名を公開βに用意します。候補は `vulnix.next-standards.com` です。Quick Tunnel の `trycloudflare.com` ホスト名は起動で変わり、Vulnix 所有のドメインでもないため OAuth のリダイレクト先に使いません（[Google のポリシー](https://developers.google.com/identity/protocols/oauth2/policies)）。
 2. Google Cloud Console で Search Console API を有効にし、OAuth 同意画面に読み取り専用スコープ `https://www.googleapis.com/auth/webmasters.readonly` を追加します。審査前のテストでは利用者をテストユーザーに登録します（[Google の OAuth 設定](https://developers.google.com/identity/protocols/oauth2/web-server)、[Search Console の権限](https://developers.google.com/webmaster-tools/v1/how-tos/authorizing)）。
 3. 「ウェブ アプリケーション」の OAuth クライアントを作り、**正確に** `https://<固定の公開ホスト名>/verify/google` を承認済みリダイレクト URI に登録します。Google は完全一致を要求します。
 4. クライアント ID とシークレットはチャットやリポジトリに送らず、VM の保護された `/opt/vulnix-public/.env.local`（0600）に `VULNIX_GOOGLE_CLIENT_ID`、`VULNIX_GOOGLE_CLIENT_SECRET`、`VULNIX_GOOGLE_REDIRECT_URI` として設定します。承認後に公開バックエンドを再起動し、`/api/auth/me` の `google_ownership: true` と実際の OAuth 往復を確認します。
+
+固定ホストへの切り替え準備（まだ DNS と公開設定は変更しません）：
+- 現在の Mac 上の `cloudflared` は Quick Tunnel で、Colima VM の公開バックエンドへは Mac の Next.js（`127.0.0.1:3200`）を経由しています。固定ホストも **Mac の同じ 3200 番**に向け、VM の 8788 番は外へ公開しません。既存の Mac と Colima VM を使い続けます。
+- Cloudflare 側で `next-standards.com` ゾーンの管理権限、`vulnix` の既存 DNS レコードの有無、既存の名前付き Tunnel を確認します。Quick Tunnel には固定ホストを付けられないため、既存の名前付き Tunnel が使えればその公開ルートを追加し、なければ同じ Mac に名前付き Tunnel を用意します。ルートと DNS の作成は別途承認後に行います（[Cloudflare の手順](https://developers.cloudflare.com/tunnel/features/locally-managed-tunnels/create-local-tunnel/)）。
+- Web の許可ホスト名を固定ホストへ切り替えるときは、同じ公開アプリの起動設定を更新します。Google のリダイレクト URI は `https://vulnix.next-standards.com/verify/google` と完全一致させます。OAuth 同意画面はテストモードのまま、所有確認を試す Google アカウントだけをテストユーザーにします。
+- 切り替え後はログイン、URL登録、Google 所有確認、DNS・ファイル方式への戻り、診断開始前の範囲確認を確認します。所有確認前の実サイト診断通信は行いません。
 
 ## 既知の制約
 - **Quick Tunnel は、更新の受信（SSE）を途中で溜め込みます。** そのため画面は、受信が途切れているあいだ、4 秒ごとに状態を読み直します（表示が数秒遅れることがあります）。固定ドメインの名前付きトンネルを使えば、この制約はなくなります。
