@@ -278,6 +278,21 @@ class TestThePlanThroughTheGateway(ServiceBase):
         with self.assertRaises(ValueError):
             self.svc.plan_with_artex("op")
 
+    def test_real_site_planner_cannot_use_the_unconfined_dev_exception(self):
+        from aegis.confinement import KernelConfinement
+
+        self.svc._real_site_local_artex = True
+        self.svc.issue_ownership_challenge(url="https://site.test/")
+        self.svc.verify_asset_ownership(
+            url_or_host="site.test", method="google_search_console",
+            google_property="sc-domain:site.test", google_endpoint=("https", 443))
+        self.svc.confirm_asset_scope(url_or_host="site.test", confirmed_prohibited=True,
+                                     activate_workspace=True)
+        self.svc._l2_confinement = KernelConfinement(platform="darwin")
+        with patch.dict(os.environ, {"VULNIX_ARTEX_ALLOW_UNCONFINED": "1", "AEGIS_ENV": "development"}):
+            with self.assertRaisesRegex(ValueError, "隔離"):
+                self.svc.plan_with_artex("op")
+
     def test_opted_in_real_site_plan_gets_only_anonymous_input_and_l1_items(self):
         from aegis import assessment as assessment_module
 

@@ -1651,7 +1651,7 @@ class AssessmentService:
         if st.get("ok"):
             confinement = self._l2_confinement
             protected = sorted(str(p) for p in self.data_dir.iterdir() if p.is_file())
-        elif (os.environ.get("VULNIX_ARTEX_ALLOW_UNCONFINED") == "1"
+        elif (not real_site and os.environ.get("VULNIX_ARTEX_ALLOW_UNCONFINED") == "1"
               and os.environ.get("AEGIS_ENV", "").strip().lower() in ("development", "dev")):
             confinement, protected = None, ()
             self.audit.record("artex.unconfined_dev_run", actor=actor, reason=str(st.get("reason", ""))[:200])
