@@ -558,6 +558,13 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         return self._json(403, {"error": "閲覧者の権限では操作できません"})
                     # L1-only mode: traffic to real sites is bounded per organization and platform-wide
                     limited = None
+                    if REAL_SITE_L1_ONLY and not real_site_traffic and p.endswith(("/start", "/restart", "/resume")):
+                        # the workspace can be switched onto a proven site between this check and
+                        # the run: every run of an organization holding one is counted
+                        try:
+                            real_site_traffic = osvc.has_scoped_real_site()
+                        except Exception:   # noqa: BLE001 - when in doubt, count it
+                            real_site_traffic = True
                     if real_site_traffic and REAL_SITE_L1_ONLY:
                         if p == "/api/assets/verify-ownership":
                             limited = (verify_times, verify_all, OWNERSHIP_CHECKS_PER_ORG_PER_HOUR,

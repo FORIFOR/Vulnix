@@ -1142,6 +1142,12 @@ class AssessmentService:
         return {"ok": bool(st.get("ok")), "reason": str(st.get("reason") or ""),
                 "mechanism": str(st.get("mechanism") or "")}
 
+    def has_scoped_real_site(self) -> bool:
+        """True while any real site of this organization has a valid scope (a run could
+        be switched onto it at any moment)."""
+        with self._lock:
+            return any(self._external_entry(h) is not None for h in list(self._verified_external_hosts))
+
     def _is_external_service_asset(self, host: str | None = None) -> bool:
         """True only for a real service that completed ownership + scope
         confirmation. Everything else is the local simulated lab."""
@@ -3126,7 +3132,10 @@ class AssessmentService:
         """Public beta (L1-only): on a real site only the read-only run is allowed. Checked
         under the service lock with the active asset pinned, so a concurrent switch to a
         real site cannot slip an L2 / re-check / approval past the HTTP layer's check."""
-        if getattr(self, "real_site_read_only", False) and self._is_external_service_asset():
+        # "registered as a real site", not "scope valid right now": a lapsed scope confirmed
+        # again while the call runs would otherwise turn the same call into an L2 on it
+        if getattr(self, "real_site_read_only", False) and (
+                self._is_external_service_asset() or self._in_ownership_flow(self.a.asset.get("name"))):
             raise ValueError("実在するサイトに対しては、読み取り専用の診断だけを行います。"
                              "この操作は実在するサイトでは使えません")
 

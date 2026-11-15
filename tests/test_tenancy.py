@@ -5,6 +5,7 @@ import json
 import os
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -868,6 +869,45 @@ class TestPublicReadOnlyRealSitesReview(TestPublicReadOnlyRealSites):
             with self.assertRaises(ValueError) as cm:
                 call()
             self.assertIn("読み取り専用", str(cm.exception))
+
+    def test_the_service_refuses_on_a_real_site_whose_scope_lapsed(self):
+        # the refusal must follow "registered as a real site", not "scope valid right now":
+        # a lapsed scope that is confirmed again mid-call would otherwise let an L2 re-check through
+        a = self.signup("alice")
+        self._proven(a)
+        osvc = self.reg.service(a["orgs"][0]["id"])
+        with osvc._lock:
+            osvc._verified_external_hosts["next-standards.com"]["not_after"] = time.time() - 1
+        self.assertFalse(osvc._is_external_service_asset())
+        for call in (lambda: osvc.verify_fix("alice"), lambda: osvc.verify_finding("all", "alice"),
+                     lambda: osvc.request_l2_run("f_x", "alice"), lambda: osvc.decide_approval("req_0", "approve", "alice")):
+            with self.assertRaises(ValueError) as cm:
+                call()
+            self.assertIn("読み取り専用", str(cm.exception))
+
+    def test_a_run_started_from_the_lab_counts_when_the_org_has_a_proven_site(self):
+        # the workspace can be switched to the proven site between the server's check and
+        # the run itself, so every run of an org with a proven real site is counted
+        from aegis import server as srvmod
+        a = self.signup("alice")
+        self._proven(a)
+        osvc = self.reg.service(a["orgs"][0]["id"])
+        lab = next(x for x in self.req(a, "/assets")[1] if not osvc.asset_is_real_service(asset_id=x["id"]))
+        self.assertEqual(self.req(a, "/assets/select", {"id": lab["id"]})[0], 200)
+        self.assertFalse(osvc._is_external_service_asset())
+        with patch.object(srvmod, "REAL_SITE_RUNS_PER_ORG_PER_HOUR", 1), \
+                patch("aegis.assessment.AssessmentService.restart", return_value={"ok": True}):
+            codes = [self.req(a, f"/assessments/{osvc.a.id}/restart", {})[0] for _ in range(2)]
+        self.assertEqual(codes, [200, 429])
+
+    def test_lab_only_orgs_are_not_counted_as_real_site_runs(self):
+        from aegis import server as srvmod
+        a = self.signup("alice")
+        osvc = self.reg.service(a["orgs"][0]["id"])
+        with patch.object(srvmod, "REAL_SITE_RUNS_PER_ORG_PER_HOUR", 1), \
+                patch("aegis.assessment.AssessmentService.restart", return_value={"ok": True}):
+            codes = [self.req(a, f"/assessments/{osvc.a.id}/restart", {})[0] for _ in range(2)]
+        self.assertEqual(codes, [200, 200])
 
     def test_switched_off_still_refuses_the_ownership_check(self):
         from aegis import server as srvmod
