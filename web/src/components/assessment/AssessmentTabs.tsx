@@ -195,9 +195,10 @@ export function AssessmentTabs({ id }: { id: string }) {
                   <dt className="text-zinc-500">所有確認</dt><dd>{auth.ownership_verified ? "確認済み" : "未確認"}</dd>
                   <dt className="text-zinc-500">期間</dt><dd>{fmtTime(auth.not_before)} 〜 {fmtTime(auth.not_after)}</dd>
                   <dt className="text-zinc-500">対象</dt><dd className="break-all">{auth.scope.hosts.join(", ")}</dd>
-                  <dt className="text-zinc-500">許可IP</dt><dd>{auth.scope.cidrs.join(", ")}</dd>
+                  {/* a real site's traffic is pinned to the addresses checked for it, not to a fixed range */}
+                  <dt className="text-zinc-500">許可IP</dt><dd>{snap.is_external_service ? "このサイトの確認済みの公開アドレスのみ" : auth.scope.cidrs.join(", ")}</dd>
                   <dt className="text-zinc-500">ポート</dt><dd>{auth.scope.ports.join(", ")}</dd>
-                  <dt className="text-zinc-500">許可操作</dt><dd>{auth.allowed_actions.join(", ")}</dd>
+                  <dt className="text-zinc-500">許可操作</dt><dd>{snap.is_external_service && snap.real_site_read_only ? "ページの読み取りのみ" : auth.allowed_actions.join(", ")}</dd>
                 </dl>
               </Card>
               {snap.defense_comparison && (

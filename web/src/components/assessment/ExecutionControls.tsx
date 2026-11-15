@@ -85,7 +85,7 @@ export function ExecutionControls({ snap, onUpdate, refetch }: {
           ↻ 再診断を実行
         </button>
       )}
-      {snap.state === "completed" && !snap.defense_comparison && (
+      {snap.state === "completed" && !snap.defense_comparison && !(snap.is_external_service && snap.real_site_read_only) && (
         <button
           disabled={busy}
           onClick={() => run("/verify-fix")}

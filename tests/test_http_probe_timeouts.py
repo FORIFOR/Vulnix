@@ -644,6 +644,21 @@ class TestWorkerFailureIsRecordedWithItsStage(unittest.TestCase):
         plain = AssessmentService._worker_failure_text("http_probe", WorkerResult(1, "not json", "", False, 1.0))
         self.assertIn("rc=1", plain)
 
+    def test_failure_text_starts_with_what_the_site_owner_can_check(self):
+        from aegis.assessment import AssessmentService
+        from aegis.runtime import WorkerResult
+        def text(kind, stage="connect"):
+            out = json.dumps({"error": {"stage": stage, "kind": kind, "timeout_s": 8.0}})
+            return AssessmentService._worker_failure_text("http_probe", WorkerResult(3, out, "", False, 1.0))
+        refused = text("connection_refused")
+        self.assertTrue(refused.startswith("サイトに接続できませんでした"), refused)
+        self.assertIn("URL", refused)
+        self.assertIn("接続拒否", refused)              # the technical detail is kept
+        self.assertTrue(text("timeout", "first_byte").startswith("サイトから時間内に応答がありませんでした"))
+        self.assertTrue(text("tls_verify_failed", "tls").startswith("サイトの証明書"))
+        timed = AssessmentService._worker_failure_text("http_probe", WorkerResult(-9, "", "", True, 50.0, timed_out=True))
+        self.assertTrue(timed.startswith("サイトから時間内に応答がありませんでした"), timed)
+
 
 class TestManagedEdgeServerHeader(unittest.TestCase):
     def analyze(self, headers):

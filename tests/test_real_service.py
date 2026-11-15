@@ -612,6 +612,23 @@ class TestL1Diagnosis(RealServiceBase):
         self.assertEqual((primary["name"], primary["previous_risk_score"]), (HOST, None))
         self.assertNotIn("ローカル模擬ラボ", report)
 
+    def test_read_only_mode_says_so_instead_of_promising_an_l2(self):
+        # public beta: no L2 ever runs on a real site, so the run must not say one is waiting
+        self.svc.real_site_read_only = True
+        self.onboard()
+        snap = self.run_l1()
+        self.assertEqual(snap["state"], "completed")
+        self.assertTrue(snap["real_site_read_only"])
+        verification = next(p for p in snap["phases"] if p["key"] == "verification")
+        self.assertEqual(verification["status"], "skipped")
+        self.assertIn("読み取り専用", verification["detail"])
+        self.assertNotIn("承認", verification["detail"])
+        thoughts = [e for e in self.svc.audit.entries() if e["event"] == "agent.thought"]
+        self.assertFalse(any("承認待ち" in json.dumps(e, ensure_ascii=False) for e in thoughts))
+
+    def test_snapshot_reports_the_mode_outside_the_public_beta_too(self):
+        self.assertFalse(self.svc.snapshot()["real_site_read_only"])
+
     def test_bulk_verify_never_runs_l2_on_a_real_service(self):
         self.onboard()
         self.set_secrets(billing=True)
