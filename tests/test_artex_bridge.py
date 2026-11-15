@@ -293,6 +293,13 @@ class TestThePlanThroughTheGateway(ServiceBase):
             with self.assertRaisesRegex(ValueError, "隔離"):
                 self.svc.plan_with_artex("op")
 
+    def test_real_site_direct_planner_refuses_an_external_model_endpoint(self):
+        self.svc._real_site_local_artex = True
+        self.svc._artex_llm_url = "https://external-model.example/v1"
+        with patch.object(self.svc, "_is_external_service_asset", return_value=True):
+            with self.assertRaisesRegex(ValueError, "ループバック"):
+                self.svc.plan_with_artex("op")
+
     def test_opted_in_real_site_plan_gets_only_anonymous_input_and_l1_items(self):
         from aegis import assessment as assessment_module
 
