@@ -4347,9 +4347,22 @@ class AssessmentService:
             level="L1",
         )
         self._phase("report", "done", "診断が完了しました")
-        with self._lock:
-            self.a.activity = None
-            self._set_state("completed")
+        while True:
+            self._checkpoint()
+            with self._lock:
+                if self.gateway.state is State.STOPPED or self._stale_runner():
+                    raise _Stopped()
+                if self.a.state == "paused" or self.gateway.state is State.PAUSED:
+                    continue
+                if self.a.state != "running":
+                    raise _Stopped()
+                if is_ext:
+                    # A local planner may have taken time after the Worker returned.
+                    # Recheck ownership and scope in the same lock as final adoption.
+                    self._ensure_artex_authority_locked()
+                self.a.activity = None
+                self._set_state("completed")
+                break
 
     def _exec(self, tool, action, args, approval_actor=None, approval_id=None):
         self._checkpoint()
@@ -4554,7 +4567,7 @@ class AssessmentService:
         while True:
             if self.gateway.state is State.STOPPED or self.a.state == "stopped" or self._stale_runner():
                 raise _Stopped()
-            if self.a.state != "paused" or allow_pause:
+            if (self.a.state != "paused" and self.gateway.state is not State.PAUSED) or allow_pause:
                 return
             time.sleep(0.2)
 

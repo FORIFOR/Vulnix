@@ -714,6 +714,57 @@ class TestL1Diagnosis(RealServiceBase):
         self.assertEqual(snap["state"], "failed")
         self.assertEqual([path for path, _ in self.fake.seen], ["/"])
 
+    def test_ownership_expiry_at_final_result_adoption_fails_closed(self):
+        self.svc.real_site_read_only = True
+        self.onboard()
+        original = self.svc._phase
+        def expire_at_report(key, status, detail):
+            result = original(key, status, detail)
+            if key == "report" and status == "done":
+                self.svc._verified_external_hosts[HOST]["not_after"] = time.time() - 1
+            return result
+
+        with patch.object(self.svc, "_phase", side_effect=expire_at_report):
+            snap = self.run_l1()
+        self.assertEqual(snap["state"], "failed")
+        self.assertEqual([path for path, _ in self.fake.seen], ["/"])
+
+    def test_pause_at_final_result_adoption_does_not_complete_until_resume(self):
+        self.svc.real_site_read_only = True
+        self.onboard()
+        original = self.svc._phase
+        def pause_at_report(key, status, detail):
+            result = original(key, status, detail)
+            if key == "report" and status == "done":
+                self.svc.pause("op")
+            return result
+
+        with patch.object(self.svc, "_phase", side_effect=pause_at_report):
+            self.svc.start()
+            deadline = time.time() + 10
+            while time.time() < deadline and self.svc.a.state != "paused":
+                time.sleep(0.01)
+            self.assertEqual(self.svc.a.state, "paused")
+            time.sleep(0.1)
+            self.assertEqual(self.svc.a.state, "paused")
+            self.svc.resume("op")
+            deadline = time.time() + 10
+            while time.time() < deadline and self.svc.snapshot()["state"] == "running":
+                time.sleep(0.01)
+        self.assertEqual(self.svc.snapshot()["state"], "completed")
+        self.assertEqual([path for path, _ in self.fake.seen], ["/"])
+
+    def test_checkpoint_waits_if_only_gateway_is_paused(self):
+        self.svc.a.state = "running"
+        self.svc.gateway.pause("op")
+        done = threading.Event()
+        thread = threading.Thread(target=lambda: (self.svc._checkpoint(), done.set()), daemon=True)
+        thread.start()
+        self.assertFalse(done.wait(0.15))
+        self.svc.gateway.resume("op")
+        self.assertTrue(done.wait(2))
+        thread.join(timeout=2)
+
     def _revoke_during_plan(self):
         self.svc._verified_external_hosts[HOST]["not_after"] = time.time() - 1
         raise ValueError("local model unavailable")
