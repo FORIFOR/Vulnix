@@ -1133,6 +1133,45 @@ class AssessmentService:
                 raise PolicyError(f"{host} の送信先 {dest.ip} は所有確認済みのアドレスではありません")
             if self._persist_error:
                 raise PolicyError("状態を保存できないため、送信を中止しました")
+            if self.real_site_read_only:
+                # The public read-only flow currently promises one root GET. A
+                # signed reservation is consumed before launch and never refunded
+                # after a failed, stopped, or interrupted Worker.
+                usage = self.ledger.scan_usage.get(host)
+                if (not isinstance(usage, dict)
+                        or usage.get("asset_id") != self.a.asset.get("id")
+                        or usage.get("authorization_ref") != ext.get("authorization_ref")
+                        or not usage.get("run_nonce")):
+                    raise PolicyError("この診断の通信枠が確認できません。再診断を開始してください")
+                if (tool_name != "http_probe" or str(args.get("method", "GET")).upper() != "GET"
+                        or dest.path != "/" or usage.get("paths") != []):
+                    raise PolicyError("この診断で許可された読み取りは既に実行済みです")
+                usage["paths"] = ["/"]
+                if not self.ledger.commit():
+                    self._persist_error = self.ledger.error or "LedgerError"
+                    raise PolicyError("通信枠を保存できないため、送信を中止しました")
+                self.audit.record("scan.request_reserved", host=host, run_nonce=usage["run_nonce"],
+                                  check="root_l1")
+
+    def _new_scan_usage_locked(self) -> None:
+        """Grant exactly one root GET to a newly started, owned public-beta run."""
+        if not (self.real_site_read_only and self._is_external_service_asset()):
+            return
+        host = (self.a.asset.get("name") or "").lower()
+        ext = self._external_entry(host)
+        if ext is None:
+            raise ValueError("有効な診断範囲がないため、通信枠を作成できません")
+        before = self.ledger.snapshot()
+        self.ledger.scan_usage[host] = {
+            "asset_id": self.a.asset.get("id"),
+            "authorization_ref": ext.get("authorization_ref"),
+            "run_nonce": secrets.token_hex(16),
+            "paths": [],
+        }
+        self._commit_grant_locked(before, "診断の通信枠")
+        if self.ledger.error:
+            self._persist_error = self.ledger.error
+            raise ValueError("通信枠を保存できないため、診断を開始できません")
 
     def _require_working_store(self) -> None:
         """Nothing that looks up, fetches from, or grants authority over a real
@@ -1596,6 +1635,28 @@ class AssessmentService:
             raise ValueError("ARTEX 計画は登録済みのローカル検証ラボでのみ使用できます"
                              "（実サービスの情報は ARTEX に渡しません）")
 
+    def _root_probe_observed_locked(self) -> bool:
+        """Only an audited successful probe in this signed run can satisfy a plan item."""
+        if not self.real_site_read_only or self.a.state != "completed":
+            return False
+        host = (self.a.asset.get("name") or "").lower()
+        usage = self.ledger.scan_usage.get(host) or {}
+        ext = self._external_entry(host)
+        if (ext is None or usage.get("asset_id") != self.a.asset.get("id")
+                or usage.get("authorization_ref") != ext.get("authorization_ref")
+                or usage.get("paths") != ["/"]):
+            return False
+        entries, valid = self.audit.verified_entries()
+        if not valid:
+            return False
+        results = {e["hash"] for e in entries if e.get("event") == "result"
+                   and e.get("fields", {}).get("tool") == "http_probe"
+                   and e.get("fields", {}).get("rc") == 0
+                   and not e.get("fields", {}).get("killed")}
+        return any(ev.get("tool") == "http_probe" and ev.get("audit_hash") in results
+                   for finding in self.a.findings.values() for ev in finding.get("evidence") or []
+                   if isinstance(ev, dict))
+
     def plan_with_artex(self, actor: str, *, llm_approval: dict | None = None, roles=None,
                         llm_mode: str | None = None) -> dict:
         """Ask the real ARTEX planner for a plan, then rebuild every item from Vulnix's
@@ -1737,11 +1798,18 @@ class AssessmentService:
                 self._ensure_artex_authority_locked()
             # a new plan replaces the previous one: its items can no longer run
             self._artex_items = {}
+            root_observed = real_site and self._root_probe_observed_locked()
             for item in rec.items:
                 tk = next((t for t in tasks if t.routed.proposal["tool"] == item.proposal["tool"]
                            and t.routed.proposal["args"] == item.proposal["args"]), None)
                 if tk is None or tk.status == "unsupported":
                     item.status = "unsupported"      # the router or Gateway catalog refused it
+                elif (real_site and self.real_site_read_only and item.catalog_id == "l1_http_probe"
+                      and self._in_ownership_flow(self.a.asset.get("name"))):
+                    # A complete baseline satisfies this one catalog item. An
+                    # old or inconsistent run without auditable evidence must
+                    # not advertise another GET that the signed cap will reject.
+                    item.status = "observed" if root_observed else "unsupported"
                 if tk is not None:
                     tk.id = item.id                  # unique across plans
                     tk.status = item.status
@@ -3161,6 +3229,7 @@ class AssessmentService:
             if self.a.state != "idle":
                 raise ValueError(f"cannot start from {self.a.state}")
             self._ensure_active_window_locked()
+            self._new_scan_usage_locked()
             if getattr(self, "_may_switch_lab", True):
                 set_lab_mode("vulnerable")
             self._set_state("running")
@@ -3190,6 +3259,7 @@ class AssessmentService:
                 # (an emergency stop, if there was one, is still in force)
                 raise ValueError("前の診断のWorkerの停止を確認できなかったため、新しい診断は開始できません")
             self._ensure_active_window_locked()
+            self._new_scan_usage_locked()
             if getattr(self, "_may_switch_lab", True):
                 set_lab_mode("vulnerable")
             self._set_state("running")
