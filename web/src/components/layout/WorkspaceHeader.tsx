@@ -52,7 +52,7 @@ export function WorkspaceHeader({ snap, conn, onUpdate, refetch }: {
       <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg bg-zinc-100 px-3 py-2 text-xs dark:bg-zinc-900">
         <span className="font-semibold">{source.plan}</span>
         <span className="text-zinc-500">{source.explanation}</span>
-        {snap.is_external_service && <span className="text-zinc-500">公開ページ1回の読み取りのみ</span>}
+        {snap.is_external_service && snap.real_site_read_only && <span className="text-zinc-500">読み取り専用の診断</span>}
       </div>
       <div className="mt-3">
         <ExecutionControls snap={snap} onUpdate={onUpdate} refetch={refetch} />

@@ -49,142 +49,142 @@
     },
     {
       "file": "aegis/advisor_catalog.py",
-      "line": 96,
+      "line": 99,
       "name": "operation_allowed"
     },
     {
       "file": "aegis/advisor_catalog.py",
-      "line": 101,
+      "line": 104,
       "name": "action_allowed"
     },
     {
       "file": "aegis/advisor_catalog.py",
-      "line": 111,
+      "line": 114,
       "name": "claim_problem"
     },
     {
       "file": "aegis/advisor_catalog.py",
-      "line": 121,
+      "line": 124,
       "name": "fix_verdict_problem"
     },
     {
       "file": "aegis/advisor_catalog.py",
-      "line": 135,
+      "line": 138,
       "name": "gates_for"
     },
     {
       "file": "aegis/advisor_catalog.py",
-      "line": 143,
+      "line": 146,
       "name": "catalog_for_prompt"
     },
     {
       "file": "aegis/ai_advisor.py",
-      "line": 77,
+      "line": 79,
       "name": "_enum"
     },
     {
       "file": "aegis/ai_advisor.py",
-      "line": 81,
+      "line": 83,
       "name": "finding_to_payload_item"
     },
     {
       "file": "aegis/ai_advisor.py",
-      "line": 127,
+      "line": 129,
       "name": "_norm"
     },
     {
       "file": "aegis/ai_advisor.py",
-      "line": 132,
+      "line": 134,
       "name": "leak_reasons"
     },
     {
       "file": "aegis/ai_advisor.py",
-      "line": 170,
+      "line": 172,
       "name": "_ApprovalBypass.search"
     },
     {
       "file": "aegis/ai_advisor.py",
-      "line": 249,
+      "line": 251,
       "name": "AdviceResult.to_dict"
     },
     {
       "file": "aegis/ai_advisor.py",
-      "line": 275,
+      "line": 277,
       "name": "_clean_text"
     },
     {
       "file": "aegis/ai_advisor.py",
-      "line": 284,
+      "line": 286,
       "name": "_text_problem"
     },
     {
       "file": "aegis/ai_advisor.py",
-      "line": 297,
+      "line": 299,
       "name": "_keys_problem"
     },
     {
       "file": "aegis/ai_advisor.py",
-      "line": 304,
+      "line": 306,
       "name": "validate_advice"
     },
     {
       "file": "aegis/ai_advisor.py",
-      "line": 439,
+      "line": 441,
       "name": "_require_loopback"
     },
     {
       "file": "aegis/ai_advisor.py",
-      "line": 448,
+      "line": 450,
       "name": "_loopback_transport"
     },
     {
       "file": "aegis/ai_advisor.py",
-      "line": 473,
+      "line": 475,
       "name": "AbliterationAdvisor._require_endpoint"
     },
     {
       "file": "aegis/ai_advisor.py",
-      "line": 476,
+      "line": 478,
       "name": "AbliterationAdvisor._headers"
     },
     {
       "file": "aegis/ai_advisor.py",
-      "line": 479,
+      "line": 481,
       "name": "AbliterationAdvisor.__post_init__"
     },
     {
       "file": "aegis/ai_advisor.py",
-      "line": 486,
+      "line": 488,
       "name": "AbliterationAdvisor.build_request"
     },
     {
       "file": "aegis/ai_advisor.py",
-      "line": 502,
+      "line": 508,
       "name": "AbliterationAdvisor.advise"
     },
     {
       "file": "aegis/ai_advisor.py",
-      "line": 526,
+      "line": 532,
       "name": "_external_transport"
     },
     {
       "file": "aegis/ai_advisor.py",
-      "line": 543,
+      "line": 549,
       "name": "ExternalAbliterationAdvisor._require_endpoint"
     },
     {
       "file": "aegis/ai_advisor.py",
-      "line": 555,
+      "line": 561,
       "name": "ExternalAbliterationAdvisor._headers"
     },
     {
       "file": "aegis/ai_advisor.py",
-      "line": 558,
+      "line": 564,
       "name": "ExternalAbliterationAdvisor.build_request"
     },
     {
       "file": "aegis/ai_advisor.py",
-      "line": 565,
+      "line": 571,
       "name": "ExternalAbliterationAdvisor.__post_init__"
     },
     {
@@ -4665,13 +4665,13 @@
   "network_process_calls": [
     {
       "file": "aegis/ai_advisor.py",
-      "line": 455,
+      "line": 457,
       "function": "_loopback_transport",
       "call": "opener.open"
     },
     {
       "file": "aegis/ai_advisor.py",
-      "line": 530,
+      "line": 536,
       "function": "_external_transport",
       "call": "opener.open"
     },
