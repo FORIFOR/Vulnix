@@ -436,6 +436,9 @@ class RealServiceBase(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.dir = Path(self.tmp.name)
         self.svc = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT, verify_seconds=0.1, l2_profile_dirs=PROFILE_DIRS)
+        # These tests also exercise the separately gated legacy L2 path. Public-beta
+        # callers start read-only and must opt into that test path explicitly.
+        self.svc.real_site_read_only = False
         self.fake = FakeService()
         threading.Thread(target=self.fake.serve_forever, daemon=True).start()
         self.url = f"http://{HOST}:{self.fake.server_port}"
@@ -579,6 +582,22 @@ class TestOwnershipGate(RealServiceBase):
 
 
 class TestL1Diagnosis(RealServiceBase):
+    def test_new_service_defaults_to_read_only_on_real_sites(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            svc = AssessmentService(Path(data_dir), LAB_PORT, l2_confinement=TEST_CONFINEMENT,
+                                    l2_profile_dirs=PROFILE_DIRS)
+            try:
+                self.assertTrue(svc.real_site_read_only)
+                svc._custom_resolver = lambda h: ["127.0.0.1"] if h == HOST else []
+                challenge = svc.issue_ownership_challenge(url=self.url)["challenge"]
+                svc.verify_asset_ownership(url_or_host=self.url, method="dns_txt",
+                                           dns_lookup=self._token_lookup(challenge))
+                svc.confirm_asset_scope(url_or_host=self.url, activate_workspace=True, allow_loopback_test=True)
+                with self.assertRaisesRegex(ValueError, "読み取り専用"):
+                    svc.request_l2_run("f_ex_idor", "operator")
+            finally:
+                svc.close()
+
     def test_l1_run_is_read_only_and_leaves_l2_as_unmeasured_candidates(self):
         self.onboard()
         self.set_secrets()                           # even WITH credentials, L1 sends none
@@ -848,6 +867,7 @@ class TestUnconfirmedRulesCannotRun(RealServiceBase):
         (self.dir / "l2_profiles").chmod(0o700)
         (self.dir / "l2_profiles" / "sample_api.json").chmod(0o600)
         self.svc = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT, verify_seconds=0.1)       # default profile dirs
+        self.svc.real_site_read_only = False  # this case exercises an explicitly enabled legacy L2 profile
         # a site profile is listed but nothing in it runs until an admin accepts its exact content
         self.assertEqual(self.svc.l2.runnable_check_ids(), ())
         status = self.svc.l2_profiles_status()["profiles"]
@@ -1120,6 +1140,10 @@ class TestRealServiceApi(RealServiceBase):
 
     def setUp(self):
         super().setUp()
+        from aegis import server as srvmod
+        legacy_mode = patch.multiple(srvmod, REAL_SERVICE_DIAGNOSIS=True, REAL_SITE_L1_ONLY=False)
+        legacy_mode.start()
+        self.addCleanup(legacy_mode.stop)
         from http.server import ThreadingHTTPServer
         from aegis.operators import OperatorStore, hash_password
         from aegis.server import make_handler

@@ -66,8 +66,8 @@ CHAT_PLATFORM_PER_DAY = int(os.environ.get("VULNIX_CHAT_PER_DAY", "1000") or 100
 #   l1           public beta: ownership checks and the read-only (L1) diagnosis of a
 #                site whose ownership this organization proved; nothing beyond that
 #   0            no traffic to real sites at all
-_REAL_SITE_MODE = (os.environ.get("VULNIX_REAL_SERVICE_DIAGNOSIS", "1") or "1").strip().lower()
-REAL_SERVICE_DIAGNOSIS = _REAL_SITE_MODE not in ("0", "l1")
+_REAL_SITE_MODE = (os.environ.get("VULNIX_REAL_SERVICE_DIAGNOSIS", "l1") or "l1").strip().lower()
+REAL_SERVICE_DIAGNOSIS = _REAL_SITE_MODE == "1"
 REAL_SITE_L1_ONLY = _REAL_SITE_MODE == "l1"
 OWNERSHIP_CHECKS_PER_ORG_PER_HOUR = 20   # DNS / .well-known lookups a single organization may trigger
 OWNERSHIP_CHECKS_PLATFORM_PER_HOUR = 300
@@ -250,7 +250,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             account's roles IN that organization). Answers 401/403/404 itself and returns
             None when there is none. Without tenancy: the single service, unchanged."""
             if tenancy is None:
-                default_svc.real_site_read_only = REAL_SITE_L1_ONLY and not REAL_SERVICE_DIAGNOSIS
+                default_svc.real_site_read_only = not REAL_SERVICE_DIAGNOSIS
                 return default_svc, sess
             if not sess:
                 self._json(401, {"error": "ログインが必要です"})
@@ -275,7 +275,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 return None
             self._bound_org = wanted
             # enforced again inside the service, under its lock (an asset switch cannot race it)
-            osvc.real_site_read_only = REAL_SITE_L1_ONLY and not REAL_SERVICE_DIAGNOSIS
+            osvc.real_site_read_only = not REAL_SERVICE_DIAGNOSIS
             return osvc, dataclasses.replace(sess, roles=service_roles(roles))
 
         def _host_ok(self) -> bool:
