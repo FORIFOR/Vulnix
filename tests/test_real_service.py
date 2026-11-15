@@ -589,6 +589,186 @@ class TestOwnershipGate(RealServiceBase):
 
 
 class TestL1Diagnosis(RealServiceBase):
+    def test_manual_real_site_artex_setting_does_not_auto_plan_by_default(self):
+        self.svc.real_site_read_only = True
+        self.svc._real_site_local_artex = True
+        self.svc._artex_real_cmd = ["mock-artex"]
+        self.onboard()
+        with patch.dict("os.environ", {"VULNIX_REAL_SITE_INITIAL_ARTEX": "0",
+                                       "VULNIX_ARTEX_LLM_MODE": "gateway-forward",
+                                       "VULNIX_ARTEX_LLM_UPSTREAM_URL": "http://127.0.0.1:19991/v1/chat/completions"}), \
+                patch.object(self.svc, "_plan_with_artex", side_effect=AssertionError("unexpected model")) as plan:
+            snap = self.run_l1()
+        self.assertEqual(snap["state"], "completed")
+        self.assertEqual([path for path, _ in self.fake.seen], ["/"])
+        plan.assert_not_called()
+
+    def test_malformed_local_model_setting_keeps_fixed_l1_result(self):
+        self.svc.real_site_read_only = True
+        self.svc._real_site_local_artex = True
+        self.svc._artex_real_cmd = ["mock-artex"]
+        self.onboard()
+        with patch.dict("os.environ", {"VULNIX_REAL_SITE_INITIAL_ARTEX": "1",
+                                       "VULNIX_ARTEX_LLM_MODE": "gateway-forward",
+                                       "VULNIX_ARTEX_LLM_UPSTREAM_URL": "http://[bad"}), \
+                patch.object(self.svc, "_plan_with_artex", side_effect=AssertionError("unexpected model")) as plan:
+            snap = self.run_l1()
+        self.assertEqual(snap["state"], "completed")
+        self.assertEqual([path for path, _ in self.fake.seen], ["/"])
+        plan.assert_not_called()
+        self.assertTrue(any(e["event"] == "artex.initial_fallback" and
+                            e["fields"].get("reason") == "bad_local_upstream"
+                            for e in self.svc.audit.entries()))
+
+    def test_public_artex_api_still_refuses_in_progress_run_with_signed_root(self):
+        self.svc.real_site_read_only = True
+        self.onboard()
+        self.assertEqual(self.run_l1()["state"], "completed")
+        self.svc._real_site_local_artex = True
+        self.svc._artex_real_cmd = ["mock-artex"]
+        with self.svc._lock:
+            self.svc.a.state = "running"
+        with self.assertRaises(ValueError):
+            self.svc.plan_with_artex("op")
+        self.assertEqual([path for path, _ in self.fake.seen], ["/"])
+
+    def test_opted_in_initial_artex_receives_only_root_fingerprint_after_one_get(self):
+        self.svc.real_site_read_only = True
+        self.svc._real_site_local_artex = True
+        self.svc._artex_real_cmd = ["mock-artex"]
+        self.onboard()
+        seen = []
+
+        def plan(_actor, **kwargs):
+            seen.append((self.svc.a.state, kwargs))
+            return self.svc.snapshot()
+
+        with patch.dict("os.environ", {"VULNIX_REAL_SITE_INITIAL_ARTEX": "1",
+                                       "VULNIX_ARTEX_LLM_MODE": "gateway-forward",
+                                       "VULNIX_ARTEX_LLM_UPSTREAM_URL": "http://127.0.0.1:19991/v1/chat/completions"}), \
+                patch.object(self.svc, "_plan_with_artex", create=True, side_effect=plan):
+            snap = self.run_l1()
+        self.assertEqual(snap["state"], "completed")
+        self.assertEqual([path for path, _ in self.fake.seen], ["/"])
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0][0], "running")
+        self.assertEqual(seen[0][1]["fingerprint"]["status_class"], "2xx")
+        self.assertEqual(seen[0][1]["fingerprint"]["server_family"], "nginx")
+
+    def test_pause_before_initial_plan_blocks_model_until_resume(self):
+        self.svc.real_site_read_only = True
+        self.svc._real_site_local_artex = True
+        self.svc._artex_real_cmd = ["mock-artex"]
+        self.onboard()
+        original = self.svc._analyze
+        def pause_after_observation(*args):
+            result = original(*args)
+            self.svc.pause("op")
+            return result
+
+        with patch.dict("os.environ", {"VULNIX_REAL_SITE_INITIAL_ARTEX": "1",
+                                       "VULNIX_ARTEX_LLM_MODE": "gateway-forward",
+                                       "VULNIX_ARTEX_LLM_UPSTREAM_URL": "http://127.0.0.1:19991/v1/chat/completions"}), \
+                patch.object(self.svc, "_analyze", side_effect=pause_after_observation), \
+                patch.object(self.svc, "_plan_with_artex", return_value={}) as plan:
+            self.svc.start()
+            deadline = time.time() + 10
+            while time.time() < deadline and self.svc.a.state != "paused":
+                time.sleep(0.01)
+            self.assertEqual(self.svc.a.state, "paused")
+            self.assertFalse(self.svc._artex_may_start(self.svc._run_generation))
+            plan.assert_not_called()
+            self.svc.resume("op")
+            deadline = time.time() + 10
+            while time.time() < deadline and self.svc.snapshot()["state"] == "running":
+                time.sleep(0.01)
+        self.assertEqual(self.svc.snapshot()["state"], "completed")
+        plan.assert_called_once()
+        self.assertEqual([path for path, _ in self.fake.seen], ["/"])
+
+    def test_initial_model_failure_keeps_root_result(self):
+        self.svc.real_site_read_only = True
+        self.svc._real_site_local_artex = True
+        self.svc._artex_real_cmd = ["mock-artex"]
+        self.onboard()
+        with patch.dict("os.environ", {"VULNIX_REAL_SITE_INITIAL_ARTEX": "1",
+                                       "VULNIX_ARTEX_LLM_MODE": "gateway-forward",
+                                       "VULNIX_ARTEX_LLM_UPSTREAM_URL": "http://127.0.0.1:19991/v1/chat/completions"}), \
+                patch.object(self.svc, "_plan_with_artex", create=True,
+                             side_effect=ValueError("local model unavailable")):
+            snap = self.run_l1()
+        self.assertEqual(snap["state"], "completed")
+        self.assertEqual([path for path, _ in self.fake.seen], ["/"])
+
+    def test_initial_plan_revocation_does_not_complete(self):
+        self.svc.real_site_read_only = True
+        self.svc._real_site_local_artex = True
+        self.svc._artex_real_cmd = ["mock-artex"]
+        self.onboard()
+        with patch.dict("os.environ", {"VULNIX_REAL_SITE_INITIAL_ARTEX": "1",
+                                       "VULNIX_ARTEX_LLM_MODE": "gateway-forward",
+                                       "VULNIX_ARTEX_LLM_UPSTREAM_URL": "http://127.0.0.1:19991/v1/chat/completions"}), \
+                patch.object(self.svc, "_plan_with_artex", create=True,
+                             side_effect=lambda *_args, **_kwargs: self._revoke_during_plan()):
+            snap = self.run_l1()
+        self.assertEqual(snap["state"], "failed")
+        self.assertEqual([path for path, _ in self.fake.seen], ["/"])
+
+    def test_ownership_expiry_at_final_result_adoption_fails_closed(self):
+        self.svc.real_site_read_only = True
+        self.onboard()
+        original = self.svc._phase
+        def expire_at_report(key, status, detail):
+            result = original(key, status, detail)
+            if key == "report" and status == "done":
+                self.svc._verified_external_hosts[HOST]["not_after"] = time.time() - 1
+            return result
+
+        with patch.object(self.svc, "_phase", side_effect=expire_at_report):
+            snap = self.run_l1()
+        self.assertEqual(snap["state"], "failed")
+        self.assertEqual([path for path, _ in self.fake.seen], ["/"])
+
+    def test_pause_at_final_result_adoption_does_not_complete_until_resume(self):
+        self.svc.real_site_read_only = True
+        self.onboard()
+        original = self.svc._phase
+        def pause_at_report(key, status, detail):
+            result = original(key, status, detail)
+            if key == "report" and status == "done":
+                self.svc.pause("op")
+            return result
+
+        with patch.object(self.svc, "_phase", side_effect=pause_at_report):
+            self.svc.start()
+            deadline = time.time() + 10
+            while time.time() < deadline and self.svc.a.state != "paused":
+                time.sleep(0.01)
+            self.assertEqual(self.svc.a.state, "paused")
+            time.sleep(0.1)
+            self.assertEqual(self.svc.a.state, "paused")
+            self.svc.resume("op")
+            deadline = time.time() + 10
+            while time.time() < deadline and self.svc.snapshot()["state"] == "running":
+                time.sleep(0.01)
+        self.assertEqual(self.svc.snapshot()["state"], "completed")
+        self.assertEqual([path for path, _ in self.fake.seen], ["/"])
+
+    def test_checkpoint_waits_if_only_gateway_is_paused(self):
+        self.svc.a.state = "running"
+        self.svc.gateway.pause("op")
+        done = threading.Event()
+        thread = threading.Thread(target=lambda: (self.svc._checkpoint(), done.set()), daemon=True)
+        thread.start()
+        self.assertFalse(done.wait(0.15))
+        self.svc.gateway.resume("op")
+        self.assertTrue(done.wait(2))
+        thread.join(timeout=2)
+
+    def _revoke_during_plan(self):
+        self.svc._verified_external_hosts[HOST]["not_after"] = time.time() - 1
+        raise ValueError("local model unavailable")
+
     def test_concurrent_read_only_requests_share_one_signed_allowance(self):
         self.svc.real_site_read_only = True
         self.onboard()

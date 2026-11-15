@@ -255,6 +255,45 @@ class ServiceBase(unittest.TestCase):
 
 
 class TestThePlanThroughTheGateway(ServiceBase):
+    def test_initial_owned_scan_plans_after_signed_root_without_extra_get(self):
+        from aegis import assessment as assessment_module
+        from tests.test_real_service import FakeService, HOST
+
+        site = FakeService()
+        threading.Thread(target=site.serve_forever, daemon=True).start()
+        self.addCleanup(site.server_close)
+        self.addCleanup(site.shutdown)
+        url = f"http://{HOST}:{site.server_port}"
+        self.svc._custom_resolver = lambda host: ["127.0.0.1"] if host == HOST else []
+        self.svc._real_site_local_artex = True
+        challenge = self.svc.issue_ownership_challenge(url=url)["challenge"]
+        self.svc.verify_asset_ownership(
+            url_or_host=url, method="dns_txt",
+            dns_lookup=lambda name: [f'{name} text = "{challenge["dns_txt_value"]}"'],
+        )
+        self.svc.confirm_asset_scope(url_or_host=url, confirmed_prohibited=True,
+                                     activate_workspace=True, allow_loopback_test=True)
+        with MockLLM() as model, patch.dict(os.environ, {
+                "VULNIX_REAL_SITE_INITIAL_ARTEX": "1",
+                "VULNIX_ARTEX_LLM_MODE": "gateway-forward",
+                "VULNIX_ARTEX_LLM_UPSTREAM_URL": model.url + "/chat/completions"}), \
+                patch.object(assessment_module, "run_artex_planner",
+                             wraps=assessment_module.run_artex_planner) as runner:
+            self.svc.start()
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline and self.svc.snapshot()["state"] == "running":
+                time.sleep(0.02)
+        snap = self.svc.snapshot()
+        self.assertEqual(snap["state"], "completed", snap.get("failure"))
+        self.assertEqual(site.seen, [("/", None)])
+        self.assertEqual(runner.call_count, 1)
+        request = runner.call_args.args[1]
+        self.assertIn("Measured root fingerprint", request["observations"][0]["title"])
+        self.assertNotIn(HOST, json.dumps(request, ensure_ascii=False))
+        plan = snap["artex_plan"]["plan"]
+        self.assertEqual([item["catalog_id"] for item in plan["items"]], ["l1_http_probe"])
+        self.assertEqual(plan["items"][0]["status"], "observed")
+
     def test_real_site_plan_waits_for_a_completed_baseline(self):
         from aegis import assessment as assessment_module
 
@@ -793,6 +832,32 @@ class TestThePlanThroughTheGateway(ServiceBase):
 
 
 class TestAnonymousRealSitePlannerInput(unittest.TestCase):
+    def test_initial_fingerprint_contains_only_fixed_observed_enums(self):
+        from aegis.artex_bridge import anonymous_real_site_request, safe_public_fingerprint
+
+        secret = "private.example.com user@example.com Bearer secret-value"
+        response = {"status": 200, "headers": {
+            "Server": "Apache/2.4 " + secret, "Strict-Transport-Security": "max-age=1",
+            "X-Secret": secret}, "body_prefix": secret,
+            "connected_ip": "203.0.113.11", "tls": {"verified": True}}
+        fingerprint = safe_public_fingerprint(response, scheme="https")
+        self.assertEqual(fingerprint, {"scheme": "https", "status_class": "2xx",
+                                       "server_family": "apache", "tls_present": True,
+                                       "hsts_present": True, "csp_present": False})
+        request = anonymous_real_site_request([], fingerprint=fingerprint)
+        sent = json.dumps(request, ensure_ascii=False)
+        self.assertIn('"server_family": "apache"', request["observations"][0]["detail"])
+        for forbidden in ("private.example.com", "user@example.com", "Bearer secret-value",
+                          "203.0.113.11", "2.4", "X-Secret"):
+            self.assertNotIn(forbidden, sent)
+
+    def test_initial_fingerprint_rejects_unexpected_fields(self):
+        from aegis.artex_bridge import anonymous_real_site_request
+
+        with self.assertRaises(ValueError):
+            anonymous_real_site_request([], fingerprint={"server_family": "apache",
+                                                        "host": "private.example.com"})
+
     def test_only_fixed_measured_fields_reach_artex(self):
         from aegis.artex_bridge import anonymous_real_site_request
 
@@ -1555,6 +1620,43 @@ class TestRealArtexThroughThePlannerGateway(TestRealArtexPlanner):
 
     def test_the_real_planner_plans_and_the_gateway_decides(self):      # replaced below
         pass
+
+    def test_real_artex_plans_during_first_owned_scan_without_second_get(self):
+        from tests.test_real_service import FakeService, HOST
+
+        site = FakeService()
+        threading.Thread(target=site.serve_forever, daemon=True).start()
+        self.addCleanup(site.server_close)
+        self.addCleanup(site.shutdown)
+        url = f"http://{HOST}:{site.server_port}"
+        self.svc._custom_resolver = lambda host: ["127.0.0.1"] if host == HOST else []
+        self.svc._real_site_local_artex = True
+        challenge = self.svc.issue_ownership_challenge(url=url)["challenge"]
+        self.svc.verify_asset_ownership(
+            url_or_host=url, method="dns_txt",
+            dns_lookup=lambda name: [f'{name} text = "{challenge["dns_txt_value"]}"'],
+        )
+        self.svc.confirm_asset_scope(url_or_host=url, confirmed_prohibited=True,
+                                     activate_workspace=True, allow_loopback_test=True)
+        with patch.dict(os.environ, {"VULNIX_REAL_SITE_INITIAL_ARTEX": "1",
+                                     "VULNIX_ARTEX_LLM_MODE": "gateway-forward",
+                                     "VULNIX_ARTEX_LLM_UPSTREAM_URL": self.mock.url + "/chat/completions"}):
+            self.svc.start()
+            deadline = time.monotonic() + 90
+            while time.monotonic() < deadline and self.svc.snapshot()["state"] == "running":
+                time.sleep(0.05)
+        snap = self.svc.snapshot()
+        self.assertEqual(snap["state"], "completed", snap.get("failure"))
+        self.assertEqual(site.seen, [("/", None)])
+        plan = snap["artex_plan"]["plan"]
+        self.assertEqual(plan["engine"]["kind"], "artex-binary")
+        self.assertTrue(self.mock.requests)
+        sent = json.dumps(self.mock.requests, ensure_ascii=False)
+        self.assertIn("Measured root fingerprint", sent)
+        self.assertNotIn(HOST, sent)
+        self.assertNotIn(url, sent)
+        self.assertTrue(all(item["level"] == "L1" for item in plan["items"]))
+        self.assertTrue(any(item["status"] == "observed" for item in plan["items"]))
 
     def test_forward_mode_through_the_gateway_to_the_local_mock(self):
         env = {"VULNIX_ARTEX_LLM_MODE": "gateway-forward",

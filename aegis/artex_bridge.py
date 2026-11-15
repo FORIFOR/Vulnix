@@ -113,7 +113,34 @@ CATALOG: tuple[CatalogEntry, ...] = (
 CATALOG_BY_ID = {c.id: c for c in CATALOG}
 
 
-def anonymous_real_site_request(findings: list[dict]) -> dict:
+_FINGERPRINT_KEYS = frozenset({"scheme", "status_class", "server_family", "tls_present",
+                               "hsts_present", "csp_present"})
+
+
+def safe_public_fingerprint(response: dict, *, scheme: str) -> dict:
+    """Map a measured root response to enums and booleans; never copy target text."""
+    if scheme not in ("http", "https"):
+        raise ValueError("unsupported fingerprint scheme")
+    headers = response.get("headers") or {}
+    if not isinstance(headers, dict):
+        headers = {}
+    normalized = {str(k).lower(): v for k, v in headers.items()}
+    server = normalized.get("server")
+    server = server.lower() if isinstance(server, str) else ""
+    family = ("apache" if server == "apache" or server.startswith("apache/") else
+              "nginx" if server == "nginx" or server.startswith("nginx/") else
+              "other" if server else "unknown")
+    status = response.get("status")
+    status_class = f"{status // 100}xx" if type(status) is int and 100 <= status <= 599 else "unknown"
+    tls = response.get("tls")
+    return {"scheme": scheme, "status_class": status_class,
+            "server_family": family,
+            "tls_present": scheme == "https" and isinstance(tls, dict) and tls.get("verified") is True,
+            "hsts_present": "strict-transport-security" in normalized,
+            "csp_present": "content-security-policy" in normalized}
+
+
+def anonymous_real_site_request(findings: list[dict], *, fingerprint: dict | None = None) -> dict:
     """Give ARTEX only a synthetic target and code-defined measured finding fields.
 
     The ARTEX overlay records each observation as an observed fact. Candidate and
@@ -124,6 +151,15 @@ def anonymous_real_site_request(findings: list[dict]) -> dict:
     from .evidence import enforce_verdict, evidence_status
 
     observations = []
+    if fingerprint is not None:
+        if (not isinstance(fingerprint, dict) or set(fingerprint) != _FINGERPRINT_KEYS
+                or fingerprint["scheme"] not in ("http", "https")
+                or fingerprint["status_class"] not in ("1xx", "2xx", "3xx", "4xx", "5xx", "unknown")
+                or fingerprint["server_family"] not in ("apache", "nginx", "other", "unknown")
+                or any(type(fingerprint[k]) is not bool for k in ("tls_present", "hsts_present", "csp_present"))):
+            raise ValueError("real-site fingerprint is not allowlisted")
+        safe_fact = json.dumps(fingerprint, ensure_ascii=False, sort_keys=True)
+        observations.append({"title": f"Measured root fingerprint: {safe_fact}", "detail": safe_fact})
     for finding in findings[:20]:
         if not isinstance(finding, dict):
             continue
