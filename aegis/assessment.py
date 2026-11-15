@@ -55,12 +55,12 @@ from .service_diag import analyze_l1_service_response, build_l2_candidates, clea
 from .google_ownership import METHOD as GOOGLE_METHOD
 
 SEVERITY_WEIGHT = {"critical": 40, "high": 25, "medium": 10, "low": 3, "info": 0}
-VERDICT_FACTOR = {"proven": 1.0, "detected": 0.6, "unverified": 0.6, "aborted": 0.6,
+VERDICT_FACTOR = {"proven": 1.0, "detected": 0.6, "candidate": 0.0, "unverified": 0.0, "aborted": 0.0,
                   "not_reproduced": 0.0}
 
 EXECUTOR = {
-    "agent": "ARTEX 実行エンジン（ProposalRouter 制御）",
-    "model": "提案元は診断コンテキストを参照（実行権限なし）",
+    "agent": "Vulnix 診断エンジン",
+    "model": "内蔵の検査ルール（実行権限なし）",
 }
 
 
@@ -2939,9 +2939,9 @@ class AssessmentService:
             "artex_engine": "ready",
             "autonomous_execution": False,
             "note": _PLANNER_NOTES[conn["state"]] if self._external_model_configured
-                    else (f"提案は内蔵 ARTEX プランナー（外部モデルからの提案は無効）。AI解説に "
+                    else (f"提案はVulnixの内蔵プランナーから生成します。AI解説に "
                           f"{self._chat_backend._model or '外部モデル'} を使用します。" if self._chat_backend is not None
-                          else "内蔵 ARTEX プランナーで動作中。外部 AI モデルは未設定です。"),
+                          else "Vulnixの内蔵プランナーで動作中。外部 AI モデルは未設定です。"),
         }
 
     def _note_model_outcome_locked(self, ok: bool, error: str | None = None) -> None:
@@ -3007,7 +3007,8 @@ class AssessmentService:
                 # the open site's runs only: nothing of another site follows into this view
                 "run_history": [h for h in self.a.run_history
                                 if h.get("asset_id") == self.a.asset.get("id")],
-                "defense_comparison": self.a.defense_comparison,
+                "defense_comparison": (self.a.defense_comparison if is_ext or not self.a.defense_comparison
+                                       or self.a.defense_comparison.get("lab_mode") == "patched" else None),
                 "cve_status": self.cve_monitor.status(),
                 "artex_tasks": [
                     {"id": tk.id, "phase": tk.phase, "title": clean_target_text(tk.title, 200),
@@ -3617,6 +3618,8 @@ class AssessmentService:
             self._ensure_active_window_locked()
             before_risk = self._risk()
             is_ext = self._is_external_service_asset()
+            if not is_ext and not getattr(self, "_may_switch_lab", True):
+                raise ValueError("共有の模擬ラボを安全に切り替えられないため、修正後の比較は実行できません")
             url = self.a.target_url        # decided together with is_ext, under the same lock
             before_verdicts = {
                 f["id"]: {"title": f["title"], "severity": f["severity"], "verdict": f["verdict"]}
@@ -3828,7 +3831,7 @@ class AssessmentService:
         self._activity("公開設定を検査（GET 1回・非破壊）", "http_probe", "L1")
         self._think(
             "非破壊HTTPプローブの計画とサニタイズ",
-            "ARTEX プランナーが公開設定・応答ヘッダー取得のため http_probe (GET) を提案し、ProposalRouter で安全性を検証しました。",
+            "診断プランナーが公開設定・応答ヘッダー取得のため http_probe (GET) を提案し、ProposalRouter で安全性を検証しました。",
             phase="config",
             tool="http_probe",
             level="L1",
@@ -3871,7 +3874,9 @@ class AssessmentService:
         if "AI agent:" in res.get("body_prefix", ""):
             self.bus.publish(self.a.id, "agent.note",
                              message="ページ内にAI向けの指示文を検出しました。ProposalRouterにより無害化され実行権限には影響しません。")
-        self._phase("analysis", "done", f"{len(self._real_findings())} 件を検出")
+        observed = [evidence_status(f) for f in self._real_findings()]
+        self._phase("analysis", "done",
+                    f"検出 {observed.count('detected')} 件・候補 {observed.count('candidate')} 件")
 
         self._checkpoint()
         if is_ext:
@@ -3906,7 +3911,7 @@ class AssessmentService:
             self._activity("脆弱性の検証（侵入成立の実証）", "reproduction_probe", "L2")
             self._think(
                 "L2 侵入成立実証の人間承認リクエスト",
-                "CVE-2021-41773・IDOR・SQLi の再現試験は L2 操作のため、承認責任者による実行許可（単一使用トークン発行）を待機しています。",
+                "CVE候補・IDOR候補・SQLi候補の再現試験は承認が必要なため、承認責任者による実行許可を待機しています。",
                 phase="verification",
                 tool="reproduction_probe",
                 level="L2",
@@ -3918,8 +3923,8 @@ class AssessmentService:
                 if tk.status != "unsupported":
                     tk.status = "awaiting_approval"
             ap_id = self._request_approval(
-                "safe_reproduction", "L2", "検出された問題（未実証）が成立するかのL2実証（CVE-2021-41773 / IDOR / SQLi）",
-                "検出したバージョン表示（CVE-2021-41773）、テストアカウント間の認可境界（IDOR）、および検索APIのSQLインジェクション境界が"
+                "safe_reproduction", "L2", "候補が実際に成立するか確認（CVE-2021-41773 / IDOR / SQLi）",
+                "バージョン表示（CVE-2021-41773候補）、テストアカウント間の認可境界（IDOR）、および検索APIのSQLインジェクション境界が"
                 "実際に成立するかを、egress_sentinel 隔離Worker（reproduction_probe）で非破壊実証します。")
             if self.a.approvals[ap_id]["status"] != "approved":
                 for tk in tasks_l2:
@@ -3927,7 +3932,7 @@ class AssessmentService:
                         tk.status = "skipped"
                 self._think(
                     "L2 再現試験をスキップ",
-                    "承認責任者により却下されたため、L2 再現試験は実施せず検出段階の結果でレポートを作成します。",
+                    "承認責任者により却下されたため、再現試験は実施せず、未計測の候補は候補のままレポートを作成します。",
                     phase="verification",
                     tool="Gateway",
                     level="L2",
@@ -4053,7 +4058,16 @@ class AssessmentService:
                 for tk in tasks_l2:
                     if tk.status != "unsupported":
                         tk.status = "completed"
-                self._phase("verification", "done", "結果: 侵入成立を実証（証拠・監査ハッシュ保存済み）")
+                verdicts = [evidence_status(self.a.findings[fid]) for fid in (banner_id, "f_idor", "f_sqli")
+                            if fid in self.a.findings]
+                proven_count = verdicts.count("proven")
+                not_reproduced_count = verdicts.count("not_reproduced")
+                self._phase(
+                    "verification", "done",
+                    f"実証済み {proven_count} 件・再現せず {not_reproduced_count} 件"
+                    + (f"・未完了 {len(verdicts) - proven_count - not_reproduced_count} 件"
+                       if len(verdicts) > proven_count + not_reproduced_count else ""),
+                )
 
         self._checkpoint()
         self._phase("report", "running", "結果をまとめています")
@@ -4173,33 +4187,34 @@ class AssessmentService:
                 "why_detected": "応答ヘッダーのバージョン文字列が、NVD / CISA KEV フィードの影響バージョンと一致したためです。",
                 "caveat": "バナー段階では「検出（未実証）」です。L2再現試験を承認すると、隔離ラボで実際に到達可能か検証します。",
                 "evidence": [ev],
-                "remediation": {"steps": ["Apache HTTP Server を最新の安定版（2.4.62以降）に更新する",
+                "remediation": {"steps": ["Apache HTTP Server の公式セキュリティ情報を確認し、サポート中の修正版へ更新する",
                                           "Server ヘッダーのバージョン表示を抑制する（ServerTokens Prod）"],
                                 "how_to_verify": "「防御パッチ適用・再検証」を実行し、再現試験の結果が「再現せず」に変わることを確認します。"},
                 "executor": {**EXECUTOR, "tool": "http_probe"}, "demo_fixture": False})
 
-        # Candidate IDOR check queued for L2 verification
+        # The root page says nothing about authorization on another endpoint. Keep
+        # this as an unmeasured candidate until its own approved probe has evidence.
         self._upsert_finding({
-            "id": "f_idor", "title": "他アカウントの保護リソースへのアクセス制御不備（IDOR）",
-            "severity": "high", "verdict": "detected", "category": "アクセス制御", "cve": [],
+            "id": "f_idor", "title": "他アカウントの保護リソースへのアクセス制御確認（IDOR）",
+            "severity": "high", "verdict": "candidate", "category": "アクセス制御", "cve": [],
             "risk_level": "L2", "help_term": "idor",
-            "summary": "APIエンドポイント /api/accounts/B/secret においてオブジェクト単位の所有者検証が必要と判定されました。",
-            "why_detected": "ARTEX のエンドポイント分析により、アカウントID指定型リソースが検出されたためです（L2承認後に2アカウント間で実証試験を行います）。",
-            "caveat": "L2承認前は「検出（未実証）」として扱います。",
-            "evidence": [ev],
+            "summary": "模擬ラボの /api/accounts/B/secret は、承認後にアカウント間のアクセス制御を確認する候補です。現時点では未計測です。",
+            "why_detected": "模擬ラボに用意された確認対象です。ルートページの応答から、このAPIの認可不備は判断できません。",
+            "caveat": "承認済みの再現試験でこのAPIの応答を測るまで、脆弱性として検出したとは扱いません。",
+            "evidence": [],
             "remediation": {"steps": ["サーバー側でセッション主体とリソース所有者を必ず照合し、不一致時は 403 Forbidden を返す"],
                             "how_to_verify": "修正後に同じ2アカウント間の試験を実行し、HTTP 403 が返ることを確認します。"},
             "executor": {**EXECUTOR, "tool": "http_probe"}, "demo_fixture": False})
 
-        # Candidate SQLi check queued for L2 verification
+        # Likewise, a root-page response cannot establish the query boundary.
         self._upsert_finding({
-            "id": "f_sqli", "title": "検索欄のSQLインジェクション境界不備（/api/search）",
-            "severity": "critical", "verdict": "detected", "category": "インジェクション", "cve": [],
+            "id": "f_sqli", "title": "検索欄のSQLインジェクション境界確認（/api/search）",
+            "severity": "critical", "verdict": "candidate", "category": "インジェクション", "cve": [],
             "risk_level": "L2", "help_term": "sqli",
-            "summary": "検索エンドポイント /api/search のクエリパラメータ q において、SQL構文差分の検証が必要と判定されました。",
-            "why_detected": "ARTEX のパラメータ境界分析により、未バインドクエリの可能性が検出されたためです（L2承認後に非破壊エラー差分検証を行います）。",
-            "caveat": "L2承認前は「検出（未実証）」として扱います。",
-            "evidence": [ev],
+            "summary": "模擬ラボの /api/search は、承認後に入力処理を確認する候補です。現時点では未計測です。",
+            "why_detected": "模擬ラボに用意された確認対象です。ルートページの応答から、このAPIのSQL処理は判断できません。",
+            "caveat": "承認済みの再現試験で検索APIの応答を測るまで、脆弱性として検出したとは扱いません。",
+            "evidence": [],
             "remediation": {"steps": ["プリペアドステートメント（プレースホルダー付きクエリ）を使用し文字列連結を廃止する"],
                             "how_to_verify": "修正後に同じ試験を実行し、SQLエラー差分が発生しないことを確認します。"},
             "executor": {**EXECUTOR, "tool": "http_probe"}, "demo_fixture": False})
@@ -4418,14 +4433,17 @@ class AssessmentService:
         # not matching the rule) says nothing about the boundary, so it does not
         # move the score either; such an item counts only once it is proven.
         fs = [f for f in self._real_findings()
-              if evidence_status(f) != "candidate"
+              if evidence_status(f) in ("detected", "proven")
               and not (self.l2.has_check(f.get("reproduce_check")) and f.get("verdict") != "proven")]
         score = min(100, round(sum(SEVERITY_WEIGHT[f["severity"]] * VERDICT_FACTOR[f["verdict"]]
                                    for f in fs)))
-        label = "高リスク" if score >= 70 else "中リスク" if score >= 40 else "低リスク"
+        unknown = any(evidence_status(f) in ("candidate", "incomplete") for f in self._real_findings())
+        label = ("高リスク" if score >= 70 else "中リスク" if score >= 40
+                 else "未計測項目あり" if score == 0 and unknown
+                 else "確認範囲で検出なし" if score == 0 else "低リスク")
         return {"score": score, "label": label,
                 "provisional": self.a.state != "completed",
-                "basis": "架空データ・未計測の候補・判定できなかったL2検証を除く検出結果の深刻度 × 判定（実証=1.0, 検出・未検証=0.6, 再現せず=0）の合計（上限100）"}
+                "basis": "架空データ・未計測の候補・判定できなかった検証を除く実測結果の深刻度 × 判定（実証=1.0, 検出・未実証=0.6, 再現せず=0）の合計（上限100）。0点はサイト全体の安全を保証しません。"}
 
     def _on_audit(self, entry: dict) -> None:
         self.bus.publish(self.a.id if hasattr(self, "a") else "scan_001", "audit.recorded",
@@ -4781,29 +4799,29 @@ def _fixture_findings() -> list[dict]:
     common = {"demo_fixture": False, "executor": {**EXECUTOR, "tool": "reproduction_probe"}}
     return [
         {**common, "id": "f_banner", "title": "既知の脆弱性に該当するWebサーバーのバージョン表示（CVE-2021-41773）",
-         "severity": "high", "verdict": "detected", "category": "既知の脆弱性（CVE）",
+         "severity": "high", "verdict": "candidate", "category": "既知の脆弱性（CVE）",
          "cve": ["CVE-2021-41773", "CVE-2021-42013"], "risk_level": "L2", "help_term": "cve",
          "summary": "ローカル検証ラボ（127.0.0.1）の Server ヘッダーおよびパス正規化処理に CVE-2021-41773 の影響可能性があります。",
-         "why_detected": "対象エンドポイントの構成プロファイルおよび応答バナーから CVE-2021-41773 / CVE-2021-42013 の検証対象として検出されました。",
+         "why_detected": "模擬ラボに用意された確認候補です。診断を開始するまでバナーも脆弱性も測定していません。",
          "caveat": "「実機Workerで今すぐ検証」または「診断を開始」を実行すると、Gateway経由で reproduction_probe Worker が実際に検証します。",
          "evidence": [],
-         "remediation": {"steps": ["Apache HTTP Server を最新の安定版（2.4.62以降）に更新する",
+         "remediation": {"steps": ["Apache HTTP Server の公式セキュリティ情報を確認し、サポート中の修正版へ更新する",
                                    "Server ヘッダーのバージョン表示を抑制する（ServerTokens Prod）"],
                          "how_to_verify": "「防御パッチ適用・再検証」または「実機Workerで今すぐ検証」を実行し、結果が「再現せず」に変わることを確認します。"}},
-        {**common, "id": "f_idor", "title": "他アカウントの保護リソースへのアクセス制御不備（IDOR）",
-         "severity": "high", "verdict": "detected", "category": "アクセス制御", "cve": [],
+        {**common, "id": "f_idor", "title": "他アカウントの保護リソースへのアクセス制御確認（IDOR）",
+         "severity": "high", "verdict": "candidate", "category": "アクセス制御", "cve": [],
          "risk_level": "L2", "help_term": "idor",
          "summary": "検証用アカウント acct_A のトークンで、別アカウント acct_B の保護リソース（/api/accounts/B/secret）へアクセスできるか検証します。",
-         "why_detected": "APIエンドポイント /api/accounts/B/secret においてオブジェクト単位の所有者検証が必要と判定されたためです。",
+         "why_detected": "模擬ラボに用意された確認候補です。承認済みの再現試験までアクセス制御は測定していません。",
          "caveat": "「実機Workerで今すぐ検証」または「診断を開始」を実行すると、Gateway経由で reproduction_probe Worker が2アカウント間の実通信で実証します。",
          "evidence": [],
          "remediation": {"steps": ["サーバー側でセッション主体とリソース所有者を必ず照合し、不一致時は 403 Forbidden を返す"],
                          "how_to_verify": "修正後に同じ手順で再試験し、HTTP 403 が返ることを確認します。"}},
-        {**common, "id": "f_sqli", "title": "検索欄のSQLインジェクション境界不備（/api/search）",
-         "severity": "critical", "verdict": "detected", "category": "インジェクション",
+        {**common, "id": "f_sqli", "title": "検索欄のSQLインジェクション境界確認（/api/search）",
+         "severity": "critical", "verdict": "candidate", "category": "インジェクション",
          "cve": [], "risk_level": "L2", "help_term": "sqli",
          "summary": "検索エンドポイント /api/search?q=test' に対し、未バインドのSQL構文解釈が発生するかを非破壊プローブで検証します。",
-         "why_detected": "検索パラメータ q において未エスケープのクエリ連結が行われている可能性が検出されたためです。",
+         "why_detected": "模擬ラボに用意された確認候補です。承認済みの再現試験まで検索APIの入力処理は測定していません。",
          "caveat": "「実機Workerで今すぐ検証」または「診断を開始」を実行すると、Gateway経由で reproduction_probe Worker が実際のHTTP応答と監査ハッシュを記録します。",
          "evidence": [],
          "remediation": {"steps": ["プリペアドステートメント（プレースホルダー付きクエリ）を使用し文字列連結を廃止する"],

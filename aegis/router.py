@@ -386,11 +386,11 @@ class ArtexTask:
 
 
 class ArtexplannerBackend:
-    """Built-in deterministic ARTEX task planner that proposes phased diagnostic
-    and reproduction actions based on current observations. Like any LLM backend,
+    """Built-in deterministic task planner that proposes phased diagnostic
+    and reproduction actions based on current observations. Like any backend,
     it is untrusted and routed through ProposalRouter."""
 
-    name = "artex-planner"
+    name = "vulnix-builtin"
 
     def propose(self, context: dict) -> list[dict]:
         phase = context.get("phase", "config")
@@ -402,7 +402,7 @@ class ArtexplannerBackend:
                 "target_id": target_id,
                 "action": "read_only_probe",
                 "args": {"url": target_url, "method": "GET"},
-                "rationale": "ARTEX Step 1: 公開HTTPヘッダーとバナー情報を非破壊GETで収集",
+                "rationale": "内蔵手順 1: 公開HTTPヘッダーとバナー情報を非破壊GETで収集",
             }]
         if phase == "verification":
             proposals = [
@@ -411,7 +411,7 @@ class ArtexplannerBackend:
                     "target_id": target_id,
                     "action": "safe_reproduction",
                     "args": {"url": target_url, "check": "idor"},
-                    "rationale": "ARTEX Step 2: テストアカウント acct_A から acct_B リソースへの認可境界（IDOR）を実証検証",
+                    "rationale": "内蔵手順 2: テストアカウント acct_A から acct_B リソースへの認可境界（IDOR）を実証検証",
                 },
             ]
             if context.get("has_cve_2021_41773"):
@@ -420,7 +420,7 @@ class ArtexplannerBackend:
                     "target_id": target_id,
                     "action": "safe_reproduction",
                     "args": {"url": target_url, "check": "cve_2021_41773"},
-                    "rationale": "ARTEX Step 3: 検出された CVE-2021-41773 パス正規化不備が隔離ラボマーカーで成立するか実証検証",
+                    "rationale": "内蔵手順 3: 検出された CVE-2021-41773 パス正規化不備が隔離ラボマーカーで成立するか実証検証",
                 })
             return proposals
         return []

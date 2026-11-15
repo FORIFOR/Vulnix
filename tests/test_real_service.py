@@ -637,6 +637,8 @@ class TestL1Diagnosis(RealServiceBase):
         self.svc.verify_finding("all", actor="appr")
         self.assertEqual([p for p, _ in self.fake.seen], ["/"])
         self.assertEqual(self.finding("f_ex_idor")["evidence_status"], "candidate")
+        self.assertEqual(self.finding("f_ex_idor")["verdict"], "candidate")
+        self.assertEqual(self.finding("f_ex_idor")["risk_score"], 0)
 
 
 class TestL2HumanApprovedChecks(RealServiceBase):

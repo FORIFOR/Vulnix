@@ -18,6 +18,9 @@ class TestEvidenceStatus(unittest.TestCase):
 
     def test_recorded_verdicts_and_interrupted_checks_remain_distinct(self):
         evidence = [{"audit_hash": "hash", "saved_at": 0}]
+        # A page observation accidentally attached to a candidate does not
+        # establish the unrelated endpoint named by that candidate.
+        self.assertEqual(evidence_status({"verdict": "candidate", "evidence": evidence}), "candidate")
         l2 = [{"audit_hash": "hash", "saved_at": 0, "tool": "reproduction_probe"}]
         for verdict in ("detected", "not_reproduced"):
             self.assertEqual(evidence_status({"verdict": verdict, "evidence": evidence}), verdict)
@@ -76,7 +79,7 @@ class TestTrustSnapshot(unittest.TestCase):
         self.assertEqual(status["mode"], "external_configured")
         self.assertTrue(status["external_model_configured"])
         self.assertFalse(status["connection_verified"])
-        self.assertEqual(status["backends"], ["artex-planner", "model"])
+        self.assertEqual(status["backends"], ["vulnix-builtin", "model"])
         self.assertNotIn("hidden", str(status))
         self.assertNotIn("do-not-expose", str(status))
         self.assertFalse(status["connected"])
@@ -92,6 +95,59 @@ class TestTrustSnapshot(unittest.TestCase):
         self.assertEqual(event["evidence_summary"], snap["evidence_summary"])
         self.assertEqual(event["evidence_summary"]["candidate"], 2)
         self.assertEqual(event["evidence_summary"]["proven"], 1)
+
+    def test_inconclusive_record_does_not_add_risk(self):
+        finding = {**self.svc.a.findings["f_sqli"], "verdict": "unverified",
+                   "evidence": [{"audit_hash": "attempted", "saved_at": 1, "tool": "reproduction_probe"}]}
+        self.svc._upsert_finding(finding)
+        snap = self.svc.snapshot()
+        self.assertEqual(snap["evidence_summary"]["incomplete"], 1)
+        self.assertEqual(snap["risk"]["score"], 0)
+        self.assertEqual(snap["risk"]["label"], "未計測項目あり")
+
+
+class TestLabL1Evidence(unittest.TestCase):
+    """A root-page observation must not become proof of unrelated API boundaries."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.svc = AssessmentService(Path(self.tmp.name), 18199)
+
+    def tearDown(self):
+        self.svc.close()
+        self.tmp.cleanup()
+
+    def observe(self, headers):
+        self.svc._analyze(
+            {"status": 200, "headers": headers, "body_prefix": "<h1>lab</h1>"},
+            {"evidence_id": "ev_root", "audit_hash": "root-hash", "saved_at": 1,
+             "tool": "http_probe", "target_url": self.svc.a.target_url},
+        )
+        return {f["id"]: f for f in self.svc.snapshot()["findings"]}
+
+    def test_patched_root_has_no_unobserved_idor_or_sqli_detection(self):
+        findings = self.observe({
+            "Server": "Apache/2.4.62", "Content-Security-Policy": "default-src 'self'",
+            "X-Content-Type-Options": "nosniff", "Strict-Transport-Security": "max-age=63072000",
+            "X-Custom-Site": "search and account routes may exist",
+        })
+        for fid in ("f_idor", "f_sqli"):
+            with self.subTest(fid=fid):
+                self.assertEqual(findings[fid]["verdict"], "candidate")
+                self.assertEqual(findings[fid]["evidence_status"], "candidate")
+                self.assertEqual(findings[fid]["evidence"], [])
+                self.assertNotIn("ARTEX", findings[fid]["why_detected"])
+        self.assertEqual(self.svc.snapshot()["risk"]["score"], 0)
+
+    def test_vulnerable_banner_detects_only_what_the_root_observed(self):
+        findings = self.observe({"Server": "Apache/2.4.49", "X-Powered-By": "PHP/8.1.0"})
+        self.assertEqual(findings["f_banner"]["evidence_status"], "detected")
+        self.assertEqual(findings["f_idor"]["evidence_status"], "candidate")
+        self.assertEqual(findings["f_sqli"]["evidence_status"], "candidate")
+        measured = [f for f in findings.values() if f["evidence_status"] == "detected"]
+        self.assertEqual(self.svc._risk()["score"],
+                         round(sum({"critical": 40, "high": 25, "medium": 10, "low": 3, "info": 0}[f["severity"]] * .6
+                                   for f in measured)))
 
 
 class TestReproductionVerdict(unittest.TestCase):

@@ -42,6 +42,8 @@ def enforce_verdict(finding: dict) -> dict:
 def evidence_status(finding: dict) -> str:
     if finding.get("demo_fixture"):
         return "fixture"
+    if finding.get("verdict") == "candidate":
+        return "candidate"
     if finding.get("verdict") in {"aborted", "unverified"}:
         return "incomplete"
     # A pre-populated candidate or unattached example is not a measured finding.

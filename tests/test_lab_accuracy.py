@@ -1,0 +1,125 @@
+"""Measure lab findings against behavior in both independently running lab modes."""
+import tests  # noqa: F401  (hermetic revocation-marker directory)
+import tempfile
+import time
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from aegis.assessment import AssessmentService
+from aegis.lab import set_lab_mode, start_lab
+
+
+LAB_PORT = 18194
+CHECKS = ("f_banner", "f_idor", "f_sqli")
+ALL_CHECKS = CHECKS + ("f_headers", "f_powered")
+
+
+class TestLabAccuracy(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.lab = start_lab(LAB_PORT)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.lab.shutdown()
+        cls.lab.server_close()
+
+    def run_mode(self, mode, approve):
+        set_lab_mode(mode, self.lab)
+        with tempfile.TemporaryDirectory() as tmp:
+            svc = AssessmentService(Path(tmp), LAB_PORT, verify_seconds=0.01)
+            svc._may_switch_lab = False
+            try:
+                svc.start()
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline:
+                    snap = svc.snapshot()
+                    pending = next((a for a in snap["approvals"] if a["status"] == "pending"), None)
+                    if pending:
+                        l1 = snap
+                        svc.decide_approval(pending["id"], "approve" if approve else "reject", "audit")
+                        break
+                    if snap["state"] == "failed":
+                        self.fail(f"lab run failed before approval: {snap['failure']}")
+                    time.sleep(0.01)
+                else:
+                    self.fail("lab run did not request its approval")
+                while time.monotonic() < deadline:
+                    final = svc.snapshot()
+                    if final["state"] in ("completed", "failed"):
+                        self.assertEqual(final["state"], "completed", final["failure"])
+                        return l1, final
+                    time.sleep(0.01)
+                self.fail("lab run did not complete")
+            finally:
+                svc.close()
+
+    def test_l1_candidates_do_not_create_false_positives_on_patched_lab(self):
+        vulnerable_l1, vulnerable = self.run_mode("vulnerable", approve=False)
+        patched_l1, patched = self.run_mode("patched", approve=False)
+        self.assertEqual(vulnerable["state"], "completed")
+        self.assertEqual(patched["state"], "completed")
+        for snap in (vulnerable_l1, vulnerable, patched_l1, patched):
+            by_id = {f["id"]: f for f in snap["findings"]}
+            self.assertEqual(by_id["f_idor"]["evidence_status"], "candidate")
+            self.assertEqual(by_id["f_sqli"]["evidence_status"], "candidate")
+        by_id = {f["id"]: f for f in patched["findings"]}
+        self.assertEqual(by_id["f_banner"]["evidence_status"], "candidate")
+        self.assertEqual(patched["risk"]["score"], 0)
+        patched_analysis = next(p for p in patched_l1["phases"] if p["key"] == "analysis")
+        self.assertIn("検出 0 件", patched_analysis["detail"])
+        self.assertIn("候補 3 件", patched_analysis["detail"])
+        self.assertEqual({f["id"] for f in vulnerable["findings"] if f["evidence_status"] == "detected"},
+                         {"f_banner", "f_headers", "f_powered"})
+
+    def test_approved_probes_separate_vulnerable_and_patched_lab(self):
+        _, vulnerable = self.run_mode("vulnerable", approve=True)
+        _, patched = self.run_mode("patched", approve=True)
+        for mode, snap, expected in (("vulnerable", vulnerable, "proven"),
+                                     ("patched", patched, "not_reproduced")):
+            by_id = {f["id"]: f for f in snap["findings"]}
+            for fid in CHECKS:
+                with self.subTest(mode=mode, finding=fid):
+                    self.assertEqual(by_id[fid]["evidence_status"], expected)
+                    self.assertTrue(any(e.get("tool") == "reproduction_probe" and e.get("audit_hash")
+                                        for e in by_id[fid]["evidence"]))
+        self.assertEqual(patched["risk"]["score"], 0)
+        self.assertGreater(vulnerable["risk"]["score"], patched["risk"]["score"])
+        patched_verification = next(p for p in patched["phases"] if p["key"] == "verification")
+        self.assertNotIn("侵入成立を実証", patched_verification["detail"])
+        self.assertIn("再現せず", patched_verification["detail"])
+
+    def test_shared_lab_without_switch_permission_refuses_fix_comparison(self):
+        set_lab_mode("vulnerable", self.lab)
+        with tempfile.TemporaryDirectory() as tmp:
+            svc = AssessmentService(Path(tmp), LAB_PORT)
+            svc._may_switch_lab = False
+            svc.a.state = "completed"
+            try:
+                with patch.object(svc, "_exec") as execute:
+                    with self.assertRaisesRegex(ValueError, "共有"):
+                        svc.verify_fix("audit")
+                    execute.assert_not_called()
+                self.assertIsNone(svc.a.defense_comparison)
+                svc.a.defense_comparison = {"lab_mode": "vulnerable", "before_score": 94, "after_score": 94}
+                self.assertIsNone(svc.snapshot()["defense_comparison"])
+            finally:
+                svc.close()
+        self.assertEqual("vulnerable", self.lab.lab_state.mode)
+
+    def test_measured_accuracy_for_the_five_known_lab_conditions(self):
+        for approve, expected in ((False, (3, 0, 2, 2, 3)),
+                                  (True, (5, 0, 0, 5, 0))):
+            vulnerable_l1, vulnerable = self.run_mode("vulnerable", approve)
+            patched_l1, patched = self.run_mode("patched", approve)
+            positive = vulnerable if approve else vulnerable_l1
+            negative = patched if approve else patched_l1
+            positive_by_id = {f["id"]: f["evidence_status"] for f in positive["findings"]}
+            negative_by_id = {f["id"]: f["evidence_status"] for f in negative["findings"]}
+            tp = sum(positive_by_id.get(fid) in ("detected", "proven") for fid in ALL_CHECKS)
+            fn = sum(positive_by_id.get(fid) not in ("detected", "proven") for fid in ALL_CHECKS)
+            fp = sum(negative_by_id.get(fid) in ("detected", "proven") for fid in ALL_CHECKS)
+            tn = sum(negative_by_id.get(fid) in (None, "not_reproduced") for fid in ALL_CHECKS)
+            unverified = sum(negative_by_id.get(fid) == "candidate" for fid in ALL_CHECKS)
+            self.assertEqual((tp, fp, fn, tn, unverified), expected)

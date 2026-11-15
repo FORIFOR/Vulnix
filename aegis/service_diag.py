@@ -19,8 +19,8 @@ from . import cve
 
 
 EXECUTOR_DEFAULT = {
-    "agent": "ARTEX 実行エンジン（ProposalRouter 制御）",
-    "model": "提案元は診断コンテキストを参照（実行権限なし）",
+    "agent": "Vulnix 診断エンジン",
+    "model": "内蔵の検査ルール（実行権限なし）",
 }
 
 SEVERITY_BASE_SCORE = {"critical": 90, "high": 75, "medium": 50, "low": 25}
@@ -41,7 +41,7 @@ def compute_finding_risk_score(
         else 0.75
         if verdict == "detected"
         else 0.0
-        if verdict == "not_reproduced"
+        if verdict in ("candidate", "not_reproduced", "unverified", "aborted")
         else 0.5
     )
     bonus = (10 if kev else 0) + (5 if internet_facing else 0)
@@ -542,14 +542,14 @@ def build_l2_candidates(
             else "未検査（この項目に必要なL2検証用アカウントが未設定・人間の個別承認待ち）"
         )
         r_score, r_rat = compute_finding_risk_score(
-            spec["severity"], "detected", internet_facing=is_https
+            spec["severity"], "candidate", internet_facing=is_https
         )
         candidates.append(
             {
                 "id": spec["id"],
                 "title": spec["title"],
                 "severity": spec["severity"],
-                "verdict": "detected",
+                "verdict": "candidate",
                 "category": spec["category"],
                 "cve": [],
                 "risk_level": "L2",
