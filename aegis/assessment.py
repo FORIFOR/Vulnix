@@ -243,8 +243,12 @@ class AssessmentService:
                  l2_profile_dirs: list[Path] | None = None,
                  separate_l2_approver: bool | None = None,
                  l2_confinement=None,
-                 revocation_marker_dirs: list[Path] | None = None):
+                 revocation_marker_dirs: list[Path] | None = None,
+                 real_site_read_only: bool = True):
         self.data_dir = Path(data_dir)
+        # A service used outside the HTTP server still refuses real-site L2 and
+        # re-checks by default. The trusted caller must explicitly select legacy mode.
+        self.real_site_read_only = bool(real_site_read_only)
         # Kernel confinement of the worker that carries test-account tokens to a real
         # service. The default is the real thing (Linux only); it can be replaced only
         # here, in code - there is no environment variable or API for it.

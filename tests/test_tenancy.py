@@ -552,7 +552,7 @@ class TestPublicDeploymentSwitches(TestTenantIsolationOverHttp):
     def test_real_site_traffic_is_refused_when_switched_off(self):
         from aegis import server as srvmod
         a = self.signup("alice")
-        with patch.object(srvmod, "REAL_SERVICE_DIAGNOSIS", False):
+        with patch.multiple(srvmod, REAL_SERVICE_DIAGNOSIS=False, REAL_SITE_L1_ONLY=False):
             code, body = self.req(a, "/assets/challenge", {"url": "https://shop.example.com/"})
             self.assertEqual(code, 200)                                   # registering and the proof value: allowed
             code, body = self.req(a, "/assets/verify-ownership", {"host": "shop.example.com", "method": "dns_txt"})
@@ -576,6 +576,19 @@ class TestPublicDeploymentSwitches(TestTenantIsolationOverHttp):
             m = importlib.reload(srvmod)
             self.assertEqual((m.ARTEX_LLM_PLANS_PLATFORM_PER_HOUR, m.CHAT_PLATFORM_PER_DAY, m.REAL_SERVICE_DIAGNOSIS), (0, 7, False))
         importlib.reload(srvmod)
+
+    def test_real_site_mode_defaults_to_read_only_and_typos_fail_closed(self):
+        import importlib
+        from aegis import server as srvmod
+        try:
+            with patch.dict(os.environ, {"VULNIX_NO_ENV_LOCAL": "1"}, clear=True):
+                m = importlib.reload(srvmod)
+                self.assertEqual((m.REAL_SERVICE_DIAGNOSIS, m.REAL_SITE_L1_ONLY), (False, True))
+                os.environ["VULNIX_REAL_SERVICE_DIAGNOSIS"] = "ll"
+                m = importlib.reload(srvmod)
+                self.assertEqual((m.REAL_SERVICE_DIAGNOSIS, m.REAL_SITE_L1_ONLY), (False, False))
+        finally:
+            importlib.reload(srvmod)
 
     def test_all_artex_plans_are_capped_per_org(self):
         from aegis import server as srvmod
@@ -629,7 +642,7 @@ class TestFifthReviewFixes(TestTenantIsolationOverHttp):
     def test_switching_to_a_real_site_is_refused_and_the_switch_is_visible(self):
         from aegis import server as srvmod
         a = self.signup("alice")
-        with patch.object(srvmod, "REAL_SERVICE_DIAGNOSIS", False):
+        with patch.multiple(srvmod, REAL_SERVICE_DIAGNOSIS=False, REAL_SITE_L1_ONLY=False):
             self.req(a, "/assets/challenge", {"url": "https://shop.example.com/"})
             real = next(x for x in self.req(a, "/assets")[1] if x.get("name") == "shop.example.com")
             self.assertEqual(self.req(a, "/assets/select", {"id": real["id"]})[0], 403)

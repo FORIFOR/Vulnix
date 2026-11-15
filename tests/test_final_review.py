@@ -309,6 +309,8 @@ class TestHostileResponses(unittest.TestCase):
         self.assertEqual(clean_target_text("a<b>[c](d)`e`\x07" + "z" * 9999, 20), "abc(d)e" + "z" * 13)
 
     def test_report_does_not_carry_markup_from_a_target(self):
+        from aegis import server as srvmod
+        mode_before = (srvmod.REAL_SERVICE_DIAGNOSIS, srvmod.REAL_SITE_L1_ONLY)
         class Probe(RealServiceBase):
             def runTest(self):
                 pass
@@ -324,8 +326,12 @@ class TestHostileResponses(unittest.TestCase):
             self.assertNotIn("<script>", report)
             self.assertNotIn("](http://evil)", report)
         finally:
-            t.tearDown()
-            Probe.tearDownClass()
+            try:
+                t.tearDown()
+            finally:
+                t.doCleanups()  # this test invokes setUp manually; release its mode patch too
+                Probe.tearDownClass()
+        self.assertEqual((srvmod.REAL_SERVICE_DIAGNOSIS, srvmod.REAL_SITE_L1_ONLY), mode_before)
 
 
 class TestL1AnalyzerSaysOnlyWhatTheResponseShows(unittest.TestCase):

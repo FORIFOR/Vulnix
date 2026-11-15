@@ -350,7 +350,8 @@ class TestPlantedOrEditedProfile(RealServiceBase):
 
     def start(self):
         self.svc.workers.kill_all()
-        self.svc = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT, verify_seconds=0.1)        # default (site) profile dirs
+        self.svc = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT, verify_seconds=0.1,
+                                     real_site_read_only=False)  # default (site) profile dirs; legacy L2 test
         self.svc._custom_resolver = lambda h: ["127.0.0.1"] if h == HOST else []
         return self.svc
 
