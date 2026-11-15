@@ -44,18 +44,20 @@ from .router import (DEFAULT_MODEL_TIMEOUT_SECONDS, MAX_MODEL_RESPONSE_BYTES, Tr
 
 PROMPT_MARKER = "vulnix-advisor/v2"
 
-SYSTEM_ADVISOR_PROMPT = (
+_PROMPT_BEFORE_CATALOG = (
     f"[{PROMPT_MARKER}] あなたは Vulnix のセキュリティ診断アドバイザーです。"
     "与えられた所見（参照ID、規則、分類、深刻度、判定）だけを根拠に答えてください。"
     "claim_level は判定に合うものを選び、cites には根拠にした入力の項目名を入れてください。"
     "remediation の fix と next_checks の operation は、次の一覧の id だけを使えます。"
     "それ以外の操作は提案できません。実行は Vulnix の承認ゲートを通ります。"
     "URL、ホスト名、コマンド、攻撃手順は書かないでください。"
-    + catalog.catalog_for_prompt() +
+)
+_PROMPT_AFTER_CATALOG = (
     ' JSON だけを返してください: {"advice": [{"ref": "F1", "claim_level": "observed", "cites": ["rule", "verdict"], '
     '"risk_explanation": "...", "remediation": [{"fix": "<id>", "detail": "..."}], '
     '"next_checks": [{"operation": "<id>", "purpose": "<id>"}]}]}'
 )
+SYSTEM_ADVISOR_PROMPT = _PROMPT_BEFORE_CATALOG + catalog.catalog_for_prompt() + _PROMPT_AFTER_CATALOG
 
 # ---- input allow-list -------------------------------------------------------------
 
@@ -493,7 +495,11 @@ class AbliterationAdvisor:
             raise AdvisorError(f"payload refused: {leaks}")
         payload = {
             "model": self.model,
-            "messages": [{"role": "system", "content": SYSTEM_ADVISOR_PROMPT},
+            "messages": [{"role": "system", "content": (_PROMPT_BEFORE_CATALOG
+                          + catalog.catalog_for_prompt(
+                              rules={item["rule"] for item in items},
+                              verdicts={item["verdict"] for item in items})
+                          + _PROMPT_AFTER_CATALOG)},
                          {"role": "user", "content": user}],
             "temperature": 0.2,
         }

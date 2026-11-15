@@ -12,6 +12,7 @@ disjoint, so an operation id can never be mistaken for something the gateway exe
 """
 from __future__ import annotations
 
+from collections.abc import Iterable
 from types import MappingProxyType
 
 ALL_RULES = ("f_l1_tls", "f_l1_no_tls", "f_headers", "f_l1_cookies", "f_l1_cors", "f_powered",
@@ -142,10 +143,18 @@ def gates_for(level: str) -> tuple[str, ...]:
     return base + ("l2_human_approval",) if level == "L2" else base
 
 
-def catalog_for_prompt() -> str:
-    """The ids the model may use, for the system prompt (no case data, no labels)."""
-    ops = "; ".join(f"{k}({v[0]}: {', '.join(sorted(v[2]))})" for k, v in OPERATIONS.items())
-    acts = "; ".join(f"{k}({', '.join(sorted(v[1]))})" for k, v in REMEDIATION_ACTIONS.items())
-    claims = ", ".join(f"{v}: {', '.join(sorted(c))}" for v, c in CLAIMS_BY_VERDICT.items())
+def catalog_for_prompt(*, rules: Iterable[str] | None = None,
+                       verdicts: Iterable[str] | None = None) -> str:
+    """Only relevant IDs in a request; the full catalog remains the validator."""
+    rule_set = set(ALL_RULES if rules is None else rules)
+    verdict_set = set(CLAIMS_BY_VERDICT if verdicts is None else verdicts)
+    ops = "; ".join(f"{k}({v[0]}: {', '.join(sorted(v[2] & rule_set))})"
+                    for k, v in OPERATIONS.items() if v[2] & rule_set)
+    acts = "; ".join(f"{k}({', '.join(sorted(v[1] & rule_set))})"
+                     for k, v in REMEDIATION_ACTIONS.items()
+                     if v[1] & rule_set and any(fix_verdict_problem(k, verdict) is None
+                                                for verdict in verdict_set))
+    claims = ", ".join(f"{v}: {', '.join(sorted(c))}" for v, c in CLAIMS_BY_VERDICT.items()
+                       if v in verdict_set)
     return (f"operations: {ops}. remediation fixes: {acts}. claim_level by verdict: {claims}. "
             f"next check purposes: {', '.join(PURPOSES)}.")

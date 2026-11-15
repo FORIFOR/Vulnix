@@ -117,6 +117,21 @@ class TestPayloadIsAnAllowList(unittest.TestCase):
         self.assertEqual(len(result.advice), 1, result.rejected)
         self.assertEqual(result.advice[0].remediation[0].fix, "restrict_apache_status")
 
+    def test_single_finding_prompt_contains_only_relevant_catalog_ids(self):
+        finding = _leaky_finding("f_l1_apache_mod_status", category="情報公開設定", cve=[])
+        advisor = adv.AbliterationAdvisor("http://127.0.0.1:9/v1/chat/completions")
+        body, _ = advisor.build_request([finding])
+        prompt = json.loads(body)["messages"][0]["content"]
+        self.assertIn("restrict_apache_status", prompt)
+        self.assertIn("l1_recheck_apache_status", prompt)
+        self.assertNotIn("parameterize_queries", prompt)
+        self.assertNotIn("l2_input_boundary_check", prompt)
+        self.assertLess(len(prompt.encode("utf-8")), len(adv.SYSTEM_ADVISOR_PROMPT.encode("utf-8")))
+        bad = _ok_item(remediation=[_rem("入力値をパラメータ化する", "parameterize_queries")], next_checks=[])
+        accepted, rejected = adv.validate_advice({"advice": [bad]}, {"F1": finding})
+        self.assertEqual(accepted, [])
+        self.assertTrue(any(r["where"] == "remediation" for r in rejected))
+
     def test_candidate_is_never_sent_or_explained_as_detected(self):
         finding = _leaky_finding("f_sqli", verdict="candidate")
         item = adv.finding_to_payload_item("F1", finding)
