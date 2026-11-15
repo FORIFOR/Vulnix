@@ -42,14 +42,19 @@ class AuditLog:
             return []
         return [json.loads(l) for l in self.path.read_text().splitlines() if l.strip()]
 
-    def verify(self) -> bool:
+    def verified_entries(self) -> tuple[list[dict], bool]:
+        """Read once so returned entries and their chain verdict match."""
+        entries = self.entries()
         prev = GENESIS
-        for e in self.entries():
+        for e in entries:
             body = {k: e[k] for k in ("ts", "event", "fields", "prev")}
             if e["prev"] != prev or hashlib.sha256(_canon(body).encode()).hexdigest() != e["hash"]:
-                return False
+                return entries, False
             prev = e["hash"]
-        return True
+        return entries, True
+
+    def verify(self) -> bool:
+        return self.verified_entries()[1]
 
 
 def _canon(obj) -> str:
