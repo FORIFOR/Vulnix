@@ -507,6 +507,39 @@ class TestServer(unittest.TestCase):
         finally:
             restarted_svc.workers.kill_all()
 
+    def test_interrupted_run_restores_as_failed_with_restart_available(self):
+        for prior in ("paused", "running"):
+            with self.subTest(prior=prior):
+                self.svc._set_state(prior)
+                reopened = AssessmentService(Path(self.tmp.name), LAB_PORT, verify_seconds=0.05)
+                try:
+                    snap = reopened.snapshot()
+                    self.assertEqual(snap["state"], "failed")
+                    self.assertEqual(snap["failure"]["kind"], "interrupted")
+                    self.assertIn("再診断", snap["failure"]["reason"])
+                    with self.assertRaises(ValueError):
+                        reopened.resume("op")
+                    self.assertEqual(reopened.snapshot()["state"], "failed")
+                    if prior == "running":
+                        reopened.restart("op")
+                        reopened.emergency_stop("op")
+                        if reopened._thread is not None:
+                            reopened._thread.join(timeout=5)
+                        self.assertEqual(reopened.snapshot()["state"], "stopped")
+                finally:
+                    reopened.workers.kill_all()
+
+    def test_live_paused_runner_can_still_resume(self):
+        self.login("appr", "appr-pw")
+        self.assertEqual(self.post("/start")[0], 200)
+        pending = self.wait_for(lambda s: any(a["status"] == "pending" for a in s["approvals"]))
+        self.assertEqual(self.post("/pause")[0], 200)
+        self.assertEqual(self.get()["state"], "paused")
+        self.assertEqual(self.post("/resume")[0], 200)
+        self.assertEqual(self.get()["state"], "running")
+        self.post(f"/approvals/{pending['approvals'][0]['id']}", {"decision": "reject"})
+        self.wait_for(lambda s: s["state"] == "completed")
+
     def test_artex_cli_and_abliteration_api_live_verification_endpoint(self):
         self.login("op", "op-pw")
         self.assertEqual(self._req(f"{self.root}/router/verify", {})[0], 403)    # spawns a CLI + model call
