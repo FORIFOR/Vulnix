@@ -255,6 +255,53 @@ class ServiceBase(unittest.TestCase):
 
 
 class TestThePlanThroughTheGateway(ServiceBase):
+    def test_owned_mock_site_runs_l1_then_anonymous_plan_then_gateway_worker(self):
+        from aegis import assessment as assessment_module
+        from tests.test_real_service import FakeService, HOST
+
+        site = FakeService()
+        threading.Thread(target=site.serve_forever, daemon=True).start()
+        self.addCleanup(site.server_close)
+        self.addCleanup(site.shutdown)
+        url = f"http://{HOST}:{site.server_port}"
+        self.svc._custom_resolver = lambda host: ["127.0.0.1"] if host == HOST else []
+        self.svc._real_site_local_artex = True
+
+        challenge = self.svc.issue_ownership_challenge(url=url)["challenge"]
+        self.assertEqual(site.seen, [])
+        self.assertTrue(self.svc.verify_asset_ownership(
+            url_or_host=url, method="dns_txt",
+            dns_lookup=lambda name: [f'{name} text = "{challenge["dns_txt_value"]}"'],
+        )["verified"])
+        self.svc.confirm_asset_scope(url_or_host=url, confirmed_prohibited=True,
+                                     activate_workspace=True, allow_loopback_test=True)
+        self.assertEqual(site.seen, [])
+
+        self.svc.start()
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline and self.svc.snapshot()["state"] == "running":
+            time.sleep(0.02)
+        snap = self.svc.snapshot()
+        self.assertEqual(snap["state"], "completed", snap.get("failure"))
+        self.assertEqual(site.seen, [("/", None)])
+        self.assertTrue(any(f["evidence_status"] == "detected" and f["evidence"][0]["audit_hash"]
+                            for f in snap["findings"]))
+
+        with patch.object(assessment_module, "run_artex_planner",
+                          wraps=assessment_module.run_artex_planner) as runner:
+            plan = self.svc.plan_with_artex("op")["artex_plan"]["plan"]
+        request = runner.call_args.args[1]
+        self.assertTrue(request["observations"])
+        self.assertNotIn(HOST, json.dumps(request, ensure_ascii=False))
+        self.assertNotIn(url, json.dumps(request, ensure_ascii=False))
+        self.assertEqual(site.seen, [("/", None)])
+        self.assertEqual([item["catalog_id"] for item in plan["items"]], ["l1_http_probe"])
+
+        self.svc.execute_artex_item(plan["items"][0]["id"], "op", roles=("operator",))
+        self.assertEqual(site.seen, [("/", None), ("/", None)])
+        self.assertEqual(self.svc.artex_plan_view()["plan"]["items"][0]["status"], "completed")
+        self.assertTrue(self.events("allow"))
+
     def test_real_site_plan_is_shown_only_when_scoped_and_opted_in(self):
         self.svc.issue_ownership_challenge(url="https://site.test/")
         self.svc.verify_asset_ownership(
