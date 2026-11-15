@@ -33,6 +33,7 @@ import argparse
 import http.client
 import json
 import os
+import re
 import signal
 import socket
 import ssl
@@ -189,6 +190,9 @@ def probe(a: argparse.Namespace, clock=time.monotonic) -> dict:
 
     def error_result(e: StageError) -> dict:
         timings["total_ms"] = round((clock() - t0) * 1000)
+        if getattr(a, "report_mode", "full") == "status_marker":
+            return {"check_id": "apache_mod_status", "elapsed_ms": timings["total_ms"],
+                    "error": {"stage": e.stage, "kind": e.kind}}
         return {
             "error": {"stage": e.stage, "kind": e.kind, "timeout_s": e.timeout_s, "exception": e.detail},
             "connected_ip": a.ip,
@@ -240,6 +244,14 @@ def probe(a: argparse.Namespace, clock=time.monotonic) -> dict:
             return r.read(4096) if a.method == "GET" else b""
         raw_body = stage("body", a.read_timeout, body)
         timings["total_ms"] = round((clock() - t0) * 1000)
+        if getattr(a, "report_mode", "full") == "status_marker":
+            markers = {
+                "total_accesses": bool(re.search(rb"(?m)^Total Accesses: [0-9]+\r?$", raw_body)),
+                "uptime_seconds": bool(re.search(rb"(?m)^ServerUptimeSeconds: [0-9]+\r?$", raw_body)),
+            }
+            return {"check_id": "apache_mod_status", "elapsed_ms": timings["total_ms"],
+                    "status": r.status, "markers": markers,
+                    "detected": r.status == 200 and all(markers.values())}
         return {
             "status": r.status,
             "headers": dict(r.getheaders()),
@@ -376,6 +388,7 @@ def main() -> None:
     p.add_argument("--read-timeout", type=_seconds, default=FIRST_BYTE_TIMEOUT_S)
     p.add_argument("--overall-timeout", type=_seconds, default=OVERALL_DEADLINE_S)
     p.add_argument("--progress", default="none", choices=["none", "stderr"])
+    p.add_argument("--report-mode", default="full", choices=["full", "status_marker"])
     a = p.parse_args()
     _PROGRESS["on"] = a.progress == "stderr"
     out = probe(a)

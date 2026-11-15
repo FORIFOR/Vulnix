@@ -85,6 +85,69 @@ def http_probe_tool() -> Tool:
     )
 
 
+def status_marker_tool() -> Tool:
+    """A fixed, single GET whose worker reports only two mod_status markers.
+
+    This tool is intentionally not registered by AssessmentService. The public
+    path needs separate consent and a signed second-request allowance first.
+    """
+    workers = Path(__file__).parent / "workers"
+    worker = str(workers / "http_probe.py")
+    sentinel = str(workers / "egress_sentinel.py")
+
+    def build(args: dict, d: PinnedDestination) -> list[str]:
+        if d.path != "/server-status?auto":
+            raise PolicyError("status marker path is not fixed")
+        inner = [worker, "--scheme", d.scheme, "--host", d.host, "--ip", d.ip,
+                 "--port", str(d.port), "--path", d.path, "--method", "GET",
+                 "--report-mode", "status_marker", "--progress", "stderr"]
+        return [sys.executable, "-I", sentinel, "--allow", f"{d.ip}/{d.port}", "--", *inner]
+
+    return Tool(
+        name="status_marker", action="read_only_probe",
+        args={"url": ArgSpec(str, pattern=r"https?://[^/?#\s]+/server-status\?auto")},
+        build_argv=build, timeout_s=50,
+    )
+
+
+def _validate_status_marker_report(report: object, returncode: int) -> bool:
+    """Reject unexpected Worker output before it can enter the result audit."""
+    if not isinstance(report, dict):
+        raise PolicyError("status marker report is not an object")
+    if (report.get("check_id") != "apache_mod_status"
+            or type(report.get("elapsed_ms")) is not int
+            or not 0 <= report["elapsed_ms"] <= 120_000):
+        raise PolicyError("status marker report has an invalid check or duration")
+    if returncode == 3 and set(report) == {"check_id", "elapsed_ms", "error"}:
+        error = report["error"]
+        if (isinstance(error, dict) and set(error) == {"stage", "kind"}
+                and isinstance(error["stage"], str)
+                and error["stage"] in {"connect", "tls", "send", "first_byte", "body", "between_stages"}
+                and isinstance(error["kind"], str)
+                and error["kind"] in {"timeout", "tls_verify_failed", "tls_error",
+                                      "connection_refused", "connection_reset", "bad_http_response",
+                                      "network_error", "egress_blocked", "error"}):
+            return True
+    if returncode == 0 and set(report) == {"check_id", "elapsed_ms", "status", "markers", "detected"}:
+        status, markers, detected = report["status"], report["markers"], report["detected"]
+        if (type(status) is int and 100 <= status <= 599 and isinstance(markers, dict)
+                and set(markers) == {"total_accesses", "uptime_seconds"}
+                and all(type(value) is bool for value in markers.values())
+                and type(detected) is bool
+                and detected == (status == 200 and all(markers.values()))):
+            return True
+    raise PolicyError("status marker report has an invalid schema")
+
+
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict:
+    obj = {}
+    for key, value in pairs:
+        if key in obj:
+            raise ValueError("duplicate JSON key")
+        obj[key] = value
+    return obj
+
+
 LAB_REPRODUCTION_CHECKS = ("idor", "cve_2021_41773", "sqli")
 
 
@@ -297,6 +360,14 @@ class Gateway:
                                   last_stage=result.last_stage or "", stop_confirmed=result.stop_confirmed,
                                   worker_stdout_bytes=len(result.stdout or ""))
                 result = deadline_report(tool.name, result)
+            if tool.name == "status_marker" and not result.timed_out:
+                if result.stderr or result.output_truncated:
+                    raise PolicyError("status marker worker emitted unexpected output")
+                try:
+                    report = json.loads(result.stdout or "", object_pairs_hook=_unique_json_object)
+                except (TypeError, ValueError):
+                    raise PolicyError("status marker report is not JSON") from None
+                _validate_status_marker_report(report, result.returncode)
             if self.secret_redactor:
                 result = replace(result, stdout=self.secret_redactor(result.stdout or ""),
                                  stderr=self.secret_redactor(result.stderr or ""))
