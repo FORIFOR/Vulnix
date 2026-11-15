@@ -4798,7 +4798,7 @@ def _fixture_findings() -> list[dict]:
     """Initial real candidate findings for the local verification lab (127.0.0.1), ready for live Gateway + Worker execution."""
     common = {"demo_fixture": False, "executor": {**EXECUTOR, "tool": "reproduction_probe"}}
     return [
-        {**common, "id": "f_banner", "title": "既知の脆弱性に該当するWebサーバーのバージョン表示（CVE-2021-41773）",
+        {**common, "id": "f_banner", "title": "Webサーバーのバージョンと既知脆弱性の確認（CVE-2021-41773）",
          "severity": "high", "verdict": "candidate", "category": "既知の脆弱性（CVE）",
          "cve": ["CVE-2021-41773", "CVE-2021-42013"], "risk_level": "L2", "help_term": "cve",
          "summary": "ローカル検証ラボ（127.0.0.1）の Server ヘッダーおよびパス正規化処理に CVE-2021-41773 の影響可能性があります。",

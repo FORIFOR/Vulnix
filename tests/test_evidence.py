@@ -65,6 +65,7 @@ class TestTrustSnapshot(unittest.TestCase):
         self.assertFalse(snap["planner"]["connection_verified"])
         self.assertEqual(snap["evidence_summary"]["candidate"], 3)
         self.assertTrue(all(f["evidence_status"] == "candidate" for f in snap["findings"]))
+        self.assertNotIn("該当する", self.svc.a.findings["f_banner"]["title"])
         report = self.svc.report_markdown()
         for text in ("未診断（安全性は未評価）", "ローカル模擬ラボ", "未計測の候補 3 件", "架空のデモ履歴", "外部 AI モデルは未設定"):
             self.assertIn(text, report)
