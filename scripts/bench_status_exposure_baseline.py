@@ -11,6 +11,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from unittest.mock import patch
 
 os.environ["VULNIX_NO_ENV_LOCAL"] = "1"
 os.environ["VULNIX_EXTERNAL_PROPOSALS"] = "0"
@@ -18,6 +19,7 @@ os.environ["VULNIX_REAL_SITE_SAFE_AI"] = "0"
 os.environ["VULNIX_REAL_SITE_LOCAL_ARTEX"] = "0"
 
 from aegis.assessment import AssessmentService  # noqa: E402
+from aegis import assessment as assessment_module  # noqa: E402
 from tests import TEST_CONFINEMENT  # noqa: E402
 from tests.fixtures.status_exposure_lab import StatusExposureLab  # noqa: E402
 
@@ -44,16 +46,28 @@ def measure(mode: str) -> dict:
                 svc.confirm_asset_scope(url_or_host=url, confirmed_prohibited=True,
                                         activate_workspace=True, allow_loopback_test=True)
                 assert site.seen == [], "scope confirmation contacted the target"
+                counts = {"gateway_calls": 0, "worker_launches": 0, "state_saves": 0}
+                for obj, attr, key in ((svc.gateway, "execute", "gateway_calls"),
+                                       (svc.workers, "run", "worker_launches"),
+                                       (svc, "_save_state_locked", "state_saves")):
+                    original = getattr(obj, attr)
+                    def count(*args, _original=original, _key=key, **kwargs):
+                        counts[_key] += 1
+                        return _original(*args, **kwargs)
+                    setattr(obj, attr, count)
                 start = time.monotonic()
-                svc.start()
-                deadline = start + 20
-                while time.monotonic() < deadline:
-                    snap = svc.snapshot()
-                    if snap["state"] in ("completed", "failed"):
-                        break
-                    time.sleep(0.02)
-                else:
-                    raise TimeoutError("L1 did not finish")
+                with patch.object(assessment_module, "run_artex_planner",
+                                  side_effect=AssertionError("unexpected ARTEX baseline call")) as artex:
+                    svc.start()
+                    deadline = start + 20
+                    while time.monotonic() < deadline:
+                        snap = svc.snapshot()
+                        if snap["state"] in ("completed", "failed"):
+                            break
+                        time.sleep(0.02)
+                    else:
+                        raise TimeoutError("L1 did not finish")
+                    assert artex.call_count == 0
                 if snap["state"] != "completed":
                     raise RuntimeError(snap.get("failure"))
                 assert site.seen == ["/"], site.seen
@@ -61,6 +75,8 @@ def measure(mode: str) -> dict:
                          (f.get("title", "") + f.get("summary", "")).lower()]
                 return {"mode": mode, "truth_status_exposed": mode == "vulnerable",
                         "elapsed_s": round(time.monotonic() - start, 3),
+                        **counts, "artex_calls": artex.call_count,
+                        "external_model_calls": 0, "ai_tokens": 0,
                         "target_requests": list(site.seen),
                         "status_exposure_detected": any(f["evidence_status"] == "detected" for f in found),
                         "all_findings": [{"id": f["id"], "status": f["evidence_status"]}
