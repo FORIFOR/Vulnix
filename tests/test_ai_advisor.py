@@ -96,6 +96,27 @@ class TestPayloadIsAnAllowList(unittest.TestCase):
         self.assertEqual((item["rule"], item["category"], item["severity"], item["verdict"], item["risk_score"]),
                          ("other", "その他", "medium", "unverified", None))
 
+    def test_audited_status_finding_has_specific_safe_japanese_advice(self):
+        from aegis.service_diag import analyze_status_marker_report
+        finding = analyze_status_marker_report(
+            {"check_id": "apache_mod_status", "detected": True},
+            {"tool": "status_marker", "audit_hash": "a" * 64,
+             "target_url": "https://private.example/server-status?auto", "body_prefix": "SECRET"})
+        reply = _ok_item(
+            risk_explanation="Apacheの状態情報が公開されています。",
+            remediation=[_rem("公開範囲から外し、管理者だけにアクセスを制限します。", "restrict_apache_status")],
+            next_checks=[_chk("confirm_fix", "l1_recheck_apache_status")])
+        with _MockServer(_advice_reply([reply])) as mock:
+            result = adv.AbliterationAdvisor(mock.url).advise([finding])
+            sent = json.dumps(mock.srv.received[0], ensure_ascii=False)
+            item = json.loads(mock.srv.received[0]["messages"][1]["content"])["findings"][0]
+        self.assertEqual((item["rule"], item["category"], item["verdict"]),
+                         ("f_l1_apache_mod_status", "情報公開設定", "detected"))
+        self.assertNotIn("private.example", sent)
+        self.assertNotIn("SECRET", sent)
+        self.assertEqual(len(result.advice), 1, result.rejected)
+        self.assertEqual(result.advice[0].remediation[0].fix, "restrict_apache_status")
+
     def test_candidate_is_never_sent_or_explained_as_detected(self):
         finding = _leaky_finding("f_sqli", verdict="candidate")
         item = adv.finding_to_payload_item("F1", finding)

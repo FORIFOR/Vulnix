@@ -61,11 +61,11 @@ SYSTEM_ADVISOR_PROMPT = (
 
 KNOWN_RULES = frozenset({
     "f_l1_tls", "f_l1_no_tls", "f_headers", "f_l1_cookies", "f_l1_cors", "f_powered",
-    "f_l1_unauth_api", "f_banner", "f_idor", "f_sqli",
+    "f_l1_unauth_api", "f_l1_apache_mod_status", "f_banner", "f_idor", "f_sqli",
 })
 KNOWN_CATEGORIES = frozenset({
     "暗号・TLS設定", "設定不備", "セッション・Cookie設定", "CORS・オリジン境界", "既知の脆弱性（CVE）",
-    "情報露出", "APIアクセス制御", "アクセス制御", "入力検証", "インジェクション",
+    "情報露出", "情報公開設定", "APIアクセス制御", "アクセス制御", "入力検証", "インジェクション",
 })
 SEVERITIES = ("critical", "high", "medium", "low", "info")
 VERDICTS = ("candidate", "detected", "proven", "not_reproduced", "unverified", "fixed")
