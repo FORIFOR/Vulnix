@@ -5,9 +5,17 @@ import urllib.error
 import urllib.request
 
 from tests.fixtures.status_exposure_lab import StatusExposureLab
+from scripts.bench_status_exposure_baseline import measure_safety
 
 
 class TestStatusExposureLab(unittest.TestCase):
+    def test_expired_or_revoked_scope_never_launches_a_worker(self):
+        checks = measure_safety()
+        self.assertEqual(set(checks), {"expired_scope", "revoked_ownership"})
+        self.assertTrue(all(row["refused"] for row in checks.values()))
+        self.assertTrue(all(row["worker_launches"] == 0 for row in checks.values()))
+        self.assertTrue(all(row["target_requests"] == [] for row in checks.values()))
+
     def test_only_vulnerable_mode_exposes_status_markers(self):
         for mode, expected_status in (("vulnerable", 200), ("patched", 403), ("generic_200", 200)):
             with self.subTest(mode=mode):

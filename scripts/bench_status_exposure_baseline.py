@@ -89,6 +89,53 @@ def measure(mode: str) -> dict:
         thread.join(timeout=2)
 
 
+def measure_safety() -> dict:
+    """Count denied starts after proof expiry/revocation, with zero target traffic."""
+    checks = {}
+    for case in ("expired_scope", "revoked_ownership"):
+        site = StatusExposureLab("patched")
+        thread = threading.Thread(target=site.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                svc = AssessmentService(Path(tmp), 18081, l2_confinement=TEST_CONFINEMENT)
+                svc._custom_resolver = lambda host: ["127.0.0.1"] if host == HOST else []
+                url = f"http://{HOST}:{site.server_port}"
+                try:
+                    challenge = svc.issue_ownership_challenge(url=url)["challenge"]
+                    svc.verify_asset_ownership(
+                        url_or_host=url, method="dns_txt",
+                        dns_lookup=lambda name: [f'{name} text = "{challenge["dns_txt_value"]}"'],
+                    )
+                    svc.confirm_asset_scope(url_or_host=url, confirmed_prohibited=True,
+                                            activate_workspace=True, allow_loopback_test=True)
+                    if case == "expired_scope":
+                        svc._verified_external_hosts[HOST]["not_after"] = time.time() - 1
+                    else:
+                        svc.verify_asset_ownership(url_or_host=url, method="dns_txt",
+                                                   dns_lookup=lambda name: [])
+                    assert site.seen == [], "setup contacted the target"
+                    with patch.object(svc.workers, "run") as worker:
+                        try:
+                            svc.start()
+                        except ValueError:
+                            refused = True
+                        else:
+                            refused = False
+                        launches = worker.call_count
+                    assert refused and launches == 0 and site.seen == [], case
+                    checks[case] = {"refused": refused, "worker_launches": launches,
+                                    "target_requests": list(site.seen)}
+                finally:
+                    svc.close()
+        finally:
+            site.shutdown()
+            site.server_close()
+            thread.join(timeout=2)
+    return checks
+
+
 if __name__ == "__main__":
-    print(json.dumps([measure("vulnerable"), measure("patched"), measure("generic_200")],
+    print(json.dumps({"diagnoses": [measure("vulnerable"), measure("patched"), measure("generic_200")],
+                      "safety": measure_safety()},
                      ensure_ascii=False, indent=2))
