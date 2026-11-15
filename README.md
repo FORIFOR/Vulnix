@@ -4,7 +4,7 @@
 
 **AI は提案する、実行はゲートウェイが裁く（AI proposes, Gateway disposes）** を第一原則とする、AI セキュリティ診断・実証プラットフォーム（旧称: Aegis AI）。
 
-AI/エージェント（ARTEX / Abliteration AI）の出力は常に「信頼できない提案（データ）」として扱い、実行権限はサーバ側シークレット（HMAC トークン）を握る Gateway だけが持ちます。未計測の候補（`candidate`）、設定の実測（`detected`）、人間承認下の再現証明（`proven`）、修正後の再検証（`not_reproduced`）を分離します。公開版の実サイト診断は所有確認後の公開ページ1回の読み取り専用で、ARTEXと外部AIは使用しません。
+AI/エージェント（ARTEX / Abliteration AI）の出力は常に「信頼できない提案（データ）」として扱い、実行権限はサーバ側シークレット（HMAC トークン）を握る Gateway だけが持ちます。未計測の候補（`candidate`）、設定の実測（`detected`）、人間承認下の再現証明（`proven`）、修正後の再検証（`not_reproduced`）を分離します。現在の公開βでは、実サイト診断は所有確認後の公開ページ1回の読み取り専用で、ARTEXと外部AIは無効です。Draft PRでは、匿名化した実測所見から安全なL1計画を作る任意のARTEX経路を追加しています。
 
 > 🛡️ **スコープと安全性**: すべての診断・再現検証ワーカー（`http_probe`, `reproduction_probe`, `demo_verify`）は Gateway が DNS ピン留めした許可ターゲットに対し、プロセス内 `egress_sentinel`（`socket.connect` ホワイトリスト強制）下で非破壊・読み取り専用のリクエストのみを実行します。
 
@@ -12,7 +12,7 @@ AI/エージェント（ARTEX / Abliteration AI）の出力は常に「信頼で
 
 ## アーキテクチャ
 
-次の図は任意のARTEX・外部モデル連携を含む構成です。標準の模擬ラボではVulnix内蔵プランナーが提案し、公開版の実サイトでは内蔵の読み取り専用手順だけを実行します。
+次の図は任意のARTEX・外部モデル連携を含む構成です。標準の模擬ラボではVulnix内蔵プランナーが提案します。現在の公開βでは実サイトの内蔵手順だけが有効で、Draft PRのARTEX経路は未公開です。
 
 ```
 ┌──────────────────┐   提案(untrusted)   ┌──────────────┐   権限あり   ┌──────────┐
@@ -83,7 +83,7 @@ npm run dev                        # http://localhost:3000
 
 ### 実サービスの診断（所有確認済みの対象のみ）
 
-公開版の既定値 `VULNIX_REAL_SERVICE_DIAGNOSIS=l1` では下記の4までを提供し、5のL2検証、ARTEX計画、修正後再検証は拒否します。実サイトの情報を外部AIへ送らないため、AI計画と外部AI解説も行いません。判断の詳細は [docs/REAL_SITE_AI_PLAN_DECISION.md](docs/REAL_SITE_AI_PLAN_DECISION.md) を参照してください。
+公開版の既定値 `VULNIX_REAL_SERVICE_DIAGNOSIS=l1` では下記の4までを提供し、5のL2検証と修正後再検証は拒否します。ARTEX計画と外部AI解説はそれぞれ明示設定がない限り無効です。Draft PRのARTEX計画には匿名化した実測所見の固定項目だけを渡し、Gatewayが許したL1だけを実行します。現在の公開βでは両方とも無効です。判断の詳細は [docs/REAL_SITE_AI_PLAN_DECISION.md](docs/REAL_SITE_AI_PLAN_DECISION.md) を参照してください。
 
 管理権限を証明できた自社サービス（ステージング想定）だけを、次の順で診断できます。
 
