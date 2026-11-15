@@ -1,5 +1,5 @@
 export type Severity = "critical" | "high" | "medium" | "low" | "info";
-export type Verdict = "detected" | "unverified" | "proven" | "not_reproduced" | "aborted";
+export type Verdict = "candidate" | "detected" | "unverified" | "proven" | "not_reproduced" | "aborted";
 export type AssessmentState = "idle" | "running" | "paused" | "stopped" | "failed" | "completed";
 export type PhaseStatus = "pending" | "running" | "done" | "aborted" | "skipped";
 export type RiskLevel = "L1" | "L2" | "L3";

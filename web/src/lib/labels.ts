@@ -10,6 +10,7 @@ export const SEVERITY: Record<Severity, { label: string; cls: string }> = {
 };
 
 export const VERDICT: Record<Verdict, { label: string; cls: string; help: string }> = {
+  candidate: { label: "未計測の候補", cls: "border-zinc-400 text-zinc-700 dark:text-zinc-300", help: "verdict_unverified" },
   proven: { label: "実証成功", cls: "border-red-500 text-red-700 dark:text-red-300", help: "verdict_proven" },
   detected: { label: "検出（未実証）", cls: "border-amber-500 text-amber-700 dark:text-amber-300", help: "verdict_detected" },
   unverified: { label: "未検証", cls: "border-zinc-400 text-zinc-700 dark:text-zinc-300", help: "verdict_unverified" },

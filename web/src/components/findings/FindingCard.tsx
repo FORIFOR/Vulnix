@@ -12,12 +12,14 @@ export function FindingCard({
   f,
   assessmentId,
   labEndpoint,
+  readOnly = false,
   onUpdate,
   onBusyChange,
 }: {
   f: Finding;
   assessmentId: string;
   labEndpoint: string;
+  readOnly?: boolean;
   onUpdate?: (s: Snapshot) => void;
   onBusyChange?: (busy: boolean) => void;
 }) {
@@ -62,13 +64,10 @@ export function FindingCard({
     <Card className="flex min-w-0 flex-col justify-between">
       <div>
         <div className="flex flex-wrap items-center gap-2">
-          <SeverityBadge s={f.severity} />
+          {f.evidence_status !== "candidate" && <SeverityBadge s={f.severity} />}
           {f.evidence_status === "candidate" ? <Pill className="border border-zinc-400">未計測の候補</Pill> : <VerdictBadge v={f.verdict} />}
-          {(f._in_verification || busy) && <Pill className="bg-blue-600 text-white">実機Worker検証中</Pill>}
+          {(f._in_verification || busy) && <Pill className="bg-blue-600 text-white">検証中</Pill>}
           {f.demo_fixture && <FixtureBadge />}
-          <span className="ml-auto font-mono text-[11px] text-zinc-500">
-            Worker: {f.executor.tool}
-          </span>
         </div>
         <h3 className="mt-2 flex items-center font-semibold">
           {f.title}
@@ -99,8 +98,8 @@ export function FindingCard({
                 )}
                 <span>
                   {busy
-                    ? `計画・Worker実行中（${f.executor.tool} → ${labEndpoint}）…`
-                    : `計画・Worker実行ログ（最新証拠 ${latestEv?.evidence_id}）`}
+                    ? "検証中…"
+                    : "検証の記録"}
                 </span>
               </span>
               <span className="text-[11px] text-zinc-500">{showLog ? "閉じる ▴" : "表示 ▾"}</span>
@@ -129,7 +128,7 @@ export function FindingCard({
       <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-zinc-100 pt-2.5 text-xs text-zinc-500 dark:border-zinc-800">
         <span>{f.category}・実測証拠 {f.evidence.length} 件</span>
         <div className="flex items-center gap-2">
-          <button
+          {!readOnly && <button
             type="button"
             disabled={busy || blocked || waitingForOther}
             title={unaccepted
@@ -141,7 +140,7 @@ export function FindingCard({
             className="rounded-lg bg-zinc-900 px-2.5 py-1 text-xs font-semibold text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-white dark:text-zinc-900"
           >
             {busy
-              ? "Worker実行中…"
+              ? "再検証中…"
               : unaccepted
                 ? "実行不可（プロファイル未承認）"
               : unconfirmed
@@ -156,8 +155,8 @@ export function FindingCard({
                 ? `✓ 承認してL2検証を実行（依頼: ${request?.requested_by}）`
                 : needsApproval
                   ? "✓ 承認してL2検証を実行"
-                  : "▶ 実機Workerで今すぐ検証"}
-          </button>
+                  : "再検証する"}
+          </button>}
           <Link href={`/findings/${f.id}?a=${assessmentId}`} className="font-semibold text-zinc-900 underline-offset-2 hover:underline dark:text-zinc-100">
             詳しく見る →
           </Link>
