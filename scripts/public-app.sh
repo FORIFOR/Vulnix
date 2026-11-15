@@ -27,28 +27,65 @@ start)
   echo "$me" | grep -q '"multi_tenant": true' || { echo "組織分離が無効なコントロールプレーンは公開しません"; exit 1; }
   echo "$me" | grep -q '"real_service_diagnosis": false' || { echo "実サイトへの通信が有効なコントロールプレーンは公開しません（VULNIX_REAL_SERVICE_DIAGNOSIS=0 または l1 が必要）"; exit 1; }
   echo "$me" | grep -q '"development": false' || { echo "開発モードのコントロールプレーンは公開しません"; exit 1; }
+  if ! running web && curl -s --max-time 2 -o /dev/null "http://127.0.0.1:$PORT/"; then
+    echo "ポート $PORT は別のプロセスが使用中です。既存の Web サーバーを確認してください"
+    exit 1
+  fi
+  cd "$ROOT/web"
+  npm run build
+  new_tunnel=0
   if ! running tunnel; then
     nohup cloudflared tunnel --no-autoupdate --url "http://127.0.0.1:$PORT" >"$RUN/tunnel.log" 2>&1 &
     echo $! >"$RUN/tunnel.pid"
+    new_tunnel=1
   fi
   url=""
-  for _ in $(seq 1 30); do
-    url=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$RUN/tunnel.log" | head -1 || true)
-    [ -n "$url" ] && break
-    sleep 1
-  done
-  [ -n "$url" ] || { echo "トンネルの URL を取得できませんでした（$RUN/tunnel.log）"; exit 1; }
+  if [ "$new_tunnel" = 0 ] && [ -f "$RUN/url" ]; then
+    url=$(grep -E '^https://[a-z0-9-]+\.trycloudflare\.com$' "$RUN/url" | head -1 || true)
+  fi
+  if [ -z "$url" ]; then
+    for _ in $(seq 1 30); do
+      url=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$RUN/tunnel.log" | tail -1 || true)
+      [ -n "$url" ] && break
+      sleep 1
+    done
+  fi
+  if [ -z "$url" ]; then
+    [ "$new_tunnel" = 0 ] || { kill "$(cat "$RUN/tunnel.pid")" 2>/dev/null || true; rm -f "$RUN/tunnel.pid"; }
+    echo "トンネルの URL を取得できませんでした（$RUN/tunnel.log）"
+    exit 1
+  fi
   host=${url#https://}
-  cd "$ROOT/web"
-  [ -f .next/BUILD_ID ] || npm run build
   if running web; then kill "$(cat "$RUN/web.pid")"; sleep 1; fi
+  if curl -s --max-time 2 -o /dev/null "http://127.0.0.1:$PORT/"; then
+    echo "ポート $PORT はまだ使用中です。既存の Web サーバーを確認してください"
+    exit 1
+  fi
   # the proxy answers only for this host name (and loopback), and sends API calls to the
   # public control plane only
-  VULNIX_APP_LANDING=1 AEGIS_UI_ALLOWED_HOSTS="$host" AEGIS_API="$API" nohup npx next start -p "$PORT" -H 127.0.0.1 \
+  VULNIX_APP_LANDING=1 AEGIS_UI_ALLOWED_HOSTS="$host" AEGIS_API="$API" nohup node node_modules/next/dist/bin/next start -p "$PORT" -H 127.0.0.1 \
     >"$RUN/web.log" 2>&1 &
   echo $! >"$RUN/web.pid"
+  ready=0
+  for _ in $(seq 1 10); do
+    if ! running web; then break; fi
+    if curl -fs --max-time 2 -o /dev/null -H "Host: $host" "http://127.0.0.1:$PORT/"; then
+      ready=1
+      break
+    fi
+    sleep 1
+  done
+  if [ "$ready" != 1 ]; then
+    if running web; then kill "$(cat "$RUN/web.pid")" 2>/dev/null || true; fi
+    rm -f "$RUN/web.pid"
+    if [ "$new_tunnel" = 1 ]; then
+      kill "$(cat "$RUN/tunnel.pid")" 2>/dev/null || true
+      rm -f "$RUN/tunnel.pid"
+    fi
+    echo "Web サーバーが起動しませんでした（$RUN/web.log を確認してください）"
+    exit 1
+  fi
   echo "$url" >"$RUN/url"
-  sleep 5
   echo "$url"
   ;;
 stop)
@@ -56,13 +93,14 @@ stop)
     if running "$p"; then kill "$(cat "$RUN/$p.pid")"; fi
     rm -f "$RUN/$p.pid"
   done
+  rm -f "$RUN/url"
   echo "停止しました"
   ;;
 status)
   for p in web tunnel; do
     if running "$p"; then echo "$p: 稼働中"; else echo "$p: 停止"; fi
   done
-  cat "$RUN/url" 2>/dev/null || true
+  if running tunnel; then cat "$RUN/url" 2>/dev/null || true; fi
   ;;
 *)
   echo "usage: $0 start|stop|status"; exit 2 ;;
