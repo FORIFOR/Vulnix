@@ -47,13 +47,13 @@ export function Landing({ app = false }: { app?: boolean }) {
       <main id="top">
         <section className="mx-auto grid max-w-6xl items-center gap-10 px-4 pb-16 pt-14 sm:px-6 md:grid-cols-2 md:pt-20">
           <div>
-            <p className="mb-4 text-sm font-medium tracking-wide text-zinc-500">AI セキュリティ診断サービス</p>
+            <p className="mb-4 text-sm font-medium tracking-wide text-zinc-500">所有確認済みサイトの設定診断</p>
             <h1 className="text-4xl font-bold leading-tight tracking-tight sm:text-5xl">
-              AI が考え、<br />人が承認し、<br />証拠で示す。
+              URLを入力し、<br />所有を確認。<br />証拠と対策を見る。
             </h1>
             <p className="mt-6 text-base leading-relaxed text-zinc-600 sm:text-lg">
-              Vulnix は、AI が検証計画を立て、人の承認と隔離された環境のもとで安全に確かめ、
-              結果を日本語でわかりやすく説明する Web セキュリティ診断サービスです。
+              公開版では、所有を確認したサイトの公開ページを1回読み、設定と根拠を日本語で示します。
+              模擬ラボでは承認済みの再現試験も試せます。
             </p>
             <div className="mt-8 flex flex-wrap gap-3">
               {app ? (
@@ -93,7 +93,7 @@ export function Landing({ app = false }: { app?: boolean }) {
         <section id="how" className="scroll-mt-20">
           <div className="mx-auto max-w-6xl px-4 py-16 sm:px-6">
             <h2 className="text-2xl font-bold tracking-tight sm:text-3xl">診断の流れ</h2>
-            <ol className="mt-10 grid gap-4 md:grid-cols-5">
+            <ol className="mt-10 grid gap-4 md:grid-cols-4">
               {STEPS.map((s) => (
                 <li key={s.n} className="rounded-xl border border-zinc-200 p-5">
                   <span className="text-xs font-semibold text-zinc-400">STEP {s.n}</span>
@@ -108,8 +108,8 @@ export function Landing({ app = false }: { app?: boolean }) {
                 <figcaption className="border-t border-zinc-100 px-4 py-3 text-sm text-zinc-600">問題ごとに、証拠・危険性・修正方法・修正後の確認方法を表示します。</figcaption>
               </figure>
               <figure className="overflow-hidden rounded-xl border border-zinc-200">
-                <img src="/media/shot-ai-explanation.png" alt="AI による日本語の解説" className="block w-full" loading="lazy" />
-                <figcaption className="border-t border-zinc-100 px-4 py-3 text-sm text-zinc-600">AI の解説には、判定（未実証かどうか）を Vulnix が必ず添えます。</figcaption>
+                <img src="/media/shot-ai-explanation.png" alt="模擬ラボの日本語解説画面" className="block w-full" loading="lazy" />
+                <figcaption className="border-t border-zinc-100 px-4 py-3 text-sm text-zinc-600">模擬ラボの解説例です。未実証の候補は実証済みの結果と分けて表示します。</figcaption>
               </figure>
             </div>
           </div>
@@ -135,18 +135,18 @@ export function Landing({ app = false }: { app?: boolean }) {
             {app ? (
               <>
                 <p className="mt-5 leading-relaxed text-zinc-600">
-                  どなたでもアカウントを作り、自分の組織とサイトを登録して、模擬ラボで診断の流れ・証拠・AI の解説を試せます。
+                  どなたでもアカウントを作り、自分の組織とサイトを登録して、模擬ラボで診断の流れ・証拠・内蔵の解説を試せます。
                   チームのメンバーを招待して、役割（実行者・承認者・閲覧者など）を分けることもできます。
                 </p>
                 <p className="mt-3 text-sm leading-relaxed text-zinc-500">
-                  β版では、実在のサイトへの通信（所有確認の実行・診断）はまだ有効にしていません。サイトの登録と、所有確認に使う値の発行までお試しいただけます。
+                  公開βの実サイト診断は、所有確認後に公開ページを1回読む設定確認に限ります。追加の再現試験やARTEX計画は行いません。
                 </p>
                 <a href="/login" className="mt-6 inline-block rounded-lg bg-zinc-900 px-6 py-2.5 text-sm font-semibold text-white hover:bg-zinc-700">アカウントを作成する</a>
               </>
             ) : (
               <p className="mt-5 leading-relaxed text-zinc-600">
                 Vulnix は現在、限られた参加者だけが使えるクローズドβです。
-                一般の方が自分のサイトを登録して診断できる機能は、認証と利用者ごとのデータ分離の検証が終わってから公開します。
+                利用は招待された参加者に限定しています。
                 このページから診断を始めることはできません。
               </p>
             )}
