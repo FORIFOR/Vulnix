@@ -1173,6 +1173,27 @@ class AssessmentService:
             self._persist_error = self.ledger.error
             raise ValueError("通信枠を保存できないため、診断を開始できません")
 
+    def _record_root_result_locked(self, evidence: dict) -> bool:
+        """Bind a successful root response to its signed scan run, even if clean."""
+        if not self.real_site_read_only:
+            return True
+        host = (self.a.asset.get("name") or "").lower()
+        if (self._external_entry(host) is None or self.gateway.state is State.STOPPED
+                or self._stale_runner()):
+            self._fail("診断許可が終了したため、この応答は採用しません")
+            return False
+        usage = self.ledger.scan_usage.get(host)
+        if (not isinstance(usage, dict) or usage.get("paths") != ["/"]
+                or evidence.get("tool") != "http_probe" or not evidence.get("audit_hash")):
+            self._fail("診断の監査証拠を通信枠と照合できません")
+            return False
+        usage["result_audit_hash"] = evidence["audit_hash"]
+        if not self.ledger.commit():
+            self._persist_error = self.ledger.error or "LedgerError"
+            self._fail("診断の監査証拠を保存できません")
+            return False
+        return True
+
     def _require_working_store(self) -> None:
         """Nothing that looks up, fetches from, or grants authority over a real
         service happens while a save is known to be failing."""
@@ -1637,7 +1658,8 @@ class AssessmentService:
 
     def _root_probe_observed_locked(self) -> bool:
         """Only an audited successful probe in this signed run can satisfy a plan item."""
-        if not self.real_site_read_only or self.a.state != "completed":
+        if (not self.real_site_read_only or self.a.state != "completed"
+                or self._persist_error or self.ledger.error or self.ledger.dirty()):
             return False
         host = (self.a.asset.get("name") or "").lower()
         usage = self.ledger.scan_usage.get(host) or {}
@@ -1649,13 +1671,14 @@ class AssessmentService:
         entries, valid = self.audit.verified_entries()
         if not valid:
             return False
-        results = {e["hash"] for e in entries if e.get("event") == "result"
-                   and e.get("fields", {}).get("tool") == "http_probe"
-                   and e.get("fields", {}).get("rc") == 0
-                   and not e.get("fields", {}).get("killed")}
-        return any(ev.get("tool") == "http_probe" and ev.get("audit_hash") in results
-                   for finding in self.a.findings.values() for ev in finding.get("evidence") or []
-                   if isinstance(ev, dict))
+        result_hash = usage.get("result_audit_hash")
+        return isinstance(result_hash, str) and any(
+            e["hash"] == result_hash for e in entries
+            if e.get("event") == "result"
+            and e.get("fields", {}).get("tool") == "http_probe"
+            and e.get("fields", {}).get("rc") == 0
+            and not e.get("fields", {}).get("killed")
+        )
 
     def plan_with_artex(self, actor: str, *, llm_approval: dict | None = None, roles=None,
                         llm_mode: str | None = None) -> dict:
@@ -4061,6 +4084,10 @@ class AssessmentService:
                              approval_actor="policy:auto-L1")
         if res is None:
             return
+        if is_ext:
+            with self._lock:
+                if not self._record_root_result_locked(ev):
+                    return
         for tk in tasks_l1:
             if tk.status == "running":
                 tk.status = "completed"

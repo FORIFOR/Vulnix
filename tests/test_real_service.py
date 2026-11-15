@@ -639,12 +639,37 @@ class TestL1Diagnosis(RealServiceBase):
         self.assertEqual(self.fake.seen, [])
         self.assertIsNotNone(self.svc._persist_error)
 
+    def test_root_result_is_not_observed_when_signed_result_save_fails(self):
+        from aegis import authority_ledger
+
+        self.svc.real_site_read_only = True
+        self.onboard()
+        original = authority_ledger._write_durable
+
+        def fail_result(path, body):
+            if path.name == "authority.ledger" and '"result_audit_hash"' in body:
+                raise OSError("mock disk full")
+            return original(path, body)
+
+        with patch.object(authority_ledger, "_write_durable", side_effect=fail_result):
+            self.svc.start()
+            end = time.time() + 20
+            while time.time() < end and self.svc.snapshot()["state"] == "running":
+                time.sleep(0.02)
+        self.assertEqual(self.svc.snapshot()["state"], "failed")
+        self.assertEqual([p for p, _ in self.fake.seen], ["/"])
+        with self.svc._lock:
+            self.svc.a.state = "completed"  # unsigned display state cannot bless an uncommitted result
+            self.assertFalse(self.svc._root_probe_observed_locked())
+        self.assertIsNotNone(self.svc._persist_error)
+
     def test_public_run_uses_one_signed_root_probe_and_rejects_duplicate(self):
         self.svc.real_site_read_only = True
         self.onboard()
         self.assertEqual(self.run_l1()["state"], "completed")
         first = dict(self.svc.ledger.scan_usage[HOST])
         self.assertEqual(first["paths"], ["/"])
+        self.assertTrue(first["result_audit_hash"])
         self.assertEqual([p for p, _ in self.fake.seen], ["/"])
         with self.svc._lock:
             self.svc._ensure_active_window_locked()  # even a reset of the in-memory Budget cannot refill it
@@ -675,6 +700,7 @@ class TestL1Diagnosis(RealServiceBase):
         second = self.svc.ledger.scan_usage[HOST]
         self.assertNotEqual(second["run_nonce"], first["run_nonce"])
         self.assertEqual(second["paths"], ["/"])
+        self.assertNotEqual(second["result_audit_hash"], first["result_audit_hash"])
 
     def test_new_service_defaults_to_read_only_on_real_sites(self):
         with tempfile.TemporaryDirectory() as data_dir:
