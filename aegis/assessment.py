@@ -2414,7 +2414,7 @@ class AssessmentService:
         self._authority_reduced_locked(gone)
         self._l2_requests = {k: v for k, v in self._l2_requests.items() if v.get("host") != gone}
 
-    def _covering_google_domain_proof_locked(self, host: str, scheme: str, port: int) -> str | None:
+    def _covering_google_domain_proof_locked(self, host: str, scheme: str, port: int) -> tuple[str, float] | None:
         """Reuse only a fresh signed Google Domain proof in this organization's ledger."""
         now = time.time()
         for source, proof in self._ownership_proofs.items():
@@ -2434,7 +2434,7 @@ class AssessmentService:
                 continue
             expected = hashlib.sha256(challenge_for_host(source, self._ownership_secret)["token"].encode()).hexdigest()
             if hmac.compare_digest(str(proof.get("token_sha256") or ""), expected):
-                return prop
+                return prop, float(verified_at)
         return None
 
     def issue_ownership_challenge(
@@ -2544,11 +2544,13 @@ class AssessmentService:
             # through this registration shortcut; re-verification has its own role gate.
             if (not asset_rec.get("ownership_verified") and host not in self._ownership_proofs
                     and host not in self._verified_external_hosts):
-                prop = self._covering_google_domain_proof_locked(host, parsed["scheme"], parsed["port"])
-                if prop is not None:
+                covering = self._covering_google_domain_proof_locked(host, parsed["scheme"], parsed["port"])
+                if covering is not None:
+                    prop, original_verified_at = covering
                     inherited = self.verify_asset_ownership(
                         url_or_host=host, method=GOOGLE_METHOD, actor=approver,
                         google_property=prop, google_endpoint=(parsed["scheme"], parsed["port"]),
+                        google_verified_at=original_verified_at,
                     )
                     asset_rec = inherited["asset"] or asset_rec
 
@@ -2582,6 +2584,7 @@ class AssessmentService:
         roles=None,
         google_property: str | None = None,
         google_endpoint: tuple[str, int] | None = None,
+        google_verified_at: float | None = None,
     ) -> dict:
         """Step 2 of the 5-step registration flow: verify ownership via DNS TXT,
         /.well-known/vulnix-verify.txt, or (method ``google_search_console``) a Google
@@ -2601,13 +2604,18 @@ class AssessmentService:
         ch = challenge_for_host(host, self._ownership_secret)
 
         if method == GOOGLE_METHOD:
+            now = time.time()
+            if (google_verified_at is not None and
+                    (not isinstance(google_verified_at, (int, float))
+                     or not 0 <= now - google_verified_at <= OWNERSHIP_PROOF_MAX_AGE_S)):
+                raise ValueError("Google の所有確認記録の有効期限が切れています")
             # Google's answer was obtained by the HTTP layer (OAuth, server side); the
             # site itself is not contacted. The result is recorded like the others.
             ok_g = bool(google_property)
             res = {
                 "verified": ok_g, "method": GOOGLE_METHOD,
                 "checked_target": google_property or "Google Search Console",
-                "verified_at": time.time() if ok_g else None,
+                "verified_at": (google_verified_at if google_verified_at is not None else now) if ok_g else None,
                 "detail": (f"Google Search Console で所有者として確認されています（{google_property}）。"
                            if ok_g else
                            "Google Search Console で、このサイトの所有者として確認されたプロパティが見つかりませんでした。"),

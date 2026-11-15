@@ -92,11 +92,15 @@ class TestGoogleOwnershipOverHttp(TestPublicReadOnlyRealSites):
         self.req(a, "/assets/challenge", {"url": "https://next-standards.com"})
         st = self.start(a, "https://next-standards.com")
         self.assertTrue(self.finish(a, st, ["sc-domain:next-standards.com"])[1]["verified"])
+        osvc = self.reg.service(a["orgs"][0]["id"])
+        source_verified_at = osvc._ownership_proofs["next-standards.com"]["verified_at"]
 
         code, inherited = self.req(a, "/assets/challenge", {"url": "https://wonder.next-standards.com"})
         self.assertEqual(code, 200, inherited)
         self.assertTrue(inherited["asset"]["ownership_verified"])
         self.assertEqual(inherited["asset"]["ownership_proof"]["method"], g.METHOD)
+        self.assertEqual(osvc._ownership_proofs["wonder.next-standards.com"]["verified_at"],
+                         source_verified_at)
         self.assertEqual(self.req(a, "/assets/confirm-scope", {
             "host": "wonder.next-standards.com", "confirmed_prohibited": True})[0], 200)
 
@@ -207,6 +211,25 @@ class TestGoogleOwnershipReview(TestGoogleOwnershipOverHttp):
             self.assertTrue(result["asset"]["ownership_verified"])
             self.assertEqual(result["asset"]["ownership_proof"]["checked_target"],
                              "sc-domain:next-standards.com")
+
+    def test_inherited_domain_proof_cannot_extend_the_original_expiry(self):
+        from aegis.assessment import AssessmentService, OWNERSHIP_PROOF_MAX_AGE_S
+
+        with tempfile.TemporaryDirectory() as directory:
+            svc = AssessmentService(Path(directory), 18094, verify_seconds=30)
+            self.addCleanup(svc.close)
+            svc.issue_ownership_challenge(url="https://next-standards.com")
+            svc.verify_asset_ownership(
+                url_or_host="next-standards.com", method=g.METHOD,
+                google_property="sc-domain:next-standards.com", google_endpoint=("https", 443))
+            original_at = svc._ownership_proofs["next-standards.com"]["verified_at"]
+            with patch("aegis.assessment.time.time", return_value=original_at + OWNERSHIP_PROOF_MAX_AGE_S - 1):
+                sub = svc.issue_ownership_challenge(url="https://one.next-standards.com")
+            self.assertTrue(sub["asset"]["ownership_verified"])
+            self.assertEqual(svc._ownership_proofs["one.next-standards.com"]["verified_at"], original_at)
+            with patch("aegis.assessment.time.time", return_value=original_at + OWNERSHIP_PROOF_MAX_AGE_S + 1):
+                deeper = svc.issue_ownership_challenge(url="https://two.one.next-standards.com")
+            self.assertFalse(deeper["asset"]["ownership_verified"])
 
     def _proven_by_google(self, who, host):
         self.req(who, "/assets/challenge", {"url": f"https://{host}"})
