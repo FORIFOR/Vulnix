@@ -1747,6 +1747,7 @@ class AssessmentService:
                            "artex_module": prov.get("artex_module"), "artex_commit": prov.get("artex_commit"),
                            "go_version": prov.get("go_version"), "norma_version": prov.get("norma_version"),
                            "label": label},
+                "llm_model": gateway.model if gateway is not None else self._artex_llm_model,
                 "llm_gateway": ({k: v for k, v in (self._artex_llm_last or {}).get("report", {}).items()
                                  if k not in ("records", "failed_upstream")} if gateway is not None else None),
                 "isolation": {**_artex_isolation_view(prov.get("isolation") or {}),
@@ -1905,8 +1906,13 @@ class AssessmentService:
 
     def artex_plan_view(self) -> dict | None:
         with self._lock:
+            real_site = self._in_ownership_flow(self.a.asset.get("name"))
+            configured = bool(self._artex_real_cmd) and (
+                not real_site or (self._real_site_local_artex and self._is_external_service_asset()))
+            if not configured:
+                return {"configured": False, "plan": None}
             if self._artex_plan is None:
-                return {"configured": bool(self._artex_real_cmd), "plan": None}
+                return {"configured": True, "plan": None}
             items = []
             for rec in self._artex_items.values():
                 it = rec["item"]
@@ -1914,7 +1920,7 @@ class AssessmentService:
                               "intent_summary": clean_target_text(it.intent_summary, 500),
                               "catalog_id": it.catalog_id, "label": it.label, "level": it.level,
                               "target_id": it.target_id, "tool": it.proposal["tool"], "status": it.status})
-            return {"configured": bool(self._artex_real_cmd), "plan": {**self._artex_plan, "items": items}}
+            return {"configured": True, "plan": {**self._artex_plan, "items": items}}
 
     def _artex_session_started(self, sess, gen: int) -> None:
         """Registered before anything runs in the session; refused after a stop."""

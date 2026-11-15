@@ -25,6 +25,7 @@ export function ArtexPlanPanel({ snap, onUpdate }: {
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const plan = snap.artex_plan?.plan ?? null;
+  const realSite = Boolean(snap.is_external_service);
   const base = `/api/assessments/${snap.id}`;
 
   const run = async (key: string, path: string) => {
@@ -44,9 +45,10 @@ export function ArtexPlanPanel({ snap, onUpdate }: {
     <Card className="mb-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
-          <h2 className="font-semibold">ARTEX 計画（提案のみ・Gateway 経由で実行）</h2>
+          <h2 className="font-semibold">{realSite ? "AIによる追加確認" : "ARTEX 計画（提案のみ・Gateway 経由で実行）"}</h2>
           <p className="mt-0.5 text-xs text-zinc-500">
-            ARTEX は方向を提案するだけです。対象・操作・引数は Vulnix が登録済み対象と許可済み検証カタログから再構成します。
+            {realSite ? "AIの提案をもとに、安全性を確認した読み取り専用の検査だけを実行できます。提案は検出結果ではありません。"
+              : "ARTEX は方向を提案するだけです。対象・操作・引数は Vulnix が登録済み対象と許可済み検証カタログから再構成します。"}
           </p>
         </div>
         <button
@@ -55,7 +57,8 @@ export function ArtexPlanPanel({ snap, onUpdate }: {
           onClick={() => run("plan", `${base}/artex/plan`)}
           className="rounded-lg bg-zinc-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-white dark:text-zinc-900"
         >
-          {busy === "plan" ? "ARTEX が計画中…" : plan ? "ARTEX で再計画" : "ARTEX で計画を作成"}
+          {busy === "plan" ? "計画中…" : realSite ? (plan ? "追加確認を考え直す" : "追加確認を考える")
+            : plan ? "ARTEX で再計画" : "ARTEX で計画を作成"}
         </button>
       </div>
 
@@ -66,23 +69,24 @@ export function ArtexPlanPanel({ snap, onUpdate }: {
           <div className="flex flex-wrap items-center gap-2 text-xs">
             <Pill className={verified ? "bg-emerald-100 text-emerald-900 dark:bg-emerald-900/50 dark:text-emerald-100"
               : "bg-amber-100 text-amber-900 dark:bg-amber-900/50 dark:text-amber-100"}>
-              {plan.engine.label}
+              {realSite ? `診断エンジン: ${plan.engine.label}` : plan.engine.label}
             </Pill>
-            {plan.isolation && (
+            {realSite && <span className="text-zinc-500">AIモデル: {plan.llm_model || "未記録"}</span>}
+            {!realSite && plan.isolation && (
               <Pill className={plan.isolation.confined ? "bg-emerald-100 text-emerald-900 dark:bg-emerald-900/50 dark:text-emerald-100"
                 : "bg-red-100 text-red-900 dark:bg-red-900/50 dark:text-red-100"}>
                 {plan.isolation.label}
               </Pill>
             )}
-            {plan.isolation?.confined && (
+            {!realSite && plan.isolation?.confined && (
               <span className="text-zinc-500">
                 許可通信：{[plan.isolation.pinned, ...(plan.isolation.pinned_extra ?? [])].filter(Boolean).join(", ")}
               </span>
             )}
-            {plan.engine.artex_commit && <span className="font-mono text-zinc-500">commit {plan.engine.artex_commit.slice(0, 12)}</span>}
-            {plan.engine.sha256 && <span className="font-mono text-zinc-500">bin {plan.engine.sha256.slice(0, 12)}</span>}
-            <span className="text-zinc-500">intent {plan.intents} 件 / {Math.round(plan.elapsed_ms)} ms</span>
-            {plan.denied_tool_calls.length > 0 && (
+            {!realSite && plan.engine.artex_commit && <span className="font-mono text-zinc-500">commit {plan.engine.artex_commit.slice(0, 12)}</span>}
+            {!realSite && plan.engine.sha256 && <span className="font-mono text-zinc-500">bin {plan.engine.sha256.slice(0, 12)}</span>}
+            {!realSite && <span className="text-zinc-500">intent {plan.intents} 件 / {Math.round(plan.elapsed_ms)} ms</span>}
+            {!realSite && plan.denied_tool_calls.length > 0 && (
               <span className="text-zinc-500">遮断したツール呼び出し：{plan.denied_tool_calls.join(", ")}</span>
             )}
           </div>
@@ -96,13 +100,13 @@ export function ArtexPlanPanel({ snap, onUpdate }: {
                 <li key={it.id} className="flex flex-wrap items-center justify-between gap-2 p-3">
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
-                      <Pill className={it.level === "L2" ? "bg-orange-100 text-orange-900 dark:bg-orange-900/50 dark:text-orange-100" : "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300"}>{it.level}</Pill>
+                      {!realSite && <Pill className={it.level === "L2" ? "bg-orange-100 text-orange-900 dark:bg-orange-900/50 dark:text-orange-100" : "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300"}>{it.level}</Pill>}
                       <span className="font-medium">{it.label}</span>
-                      <Pill className={st.cls}>{st.label}</Pill>
+                      <Pill className={st.cls}>{realSite && it.status === "planned" ? "確認可能" : st.label}</Pill>
                     </div>
-                    <p className="mt-1 break-words text-xs text-zinc-500">
+                    {!realSite && <p className="mt-1 break-words text-xs text-zinc-500">
                       <span className="font-medium">ARTEX の原文</span>（AI出力・未翻訳。実行内容は上の検証項目のとおりで、この文では決まりません）#{it.intent_id}：{it.intent_summary}
-                    </p>
+                    </p>}
                   </div>
                   <button
                     type="button"
@@ -111,7 +115,7 @@ export function ArtexPlanPanel({ snap, onUpdate }: {
                     onClick={() => run(it.id, `${base}/artex/items/${it.id}/execute`)}
                     className="rounded-lg border border-zinc-300 px-2.5 py-1 text-xs font-semibold hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
                   >
-                    {busy === it.id ? "実行中…" : it.level === "L2" ? (needsApprover ? "承認者のみ" : "承認して Gateway で実行") : "Gateway で実行"}
+                    {busy === it.id ? "実行中…" : realSite ? "この確認を実行" : it.level === "L2" ? (needsApprover ? "承認者のみ" : "承認して Gateway で実行") : "Gateway で実行"}
                   </button>
                 </li>
               );
@@ -122,11 +126,11 @@ export function ArtexPlanPanel({ snap, onUpdate }: {
           {plan.advisories.length > 0 && (
             <div>
               <h3 className="mb-1 text-xs font-semibold text-zinc-600 dark:text-zinc-400">参考提案（実行されません）</h3>
-              <p className="mb-1 text-xs text-zinc-500">ARTEX の原文をそのまま表示しています（AI出力・未翻訳。日本語以外の場合があります）。</p>
+              {!realSite && <p className="mb-1 text-xs text-zinc-500">ARTEX の原文をそのまま表示しています（AI出力・未翻訳。日本語以外の場合があります）。</p>}
               <ul className="space-y-1 text-xs">
                 {plan.advisories.map((a, i) => (
                   <li key={i} className="rounded-lg bg-zinc-50 p-2 dark:bg-zinc-800/60">
-                    <span className="break-words">#{a.intent_id} {a.summary}</span>
+                    {!realSite && <span className="break-words">#{a.intent_id} {a.summary}</span>}
                     <span className="block text-zinc-500">{a.reason}</span>
                   </li>
                 ))}

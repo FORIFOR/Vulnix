@@ -255,6 +255,19 @@ class ServiceBase(unittest.TestCase):
 
 
 class TestThePlanThroughTheGateway(ServiceBase):
+    def test_real_site_plan_is_shown_only_when_scoped_and_opted_in(self):
+        self.svc.issue_ownership_challenge(url="https://site.test/")
+        self.svc.verify_asset_ownership(
+            url_or_host="site.test", method="google_search_console",
+            google_property="sc-domain:site.test", google_endpoint=("https", 443))
+        self.svc.confirm_asset_scope(url_or_host="site.test", confirmed_prohibited=True,
+                                     activate_workspace=True)
+        self.assertFalse(self.svc.artex_plan_view()["configured"])
+        self.svc._real_site_local_artex = True
+        self.assertTrue(self.svc.artex_plan_view()["configured"])
+        self.svc._verified_external_hosts["site.test"]["not_after"] = 0
+        self.assertFalse(self.svc.artex_plan_view()["configured"])
+
     def test_registered_and_scoped_real_site_can_reach_the_anonymous_planner(self):
         self.svc._real_site_local_artex = True
         self.svc.issue_ownership_challenge(url="https://site.test/")
@@ -356,6 +369,7 @@ class TestThePlanThroughTheGateway(ServiceBase):
 
     def test_plan_items_advisories_and_provenance(self):
         plan = self.plan()
+        self.assertEqual(plan["llm_model"], self.svc._artex_llm_model)
         self.assertEqual({i["catalog_id"] for i in plan["items"]}, {"l2_sqli", "l2_idor", "l1_http_probe"})
         # RCE and the unregistered asset 99 are advisories; the evil.example SQLi intent
         # is rebuilt onto the registered lab target and deduplicated with the first one
