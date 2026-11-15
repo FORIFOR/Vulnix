@@ -2,6 +2,12 @@
 
 対象: `codex/flow-audit-gates`（基礎監査は`codex/process-chain-optimization`）。起点は [REQUEST_FLOW.md](REQUEST_FLOW.md)。実コードの機械抽出結果は [PROCESS_INVENTORY.json](PROCESS_INVENTORY.json)、再生成は `python3 scripts/flow_inventory.py > docs/PROCESS_INVENTORY.json`。この抽出は**ソースの条件式・定義・呼び出し箇所の一覧**であり、動的に構成するパスと環境変数の実行先をすべて解決した呼び出しグラフではない。以下の手動追跡と組み合わせて読む。
 
+## 後続Draft PR #53〜#55の現在地
+
+以下の監査表・「現状」図・「目標」図は監査を行った時点のスナップショット。後続の実装では、P08の初回GETの証拠をP09のARTEXへ渡し、P10の追加L1 GETを明示同意・署名枠・Apacheの実測・Gateway直前審査がすべて成立する場合だけ自動実行する。P11はWorkerの固定マーカーと監査ハッシュから判定し、結果採用前に所有・範囲の世代を再確認する。P06の任意同意は既存画面・既存APIに加えたもので、未設定時は画面に出さずAPIも拒否する。更新後の時系列図は[REQUEST_FLOW.md](REQUEST_FLOW.md)、独立ラボの前後測定は[STATUS_EXPOSURE_INTEGRATION.md](STATUS_EXPOSURE_INTEGRATION.md)にある。
+
+この後続経路は公開βでは既定無効で、公開環境への反映・実サイトでの追加通信・実Abliteration AIの採用可能な日本語解説は未確認。P15のSSEポーリング削減、P14の通常経路から使われない関数の削除、P12のドル建て費用上限も未実施。安全制御を削ってこれらを解決していない。
+
 ## 調査の範囲と漏れ
 
 機械抽出ではバックエンド関数789、Web関数197、ARTEX overlayのGo関数27・通信関連箇所7、API分岐条件75、通信・プロセス起動箇所32、バックグラウンド起動箇所26、WebのAPI参照62を列挙した。`REQUEST_FLOW.md` に文字列として現れない固定APIパスは29件、動的な評価式は6件あった。未記載は主にアカウント/MFA/組織招待、資産削除・選択、CVE同期、全体の制御検証、監査ログ・イベント・レポート出力である。これらを「未使用」とみなして削除してはいけない。URLを構成する経路（例: `/api/assessments/{id}/...`）は機械抽出だけでは網羅判定できない。

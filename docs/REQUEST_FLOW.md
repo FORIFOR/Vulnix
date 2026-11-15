@@ -2,7 +2,43 @@
 
 全ルートの機械棚卸し、異常系、現状/目標の図、実測値は [処理系統監査](PROCESS_AUDIT.md) を参照してください。
 
-この資料は `codex/real-site-flow-map` 時点の実装を、一般ユーザーの操作から結果表示まで追跡したものです。**現在公開中のβ版**では Google Search Console、実サイトARTEX、実サイト向け外部AI解説は未設定です。任意機能のコード経路は存在しますが、公開βで実動作を確認したという意味ではありません。
+この資料は一般ユーザーの操作から結果表示までを追跡したものです。後続のDraft PR #53〜#55では、初回の安全なGETからARTEX計画を自動生成し、追加GETへの明示同意がある場合だけ固定の`/server-status?auto`をGateway・Workerへ渡す経路を実装した。以下の従来図と表は`codex/real-site-flow-map`時点の記録であり、後続の実装との差分は[初回ARTEX追加検査の測定](STATUS_EXPOSURE_INTEGRATION.md)を参照。**現在公開中のβ版**ではGoogle Search Console、実サイトARTEX、実サイト向け外部AI解説は未設定で、この追加経路は動作しない。
+
+## 後続Draft PRの初回診断経路
+
+```mermaid
+sequenceDiagram
+  participant U as 利用者
+  participant UI as 既存の所有確認画面
+  participant S as 組織別AssessmentService
+  participant A as 隔離ARTEX/ローカル模擬モデル
+  participant G as Gateway
+  participant W as 隔離Worker
+  U->>UI: URL入力・所有確認
+  opt 追加の読み取りを選択（設定時だけ表示）
+    U->>UI: /server-status?autoへの追加GETに同意
+  end
+  U->>UI: 診断開始
+  UI->>S: P06-P07 署名付き範囲・診断枠
+  S->>G: P08 公開ルートの安全な初期観測
+  G->>W: 所有・範囲・IP・期限・停止・回数を直前確認
+  W-->>S: 証拠付き固定特徴
+  S->>A: P09 送信許可済みの固定特徴だけ
+  A-->>S: 未信頼の計画案
+  S->>S: 形式・カタログ・初回証拠・明示同意を照合
+  opt Apacheを実測し、同意と署名枠がある
+    S->>G: P10 固定の読み取り専用GETを申請
+    G->>W: 権限・回数・停止状態を再検証
+    W-->>S: 固定マーカーと監査ハッシュ
+    S->>S: P11 採用直前に権限世代を再確認
+  end
+  S-->>UI: P11 candidateと証拠付きdetectedを区別
+  opt 利用者が解説を要求
+    UI->>S: P12 日本語解説
+  end
+```
+
+ARTEXは計画だけを返し、Workerを直接起動できない。モデル失敗・未対応提案・同意なしでは固定の初期観測だけを残す。実サイトL2は禁止。3モードの独立ラボで、`mod_status`検出は変更前TP0/FP0/FN1/TN2、変更後の実ARTEX経路TP1/FP0/FN0/TN2だった。ただし追加GET・Worker・保存・時間は増え、一般の実サイトへの精度や速度の保証ではない。
 
 ## 1. ユーザー操作から診断結果まで
 
