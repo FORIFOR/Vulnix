@@ -1134,24 +1134,40 @@ class AssessmentService:
             if self._persist_error:
                 raise PolicyError("状態を保存できないため、送信を中止しました")
             if self.real_site_read_only:
-                # The public read-only flow currently promises one root GET. A
-                # signed reservation is consumed before launch and never refunded
-                # after a failed, stopped, or interrupted Worker.
+                # Reserve only a consented fixed request in signed state before
+                # launch. Failed, stopped, and interrupted requests are not refunded.
                 usage = self.ledger.scan_usage.get(host)
                 if (not isinstance(usage, dict)
                         or usage.get("asset_id") != self.a.asset.get("id")
                         or usage.get("authorization_ref") != ext.get("authorization_ref")
+                        or usage.get("scope_generation") != self._scope_generation(ext)
                         or not usage.get("run_nonce")):
                     raise PolicyError("この診断の通信枠が確認できません。再診断を開始してください")
-                if (tool_name != "http_probe" or str(args.get("method", "GET")).upper() != "GET"
-                        or dest.path != "/" or usage.get("paths") != []):
+                paths = usage.get("paths")
+                root = (tool_name == "http_probe"
+                        and str(args.get("method", "GET")).upper() == "GET"
+                        and dest.path == "/" and paths == [])
+                marker = (tool_name == "status_marker" and set(args) == {"url"}
+                          and dest.path == "/server-status?auto" and paths == ["/"]
+                          and usage.get("status_probe_allowed") is True
+                          and ext.get("allow_status_probe") is True
+                          and self._root_probe_observed_locked())
+                if not (root or marker):
                     raise PolicyError("この診断で許可された読み取りは既に実行済みです")
-                usage["paths"] = ["/"]
+                usage["paths"] = ["/"] if root else ["/", "/server-status?auto"]
                 if not self.ledger.commit():
                     self._persist_error = self.ledger.error or "LedgerError"
                     raise PolicyError("通信枠を保存できないため、送信を中止しました")
                 self.audit.record("scan.request_reserved", host=host, run_nonce=usage["run_nonce"],
-                                  check="root_l1")
+                                  check="root_l1" if root else "apache_mod_status")
+
+    @staticmethod
+    def _scope_generation(ext: dict) -> str:
+        """Bind a scan to one signed scope grant, including legacy grants."""
+        nonce = ext.get("scope_nonce")
+        if isinstance(nonce, str) and nonce:
+            return nonce
+        return f"legacy:{ext.get('confirmed_at')}:{ext.get('proof_verified_at')}"
 
     def _new_scan_usage_locked(self) -> None:
         """Grant exactly one root GET to a newly started, owned public-beta run."""
@@ -1165,7 +1181,9 @@ class AssessmentService:
         self.ledger.scan_usage[host] = {
             "asset_id": self.a.asset.get("id"),
             "authorization_ref": ext.get("authorization_ref"),
+            "scope_generation": self._scope_generation(ext),
             "run_nonce": secrets.token_hex(16),
+            "status_probe_allowed": ext.get("allow_status_probe") is True,
             "paths": [],
         }
         self._commit_grant_locked(before, "診断の通信枠")
@@ -1178,12 +1196,14 @@ class AssessmentService:
         if not self.real_site_read_only:
             return True
         host = (self.a.asset.get("name") or "").lower()
-        if (self._external_entry(host) is None or self.gateway.state is State.STOPPED
+        ext = self._external_entry(host)
+        if (ext is None or self.gateway.state is State.STOPPED
                 or self._stale_runner()):
             self._fail("診断許可が終了したため、この応答は採用しません")
             return False
         usage = self.ledger.scan_usage.get(host)
         if (not isinstance(usage, dict) or usage.get("paths") != ["/"]
+                or usage.get("scope_generation") != self._scope_generation(ext)
                 or evidence.get("tool") != "http_probe" or not evidence.get("audit_hash")):
             self._fail("診断の監査証拠を通信枠と照合できません")
             return False
@@ -1666,6 +1686,7 @@ class AssessmentService:
         ext = self._external_entry(host)
         if (ext is None or usage.get("asset_id") != self.a.asset.get("id")
                 or usage.get("authorization_ref") != ext.get("authorization_ref")
+                or usage.get("scope_generation") != self._scope_generation(ext)
                 or usage.get("paths") != ["/"]):
             return False
         entries, valid = self.audit.verified_entries()
@@ -2908,6 +2929,7 @@ class AssessmentService:
         sow_id: str = "",
         activate_workspace: bool = False,
         allow_loopback_test: bool = False,
+        allow_status_probe: bool = False,
     ) -> dict:
         """Step 3 of the 5-step flow: confirm target scope & prohibited actions
         after ownership verification, enabling safe L1 diagnosis (while keeping
@@ -2995,9 +3017,11 @@ class AssessmentService:
                 "l2_auto_approved": False,
                 "approver": approver,
                 "authorization_ref": auth_ref,
+                "scope_nonce": secrets.token_hex(16),
                 "not_before": now - 60,
                 "not_after": now + 30 * 86400,
                 "allow_loopback_test": bool(allow_loopback_test),
+                "allow_status_probe": allow_status_probe is True,
                 "confirmed_at": now,
                 "proof_method": proof["method"],
                 "proof_verified_at": proof["verified_at"],
@@ -3023,12 +3047,14 @@ class AssessmentService:
             host=host,
             authorization_ref=auth_ref,
             l2_auto_approved=False,
+            allow_status_probe=allow_status_probe is True,
         )
         return {
             "host": host,
             "scope_confirmed": True,
             "authorization_ref": auth_ref,
             "l2_auto_approved": False,
+            "allow_status_probe": allow_status_probe is True,
             "asset": dict(target_asset),
         }
 
