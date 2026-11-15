@@ -850,10 +850,19 @@ class TestRealArtexPlanner(ServiceBase):
             google_property="sc-domain:site.test", google_endpoint=("https", 443))
         self.svc.confirm_asset_scope(url_or_host="site.test", confirmed_prohibited=True,
                                      activate_workspace=True)
+        self.svc.a.findings["f_headers"] = {
+            "id": "f_headers", "category": "設定不備", "severity": "medium",
+            "verdict": "detected", "verdict_basis": "l1_observation", "demo_fixture": False,
+            "evidence": [{"audit_hash": "local-evidence", "saved_at": 1,
+                          "body": "private response text"}],
+        }
         plan = self.plan()
         self.assertEqual(plan["engine"]["kind"], "artex-binary")
         self.assertTrue(self.mock.requests)
-        self.assertNotIn("site.test", json.dumps(self.mock.requests, ensure_ascii=False))
+        requests = json.dumps(self.mock.requests, ensure_ascii=False)
+        self.assertIn("f_headers", requests)  # real ARTEX receives a measured, site-specific feature
+        self.assertNotIn("site.test", requests)
+        self.assertNotIn("private response text", requests)
         self.assertTrue(all(item["level"] == "L1" for item in plan["items"]))
         self.assertTrue(any(item["catalog_id"] == "l1_http_probe" for item in plan["items"]))
 
