@@ -6,7 +6,7 @@ import { useEffect, useState } from "react";
 import { useSession } from "@/lib/useSession";
 
 export default function LoginPage() {
-  const { session, loading, refresh } = useSession();
+  const { session, loading, refresh, selfRegistration } = useSession();
   const router = useRouter();
   const [mode, setMode] = useState<"login" | "register">("login");
 
@@ -28,17 +28,6 @@ export default function LoginPage() {
   useEffect(() => {
     if (!loading && session) router.replace(afterLogin());
   }, [loading, session, router]);
-
-  // Self-registration may also be enabled for a multi-tenant public beta.
-  const [selfRegistration, setSelfRegistration] = useState(false);
-  useEffect(() => {
-    let live = true;
-    fetch("/api/auth/me", { cache: "no-store" })
-      .then((r) => r.json())
-      .then((d) => { if (live) setSelfRegistration(Boolean(d?.self_registration)); })
-      .catch(() => {});
-    return () => { live = false; };
-  }, []);
 
   const submitLogin = async (e: React.FormEvent) => {
     e.preventDefault();
