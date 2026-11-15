@@ -105,17 +105,20 @@ def main() -> None:
                 web_api.append({"file": rel, "line": line_no, "source": line.strip()[:220]})
             if match := re.search(r"\b(?:export\s+)?(?:async\s+)?function\s+(\w+)|\bconst\s+(\w+)\s*=\s*(?:async\s*)?\(", line):
                 web_functions.append({"file": rel, "line": line_no, "name": match.group(1) or match.group(2)})
-    artex_functions = []
+    artex_functions, artex_go_io = [], []
     for path in ARTEX_GO:
         rel = str(path.relative_to(ROOT))
         for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             if match := re.match(r"^func\s+(?:\([^)]*\)\s*)?(\w+)\s*\(", line):
                 artex_functions.append({"file": rel, "line": line_no, "name": match.group(1)})
+            if re.search(r"\b(?:DialContext|DialTimeout|LookupIP|DefaultTransport|\.Do)\b", line):
+                artex_go_io.append({"file": rel, "line": line_no, "source": line.strip()[:220]})
     print(json.dumps({"schema": 1, "source": "AST and text; conditional routes may be dynamic",
                       "backend_functions": functions, "route_conditions": routes,
                       "network_process_calls": network, "background_jobs": jobs,
                       "web_api_references": web_api, "web_functions": web_functions,
-                      "artex_go_functions": artex_functions}, ensure_ascii=False, indent=2))
+                      "artex_go_functions": artex_functions,
+                      "artex_go_io": artex_go_io}, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

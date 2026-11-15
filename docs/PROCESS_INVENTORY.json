@@ -6374,5 +6374,42 @@
       "line": 88,
       "name": "run"
     }
+  ],
+  "artex_go_io": [
+    {
+      "file": "integrations/artex/overlay/agent/vulnix_bridge.go",
+      "line": 42,
+      "source": "base := http.DefaultTransport.(*http.Transport).Clone()"
+    },
+    {
+      "file": "integrations/artex/overlay/agent/vulnix_bridge.go",
+      "line": 45,
+      "source": "base.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {"
+    },
+    {
+      "file": "integrations/artex/overlay/agent/vulnix_bridge.go",
+      "line": 52,
+      "source": "found, err := net.DefaultResolver.LookupIP(ctx, \"ip\", host)"
+    },
+    {
+      "file": "integrations/artex/overlay/agent/vulnix_bridge.go",
+      "line": 63,
+      "source": "return d.DialContext(ctx, network, net.JoinHostPort(ips[0].String(), port))"
+    },
+    {
+      "file": "integrations/artex/overlay/agent/vulnix_bridge.go",
+      "line": 284,
+      "source": "conn, err := net.DialTimeout(\"tcp\", addr, 3*time.Second)"
+    },
+    {
+      "file": "integrations/artex/overlay/agent/vulnix_bridge_test.go",
+      "line": 155,
+      "source": "if _, err := tr.DialContext(context.Background(), \"tcp\", addr); err == nil ||"
+    },
+    {
+      "file": "integrations/artex/overlay/cmd/vulnix-planner/main.go",
+      "line": 126,
+      "source": "http.DefaultTransport = agent.VulnixLoopbackOnlyTransport()"
+    }
   ]
 }
