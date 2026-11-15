@@ -107,7 +107,7 @@ scripts/public-app.sh stop
 固定ホストへの切り替え準備（まだ DNS と公開設定は変更しません）：
 - 現在の Mac 上の `cloudflared` は Quick Tunnel で、Colima VM の公開バックエンドへは Mac の Next.js（`127.0.0.1:3200`）を経由しています。固定ホストも **Mac の同じ 3200 番**に向け、VM の 8788 番は外へ公開しません。既存の Mac と Colima VM を使い続けます。
 - Cloudflare 側で `next-standards.com` ゾーンの管理権限、`vulnix` の既存 DNS レコードの有無、既存の名前付き Tunnel を確認します。Quick Tunnel には固定ホストを付けられないため、既存の名前付き Tunnel が使えればその公開ルートを追加し、なければ同じ Mac に名前付き Tunnel を用意します。ルートと DNS の作成は別途承認後に行います（[Cloudflare の手順](https://developers.cloudflare.com/tunnel/features/locally-managed-tunnels/create-local-tunnel/)）。
-- Web の許可ホスト名を固定ホストへ切り替えるときは、同じ公開アプリの起動設定を更新します。Google のリダイレクト URI は `https://vulnix.next-standards.com/verify/google` と完全一致させます。OAuth 同意画面はテストモードのまま、所有確認を試す Google アカウントだけをテストユーザーにします。
+- 現行の `scripts/public-app.sh` は Quick Tunnel 専用です。固定ホストへの切り替え前に、この既存スクリプトを名前付き Tunnel と固定ホストの許可設定に対応させます。Google のリダイレクト URI は `https://vulnix.next-standards.com/verify/google` と完全一致させます。OAuth 同意画面はテストモードのまま、所有確認を試す Google アカウントだけをテストユーザーにします。
 - 切り替え後はログイン、URL登録、Google 所有確認、DNS・ファイル方式への戻り、診断開始前の範囲確認を確認します。所有確認前の実サイト診断通信は行いません。
 
 ## 既知の制約
