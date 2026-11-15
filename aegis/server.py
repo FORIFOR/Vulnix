@@ -69,6 +69,20 @@ CHAT_PLATFORM_PER_DAY = int(os.environ.get("VULNIX_CHAT_PER_DAY", "1000") or 100
 _REAL_SITE_MODE = (os.environ.get("VULNIX_REAL_SERVICE_DIAGNOSIS", "l1") or "l1").strip().lower()
 REAL_SERVICE_DIAGNOSIS = _REAL_SITE_MODE == "1"
 REAL_SITE_L1_ONLY = _REAL_SITE_MODE == "l1"
+
+
+def optional_status_check_configured() -> bool:
+    """Expose the extra read-only choice only for the local planner path."""
+    if (not REAL_SITE_L1_ONLY
+            or os.environ.get("VULNIX_REAL_SITE_LOCAL_ARTEX") != "1"
+            or os.environ.get("VULNIX_REAL_SITE_INITIAL_ARTEX") != "1"
+            or os.environ.get("VULNIX_ARTEX_LLM_MODE", "").strip() != "gateway-forward"
+            or not os.environ.get("VULNIX_ARTEX_REAL_CMD", "").strip()):
+        return False
+    try:
+        return urlsplit(os.environ.get("VULNIX_ARTEX_LLM_UPSTREAM_URL", "")).hostname in ("127.0.0.1", "::1")
+    except ValueError:
+        return False
 OWNERSHIP_CHECKS_PER_ORG_PER_HOUR = 20   # DNS / .well-known lookups a single organization may trigger
 OWNERSHIP_CHECKS_PLATFORM_PER_HOUR = 300
 REAL_SITE_RUNS_PER_ORG_PER_HOUR = 10     # read-only runs on proven real sites
@@ -312,6 +326,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 me["real_service_diagnosis"] = REAL_SERVICE_DIAGNOSIS
                 me["real_site_read_only"] = REAL_SITE_L1_ONLY
                 me["google_ownership"] = google_ownership.config() is not None
+                me["optional_status_check"] = optional_status_check_configured()
                 me["development"] = development_mode()
                 if tenancy is not None:
                     me["multi_tenant"] = True
@@ -1017,12 +1032,17 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 elif p == "/api/assets/confirm-scope":
                     if "approver" not in sess.roles:
                         return self._json(403, {"error": "診断範囲の確定には承認責任者の権限が必要です"})
+                    extra_check = body.get("allow_status_probe") is True
+                    if extra_check and (not optional_status_check_configured()
+                                        or not svc._real_site_local_artex or not svc._artex_real_cmd):
+                        return self._json(409, {"error": "追加の読み取り確認は現在利用できません"})
                     res = svc.confirm_asset_scope(
                         url_or_host=str(body.get("url") or body.get("host") or ""),
                         confirmed_prohibited=body.get("confirmed_prohibited") is True,   # must be stated explicitly
                         approver=actor,
                         sow_id=str(body.get("sow_id", "")),
                         activate_workspace=bool(body.get("activate_workspace", False)),
+                        allow_status_probe=extra_check,
                     )
                     return self._json(200, {**res, "assets": svc.assets(), "snapshot": svc.snapshot()})
                 elif p == "/api/assets/secrets":

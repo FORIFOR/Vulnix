@@ -778,6 +778,36 @@ class TestPublicReadOnlyRealSites(TestTenantIsolationOverHttp):
             self.assertEqual(self.req(a, f"/assessments/{aid}/start", {})[0], 200)
         start.assert_called_once()
 
+    def test_optional_status_consent_is_explicit_and_tenant_bound(self):
+        a, b = self.signup("alice"), self.signup("bobby")
+        a_org = a["orgs"][0]["id"]
+        self.assertFalse(self.req(a, "/auth/me")[1].get("optional_status_check", False))
+        self.assertEqual(self.req(a, "/assets/confirm-scope", {
+            "host": "next-standards.com", "confirmed_prohibited": True,
+            "allow_status_probe": True})[0], 409)
+        osvc = self.reg.service(a_org)
+        osvc._real_site_local_artex = True
+        osvc._artex_real_cmd = ["mock-artex"]
+        config = {"VULNIX_REAL_SITE_LOCAL_ARTEX": "1",
+                  "VULNIX_REAL_SITE_INITIAL_ARTEX": "1",
+                  "VULNIX_ARTEX_REAL_CMD": "mock-artex",
+                  "VULNIX_ARTEX_LLM_MODE": "gateway-forward",
+                  "VULNIX_ARTEX_LLM_UPSTREAM_URL": "http://127.0.0.1:19991/v1/chat/completions"}
+        with patch.dict(os.environ, config):
+            self.assertTrue(self.req(a, "/auth/me")[1]["optional_status_check"])
+            with patch.dict(os.environ, {"VULNIX_ARTEX_LLM_UPSTREAM_URL": "https://external-model.example/v1"}):
+                self.assertFalse(self.req(a, "/auth/me")[1]["optional_status_check"])
+            self.req(a, "/assets/challenge", {"url": "https://next-standards.com"})
+            self._verify(a, "next-standards.com")
+            scope = {"host": "next-standards.com", "confirmed_prohibited": True,
+                     "activate_workspace": True, "allow_status_probe": "true"}
+            self.assertEqual(self.req(a, "/assets/confirm-scope", scope)[0], 200)
+            self.assertFalse(osvc._verified_external_hosts["next-standards.com"]["allow_status_probe"])
+            scope["allow_status_probe"] = True
+            self.assertEqual(self.req(b, "/assets/confirm-scope", scope, org=a_org)[0], 403)
+            self.assertEqual(self.req(a, "/assets/confirm-scope", scope)[0], 200)
+            self.assertTrue(osvc._verified_external_hosts["next-standards.com"]["allow_status_probe"])
+
     def test_a_subdomain_can_be_registered_too(self):
         a = self.signup("alice")
         for url in ("https://next-standards.com", "https://wonder.next-standards.com"):

@@ -15,12 +15,13 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const [multiTenant, setMultiTenant] = useState(false);
   const [selfRegistration, setSelfRegistration] = useState(false);
   const [googleOwnership, setGoogleOwnership] = useState(false);
+  const [optionalStatusCheck, setOptionalStatusCheck] = useState(false);
   const path = usePathname();
   const router = useRouter();
 
   const refresh = useCallback(async () => {
     try {
-      const me = await getJSON<{ session: SessionInfo | null; orgs?: OrgInfo[]; multi_tenant?: boolean; self_registration?: boolean; google_ownership?: boolean }>("/api/auth/me");
+      const me = await getJSON<{ session: SessionInfo | null; orgs?: OrgInfo[]; multi_tenant?: boolean; self_registration?: boolean; google_ownership?: boolean; optional_status_check?: boolean }>("/api/auth/me");
       const current = me.multi_tenant ? activeOrg(me.orgs ?? [], getSelectedOrg()) : null;
       // in an organization the workspace acts with the roles there, as the server does
       setSession(me.session && current
@@ -30,9 +31,11 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       setMultiTenant(Boolean(me.multi_tenant));
       setSelfRegistration(Boolean(me.self_registration));
       setGoogleOwnership(Boolean(me.google_ownership));
+      setOptionalStatusCheck(Boolean(me.optional_status_check));
     } catch {
       setSession(null);
       setSelfRegistration(false);
+      setOptionalStatusCheck(false);
     } finally {
       setLoading(false);
     }
@@ -66,7 +69,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   }, [loading, session, path, router]);
 
   return (
-    <SessionContext.Provider value={{ session, loading, refresh, logout, orgs, multiTenant, selfRegistration, googleOwnership,
+    <SessionContext.Provider value={{ session, loading, refresh, logout, orgs, multiTenant, selfRegistration, googleOwnership, optionalStatusCheck,
                                       org: activeOrg(orgs, typeof document === "undefined" ? null : getSelectedOrg()) }}>
       {children}
     </SessionContext.Provider>
