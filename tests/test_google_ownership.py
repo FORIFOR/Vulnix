@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
@@ -85,6 +87,55 @@ class TestGoogleOwnershipOverHttp(TestPublicReadOnlyRealSites):
         with patch("aegis.assessment.AssessmentService.start", return_value={"ok": True}):
             self.assertEqual(self.req(a, f"/assessments/{body['snapshot']['id']}/start", {})[0], 200)
 
+    def test_domain_property_proves_later_registered_subdomains_in_same_org(self):
+        a, b = self.signup("alice"), self.signup("bobby")
+        self.req(a, "/assets/challenge", {"url": "https://next-standards.com"})
+        st = self.start(a, "https://next-standards.com")
+        self.assertTrue(self.finish(a, st, ["sc-domain:next-standards.com"])[1]["verified"])
+
+        code, inherited = self.req(a, "/assets/challenge", {"url": "https://wonder.next-standards.com"})
+        self.assertEqual(code, 200, inherited)
+        self.assertTrue(inherited["asset"]["ownership_verified"])
+        self.assertEqual(inherited["asset"]["ownership_proof"]["method"], g.METHOD)
+        self.assertEqual(self.req(a, "/assets/confirm-scope", {
+            "host": "wonder.next-standards.com", "confirmed_prohibited": True})[0], 200)
+
+        code, other = self.req(b, "/assets/challenge", {"url": "https://wonder.next-standards.com"})
+        self.assertEqual(code, 200, other)
+        self.assertFalse(other["asset"]["ownership_verified"])
+
+    def test_domain_property_reuse_requires_a_fresh_source_proof(self):
+        a = self.signup("alice")
+        self.req(a, "/assets/challenge", {"url": "https://next-standards.com"})
+        st = self.start(a, "https://next-standards.com")
+        self.assertTrue(self.finish(a, st, ["sc-domain:next-standards.com"])[1]["verified"])
+        osvc = self.reg.service(a["orgs"][0]["id"])
+        osvc._ownership_proofs["next-standards.com"]["verified_at"] = 0
+        code, sub = self.req(a, "/assets/challenge", {"url": "https://wonder.next-standards.com"})
+        self.assertEqual(code, 200, sub)
+        self.assertFalse(sub["asset"]["ownership_verified"])
+
+    def test_registration_does_not_refresh_an_existing_signed_proof(self):
+        a = self.signup("alice")
+        self.req(a, "/assets/challenge", {"url": "https://next-standards.com"})
+        st = self.start(a, "https://next-standards.com")
+        self.assertTrue(self.finish(a, st, ["sc-domain:next-standards.com"])[1]["verified"])
+        self.req(a, "/assets/challenge", {"url": "https://wonder.next-standards.com"})
+        osvc = self.reg.service(a["orgs"][0]["id"])
+        before = osvc._ownership_proofs["wonder.next-standards.com"]["verified_at"]
+        osvc._asset_record("wonder.next-standards.com")["ownership_verified"] = False
+        self.req(a, "/assets/challenge", {"url": "https://wonder.next-standards.com"})
+        self.assertEqual(osvc._ownership_proofs["wonder.next-standards.com"]["verified_at"], before)
+
+    def test_url_prefix_property_does_not_prove_a_subdomain(self):
+        a = self.signup("alice")
+        self.req(a, "/assets/challenge", {"url": "https://next-standards.com"})
+        st = self.start(a, "https://next-standards.com")
+        self.assertTrue(self.finish(a, st, ["https://next-standards.com/"])[1]["verified"])
+        code, sub = self.req(a, "/assets/challenge", {"url": "https://wonder.next-standards.com"})
+        self.assertEqual(code, 200, sub)
+        self.assertFalse(sub["asset"]["ownership_verified"])
+
     def test_a_property_for_another_host_does_not_prove_this_one(self):
         a = self.signup("alice")
         self.req(a, "/assets/challenge", {"url": "https://wonder.next-standards.com"})
@@ -138,6 +189,24 @@ class TestGoogleOwnershipReview(TestGoogleOwnershipOverHttp):
                      "https://u:p@shared.example.edu/", "https://shared.example.edu:bad/"):
             self.assertIsNone(g.covering_property([site], "shared.example.edu", "https", 443), site)
         self.assertIsNone(g.covering_property(["sc-domain:com"], "example.com", "https", 443))
+
+    def test_google_domain_proof_survives_a_clean_restart_for_a_later_subdomain(self):
+        from aegis.assessment import AssessmentService
+
+        with tempfile.TemporaryDirectory() as directory:
+            first = AssessmentService(Path(directory), 18094, verify_seconds=30)
+            first.issue_ownership_challenge(url="https://next-standards.com")
+            self.assertTrue(first.verify_asset_ownership(
+                url_or_host="next-standards.com", method=g.METHOD,
+                google_property="sc-domain:next-standards.com",
+                google_endpoint=("https", 443))["verified"])
+            first.close()
+            second = AssessmentService(Path(directory), 18094, verify_seconds=30)
+            self.addCleanup(second.close)
+            result = second.issue_ownership_challenge(url="https://wonder.next-standards.com")
+            self.assertTrue(result["asset"]["ownership_verified"])
+            self.assertEqual(result["asset"]["ownership_proof"]["checked_target"],
+                             "sc-domain:next-standards.com")
 
     def _proven_by_google(self, who, host):
         self.req(who, "/assets/challenge", {"url": f"https://{host}"})

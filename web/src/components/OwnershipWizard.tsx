@@ -105,13 +105,29 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
       setChallenge(res.challenge);
       setTargetUrl((res.asset as { target_url?: string }).target_url ?? url.trim());
       onAssetsChanged(res.assets);
-      // An already-verified asset keeps its proof; skip straight to scope confirmation.
-      setStep(res.asset.ownership_verified ? 2 : 1);
+      // An existing proof (including a stored Google Domain proof for a subdomain)
+      // needs no repeated OAuth. Otherwise one click registers and starts Google.
+      if (res.asset.ownership_verified) {
+        setStep(2);
+      } else {
+        setStep(1);
+        if (googleOwnership) {
+          try {
+            const next = await postJSON<{ url: string }>("/api/assets/google/start", { url: url.trim() });
+            try { sessionStorage.setItem("vulnix_google_pending_host", res.asset.name); } catch { /* ignore */ }
+            window.location.assign(next.url);
+          } catch {
+            setOtherWays(true);
+            setVerifyDetail("Google での確認を開始できませんでした。DNS または確認用ファイルでお試しください。");
+          }
+        }
+      }
     });
 
   const viaGoogle = () =>
     run(async () => {
       const res = await postJSON<{ url: string }>("/api/assets/google/start", { url: url.trim() });
+      try { sessionStorage.setItem("vulnix_google_pending_host", new URL(url.trim()).hostname); } catch { /* ignore */ }
       window.location.assign(res.url);       // Google, then back to /verify/google
     });
 
@@ -198,7 +214,7 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
             </div>
             <div className="flex justify-end">
               <button type="submit" disabled={busy || !url.trim()} className="rounded-lg bg-zinc-900 px-4 py-2 text-xs font-semibold text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-white dark:text-zinc-900">
-                {busy ? "準備中…" : "次へ"}
+                {busy ? "準備中…" : googleOwnership ? "Google で所有確認" : "所有確認へ"}
               </button>
             </div>
           </form>
@@ -224,7 +240,7 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
             )}
             {googleOwnership && !otherWays ? (
               <button type="button" onClick={() => setOtherWays(true)} className="text-xs text-zinc-500 underline hover:text-zinc-800 dark:hover:text-zinc-200">
-                ほかの方法で確認する（DNS・確認用ファイル）
+                Google で確認できない場合（DNS・確認用ファイル）
               </button>
             ) : (
               <>
