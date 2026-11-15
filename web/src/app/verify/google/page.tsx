@@ -23,10 +23,21 @@ function Finish() {
   useEffect(() => {
     if (done.current) return;
     done.current = true;
+    let pendingHost = "";
+    try {
+      pendingHost = sessionStorage.getItem("vulnix_google_pending_host") ?? "";
+      sessionStorage.removeItem("vulnix_google_pending_host");
+    } catch { /* ignore */ }
+    const resume = (failed: boolean) => {
+      const q = new URLSearchParams();
+      if (pendingHost) q.set("resume", pendingHost);
+      if (failed) q.set("google", "failed");
+      return `/dashboard${q.size ? `?${q.toString()}` : ""}`;
+    };
     // the one-time code leaves the address bar (and history) at once
     window.history.replaceState(null, "", "/verify/google");
     if (!code || !state) {
-      const t = setTimeout(() => router.replace("/dashboard"), 1500);
+      const t = setTimeout(() => router.replace(resume(true)), 1500);
       return () => clearTimeout(t);
     }
     postJSON<FinishResponse>("/api/assets/google/finish", { code, state }).then(
@@ -37,7 +48,7 @@ function Finish() {
       },
       (e) => {
         setMsg((e as Error).message);
-        setTimeout(() => router.replace("/dashboard"), 2500);
+        setTimeout(() => router.replace(resume(true)), 2500);
       },
     );
   }, [code, state, router]);

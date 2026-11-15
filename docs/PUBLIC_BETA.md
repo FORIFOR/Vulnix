@@ -90,18 +90,25 @@ scripts/public-app.sh stop
 3. `scripts/public-app.sh start` を実行し、新しく表示された URL を共有し直します（Quick Tunnel の URL は起動するたびに変わります）。
 
 ## Google での所有確認（任意）
-サイトの所有者が Google Search Console ですでに所有権を確認している場合、画面の「Google で確認する」を押すだけで所有確認が終わります。設定がないあいだは、このボタンは表示されず、DNS・確認用ファイルの方法だけが使えます。
+サイトの所有者が Google Search Console ですでに所有権を確認している場合、URL入力後の「Google で所有確認」1回でサイト登録と Google への移動を始めます。Google で確認できなかった場合は、登録済みサイトの画面に戻って DNS・確認用ファイルを表示します。設定がないあいだは Google のボタンを出さず、既存の DNS・ファイル方式を使います。
+
+同じ組織で確認済みの **ドメインプロパティ**（`sc-domain:example.com`）がある場合、その確認結果が有効な間に登録した対応サブドメインは再度 Google へ移動せず所有確認できます。URLプレフィックスのプロパティはサブドメインへ引き継ぎません。どちらもサイトごとの診断範囲確認と期限の審査は残ります。
 
 - 求める権限は Search Console の読み取り専用（`webmasters.readonly`）だけです。アクセストークンはサーバーで1回だけ使って捨て、保存・記録・ブラウザへの送信はしません。
 - 所有者（`siteOwner`）として確認されたプロパティだけを認めます。「ドメイン」プロパティ（`sc-domain:example.com`）はサブドメインも含み、URL プレフィックスのプロパティはスキーム・ホスト・ポートが完全に一致するときだけ認めます。
 - IP アドレスが変わったときや一定時間が経ったときは Google に再確認できないため、所有確認のやり直しを求めます。
 
-有効にする手順（所有者が行います）：
-1. 固定のドメインで公開します（Quick Tunnel の URL は起動ごとに変わるため、Google に登録できません）。
-2. Google Cloud Console で「Google Search Console API」を有効にし、OAuth 同意画面を作ります（スコープ `https://www.googleapis.com/auth/webmasters.readonly`）。公開前は「テスト」モードで、使う Google アカウントをテストユーザーに追加します。一般公開には Google の審査が必要です。
-3. OAuth クライアント（ウェブ アプリケーション）を作り、承認済みのリダイレクト URI に `https://<公開ドメイン>/verify/google` を登録します。
-4. VM の `/opt/vulnix-public/.env.local`（0600）に次を書き、`~/vmscripts/start_public.sh` で再起動します：
-   `VULNIX_GOOGLE_CLIENT_ID`、`VULNIX_GOOGLE_CLIENT_SECRET`、`VULNIX_GOOGLE_REDIRECT_URI=https://<公開ドメイン>/verify/google`
+有効にする手順（所有者の設定と、別途承認される公開作業）：
+1. 所有または利用許可のある固定 HTTPS ホスト名を公開βに用意します。候補は `vulnix.next-standards.com` です。Quick Tunnel の `trycloudflare.com` ホスト名は起動で変わり、Vulnix 所有のドメインでもないため OAuth のリダイレクト先に使いません（[Google のポリシー](https://developers.google.com/identity/protocols/oauth2/policies)）。
+2. Google Cloud Console で Search Console API を有効にし、OAuth 同意画面に読み取り専用スコープ `https://www.googleapis.com/auth/webmasters.readonly` を追加します。審査前のテストでは利用者をテストユーザーに登録します（[Google の OAuth 設定](https://developers.google.com/identity/protocols/oauth2/web-server)、[Search Console の権限](https://developers.google.com/webmaster-tools/v1/how-tos/authorizing)）。
+3. 「ウェブ アプリケーション」の OAuth クライアントを作り、**正確に** `https://<固定の公開ホスト名>/verify/google` を承認済みリダイレクト URI に登録します。Google は完全一致を要求します。
+4. クライアント ID とシークレットはチャットやリポジトリに送らず、VM の保護された `/opt/vulnix-public/.env.local`（0600）に `VULNIX_GOOGLE_CLIENT_ID`、`VULNIX_GOOGLE_CLIENT_SECRET`、`VULNIX_GOOGLE_REDIRECT_URI` として設定します。承認後に公開バックエンドを再起動し、`/api/auth/me` の `google_ownership: true` と実際の OAuth 往復を確認します。
+
+固定ホストへの切り替え準備（まだ DNS と公開設定は変更しません）：
+- 現在の Mac 上の `cloudflared` は Quick Tunnel で、Colima VM の公開バックエンドへは Mac の Next.js（`127.0.0.1:3200`）を経由しています。固定ホストも **Mac の同じ 3200 番**に向け、VM の 8788 番は外へ公開しません。既存の Mac と Colima VM を使い続けます。
+- Cloudflare 側で `next-standards.com` ゾーンの管理権限、`vulnix` の既存 DNS レコードの有無、既存の名前付き Tunnel を確認します。Quick Tunnel には固定ホストを付けられないため、既存の名前付き Tunnel が使えればその公開ルートを追加し、なければ同じ Mac に名前付き Tunnel を用意します。ルートと DNS の作成は別途承認後に行います（[Cloudflare の手順](https://developers.cloudflare.com/tunnel/features/locally-managed-tunnels/create-local-tunnel/)）。
+- 現行の `scripts/public-app.sh` は Quick Tunnel 専用です。固定ホストへの切り替え前に、この既存スクリプトを名前付き Tunnel と固定ホストの許可設定に対応させます。Google のリダイレクト URI は `https://vulnix.next-standards.com/verify/google` と完全一致させます。OAuth 同意画面はテストモードのまま、所有確認を試す Google アカウントだけをテストユーザーにします。
+- 切り替え後はログイン、URL登録、Google 所有確認、DNS・ファイル方式への戻り、診断開始前の範囲確認を確認します。所有確認前の実サイト診断通信は行いません。
 
 ## 既知の制約
 - **Quick Tunnel は、更新の受信（SSE）を途中で溜め込みます。** そのため画面は、受信が途切れているあいだ、4 秒ごとに状態を読み直します（表示が数秒遅れることがあります）。固定ドメインの名前付きトンネルを使えば、この制約はなくなります。
