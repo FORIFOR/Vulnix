@@ -4493,18 +4493,21 @@ class AssessmentService:
         except AdvisorError as exc:
             outcome["model_error"] = type(exc).__name__
             with self._lock:
-                self._note_model_outcome_locked(False, "advisor_refused")
+                if self._chat_backend is backend:
+                    self._note_model_outcome_locked(False, "advisor_refused")
                 self.audit.record("advisor.safe_failed", actor=actor, finding_id=finding_id, reason="advisor_refused")
             return None
         accepted = next((a for a in result.advice if a.finding_id == finding_id), None)
         with self._lock:
-            self._note_model_outcome_locked(accepted is not None, None if accepted else "no_valid_advice")
+            if self._chat_backend is backend:
+                self._note_model_outcome_locked(accepted is not None, None if accepted else "no_valid_advice")
             self.audit.record("advisor.safe_reply", actor=actor, finding_id=finding_id,
                               accepted=accepted is not None, rejected=len(result.rejected),
                               endpoint_kind=result.endpoint_kind)
         if accepted is None:
             outcome["model_error"] = "no_valid_advice"
             return None
+        outcome["model_name"] = backend._model
         if finding.get("verdict") != "proven":
             outcome["verdict_note"] = verdict_note(finding.get("verdict"))
         steps = "\n".join(f"・{step.label}：{step.detail}" for step in accepted.remediation)
@@ -4546,7 +4549,8 @@ class AssessmentService:
             ai_msg = {
                 "id": "msg_" + secrets.token_hex(4),
                 "role": "assistant",
-                "actor": f"AI解説（{self._chat_backend._model}）" if source == "external_model" else "内蔵解説",
+                "actor": f"AI解説（{outcome.get('model_name') or (self._chat_backend._model if self._chat_backend else '外部モデル')}）"
+                         if source == "external_model" else "内蔵解説",
                 "source": source,
                 "text": answer_text,
                 "term": term,
@@ -4690,6 +4694,7 @@ class AssessmentService:
                 withheld = check_answer(ans, proven=proven)
                 if withheld is None:
                     if outcome is not None:
+                        outcome["model_name"] = ext._model
                         if target_f and not proven:
                             outcome["verdict_note"] = MIXED_VERDICT_NOTE if mixed else verdict_note(target_f.get("verdict"))
                         outcome["cautions"] = cautions(ans, proven=proven)

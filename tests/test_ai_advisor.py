@@ -167,6 +167,9 @@ class TestPhaseOneIsMockOnly(unittest.TestCase):
         advisor.advise([_leaky_finding()])
         self.assertEqual(seen[0][1]["Authorization"], "Bearer test-only-key")
         self.assertNotIn(HOST, seen[0][2].decode())
+        request = json.loads(seen[0][2])
+        self.assertLessEqual(request["max_tokens"], 2048)
+        self.assertEqual(request["response_format"], {"type": "json_object"})
 
     def test_the_adapter_takes_no_api_key_and_sends_no_authorization(self):
         fields = {f.name for f in dataclasses.fields(adv.AbliterationAdvisor)}
@@ -431,6 +434,24 @@ class TestServiceIntegration(RealServiceBase):
                 with self.assertRaisesRegex(ValueError, "変更"):
                     self.svc.ask_chat("AIで解説", "appr", finding_id="f_headers", safe_advice=True)
             self.assertEqual(self.svc.snapshot()["chat_messages"], [])
+
+    def test_real_site_ai_reply_names_the_model_that_answered(self):
+        self.onboard()
+        self.run_l1()
+        with _MockServer() as mock:
+            self.svc._chat_backend = AbliterationBackend(mock.url, model="original-model")
+            self.svc._real_site_safe_ai = True
+            original = adv.AbliterationAdvisor.advise
+
+            def replace_backend(advisor, findings):
+                result = original(advisor, findings)
+                self.svc._chat_backend = AbliterationBackend(mock.url, model="later-model")
+                return result
+
+            with patch.object(adv.AbliterationAdvisor, "advise", replace_backend):
+                out = self.svc.ask_chat("AIで解説", "appr", finding_id="f_headers", safe_advice=True)
+            self.assertIn("original-model", out["message"]["actor"])
+            self.assertNotIn("later-model", out["message"]["actor"])
 
     def test_real_service_findings_never_reach_the_advisor_and_nothing_runs(self):
         with _MockServer() as m:

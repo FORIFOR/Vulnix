@@ -549,6 +549,13 @@ class ExternalAbliterationAdvisor(AbliterationAdvisor):
     def _headers(self) -> dict[str, str]:
         return {"Content-Type": "application/json", "Authorization": f"Bearer {self.api_key}"}
 
+    def build_request(self, findings: list[dict]) -> tuple[bytes, dict[str, dict]]:
+        body, ref_map = super().build_request(findings)
+        payload = json.loads(body)
+        payload["max_tokens"] = 2048
+        payload["response_format"] = {"type": "json_object"}
+        return json.dumps(payload, ensure_ascii=False).encode("utf-8"), ref_map
+
     def __post_init__(self) -> None:
         super().__post_init__()
         self._send = self.transport or partial(_external_transport, timeout_s=self.timeout_s)
