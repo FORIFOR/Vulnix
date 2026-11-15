@@ -1,0 +1,203 @@
+{
+  "before": [
+    {
+      "mode": "vulnerable",
+      "truth_status_exposed": true,
+      "elapsed_s": 0.074,
+      "gateway_calls": 1,
+      "worker_launches": 1,
+      "state_saves": 15,
+      "ledger_commits": 17,
+      "artex_calls": 0,
+      "external_model_calls": 0,
+      "ai_tokens": 0,
+      "target_requests": [
+        "/"
+      ],
+      "status_exposure_detected": false,
+      "all_findings": [
+        {
+          "id": "f_l1_no_tls",
+          "status": "detected"
+        },
+        {
+          "id": "f_headers",
+          "status": "detected"
+        },
+        {
+          "id": "f_powered",
+          "status": "detected"
+        }
+      ]
+    },
+    {
+      "mode": "patched",
+      "truth_status_exposed": false,
+      "elapsed_s": 0.096,
+      "gateway_calls": 1,
+      "worker_launches": 1,
+      "state_saves": 15,
+      "ledger_commits": 17,
+      "artex_calls": 0,
+      "external_model_calls": 0,
+      "ai_tokens": 0,
+      "target_requests": [
+        "/"
+      ],
+      "status_exposure_detected": false,
+      "all_findings": [
+        {
+          "id": "f_l1_no_tls",
+          "status": "detected"
+        },
+        {
+          "id": "f_headers",
+          "status": "detected"
+        },
+        {
+          "id": "f_powered",
+          "status": "detected"
+        }
+      ]
+    },
+    {
+      "mode": "generic_200",
+      "truth_status_exposed": false,
+      "elapsed_s": 0.094,
+      "gateway_calls": 1,
+      "worker_launches": 1,
+      "state_saves": 15,
+      "ledger_commits": 17,
+      "artex_calls": 0,
+      "external_model_calls": 0,
+      "ai_tokens": 0,
+      "target_requests": [
+        "/"
+      ],
+      "status_exposure_detected": false,
+      "all_findings": [
+        {
+          "id": "f_l1_no_tls",
+          "status": "detected"
+        },
+        {
+          "id": "f_headers",
+          "status": "detected"
+        },
+        {
+          "id": "f_powered",
+          "status": "detected"
+        }
+      ]
+    }
+  ],
+  "after": [
+    {
+      "mode": "vulnerable",
+      "truth_status_exposed": true,
+      "elapsed_s": 0.669,
+      "gateway_calls": 2,
+      "worker_launches": 2,
+      "state_saves": 17,
+      "ledger_commits": 21,
+      "artex_calls": 1,
+      "engine_kind": "unverified",
+      "local_model_calls": 0,
+      "ai_est_tokens": 0,
+      "hypothetical_model_cost_usd": 0.0,
+      "paid_model_cost_usd": 0,
+      "target_requests": [
+        "/",
+        "/server-status?auto"
+      ],
+      "status_exposure_detected": true,
+      "status_verdict": "detected"
+    },
+    {
+      "mode": "patched",
+      "truth_status_exposed": false,
+      "elapsed_s": 0.664,
+      "gateway_calls": 2,
+      "worker_launches": 2,
+      "state_saves": 17,
+      "ledger_commits": 21,
+      "artex_calls": 1,
+      "engine_kind": "unverified",
+      "local_model_calls": 0,
+      "ai_est_tokens": 0,
+      "hypothetical_model_cost_usd": 0.0,
+      "paid_model_cost_usd": 0,
+      "target_requests": [
+        "/",
+        "/server-status?auto"
+      ],
+      "status_exposure_detected": false,
+      "status_verdict": "not_reproduced"
+    },
+    {
+      "mode": "generic_200",
+      "truth_status_exposed": false,
+      "elapsed_s": 0.656,
+      "gateway_calls": 2,
+      "worker_launches": 2,
+      "state_saves": 17,
+      "ledger_commits": 21,
+      "artex_calls": 1,
+      "engine_kind": "unverified",
+      "local_model_calls": 0,
+      "ai_est_tokens": 0,
+      "hypothetical_model_cost_usd": 0.0,
+      "paid_model_cost_usd": 0,
+      "target_requests": [
+        "/",
+        "/server-status?auto"
+      ],
+      "status_exposure_detected": false,
+      "status_verdict": "not_reproduced"
+    }
+  ],
+  "quality_before": {
+    "tp": 0,
+    "fp": 0,
+    "fn": 1,
+    "tn": 2,
+    "precision": null,
+    "recall": 0.0,
+    "false_positive_rate": 0.0
+  },
+  "quality_after": {
+    "tp": 1,
+    "fp": 0,
+    "fn": 0,
+    "tn": 2,
+    "precision": 1.0,
+    "recall": 1.0,
+    "false_positive_rate": 0.0
+  },
+  "safety_before": {
+    "expired_scope": {
+      "refused": true,
+      "worker_launches": 0,
+      "target_requests": []
+    },
+    "revoked_ownership": {
+      "refused": true,
+      "worker_launches": 0,
+      "target_requests": []
+    }
+  },
+  "safety_after": {
+    "expired_scope": {
+      "refused": true,
+      "worker_launches": 0,
+      "target_requests": []
+    },
+    "revoked_ownership": {
+      "refused": true,
+      "worker_launches": 0,
+      "target_requests": []
+    }
+  },
+  "safety_success_rate_before": 1.0,
+  "safety_success_rate_after": 1.0
+}
