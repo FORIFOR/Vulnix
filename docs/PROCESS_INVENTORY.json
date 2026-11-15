@@ -249,12 +249,12 @@
     },
     {
       "file": "aegis/artex_bridge.py",
-      "line": 570,
+      "line": 572,
       "name": "reconstruct"
     },
     {
       "file": "aegis/artex_bridge.py",
-      "line": 618,
+      "line": 620,
       "name": "command_from_env"
     },
     {
@@ -3309,207 +3309,212 @@
     },
     {
       "file": "aegis/server.py",
-      "line": 92,
+      "line": 74,
+      "name": "optional_status_check_configured"
+    },
+    {
+      "file": "aegis/server.py",
+      "line": 106,
       "name": "make_handler"
     },
     {
       "file": "aegis/server.py",
-      "line": 117,
+      "line": 131,
       "name": "make_handler.room"
     },
     {
       "file": "aegis/server.py",
-      "line": 123,
+      "line": 137,
       "name": "make_handler.within"
     },
     {
       "file": "aegis/server.py",
-      "line": 132,
+      "line": 146,
       "name": "make_handler.self_registration_allowed"
     },
     {
       "file": "aegis/server.py",
-      "line": 160,
+      "line": 174,
       "name": "make_handler.approver_grant_recorded"
     },
     {
       "file": "aegis/server.py",
-      "line": 174,
+      "line": 188,
       "name": "make_handler.H.log_message"
     },
     {
       "file": "aegis/server.py",
-      "line": 177,
+      "line": 191,
       "name": "make_handler.H.handle"
     },
     {
       "file": "aegis/server.py",
-      "line": 184,
+      "line": 198,
       "name": "make_handler.H._json"
     },
     {
       "file": "aegis/server.py",
-      "line": 195,
+      "line": 209,
       "name": "make_handler.H._session"
     },
     {
       "file": "aegis/server.py",
-      "line": 205,
+      "line": 219,
       "name": "make_handler.H._public_session"
     },
     {
       "file": "aegis/server.py",
-      "line": 210,
+      "line": 224,
       "name": "make_handler.H._touches_real_site"
     },
     {
       "file": "aegis/server.py",
-      "line": 229,
+      "line": 243,
       "name": "make_handler.H._real_site_refusal"
     },
     {
       "file": "aegis/server.py",
-      "line": 246,
+      "line": 260,
       "name": "make_handler.H._org_requested"
     },
     {
       "file": "aegis/server.py",
-      "line": 253,
+      "line": 267,
       "name": "make_handler.H._bind"
     },
     {
       "file": "aegis/server.py",
-      "line": 286,
+      "line": 300,
       "name": "make_handler.H._host_ok"
     },
     {
       "file": "aegis/server.py",
-      "line": 294,
+      "line": 308,
       "name": "make_handler.H._refuse"
     },
     {
       "file": "aegis/server.py",
-      "line": 301,
+      "line": 315,
       "name": "make_handler.H.do_GET"
     },
     {
       "file": "aegis/server.py",
-      "line": 364,
+      "line": 379,
       "name": "make_handler.H._get_org"
     },
     {
       "file": "aegis/server.py",
-      "line": 402,
+      "line": 417,
       "name": "make_handler.H._sse"
     },
     {
       "file": "aegis/server.py",
-      "line": 416,
+      "line": 431,
       "name": "make_handler.H._sse.still_allowed"
     },
     {
       "file": "aegis/server.py",
-      "line": 431,
+      "line": 446,
       "name": "make_handler.H._sse_loop"
     },
     {
       "file": "aegis/server.py",
-      "line": 466,
+      "line": 481,
       "name": "make_handler.H.do_POST"
     },
     {
       "file": "aegis/server.py",
-      "line": 641,
+      "line": 656,
       "name": "make_handler.H._change_password"
     },
     {
       "file": "aegis/server.py",
-      "line": 652,
+      "line": 667,
       "name": "make_handler.H._totp_enroll"
     },
     {
       "file": "aegis/server.py",
-      "line": 662,
+      "line": 677,
       "name": "make_handler.H._totp_confirm"
     },
     {
       "file": "aegis/server.py",
-      "line": 670,
+      "line": 685,
       "name": "make_handler.H._totp_disable"
     },
     {
       "file": "aegis/server.py",
-      "line": 680,
+      "line": 695,
       "name": "make_handler.H._locked"
     },
     {
       "file": "aegis/server.py",
-      "line": 688,
+      "line": 703,
       "name": "make_handler.H._drain_recovery_events"
     },
     {
       "file": "aegis/server.py",
-      "line": 693,
+      "line": 708,
       "name": "make_handler.H._login"
     },
     {
       "file": "aegis/server.py",
-      "line": 714,
+      "line": 729,
       "name": "make_handler.H._register"
     },
     {
       "file": "aegis/server.py",
-      "line": 797,
+      "line": 812,
       "name": "make_handler.H._set_roles"
     },
     {
       "file": "aegis/server.py",
-      "line": 816,
+      "line": 831,
       "name": "make_handler.H._admin_recovery"
     },
     {
       "file": "aegis/server.py",
-      "line": 834,
+      "line": 849,
       "name": "make_handler.H._org_for_management"
     },
     {
       "file": "aegis/server.py",
-      "line": 843,
+      "line": 858,
       "name": "make_handler.H._tenancy_get"
     },
     {
       "file": "aegis/server.py",
-      "line": 862,
+      "line": 877,
       "name": "make_handler.H._tenancy_post"
     },
     {
       "file": "aegis/server.py",
-      "line": 904,
+      "line": 919,
       "name": "make_handler.H._clear_cookie"
     },
     {
       "file": "aegis/server.py",
-      "line": 907,
+      "line": 922,
       "name": "make_handler.H._dispatch"
     },
     {
       "file": "aegis/server.py",
-      "line": 1165,
+      "line": 1185,
       "name": "_build_server"
     },
     {
       "file": "aegis/server.py",
-      "line": 1205,
+      "line": 1225,
       "name": "_load_env_local"
     },
     {
       "file": "aegis/server.py",
-      "line": 1247,
+      "line": 1267,
       "name": "main"
     },
     {
       "file": "aegis/server.py",
-      "line": 1292,
+      "line": 1312,
       "name": "main._stop"
     },
     {
@@ -3947,7 +3952,7 @@
     {
       "method": "GET",
       "file": "aegis/server.py",
-      "line": 310,
+      "line": 324,
       "handler": "make_handler.H.do_GET",
       "condition": "p == '/api/auth/me'",
       "literals": [
@@ -3957,7 +3962,7 @@
     {
       "method": "GET",
       "file": "aegis/server.py",
-      "line": 320,
+      "line": 335,
       "handler": "make_handler.H.do_GET",
       "condition": "p == '/api/health'",
       "literals": [
@@ -3967,7 +3972,7 @@
     {
       "method": "GET",
       "file": "aegis/server.py",
-      "line": 324,
+      "line": 339,
       "handler": "make_handler.H.do_GET",
       "condition": "p == '/api/operators'",
       "literals": [
@@ -3977,7 +3982,7 @@
     {
       "method": "GET",
       "file": "aegis/server.py",
-      "line": 336,
+      "line": 351,
       "handler": "make_handler.H.do_GET",
       "condition": "p == '/api/system/status'",
       "literals": [
@@ -3987,7 +3992,7 @@
     {
       "method": "GET",
       "file": "aegis/server.py",
-      "line": 344,
+      "line": 359,
       "handler": "make_handler.H.do_GET",
       "condition": "tenancy is not None and p.startswith('/api/orgs')",
       "literals": [
@@ -3997,7 +4002,7 @@
     {
       "method": "GET",
       "file": "aegis/server.py",
-      "line": 346,
+      "line": 361,
       "handler": "make_handler.H.do_GET",
       "condition": "p.startswith(('/api/assets', '/api/assessments/'))",
       "literals": [
@@ -4008,7 +4013,7 @@
     {
       "method": "GET",
       "file": "aegis/server.py",
-      "line": 351,
+      "line": 366,
       "handler": "make_handler.H.do_GET",
       "condition": "p == '/api/router/status'",
       "literals": [
@@ -4018,7 +4023,7 @@
     {
       "method": "GET",
       "file": "aegis/server.py",
-      "line": 353,
+      "line": 368,
       "handler": "make_handler.H.do_GET",
       "condition": "p == '/api/l2-profiles'",
       "literals": [
@@ -4028,7 +4033,7 @@
     {
       "method": "GET",
       "file": "aegis/server.py",
-      "line": 357,
+      "line": 372,
       "handler": "make_handler.H.do_GET",
       "condition": "p in JOB_ROUTES",
       "literals": []
@@ -4036,7 +4041,7 @@
     {
       "method": "GET",
       "file": "aegis/server.py",
-      "line": 360,
+      "line": 375,
       "handler": "make_handler.H.do_GET",
       "condition": "p == '/api/cve/status'",
       "literals": [
@@ -4046,7 +4051,7 @@
     {
       "method": "GET",
       "file": "aegis/server.py",
-      "line": 366,
+      "line": 381,
       "handler": "make_handler.H._get_org",
       "condition": "p == '/api/assets'",
       "literals": [
@@ -4056,7 +4061,7 @@
     {
       "method": "GET",
       "file": "aegis/server.py",
-      "line": 368,
+      "line": 383,
       "handler": "make_handler.H._get_org",
       "condition": "p == '/api/assets/secrets-status'",
       "literals": [
@@ -4066,7 +4071,7 @@
     {
       "method": "GET",
       "file": "aegis/server.py",
-      "line": 372,
+      "line": 387,
       "handler": "make_handler.H._get_org",
       "condition": "p == f'/api/assessments/{svc.a.id}'",
       "literals": [
@@ -4077,7 +4082,7 @@
     {
       "method": "GET",
       "file": "aegis/server.py",
-      "line": 374,
+      "line": 389,
       "handler": "make_handler.H._get_org",
       "condition": "p == f'/api/assessments/{svc.a.id}/logs'",
       "literals": [
@@ -4088,7 +4093,7 @@
     {
       "method": "GET",
       "file": "aegis/server.py",
-      "line": 376,
+      "line": 391,
       "handler": "make_handler.H._get_org",
       "condition": "p == f'/api/assessments/{svc.a.id}/artex/llm-preview'",
       "literals": [
@@ -4099,7 +4104,7 @@
     {
       "method": "GET",
       "file": "aegis/server.py",
-      "line": 381,
+      "line": 396,
       "handler": "make_handler.H._get_org",
       "condition": "p == f'/api/assessments/{svc.a.id}/report'",
       "literals": [
@@ -4110,7 +4115,7 @@
     {
       "method": "GET",
       "file": "aegis/server.py",
-      "line": 386,
+      "line": 401,
       "handler": "make_handler.H._get_org",
       "condition": "p == f'/api/assessments/{svc.a.id}/remotion'",
       "literals": [
@@ -4121,7 +4126,7 @@
     {
       "method": "GET",
       "file": "aegis/server.py",
-      "line": 395,
+      "line": 410,
       "handler": "make_handler.H._get_org",
       "condition": "p == f'/api/assessments/{svc.a.id}/events'",
       "literals": [
@@ -4132,7 +4137,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 493,
+      "line": 508,
       "handler": "make_handler.H.do_POST",
       "condition": "p == '/api/auth/login'",
       "literals": [
@@ -4142,7 +4147,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 495,
+      "line": 510,
       "handler": "make_handler.H.do_POST",
       "condition": "p == '/api/auth/register'",
       "literals": [
@@ -4152,7 +4157,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 497,
+      "line": 512,
       "handler": "make_handler.H.do_POST",
       "condition": "p == '/api/auth/logout'",
       "literals": [
@@ -4162,7 +4167,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 526,
+      "line": 541,
       "handler": "make_handler.H.do_POST",
       "condition": "p == '/api/auth/password'",
       "literals": [
@@ -4172,7 +4177,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 528,
+      "line": 543,
       "handler": "make_handler.H.do_POST",
       "condition": "p == '/api/auth/totp/enroll'",
       "literals": [
@@ -4182,7 +4187,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 530,
+      "line": 545,
       "handler": "make_handler.H.do_POST",
       "condition": "p == '/api/auth/totp/confirm'",
       "literals": [
@@ -4192,7 +4197,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 532,
+      "line": 547,
       "handler": "make_handler.H.do_POST",
       "condition": "p == '/api/auth/totp/disable'",
       "literals": [
@@ -4202,7 +4207,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 534,
+      "line": 549,
       "handler": "make_handler.H.do_POST",
       "condition": "p == '/api/operators/roles'",
       "literals": [
@@ -4212,7 +4217,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 536,
+      "line": 551,
       "handler": "make_handler.H.do_POST",
       "condition": "p in ('/api/operators/unlock', '/api/operators/reset-mfa')",
       "literals": [
@@ -4223,7 +4228,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 539,
+      "line": 554,
       "handler": "make_handler.H.do_POST",
       "condition": "p.startswith('/api/orgs') or p == '/api/invites/accept'",
       "literals": [
@@ -4234,7 +4239,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 541,
+      "line": 556,
       "handler": "make_handler.H.do_POST",
       "condition": "p.endswith('/lab-mode')",
       "literals": []
@@ -4242,7 +4247,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 546,
+      "line": 561,
       "handler": "make_handler.H.do_POST",
       "condition": "p not in PLATFORM_POST_ROUTES",
       "literals": []
@@ -4250,7 +4255,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 552,
+      "line": 567,
       "handler": "make_handler.H.do_POST",
       "condition": "not REAL_SERVICE_DIAGNOSIS and self._touches_real_site(p, osvc)",
       "literals": []
@@ -4258,7 +4263,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 562,
+      "line": 577,
       "handler": "make_handler.H.do_POST",
       "condition": "not {'operator', 'approver', 'admin'} & set(osess.roles) and (not p.endswith(('/emergency-stop', '/pause')))",
       "literals": []
@@ -4266,7 +4271,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 569,
+      "line": 584,
       "handler": "make_handler.H.do_POST",
       "condition": "REAL_SITE_L1_ONLY and (not real_site_traffic) and (p.endswith(('/start', '/restart', '/resume')) or artex_item)",
       "literals": []
@@ -4274,7 +4279,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 596,
+      "line": 611,
       "handler": "make_handler.H.do_POST",
       "condition": "p.endswith('/chat')",
       "literals": []
@@ -4282,7 +4287,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 609,
+      "line": 624,
       "handler": "make_handler.H.do_POST",
       "condition": "p.endswith('/artex/plan')",
       "literals": []
@@ -4290,7 +4295,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 624,
+      "line": 639,
       "handler": "make_handler.H.do_POST",
       "condition": "p.endswith('/artex/plan') and mode != 'direct' and (mode != 'gateway-preview') and isinstance(body.get('llm_approval'), dict)",
       "literals": []
@@ -4298,7 +4303,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 578,
+      "line": 593,
       "handler": "make_handler.H.do_POST",
       "condition": "p == '/api/assets/verify-ownership'",
       "literals": [
@@ -4308,7 +4313,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 582,
+      "line": 597,
       "handler": "make_handler.H.do_POST",
       "condition": "p.endswith(('/start', '/restart', '/resume')) or artex_item",
       "literals": []
@@ -4316,7 +4321,7 @@
     {
       "method": "GET",
       "file": "aegis/server.py",
-      "line": 846,
+      "line": 861,
       "handler": "make_handler.H._tenancy_get",
       "condition": "p == '/api/orgs'",
       "literals": [
@@ -4326,7 +4331,7 @@
     {
       "method": "GET",
       "file": "aegis/server.py",
-      "line": 853,
+      "line": 868,
       "handler": "make_handler.H._tenancy_get",
       "condition": "p == '/api/orgs/members'",
       "literals": [
@@ -4336,7 +4341,7 @@
     {
       "method": "GET",
       "file": "aegis/server.py",
-      "line": 856,
+      "line": 871,
       "handler": "make_handler.H._tenancy_get",
       "condition": "p == '/api/orgs/invites'",
       "literals": [
@@ -4346,7 +4351,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 865,
+      "line": 880,
       "handler": "make_handler.H._tenancy_post",
       "condition": "p == '/api/orgs'",
       "literals": [
@@ -4356,7 +4361,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 870,
+      "line": 885,
       "handler": "make_handler.H._tenancy_post",
       "condition": "p == '/api/invites/accept'",
       "literals": [
@@ -4366,7 +4371,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 877,
+      "line": 892,
       "handler": "make_handler.H._tenancy_post",
       "condition": "p == '/api/orgs/members/roles'",
       "literals": [
@@ -4376,7 +4381,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 883,
+      "line": 898,
       "handler": "make_handler.H._tenancy_post",
       "condition": "p == '/api/orgs/members/remove'",
       "literals": [
@@ -4386,7 +4391,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 888,
+      "line": 903,
       "handler": "make_handler.H._tenancy_post",
       "condition": "p == '/api/orgs/invites'",
       "literals": [
@@ -4396,7 +4401,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 896,
+      "line": 911,
       "handler": "make_handler.H._tenancy_post",
       "condition": "p == '/api/orgs/invites/revoke'",
       "literals": [
@@ -4406,7 +4411,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 912,
+      "line": 927,
       "handler": "make_handler.H._dispatch",
       "condition": "p == '/api/assets'",
       "literals": [
@@ -4416,7 +4421,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 923,
+      "line": 938,
       "handler": "make_handler.H._dispatch",
       "condition": "p == '/api/assets/challenge'",
       "literals": [
@@ -4426,7 +4431,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 941,
+      "line": 956,
       "handler": "make_handler.H._dispatch",
       "condition": "p == '/api/assets/google/start'",
       "literals": [
@@ -4436,7 +4441,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 973,
+      "line": 988,
       "handler": "make_handler.H._dispatch",
       "condition": "p == '/api/assets/google/finish'",
       "literals": [
@@ -4446,7 +4451,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1001,
+      "line": 1016,
       "handler": "make_handler.H._dispatch",
       "condition": "p == '/api/assets/verify-ownership'",
       "literals": [
@@ -4456,7 +4461,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1017,
+      "line": 1032,
       "handler": "make_handler.H._dispatch",
       "condition": "p == '/api/assets/confirm-scope'",
       "literals": [
@@ -4466,7 +4471,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1028,
+      "line": 1048,
       "handler": "make_handler.H._dispatch",
       "condition": "p == '/api/assets/secrets'",
       "literals": [
@@ -4476,7 +4481,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1044,
+      "line": 1064,
       "handler": "make_handler.H._dispatch",
       "condition": "p == '/api/assets/delete'",
       "literals": [
@@ -4486,7 +4491,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1050,
+      "line": 1070,
       "handler": "make_handler.H._dispatch",
       "condition": "p == '/api/assets/select'",
       "literals": [
@@ -4496,7 +4501,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1053,
+      "line": 1073,
       "handler": "make_handler.H._dispatch",
       "condition": "p == '/api/l2-profiles/accept'",
       "literals": [
@@ -4506,7 +4511,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1059,
+      "line": 1079,
       "handler": "make_handler.H._dispatch",
       "condition": "p in ('/api/router/verify', '/api/cve/sync') and (not {'approver', 'admin'} & set(sess.roles))",
       "literals": [
@@ -4517,7 +4522,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1063,
+      "line": 1083,
       "handler": "make_handler.H._dispatch",
       "condition": "p == '/api/router/verify'",
       "literals": [
@@ -4527,7 +4532,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1066,
+      "line": 1086,
       "handler": "make_handler.H._dispatch",
       "condition": "p in JOB_ROUTES",
       "literals": []
@@ -4535,7 +4540,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1071,
+      "line": 1091,
       "handler": "make_handler.H._dispatch",
       "condition": "p == '/api/system/verify-controls'",
       "literals": [
@@ -4545,7 +4550,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1078,
+      "line": 1098,
       "handler": "make_handler.H._dispatch",
       "condition": "p == '/api/cve/sync'",
       "literals": [
@@ -4555,7 +4560,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1090,
+      "line": 1110,
       "handler": "make_handler.H._dispatch",
       "condition": "p == base + '/start'",
       "literals": []
@@ -4563,7 +4568,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1093,
+      "line": 1113,
       "handler": "make_handler.H._dispatch",
       "condition": "p == base + '/restart'",
       "literals": []
@@ -4571,7 +4576,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1095,
+      "line": 1115,
       "handler": "make_handler.H._dispatch",
       "condition": "p == base + '/pause'",
       "literals": []
@@ -4579,7 +4584,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1097,
+      "line": 1117,
       "handler": "make_handler.H._dispatch",
       "condition": "p == base + '/resume'",
       "literals": []
@@ -4587,7 +4592,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1099,
+      "line": 1119,
       "handler": "make_handler.H._dispatch",
       "condition": "p == base + '/emergency-stop'",
       "literals": []
@@ -4595,7 +4600,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1101,
+      "line": 1121,
       "handler": "make_handler.H._dispatch",
       "condition": "p == base + '/verify-finding'",
       "literals": []
@@ -4603,7 +4608,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1108,
+      "line": 1128,
       "handler": "make_handler.H._dispatch",
       "condition": "p == base + '/artex/plan'",
       "literals": []
@@ -4611,7 +4616,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1114,
+      "line": 1134,
       "handler": "make_handler.H._dispatch",
       "condition": "(m := re.fullmatch(base + '/artex/items/([A-Za-z0-9_]{1,80})/execute', p))",
       "literals": []
@@ -4619,7 +4624,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1117,
+      "line": 1137,
       "handler": "make_handler.H._dispatch",
       "condition": "p == base + '/request-l2'",
       "literals": []
@@ -4627,7 +4632,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1126,
+      "line": 1146,
       "handler": "make_handler.H._dispatch",
       "condition": "p == base + '/lab-mode'",
       "literals": []
@@ -4635,7 +4640,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1131,
+      "line": 1151,
       "handler": "make_handler.H._dispatch",
       "condition": "p == base + '/verify-fix'",
       "literals": []
@@ -4643,7 +4648,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1135,
+      "line": 1155,
       "handler": "make_handler.H._dispatch",
       "condition": "p == base + '/chat'",
       "literals": []
@@ -4651,7 +4656,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1143,
+      "line": 1163,
       "handler": "make_handler.H._dispatch",
       "condition": "(m := re.fullmatch(base + '/approvals/(req_[0-9a-f]+)', p))",
       "literals": []
@@ -4968,13 +4973,13 @@
     },
     {
       "file": "aegis/server.py",
-      "line": 1294,
+      "line": 1314,
       "function": "main",
       "call": "threading.Thread(target=srv.shutdown, daemon=True).start"
     },
     {
       "file": "aegis/server.py",
-      "line": 1294,
+      "line": 1314,
       "function": "main",
       "call": "threading.Thread"
     },
@@ -5127,32 +5132,32 @@
     },
     {
       "file": "web/src/components/OwnershipWizard.tsx",
-      "line": 104,
+      "line": 105,
       "source": "const res = await postJSON<ChallengeResponse>(\"/api/assets/challenge\", { url: url.trim() });"
     },
     {
       "file": "web/src/components/OwnershipWizard.tsx",
-      "line": 116,
+      "line": 117,
       "source": "const next = await postJSON<{ url: string }>(\"/api/assets/google/start\", { url: url.trim() });"
     },
     {
       "file": "web/src/components/OwnershipWizard.tsx",
-      "line": 129,
+      "line": 130,
       "source": "const res = await postJSON<{ url: string }>(\"/api/assets/google/start\", { url: url.trim() });"
     },
     {
       "file": "web/src/components/OwnershipWizard.tsx",
-      "line": 137,
+      "line": 138,
       "source": "const res = await postJSON<VerifyResponse>(\"/api/assets/verify-ownership\", { url: url.trim(), method });"
     },
     {
       "file": "web/src/components/OwnershipWizard.tsx",
-      "line": 145,
+      "line": 146,
       "source": "const res = await postJSON<ScopeResponse>(\"/api/assets/confirm-scope\", {"
     },
     {
       "file": "web/src/components/OwnershipWizard.tsx",
-      "line": 152,
+      "line": 154,
       "source": "await postJSON(`/api/assessments/${res.snapshot.id}/start`, {});"
     },
     {
@@ -5212,12 +5217,12 @@
     },
     {
       "file": "web/src/components/layout/SessionProvider.tsx",
-      "line": 23,
-      "source": "const me = await getJSON<{ session: SessionInfo | null; orgs?: OrgInfo[]; multi_tenant?: boolean; self_registration?: boolean; google_ownership?: boolean }>(\"/api/auth/me\");"
+      "line": 24,
+      "source": "const me = await getJSON<{ session: SessionInfo | null; orgs?: OrgInfo[]; multi_tenant?: boolean; self_registration?: boolean; google_ownership?: boolean; optional_status_check?: boolean }>(\"/api/auth/me\");"
     },
     {
       "file": "web/src/components/layout/SessionProvider.tsx",
-      "line": 42,
+      "line": 45,
       "source": "const res = await fetch(\"/api/auth/logout\", { method: \"POST\", headers: { \"X-Aegis-Request\": \"1\" } }).catch(() => null);"
     },
     {
@@ -5664,27 +5669,27 @@
     },
     {
       "file": "web/src/lib/useSession.ts",
-      "line": 42,
+      "line": 45,
       "name": "useSession"
     },
     {
       "file": "web/src/lib/useSession.ts",
-      "line": 43,
+      "line": 46,
       "name": "canApprove"
     },
     {
       "file": "web/src/lib/useSession.ts",
-      "line": 44,
+      "line": 47,
       "name": "isAdmin"
     },
     {
       "file": "web/src/lib/useSession.ts",
-      "line": 46,
+      "line": 49,
       "name": "platformRoles"
     },
     {
       "file": "web/src/lib/useSession.ts",
-      "line": 47,
+      "line": 50,
       "name": "isPlatformAdmin"
     },
     {
@@ -5869,27 +5874,27 @@
     },
     {
       "file": "web/src/components/OwnershipWizard.tsx",
-      "line": 90,
+      "line": 91,
       "name": "run"
     },
     {
       "file": "web/src/components/OwnershipWizard.tsx",
-      "line": 102,
+      "line": 103,
       "name": "issue"
     },
     {
       "file": "web/src/components/OwnershipWizard.tsx",
-      "line": 127,
+      "line": 128,
       "name": "viaGoogle"
     },
     {
       "file": "web/src/components/OwnershipWizard.tsx",
-      "line": 134,
+      "line": 135,
       "name": "verify"
     },
     {
       "file": "web/src/components/OwnershipWizard.tsx",
-      "line": 143,
+      "line": 144,
       "name": "confirmScope"
     },
     {
