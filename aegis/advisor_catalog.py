@@ -15,7 +15,7 @@ from __future__ import annotations
 from types import MappingProxyType
 
 ALL_RULES = ("f_l1_tls", "f_l1_no_tls", "f_headers", "f_l1_cookies", "f_l1_cors", "f_powered",
-             "f_l1_unauth_api", "f_banner", "f_idor", "f_sqli")
+             "f_l1_unauth_api", "f_l1_apache_mod_status", "f_banner", "f_idor", "f_sqli")
 
 # What the explanation claims about the finding. The verdict decides which are honest.
 CLAIM_LEVELS = MappingProxyType({
@@ -47,6 +47,7 @@ OPERATIONS = MappingProxyType({
     "l1_recheck_cookie_attributes": ("L1", "Cookie の属性を再確認する", {"f_l1_cookies"}),
     "l1_recheck_cors_policy": ("L1", "信頼しないオリジンへの CORS 応答を再確認する", {"f_l1_cors"}),
     "l1_recheck_unauth_response": ("L1", "未認証の要求への応答を再確認する", {"f_l1_unauth_api"}),
+    "l1_recheck_apache_status": ("L1", "Apacheの状態情報が公開されていないか再確認する", {"f_l1_apache_mod_status"}),
     "l2_authz_boundary_check": ("L2", "テスト用アカウント間の認可境界を確認する", {"f_idor", "f_l1_unauth_api"}),
     "l2_input_boundary_check": ("L2", "模擬データ環境で入力の境界を確認する", {"f_sqli"}),
     "manual_config_review": ("manual", "設定を人が見直す", set(ALL_RULES)),
@@ -72,6 +73,7 @@ REMEDIATION_ACTIONS = MappingProxyType({
     "restrict_cors_allowlist": ("許可するオリジンを明示的な一覧に限る", {"f_l1_cors"}),
     "disallow_credentials_for_untrusted": ("信頼しないオリジンに資格情報つきの応答を許可しない", {"f_l1_cors"}),
     "require_authentication": ("公開を意図しない API に認証を必須にする", {"f_l1_unauth_api"}),
+    "restrict_apache_status": ("Apacheの状態情報を公開範囲から外すか管理者だけに制限する", {"f_l1_apache_mod_status"}),
     "minimize_response_fields": ("返す項目を最小限にする", {"f_l1_unauth_api", "f_idor"}),
     "confirm_intended_exposure": ("公開が意図どおりかを確認する", {"f_l1_unauth_api", "f_powered", "f_l1_cors"}),
     "enforce_object_ownership": ("資源ごとに所有者をサーバー側で照合する", {"f_idor"}),
