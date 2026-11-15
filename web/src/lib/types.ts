@@ -190,6 +190,8 @@ export interface Snapshot {
   demo: boolean;
   target_url?: string;
   is_external_service?: boolean;
+  /** public beta: a real site gets only the read-only diagnosis (no L2, no re-checks) */
+  real_site_read_only?: boolean;
   l2_separation_required?: boolean;
   /** Set while state cannot be written to disk; real-service work is refused meanwhile. */
   persistence_error?: string | null;

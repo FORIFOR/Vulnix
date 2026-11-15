@@ -2967,6 +2967,7 @@ class AssessmentService:
                 "target_url": self.a.target_url,
                 "is_external_service": is_ext,
                 "scope_active": scope_active,
+                "real_site_read_only": bool(getattr(self, "real_site_read_only", False)),
                 "lab_mode": get_lab_mode(),
                 "lab_endpoint": self.a.target_url if is_ext else f"127.0.0.1:{self.lab_port}",
                 "planner": self.planner_status(),
@@ -3877,18 +3878,29 @@ class AssessmentService:
             # Real-service L1 diagnosis completes safely without auto-running L2.
             # L2 items remain in `candidate` state until encrypted credentials +
             # per-item human approval are provided.
-            self._think(
-                "実サービス L1 読み取り専用診断の完了（L2は個別人間承認待ち）",
-                "所有確認のみでL2侵入実証を自動承認しない安全原則に従い、L1検査結果を確定しました。L2項目（対象に判定ルールが設定されている場合）は検証用アカウント設定と個別の人間承認後に実行できます。",
-                phase="verification",
-                tool="Gateway",
-                level="L1",
-            )
-            self._phase(
-                "verification",
-                "skipped",
-                "L1診断完了（L2再現試験は検証用アカウント設定と個別の人間承認が必要です）",
-            )
+            if getattr(self, "real_site_read_only", False):
+                # public beta: nothing beyond this read-only run ever reaches a real site
+                self._think(
+                    "実在するサイトの読み取り専用診断が完了しました",
+                    "公開されているページを1回読み取って調べた結果を確定しました。侵入できるかどうかの実証（L2）は、このサービスでは実在するサイトに対して行いません。",
+                    phase="verification",
+                    tool="Gateway",
+                    level="L1",
+                )
+                self._phase("verification", "skipped", "読み取り専用の診断のため、侵入の実証は行いません")
+            else:
+                self._think(
+                    "実サービス L1 読み取り専用診断の完了（L2は個別人間承認待ち）",
+                    "所有確認のみでL2侵入実証を自動承認しない安全原則に従い、L1検査結果を確定しました。L2項目（対象に判定ルールが設定されている場合）は検証用アカウント設定と個別の人間承認後に実行できます。",
+                    phase="verification",
+                    tool="Gateway",
+                    level="L1",
+                )
+                self._phase(
+                    "verification",
+                    "skipped",
+                    "L1診断完了（L2再現試験は検証用アカウント設定と個別の人間承認が必要です）",
+                )
         else:
             self._phase("verification", "running", "隔離環境での侵入成立実証（再現試験）の承認を待っています")
             self._activity("脆弱性の検証（侵入成立の実証）", "reproduction_probe", "L2")
@@ -4314,8 +4326,33 @@ class AssessmentService:
         self.bus.publish(self.a.id, "assessment.state", state=state, risk=self._risk(),
                          failure=self.a.failure)
 
+    # what a site owner can check, by the kind of failure; the technical detail follows it
+    _FAILURE_LEAD = {
+        "timeout": "サイトから時間内に応答がありませんでした。サイトが止まっていないか、混み合っていないかを確認し、時間をおいてもう一度お試しください",
+        "connection_refused": "サイトに接続できませんでした（接続を拒否されました）。サイトが動いているか、登録した URL とポート番号が正しいかを確認してください",
+        "connection_reset": "サイトとの通信が途中で切れました。時間をおいてもう一度お試しください",
+        "network_error": "サイトに接続できませんでした。サイトが公開されているか、登録した URL が正しいかを確認してください",
+        "tls_verify_failed": "サイトの証明書（HTTPS）を確認できませんでした。証明書の有効期限やドメイン名の設定を確認してください",
+        "tls_error": "サイトと HTTPS の接続を確立できませんでした。HTTPS の設定を確認してください",
+        "bad_http_response": "サイトから正しい形式の応答が返りませんでした。サイトの設定を確認してください",
+        "egress_blocked": "所有確認したアドレス以外へ接続しようとしたため、安全のため診断を止めました",
+    }
+
+    @classmethod
+    def _worker_failure_text(cls, tool: str, result) -> str:
+        """Why a worker failed: what the owner can check first, then the worker's own report."""
+        detail = cls._worker_failure_detail(tool, result)
+        if getattr(result, "timed_out", False) or result.killed:
+            return f"{cls._FAILURE_LEAD['timeout']}（詳細: {detail}）"
+        try:
+            err = json.loads((result.stdout or "").strip() or "{}").get("error")
+        except (ValueError, AttributeError):
+            err = None
+        lead = cls._FAILURE_LEAD.get(str(err.get("kind"))) if isinstance(err, dict) else None
+        return f"{lead}（詳細: {detail}）" if lead else detail
+
     @staticmethod
-    def _worker_failure_text(tool: str, result) -> str:
+    def _worker_failure_detail(tool: str, result) -> str:
         """Why a worker failed, from its own structured report when it gave one."""
         if getattr(result, "timed_out", False):
             stage = {"started": "開始直後", "connect": "TCP接続", "tls": "TLSハンドシェイク", "send": "リクエスト送信",

@@ -42,8 +42,9 @@ export function WorkspaceHeader({ snap, conn, onUpdate, refetch }: {
           </p>
         </div>
         <div className="flex items-center gap-4">
-          {/* Before any check has run, show "未診断" rather than a misleading 0 / 低リスク. */}
-          <RiskScore risk={snap.state === "idle" ? null : snap.risk} />
+          {/* Before any check has run, or when a run failed before finding anything, show
+              "未診断" rather than a misleading 0 / 低リスク. */}
+          <RiskScore risk={snap.state === "idle" || (snap.state === "failed" && snap.findings.length === 0) ? null : snap.risk} />
         </div>
       </div>
       <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg bg-zinc-100 px-3 py-2 text-xs dark:bg-zinc-900">

@@ -35,6 +35,11 @@ test("missing kernel isolation is shown for a real service only", () => {
   assert.deepEqual(statusNotices({ state: "idle", is_external_service: false, l2_isolation: iso }), []);
 });
 
+test("read-only mode does not talk about an L2 that never runs", () => {
+  const iso = { ok: false, reason: "Linux 以外のホスト（darwin）" };
+  assert.deepEqual(statusNotices({ state: "idle", is_external_service: true, real_site_read_only: true, l2_isolation: iso }), []);
+});
+
 test("authority that was not restored is announced", () => {
   assert.equal(statusNotices({ state: "idle", authority_notice: "引き継いでいません" })[0].tone, "warn");
 });

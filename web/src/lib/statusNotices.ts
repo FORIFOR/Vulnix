@@ -6,6 +6,7 @@ export interface StatusNotice { tone: "error" | "warn"; title: string; detail: s
 interface NoticeSource {
   state: string;
   is_external_service?: boolean;
+  real_site_read_only?: boolean;
   persistence_error?: string | null;
   authority_notice?: string | null;
   failure?: { reason: string; kind: string; at?: number; error?: string } | null;
@@ -56,7 +57,8 @@ export function statusNotices(s: NoticeSource): StatusNotice[] {
   if (s.authority_notice) {
     out.push({ tone: "warn", title: "所有確認・範囲確認を引き継いでいません", detail: s.authority_notice });
   }
-  if (s.is_external_service && s.l2_isolation && !s.l2_isolation.ok) {
+  // read-only mode never runs an L2 on a real site, so whether it could is not news
+  if (s.is_external_service && !s.real_site_read_only && s.l2_isolation && !s.l2_isolation.ok) {
     out.push({
       tone: "warn",
       title: "このホストでは実サービスのL2検証を実行しません",
