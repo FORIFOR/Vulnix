@@ -171,7 +171,8 @@ export function AssessmentTabs({ id }: { id: string }) {
 
         <EvidenceOverview snap={snap} selected={tab === "findings" ? evidenceFilter : "all"} />
 
-        {tab === "assessment" && snap.artex_plan?.configured && !snap.is_external_service && (
+        {tab === "assessment" && snap.artex_plan?.configured
+          && (!snap.is_external_service || snap.state === "completed") && (
           <ArtexPlanPanel snap={snap} onUpdate={setSnap} />
         )}
 

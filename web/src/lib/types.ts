@@ -316,6 +316,7 @@ export interface ArtexPlanView {
     requested_by: string;
     at: number;
     engine: { kind: string; label: string; pinned?: boolean; sha256?: string; artex_commit?: string; go_version?: string };
+    llm_model?: string;
     isolation?: {
       confined: boolean; label: string; mechanism?: string; kernel_dropped_packets?: number;
       pinned?: string; pinned_extra?: string[]; egress_canary?: string | null;
