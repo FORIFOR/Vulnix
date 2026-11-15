@@ -29,7 +29,7 @@ export default function LoginPage() {
     if (!loading && session) router.replace(afterLogin());
   }, [loading, session, router]);
 
-  // Self-registration exists only in development mode; otherwise an admin creates accounts.
+  // Self-registration may also be enabled for a multi-tenant public beta.
   const [selfRegistration, setSelfRegistration] = useState(false);
   useEffect(() => {
     let live = true;
@@ -203,11 +203,8 @@ export default function LoginPage() {
             </button>
             <p className="mt-4 text-xs leading-relaxed text-zinc-500">
               {selfRegistration
-                ? "アカウントをお持ちでない場合は上の「新規アカウント登録」タブから登録できます（開発モードのみ）。"
+                ? "アカウントをお持ちでない場合は上の「新規アカウント登録」から登録できます。"
                 : "アカウントは管理者が作成します（設定 → アカウントとロール）。"}
-              初期生成アカウント情報は
-              <code className="mx-1 rounded bg-zinc-100 px-1 dark:bg-zinc-800">operators.initial-credentials.txt</code>
-              にも保存されています。
             </p>
           </form>
         ) : (
@@ -269,13 +266,7 @@ export default function LoginPage() {
               </div>
             </div>
 
-            <div className="mb-4 rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-xs dark:border-zinc-800 dark:bg-zinc-950/60">
-              <div className="mb-1 font-semibold">付与される権限ロール</div>
-              <p className="text-zinc-600 dark:text-zinc-400">
-                登録したアカウントは操作者（operator）になります。承認責任者（approver）のロールは自分では付与できません。
-                必要な場合は、管理者に「設定 → アカウントとロール」から付与を依頼してください。
-              </p>
-            </div>
+            <p className="mb-4 text-xs text-zinc-500">登録後、サイトの診断を始められます。追加の承認が必要な操作は管理者が担当します。</p>
 
             {err && (
               <p role="alert" className="mb-3 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-800 dark:bg-red-950/40 dark:text-red-200">
@@ -291,7 +282,7 @@ export default function LoginPage() {
               {busy ? "登録中…" : "アカウントを登録して開始"}
             </button>
             <p className="mt-3 text-[11px] text-zinc-500">
-              パスワードは scrypt（N=2^15, r=8, p=1）でハッシュ化され、平文は保存されません。登録後、設定画面から2要素認証（TOTP）を有効化できます。
+              アカウントを守るため、登録後に設定から2要素認証を有効にできます。
             </p>
           </form>
         )}

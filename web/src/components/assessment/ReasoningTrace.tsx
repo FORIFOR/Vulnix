@@ -178,7 +178,7 @@ export function ReasoningTrace({
   const [userToggled, setUserToggled] = useState<boolean | null>(null);
   const [viewMode, setViewMode] = useState<"steps" | "raw">("steps");
   const scrollRef = useRef<HTMLDivElement | null>(null);
-  const open = userToggled !== null ? userToggled : isRunning || defaultOpen;
+  const open = userToggled !== null ? userToggled : defaultOpen;
 
   const execEntries = useMemo(
     () => audit.filter((e) => EXECUTION_EVENTS.has(e.event)),
@@ -197,10 +197,10 @@ export function ReasoningTrace({
   const headerTitle = isRunning
     ? snap.activity?.title
       ? `計画・実機検証中：${snap.activity.title}`
-      : "ARTEX が計画・Worker検証を実行中…"
+      : "診断の手順を確認中…"
     : items.length > 0
-      ? `計画・実行プロセス（${items.length} ステップ・監査ログ ${audit.length} 件）`
-      : "計画・実行プロセス（待機中 — 診断またはWorker検証を開始するとリアルタイム表示されます）";
+      ? `診断の詳細（${items.length} ステップ・記録 ${audit.length} 件）`
+      : "診断の詳細（待機中）";
 
   return (
     <div
@@ -237,7 +237,7 @@ export function ReasoningTrace({
                 </span>
               )}
             </div>
-            {latestItem && (
+            {open && latestItem && (
               <p className="truncate text-[11px] text-zinc-500 dark:text-zinc-400">
                 最新 [{fmtClock(latestItem.ts)}] {latestItem.title} — {latestItem.detail}
               </p>

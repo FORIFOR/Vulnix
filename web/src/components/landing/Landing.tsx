@@ -2,20 +2,19 @@
 // the control plane, so it is safe to serve through a public tunnel.
 
 const FEATURES = [
-  { icon: "◆", title: "本物の ARTEX が計画", body: "オープンソースの自律診断エンジン ARTEX が、検証の方向性を考えます。出せるのは「提案」だけで、実行の権限は持ちません。" },
-  { icon: "✓", title: "危険な検証は承認制", body: "実際に攻撃が成立するかを確かめる検証（L2）は、対象と操作を確認した承認者が許可したものだけが動きます。" },
-  { icon: "▣", title: "隔離された環境で実行", body: "ARTEX と検証 Worker は Linux の隔離環境で動き、通信先・時間・メモリ・プロセス数が制限されます。" },
-  { icon: "≡", title: "推測ではなく証拠", body: "「検出（L1）」と「実証（L2）」をはっきり分け、判断の根拠になった証拠を改ざん検知つきの監査ログに残します。" },
-  { icon: "あ", title: "AI が日本語で解説", body: "Abliteration AI が、何が問題か・危険性・修正方法・修正後の確認方法を、専門知識がなくても分かる言葉で説明します。" },
+  { icon: "◆", title: "公開ページの設定を確認", body: "所有を確認したサイトの公開ページを1回読み、設定と応答を確認します。現在、実サイト向けのARTEX計画は行いません。" },
+  { icon: "✓", title: "追加の検証は承認制", body: "模擬ラボで脆弱性の成立を確かめる検証は、承認されたものだけが動きます。公開版の実サイトでは実行しません。" },
+  { icon: "▣", title: "検証処理を隔離", body: "模擬ラボの検証処理は許可した範囲に限定されます。Linux環境ではカーネルによる隔離も適用します。" },
+  { icon: "≡", title: "推測と実測を区別", body: "未計測の候補、設定の検出、脆弱性の実証を分け、根拠となる証拠を記録します。" },
+  { icon: "あ", title: "結果を日本語で説明", body: "公開版の実サイトでは内蔵の解説機能で、確認できたことと未確認のことを説明します。" },
   { icon: "■", title: "いつでも緊急停止", body: "ワンクリックで新しい操作を止め、権限を失効させ、実行中の処理の終了まで確認します。" },
 ];
 
 const STEPS = [
-  { n: "1", title: "サイトを登録", body: "診断したい自分のサイトを登録します。" },
-  { n: "2", title: "所有を確認", body: "DNS の TXT レコードか、サイトに置くファイルで、あなたが管理者であることを確かめます。" },
-  { n: "3", title: "読み取りだけの診断（L1）", body: "公開設定やヘッダーなど、サイトに負荷をかけない観察から始めます。" },
-  { n: "4", title: "必要なものだけ実証（L2）", body: "承認者が一件ずつ許可した検証だけを、隔離環境で非破壊に行います。" },
-  { n: "5", title: "結果と直し方を確認", body: "証拠・危険性・修正方法・AI の解説を、ひとつの画面で確認できます。" },
+  { n: "1", title: "URLを入力", body: "診断したい自分のサイトを登録します。" },
+  { n: "2", title: "所有を確認", body: "DNS の記録、サイトに置くファイル、または対応している場合はGoogleで確認します。" },
+  { n: "3", title: "診断を開始", body: "公開ページを1回読み、設定を確認します。" },
+  { n: "4", title: "結果を見る", body: "確認できた設定、根拠、対策、未確認の項目を確認します。" },
 ];
 
 const PRINCIPLES = [
@@ -48,13 +47,13 @@ export function Landing({ app = false }: { app?: boolean }) {
       <main id="top">
         <section className="mx-auto grid max-w-6xl items-center gap-10 px-4 pb-16 pt-14 sm:px-6 md:grid-cols-2 md:pt-20">
           <div>
-            <p className="mb-4 text-sm font-medium tracking-wide text-zinc-500">AI セキュリティ診断サービス</p>
+            <p className="mb-4 text-sm font-medium tracking-wide text-zinc-500">所有確認済みサイトの設定診断</p>
             <h1 className="text-4xl font-bold leading-tight tracking-tight sm:text-5xl">
-              AI が考え、<br />人が承認し、<br />証拠で示す。
+              URLを入力し、<br />所有を確認。<br />証拠と対策を見る。
             </h1>
             <p className="mt-6 text-base leading-relaxed text-zinc-600 sm:text-lg">
-              Vulnix は、AI が検証計画を立て、人の承認と隔離された環境のもとで安全に確かめ、
-              結果を日本語でわかりやすく説明する Web セキュリティ診断サービスです。
+              公開版では、所有を確認したサイトの公開ページを1回読み、設定と根拠を日本語で示します。
+              模擬ラボでは承認済みの再現試験も試せます。
             </p>
             <div className="mt-8 flex flex-wrap gap-3">
               {app ? (
@@ -94,7 +93,7 @@ export function Landing({ app = false }: { app?: boolean }) {
         <section id="how" className="scroll-mt-20">
           <div className="mx-auto max-w-6xl px-4 py-16 sm:px-6">
             <h2 className="text-2xl font-bold tracking-tight sm:text-3xl">診断の流れ</h2>
-            <ol className="mt-10 grid gap-4 md:grid-cols-5">
+            <ol className="mt-10 grid gap-4 md:grid-cols-4">
               {STEPS.map((s) => (
                 <li key={s.n} className="rounded-xl border border-zinc-200 p-5">
                   <span className="text-xs font-semibold text-zinc-400">STEP {s.n}</span>
@@ -109,8 +108,8 @@ export function Landing({ app = false }: { app?: boolean }) {
                 <figcaption className="border-t border-zinc-100 px-4 py-3 text-sm text-zinc-600">問題ごとに、証拠・危険性・修正方法・修正後の確認方法を表示します。</figcaption>
               </figure>
               <figure className="overflow-hidden rounded-xl border border-zinc-200">
-                <img src="/media/shot-ai-explanation.png" alt="AI による日本語の解説" className="block w-full" loading="lazy" />
-                <figcaption className="border-t border-zinc-100 px-4 py-3 text-sm text-zinc-600">AI の解説には、判定（未実証かどうか）を Vulnix が必ず添えます。</figcaption>
+                <img src="/media/shot-ai-explanation.png" alt="模擬ラボの日本語解説画面" className="block w-full" loading="lazy" />
+                <figcaption className="border-t border-zinc-100 px-4 py-3 text-sm text-zinc-600">模擬ラボの解説例です。未実証の候補は実証済みの結果と分けて表示します。</figcaption>
               </figure>
             </div>
           </div>
@@ -136,18 +135,18 @@ export function Landing({ app = false }: { app?: boolean }) {
             {app ? (
               <>
                 <p className="mt-5 leading-relaxed text-zinc-600">
-                  どなたでもアカウントを作り、自分の組織とサイトを登録して、模擬ラボで診断の流れ・証拠・AI の解説を試せます。
+                  どなたでもアカウントを作り、自分の組織とサイトを登録して、模擬ラボで診断の流れ・証拠・内蔵の解説を試せます。
                   チームのメンバーを招待して、役割（実行者・承認者・閲覧者など）を分けることもできます。
                 </p>
                 <p className="mt-3 text-sm leading-relaxed text-zinc-500">
-                  β版では、実在のサイトへの通信（所有確認の実行・診断）はまだ有効にしていません。サイトの登録と、所有確認に使う値の発行までお試しいただけます。
+                  公開βの実サイト診断は、所有確認後に公開ページを1回読む設定確認に限ります。追加の再現試験やARTEX計画は行いません。
                 </p>
                 <a href="/login" className="mt-6 inline-block rounded-lg bg-zinc-900 px-6 py-2.5 text-sm font-semibold text-white hover:bg-zinc-700">アカウントを作成する</a>
               </>
             ) : (
               <p className="mt-5 leading-relaxed text-zinc-600">
                 Vulnix は現在、限られた参加者だけが使えるクローズドβです。
-                一般の方が自分のサイトを登録して診断できる機能は、認証と利用者ごとのデータ分離の検証が終わってから公開します。
+                利用は招待された参加者に限定しています。
                 このページから診断を始めることはできません。
               </p>
             )}
@@ -159,7 +158,7 @@ export function Landing({ app = false }: { app?: boolean }) {
         <div className="mx-auto max-w-6xl px-4 py-8 text-xs leading-relaxed text-zinc-500 sm:px-6">
           <p>© Vulnix — Find. Prove. Secure.</p>
           <p className="mt-1">動画と画面は、ローカルの模擬ラボで実際に動かしたときの録画です。実在サービスの診断結果ではありません。</p>
-          <p className="mt-1">計画エンジン: ARTEX（jiwoochris/artex-global, AGPL-3.0）／ AI 解説: Abliteration AI</p>
+          <p className="mt-1">公開版の実サイト診断は読み取り専用です。ARTEXと外部AIを使用した実サイト診断は提供していません。</p>
         </div>
       </footer>
     </div>

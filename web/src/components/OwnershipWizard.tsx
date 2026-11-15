@@ -283,7 +283,7 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
             <div className="rounded-xl border border-zinc-200 p-3 text-xs text-zinc-700 dark:border-zinc-800 dark:text-zinc-300">
               <p className="mb-1.5">
                 公開されているページを1回だけ読み取り、通信の暗号化・セキュリティ設定・Cookie などを調べます。
-                結果は数十秒で表示され、AI が問題点と直し方を分かりやすく説明します。
+                結果と対策を表示します。公開ページだけでは判断できない項目は、未計測の候補として区別します。
               </p>
               <h3 className="mb-1 mt-2 font-semibold">行わないこと</h3>
               <ul className="list-disc space-y-0.5 pl-4">

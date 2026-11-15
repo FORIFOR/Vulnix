@@ -8,6 +8,7 @@ import { OrgSection } from "@/components/settings/OrgSection";
 import { PasswordChangeForm } from "@/components/settings/PasswordChangeForm";
 import { Card, Pill } from "@/components/ui";
 import { command } from "@/lib/api";
+import { diagnosisSource } from "@/lib/diagnosisSource";
 import { fmtTime } from "@/lib/labels";
 import {
   clearLearningHistory,
@@ -66,7 +67,7 @@ export default function Settings() {
     <main className="mx-auto max-w-3xl space-y-4 p-4 md:p-8">
       <h1 className="text-2xl font-bold">設定</h1>
 
-      <Card>
+      {platformOps && <Card>
         <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
           <div>
             <h2 className="text-sm font-semibold">安全制御の実機検証（P0 Live Verification）</h2>
@@ -74,14 +75,14 @@ export default function Settings() {
               実プロセス（egress_sentinel）・実ソケット・Gateway を駆動し、通信遮断・権限詐称剥離・承認強制・緊急停止SIGKILLを実機検証します。
             </p>
           </div>
-          {platformOps && <button
+          <button
             type="button"
             disabled={verifyBusy}
             onClick={runVerifyControls}
             className="rounded-lg bg-zinc-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-white dark:text-zinc-900"
           >
             {verifyBusy ? "実機検証を実行中…" : "▶ 6層制御の実機検証を実行"}
-          </button>}
+          </button>
         </div>
         {verifyReport && (
           <div className="mt-3 space-y-2">
@@ -106,7 +107,7 @@ export default function Settings() {
             </ul>
           </div>
         )}
-      </Card>
+      </Card>}
 
       <Card>
         <h2 className="mb-2 text-sm font-semibold">アカウント</h2>
@@ -203,7 +204,7 @@ export default function Settings() {
 
       <Card>
         <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-          <h2 className="text-sm font-semibold">モデルと脅威情報（ARTEX × Abliteration / NVD + CISA KEV）</h2>
+          <h2 className="text-sm font-semibold">診断方法と脅威情報</h2>
           {platformOps && <button
             type="button"
             disabled={cveBusy}
@@ -214,10 +215,9 @@ export default function Settings() {
           </button>}
         </div>
         <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
-          <dt className="text-zinc-500">診断エージェント</dt><dd>ARTEX 実行エンジン — タスク計画・ProposalRouter 統合済み</dd>
-          <dt className="text-zinc-500">推論アダプター</dt><dd>AbliterationBackend — OpenAI 互換 Chat Completions (`messages` / `choices`) 対応</dd>
-          <dt className="text-zinc-500">モデルの権限</dt><dd>提案のみ（権限詐称キーは Router が自動除去）。実行は Gateway と人の承認が裁く</dd>
-          <dt className="text-zinc-500">CVE / KEV 監視</dt>
+          <dt className="text-zinc-500">診断手順</dt><dd>{snap ? diagnosisSource(snap).plan : "確認中…"}</dd>
+          <dt className="text-zinc-500">結果の解説</dt><dd>{snap ? diagnosisSource(snap).explanation : "確認中…"}</dd>
+          <dt className="text-zinc-500">脅威情報</dt>
           <dd>
             NVD 登録 {cveSt?.cve_count ?? 2} 件 / CISA KEV 悪用確認 {cveSt?.kev_count ?? 2} 件（最終同期: {fmtTime(cveSt?.last_synced_at)}）
           </dd>

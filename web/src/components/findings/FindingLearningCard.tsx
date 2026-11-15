@@ -9,10 +9,10 @@ export function FindingLearningCard({ finding: f, localLab, busy = false }: { fi
   const evidence = isIdor ? currentIdorEvidence(f, busy) : null;
   return (
     <Card>
-      <h2 className="text-base font-semibold">この問題をひと目で理解</h2>
+      <h2 className="text-base font-semibold">{f.evidence_status === "candidate" ? "確認候補について" : "この結果をひと目で理解"}</h2>
       {localLab && <p className="mt-1 text-xs text-zinc-500">ローカル模擬ラボ・テストアカウントの検証です。顧客データではありません。</p>}
       <dl className="mt-3 space-y-3 text-sm">
-        <div><dt className="font-semibold">どこが弱い？</dt><dd className="mt-1">{term?.detail || f.why_detected || "弱点の説明はまだ記録されていません。"}</dd></div>
+        <div><dt className="font-semibold">{f.evidence_status === "candidate" ? "何を確認する？" : "どこが弱い？"}</dt><dd className="mt-1">{f.evidence_status === "candidate" ? f.summary : term?.detail || f.why_detected || "弱点の説明はまだ記録されていません。"}</dd></div>
         <div><dt className="font-semibold">何が起こる？</dt><dd className="mt-1">{term?.easy || f.summary}</dd><dd className="mt-1 text-xs text-zinc-500">問題が成立する場合の一般的な影響です。今回の検証結果とは区別してください。</dd></div>
         <div><dt className="font-semibold">どう直す？</dt><dd className="mt-1">{f.remediation.steps[0] || "修正手順はまだ記録されていません。"}</dd></div>
       </dl>

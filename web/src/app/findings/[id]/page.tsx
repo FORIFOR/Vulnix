@@ -42,18 +42,18 @@ function Detail() {
     <main className="mx-auto max-w-3xl space-y-4 p-4 md:p-8">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <Link href={`/assessments/${aid}?tab=findings`} className="text-sm text-zinc-500 hover:underline">← 問題一覧</Link>
-        <button
+        {!(snap.is_external_service && snap.real_site_read_only) && <button
           type="button"
           disabled={busy}
           onClick={runLiveVerify}
           className="rounded-lg bg-zinc-900 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-white dark:text-zinc-900"
         >
-          {busy ? "Worker実行中…" : "▶ 実機Workerで今すぐ検証（Gateway経由）"}
-        </button>
+          {busy ? "再検証中…" : "再検証する"}
+        </button>}
       </div>
       {verifyErr && <p className="text-xs text-red-600">{verifyErr}</p>}
       <div className="flex flex-wrap items-center gap-2">
-        <SeverityBadge s={f.severity} />
+        {f.evidence_status !== "candidate" && <SeverityBadge s={f.severity} />}
         {f.evidence_status === "candidate" ? <Pill className="border border-zinc-400">未計測の候補</Pill> : <VerdictBadge v={f.verdict} />}
         {f.demo_fixture && <FixtureBadge />}
       </div>
@@ -75,7 +75,7 @@ function Detail() {
       <Card>
         <h2 className="mb-1 text-sm font-semibold">何が危険か</h2>
         <p className="text-sm">{f.summary}</p>
-        {f.what_was_established && (
+        {f.what_was_established && f.evidence_status === "proven" && (
           <p className="mt-2 rounded-lg bg-red-50 p-2 text-sm dark:bg-red-950/30">
             <span className="font-semibold">実証で成立したこと：</span>{f.what_was_established}
           </p>
@@ -88,7 +88,7 @@ function Detail() {
       </Card>
 
       <Card>
-        <h2 className="mb-1 text-sm font-semibold">なぜ検出されたか</h2>
+        <h2 className="mb-1 text-sm font-semibold">{f.evidence_status === "candidate" ? "なぜ確認候補になったか" : "なぜ検出されたか"}</h2>
         <p className="text-sm">{f.why_detected}</p>
         <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
           <dt className="text-zinc-500">実行主体</dt><dd>{f.executor.agent}</dd>

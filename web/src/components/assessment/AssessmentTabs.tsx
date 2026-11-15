@@ -8,6 +8,7 @@ import { getJSON, postJSON } from "@/lib/api";
 import { fmtTime } from "@/lib/labels";
 import type { Snapshot } from "@/lib/types";
 import { useAssessment } from "@/lib/useAssessment";
+import { useSession } from "@/lib/useSession";
 import { FindingCard } from "../findings/FindingCard";
 import { WorkspaceHeader } from "../layout/WorkspaceHeader";
 import { EventTimeline } from "../logs/EventTimeline";
@@ -34,6 +35,7 @@ export function AssessmentTabs({ id }: { id: string }) {
   const tab = TABS.find((t) => t.key === tabParam)?.key ?? "assessment";
   const evidenceFilter = EVIDENCE_STATES.find((s) => s.key === params.get("evidence"))?.key ?? "all";
   const { snap, setSnap, error, conn, audit, chainValid, notes, refetch } = useAssessment(id);
+  const { multiTenant } = useSession();
   const [reportMd, setReportMd] = useState<string | null>(null);
   const [reportBusy, setReportBusy] = useState(false);
   const [reportErr, setReportErr] = useState<string | null>(null);
@@ -140,18 +142,18 @@ export function AssessmentTabs({ id }: { id: string }) {
                 </span>
               </div>
               <p className="text-violet-800 dark:text-violet-200">
-                Gateway と隔離 Worker がローカル HTTP 応答を実測します。Apache / IDOR / SQLi の挙動を模擬しており、本番環境や実在する Apache の診断結果ではありません。
+                ローカル模擬環境の応答を確認します。表示された問題は、この模擬環境だけの結果です。
               </p>
               {labErr && <p className="font-semibold text-red-700 dark:text-red-300">エラー：{labErr}</p>}
             </div>
-            <div className="flex flex-wrap items-center gap-2">
+            {!multiTenant && <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
                 disabled={labBusy}
                 onClick={runAllWorkers}
                 className="rounded-lg bg-violet-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-violet-800 disabled:opacity-50 dark:bg-violet-200 dark:text-violet-950 dark:hover:bg-violet-100"
               >
-                {labBusy ? "Worker実行中…" : "⚡ 全問題を実機Workerで今すぐ検証"}
+                {labBusy ? "再検証中…" : "候補を再検証"}
               </button>
               <button
                 type="button"
@@ -161,7 +163,7 @@ export function AssessmentTabs({ id }: { id: string }) {
               >
                 {snap.lab_mode === "patched" ? "脆弱環境に戻して再検証" : "パッチ適用環境に切替えて再検証"}
               </button>
-            </div>
+            </div>}
           </div>
         )}
 
@@ -298,6 +300,7 @@ export function AssessmentTabs({ id }: { id: string }) {
                   f={f}
                   assessmentId={snap.id}
                   labEndpoint={snap.lab_endpoint}
+                  readOnly={Boolean(snap.is_external_service && snap.real_site_read_only)}
                   onUpdate={setSnap}
                   onBusyChange={setCardBusy}
                 />

@@ -4,13 +4,15 @@
 
 **AI は提案する、実行はゲートウェイが裁く（AI proposes, Gateway disposes）** を第一原則とする、AI セキュリティ診断・実証プラットフォーム（旧称: Aegis AI）。
 
-AI/エージェント（ARTEX / Abliteration AI）の出力は常に「信頼できない提案（データ）」として扱い、実行権限はサーバ側シークレット（HMAC トークン）を握る Gateway だけが持ちます。バナー検知（`detected`）と正式な人間承認下の再現証明（`proven`）、そしてパッチ適用後の再検証（`not_reproduced`）を明確に分離し、無認可・破壊的な攻撃は一切行いません。
+AI/エージェント（ARTEX / Abliteration AI）の出力は常に「信頼できない提案（データ）」として扱い、実行権限はサーバ側シークレット（HMAC トークン）を握る Gateway だけが持ちます。未計測の候補（`candidate`）、設定の実測（`detected`）、人間承認下の再現証明（`proven`）、修正後の再検証（`not_reproduced`）を分離します。公開版の実サイト診断は所有確認後の公開ページ1回の読み取り専用で、ARTEXと外部AIは使用しません。
 
 > 🛡️ **スコープと安全性**: すべての診断・再現検証ワーカー（`http_probe`, `reproduction_probe`, `demo_verify`）は Gateway が DNS ピン留めした許可ターゲットに対し、プロセス内 `egress_sentinel`（`socket.connect` ホワイトリスト強制）下で非破壊・読み取り専用のリクエストのみを実行します。
 
 ---
 
 ## アーキテクチャ
+
+次の図は任意のARTEX・外部モデル連携を含む構成です。標準の模擬ラボではVulnix内蔵プランナーが提案し、公開版の実サイトでは内蔵の読み取り専用手順だけを実行します。
 
 ```
 ┌──────────────────┐   提案(untrusted)   ┌──────────────┐   権限あり   ┌──────────┐
@@ -66,7 +68,7 @@ npm run dev                        # http://localhost:3000
 
 | 変数 | 用途 | 既定 |
 |------|------|------|
-| `VULNIX_ABLITERATION_URL` / `AEGIS_MODEL_URL` | Abliteration AI（OpenAI 互換 `/v1/chat/completions` または `/v1/propose`）のエンドポイント。未設定なら内蔵 ARTEX プランナーで動作。 | なし |
+| `VULNIX_ABLITERATION_URL` / `AEGIS_MODEL_URL` | Abliteration AI（OpenAI 互換 `/v1/chat/completions` または `/v1/propose`）のエンドポイント。未設定ならVulnixの内蔵プランナーで動作。 | なし |
 | `VULNIX_ABLITERATION_KEY` / `AEGIS_MODEL_KEY` | 上記の Bearer API キー（実行時に環境変数で設定。リポジトリやログには保存しない）。 | なし |
 | `VULNIX_ABLITERATION_MODEL` / `AEGIS_MODEL_MODEL` | 使用モデル名 | `"abliteration-security-v1"` |
 | `VULNIX_ABLITERATION_TIMEOUT_SECONDS` / `AEGIS_MODEL_TIMEOUT_SECONDS` | 同じ接頭辞のモデルHTTP応答待ち。1〜120秒。未設定・不正値は30秒。必要な起動プロセスだけに設定。 | `30` |
@@ -74,12 +76,14 @@ npm run dev                        # http://localhost:3000
 
 ### AI連携とデモの検証範囲
 
-- 標準設定では内蔵の決定的な ARTEX プランナーと診断情報に基づく内蔵解説を使用します。外部モデルは起動時に設定した場合だけ利用します。
+- 標準設定ではVulnixの決定的な内蔵プランナーと内蔵解説を使用します。これはARTEX本体による計画ではありません。外部モデルは起動時に設定した場合だけ利用します。
 - `VULNIX_ABLITERATION_*` を優先し、`AEGIS_MODEL_*`、`VULNIX_MODEL_*` も利用できます。URL・キー・モデル名は同じ接頭辞で設定してください。別の接続先のキーを流用しません。
 - OpenAI互換アダプターの提案形式・解説QAは単体テストとループバックHTTPサーバーで確認しています。これらは実モデルの推論品質やAbliteration済みモデルの実動作を保証するテストではありません。
 - 既定の対象はローカルHTTP模擬ラボです。脆弱箇所・影響・対策・証拠を学び、模擬的な防御前後を比較できます。本番環境の自動修正・パッチ配布や、任意のサイトを対象にした万能のペネトレーションテストは実装していません。
 
 ### 実サービスの診断（所有確認済みの対象のみ）
+
+公開版の既定値 `VULNIX_REAL_SERVICE_DIAGNOSIS=l1` では下記の4までを提供し、5のL2検証、ARTEX計画、修正後再検証は拒否します。実サイトの情報を外部AIへ送らないため、AI計画と外部AI解説も行いません。判断の詳細は [docs/REAL_SITE_AI_PLAN_DECISION.md](docs/REAL_SITE_AI_PLAN_DECISION.md) を参照してください。
 
 管理権限を証明できた自社サービス（ステージング想定）だけを、次の順で診断できます。
 
