@@ -48,6 +48,7 @@ export function ExplanationPanel({
         question: `「${t.title}」について、この診断でなぜ検出されたのか、どの証拠から判断したのか、修正後にどう確認するのかを教えてください。`,
         term,
         finding_id: findingId,
+        safe_advice: true,
       })) as { message?: { text: string; actor?: string; source?: string; guard_note?: string; verdict_note?: string; caution_note?: string } };
       setAnswerActor(res.message?.actor ?? "診断コンテキスト解説");
       setFromModel(res.message?.source === "external_model");

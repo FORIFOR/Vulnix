@@ -216,6 +216,13 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
         cb = self.req(b, "/assets/challenge", url)[1]["challenge"]["dns_txt_value"]
         self.assertNotEqual(ca, cb)           # one org's proof can never satisfy another's
 
+    def test_safe_ai_explanation_cannot_be_requested_for_another_org(self):
+        a, b = self.signup("alice"), self.signup("bobby")
+        a_org = a["orgs"][0]["id"]
+        code, _ = self.req(b, "/assessments/scan_001/chat",
+                           {"question": "AIで解説", "safe_advice": True, "finding_id": "f_headers"}, org=a_org)
+        self.assertEqual(code, 403)
+
     def test_invite_roles_viewer_read_only_and_promotion(self):
         a, b = self.signup("alice"), self.signup("bobby")
         a_org = a["orgs"][0]["id"]

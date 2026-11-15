@@ -1,4 +1,4 @@
-"""AI advisor: explanations, remediation and next-check suggestions for findings (phase 1: mock only).
+"""AI advisor: bounded explanations and suggestions from allow-listed finding fields.
 
 What the model is given, and what comes back, are both narrow on purpose:
 
@@ -9,8 +9,8 @@ What the model is given, and what comes back, are both narrow on purpose:
   never read, because analyzer titles embed observed values (an ACAO origin, a TLS
   version). The serialized payload is scanned again before sending and refused if it
   still looks like it carries a URL, host, IP, e-mail, token or cookie.
-* A finding about a real service is not given to the advisor at all; the caller
-  (`AssessmentService.advise_findings`) filters with the existing allow-list.
+* The general `advise_findings` caller excludes real services. A separate,
+  operator-enabled per-finding explanation path uses this allow-list for real sites.
 * Output must be one JSON object of a fixed schema (v2), checked structurally first: a
   claim level the verdict allows, citations of input fields that were actually given,
   remediation *fix ids* and next-check *operation ids* from aegis/advisor_catalog.py that
@@ -23,8 +23,8 @@ What the model is given, and what comes back, are both narrow on purpose:
   normal gates (ownership, scope, L2 approval for L2 items). This module imports no
   gateway, token authority, approval store or worker runner, and a next check has no
   tool/action/args, so it cannot become a gateway proposal.
-* Phase 1 talks only to a loopback endpoint (the bundled mock server) and takes no
-  API key. Connecting the real Abliteration AI API is a separate, later decision.
+* The default adapter talks only to loopback and takes no API key. The explicit
+  external adapter requires HTTPS and a key; it is used only on the opted-in path.
 """
 from __future__ import annotations
 
@@ -470,8 +470,14 @@ class AbliterationAdvisor:
     _send: Callable[[str, dict, bytes], bytes] = field(init=False, repr=False)
     endpoint_kind: str = field(init=False, default="loopback_mock")
 
-    def __post_init__(self) -> None:
+    def _require_endpoint(self) -> None:
         _require_loopback(self.url)
+
+    def _headers(self) -> dict[str, str]:
+        return {"Content-Type": "application/json"}
+
+    def __post_init__(self) -> None:
+        self._require_endpoint()
         self.timeout_s = _model_timeout(self.timeout_s)
         self._send = self.transport or partial(_loopback_transport, timeout_s=self.timeout_s)
         # an injected transport (tests) is not the loopback transport; say so in results and audit
@@ -497,9 +503,9 @@ class AbliterationAdvisor:
         body, ref_map = self.build_request(findings)
         if not ref_map:
             return AdviceResult((), (), (), (), self.name, self.endpoint_kind)
-        _require_loopback(self.url)
+        self._require_endpoint()
         try:
-            raw = self._send(self.url, {"Content-Type": "application/json"}, body)
+            raw = self._send(self.url, self._headers(), body)
             data = json.loads(raw)
             content = data["choices"][0]["message"]["content"]
         except Exception as e:  # noqa: BLE001 - any transport / format failure is one error
@@ -515,3 +521,35 @@ class AbliterationAdvisor:
             missing_refs=tuple(r for r in ref_map if r not in answered),
             backend=self.name, endpoint_kind=self.endpoint_kind,
         )
+
+
+def _external_transport(url: str, headers: dict, body: bytes, *, timeout_s: float) -> bytes:
+    # No environment proxy or redirect may receive the credential or anonymized findings.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
+    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    with opener.open(req, timeout=timeout_s) as response:
+        data = response.read(MAX_MODEL_RESPONSE_BYTES + 1)
+    if len(data) > MAX_MODEL_RESPONSE_BYTES:
+        raise AdvisorError("reply too large")
+    return data
+
+
+@dataclass
+class ExternalAbliterationAdvisor(AbliterationAdvisor):
+    """Explicit remote adapter; the default advisor remains loopback-only."""
+
+    api_key: str = field(default="", repr=False)
+
+    def _require_endpoint(self) -> None:
+        parts = urllib.parse.urlsplit(self.url)
+        if (parts.scheme != "https" or not parts.hostname or parts.username is not None
+                or parts.password is not None or parts.query or parts.fragment or not self.api_key):
+            raise AdvisorError("external advisor requires an HTTPS endpoint and API key")
+
+    def _headers(self) -> dict[str, str]:
+        return {"Content-Type": "application/json", "Authorization": f"Bearer {self.api_key}"}
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        self._send = self.transport or partial(_external_transport, timeout_s=self.timeout_s)
+        self.endpoint_kind = "external" if self.transport is None else "injected_transport"

@@ -28,6 +28,13 @@ test("a real site never claims ARTEX planning or external AI explanation", () =>
   assert.equal(source.explanation, "解説は内蔵機能で作成");
 });
 
+test("a real site names the model only after an accepted explanation", () => {
+  const run = { ...base, is_external_service: true, chat_messages: [
+    { role: "assistant", source: "external_model", actor: "AI解説（mock）" },
+  ] };
+  assert.equal(diagnosisSource(run).explanation, "AI解説（mock）を使用");
+});
+
 test("a built-in lab run does not inherit the ARTEX name from its backend", () => {
   assert.deepEqual(diagnosisSource(base), {
     plan: "内蔵の診断手順",

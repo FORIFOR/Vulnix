@@ -352,6 +352,9 @@ class AssessmentService:
             backends.append(ext_model)
         self._external_model_configured = ext_model is not None
         self._chat_backend = AbliterationBackend.from_env()
+        # Explicit operator opt-in; the real-site explanation path sends only the
+        # advisor's fixed enum payload, never the ordinary chat question or context.
+        self._real_site_safe_ai = os.environ.get("VULNIX_REAL_SITE_SAFE_AI", "0") == "1"
         # Configured is not connected: only an answer actually received from the
         # external model marks it verified; a failed call marks it failed.
         self._model_conn: dict = {"state": "configured" if self._chat_backend else "unconfigured",
@@ -4452,13 +4455,71 @@ class AssessmentService:
                          entry={k: entry[k] for k in ("ts", "event", "fields", "prev", "hash")})
 
     # ---- P1: AI chat with assessment context (read-only, zero authority) ----
+    def _safe_real_ai_explanation(self, finding_id: str | None, actor: str, outcome: dict) -> str | None:
+        """Explain one real-site finding from fixed enums only. The user's question,
+        title, evidence and target URL never enter the advisor request."""
+        from .ai_advisor import AbliterationAdvisor, ExternalAbliterationAdvisor, AdvisorError
+        from .chat_guard import verdict_note
+
+        with self._lock:
+            if (not self._real_site_safe_ai or self._chat_backend is None or not finding_id
+                    or self.a.state != "completed" or not self._is_external_service_asset()):
+                return None
+            finding = self.a.findings.get(finding_id)
+            if not isinstance(finding, dict) or evidence_status(finding) not in ("candidate", "detected", "proven"):
+                return None
+            finding = copy.deepcopy(finding)
+            backend = self._chat_backend
+            generation = self._run_generation
+
+        url = backend._url
+        host = (urllib.parse.urlsplit(url).hostname or "").lower()
+        try:
+            if host in ("127.0.0.1", "::1"):
+                advisor = AbliterationAdvisor(url, model=backend._model or "mock")
+            else:
+                advisor = ExternalAbliterationAdvisor(url, model=backend._model, api_key=backend._key or "")
+            # Construct and inspect the exact allow-listed shape before any network call.
+            body, _ = advisor.build_request([finding])
+            with self._lock:
+                if (generation != self._run_generation or not self._is_external_service_asset()
+                        or self.a.state != "completed" or not self._real_site_safe_ai):
+                    return None
+                self.audit.record("advisor.safe_send_requested", actor=actor, finding_id=finding_id,
+                                  model=backend._model, payload_sha256=hashlib.sha256(body).hexdigest(),
+                                  endpoint_kind="loopback_mock" if host in ("127.0.0.1", "::1") else "external")
+            outcome["model_attempted"] = True
+            result = advisor.advise([finding])
+        except AdvisorError as exc:
+            outcome["model_error"] = type(exc).__name__
+            with self._lock:
+                self._note_model_outcome_locked(False, "advisor_refused")
+                self.audit.record("advisor.safe_failed", actor=actor, finding_id=finding_id, reason="advisor_refused")
+            return None
+        accepted = next((a for a in result.advice if a.finding_id == finding_id), None)
+        with self._lock:
+            self._note_model_outcome_locked(accepted is not None, None if accepted else "no_valid_advice")
+            self.audit.record("advisor.safe_reply", actor=actor, finding_id=finding_id,
+                              accepted=accepted is not None, rejected=len(result.rejected),
+                              endpoint_kind=result.endpoint_kind)
+        if accepted is None:
+            outcome["model_error"] = "no_valid_advice"
+            return None
+        if finding.get("verdict") != "proven":
+            outcome["verdict_note"] = verdict_note(finding.get("verdict"))
+        steps = "\n".join(f"・{step.label}：{step.detail}" for step in accepted.remediation)
+        return (f"{accepted.risk_explanation}\n\n改善案：\n{steps}\n\n"
+                "実際の応答と監査記録は問題詳細で確認してください。これらはAIに送信していません。")
+
     def ask_chat(self, question: str, actor: str, term: str | None = None,
-                 finding_id: str | None = None) -> dict:
+                 finding_id: str | None = None, safe_advice: bool = False) -> dict:
         q = question.strip()[:500]
         if not q:
             raise ValueError("question must not be empty")
         now = time.time()
         with self._lock:
+            chat_generation = self._run_generation
+            chat_asset_id = self.a.asset.get("id")
             user_msg = {
                 "id": "msg_" + secrets.token_hex(4),
                 "role": "user",
@@ -4471,12 +4532,17 @@ class AssessmentService:
         # Inference can be slow. Never hold the control-plane lock while waiting:
         # snapshots, worker updates and emergency stop must remain responsive.
         outcome: dict = {"model_attempted": False, "model_error": None}
-        source, answer_text = self._answer_question(q, term=term, finding_id=finding_id, outcome=outcome)
+        safe_answer = self._safe_real_ai_explanation(finding_id, actor, outcome) if safe_advice else None
+        source, answer_text = ("external_model", safe_answer) if safe_answer else self._answer_question(
+            q, term=term, finding_id=finding_id, outcome=outcome)
         model_attempted = outcome["model_attempted"]
         # A model's answer is outside text too: make sure it can always be stored
         # (an unpaired surrogate would otherwise make every later save fail).
         answer_text = str(answer_text).encode("utf-8", "replace").decode("utf-8")[:20000]
         with self._lock:
+            if (chat_generation != self._run_generation or chat_asset_id != self.a.asset.get("id")
+                    or (safe_answer and not self._is_external_service_asset())):
+                raise ValueError("診断対象または許可状態が変更されたため、AI解説を破棄しました")
             ai_msg = {
                 "id": "msg_" + secrets.token_hex(4),
                 "role": "assistant",
