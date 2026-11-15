@@ -2,7 +2,7 @@
 // the control plane, so it is safe to serve through a public tunnel.
 
 const FEATURES = [
-  { icon: "◆", title: "公開ページの設定を確認", body: "所有を確認したサイトの公開ページを1回読み、設定と応答を確認します。現在、実サイト向けのARTEX計画は行いません。" },
+  { icon: "◆", title: "公開ページの設定を確認", body: "所有を確認したサイトの公開ページを1回読み、設定と応答を確認します。追加の読み取り検査は、利用できる環境で明示的に許可された場合だけ行います。" },
   { icon: "✓", title: "追加の検証は承認制", body: "模擬ラボで脆弱性の成立を確かめる検証は、承認されたものだけが動きます。公開版の実サイトでは実行しません。" },
   { icon: "▣", title: "検証処理を隔離", body: "模擬ラボの検証処理は許可した範囲に限定されます。Linux環境ではカーネルによる隔離も適用します。" },
   { icon: "≡", title: "推測と実測を区別", body: "未計測の候補、設定の検出、脆弱性の実証を分け、根拠となる証拠を記録します。" },
@@ -13,7 +13,7 @@ const FEATURES = [
 const STEPS = [
   { n: "1", title: "URLを入力", body: "診断したい自分のサイトを登録します。" },
   { n: "2", title: "所有を確認", body: "DNS の記録、サイトに置くファイル、または対応している場合はGoogleで確認します。" },
-  { n: "3", title: "診断を開始", body: "公開ページを1回読み、設定を確認します。" },
+  { n: "3", title: "診断を開始", body: "公開ページの設定を確認します。追加検査は利用可能な場合に選べます。" },
   { n: "4", title: "結果を見る", body: "確認できた設定、根拠、対策、未確認の項目を確認します。" },
 ];
 
@@ -139,7 +139,7 @@ export function Landing({ app = false }: { app?: boolean }) {
                   チームのメンバーを招待して、役割（実行者・承認者・閲覧者など）を分けることもできます。
                 </p>
                 <p className="mt-3 text-sm leading-relaxed text-zinc-500">
-                  公開βの実サイト診断は、所有確認後に公開ページを1回読む設定確認に限ります。追加の再現試験やARTEX計画は行いません。
+                  実サイト診断は、所有確認後の公開ページ1回の設定確認が基本です。AIによる追加の読み取り検査は、利用できる環境で明示的に許可された場合に限り最大1回行います。侵入の実証は行いません。
                 </p>
                 <a href="/login" className="mt-6 inline-block rounded-lg bg-zinc-900 px-6 py-2.5 text-sm font-semibold text-white hover:bg-zinc-700">アカウントを作成する</a>
               </>

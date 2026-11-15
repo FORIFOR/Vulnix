@@ -71,7 +71,7 @@ function CopyRow({ label, value }: { label: string; value: string }) {
 
 export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, notice }: Props) {
   const router = useRouter();
-  const { googleOwnership } = useSession();
+  const { googleOwnership, optionalStatusCheck } = useSession();
   const [otherWays, setOtherWays] = useState(Boolean(notice));
   const resumeAt = initialAsset?.challenge ? (initialAsset.ownership_verified ? 2 : 1) : 0;
   const [step, setStep] = useState(resumeAt);
@@ -82,6 +82,7 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
   const [method, setMethod] = useState<Method>("dns_txt");
   const [verifyDetail, setVerifyDetail] = useState<string | null>(null);
   const [confirmed, setConfirmed] = useState(false);
+  const [statusCheckConsent, setStatusCheckConsent] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -145,6 +146,7 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
       const res = await postJSON<ScopeResponse>("/api/assets/confirm-scope", {
         url: url.trim(),
         confirmed_prohibited: confirmed,
+        allow_status_probe: optionalStatusCheck && statusCheckConsent,
         activate_workspace: true,
       });
       onAssetsChanged(res.assets);
@@ -301,6 +303,10 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
                 公開されているページを1回だけ読み取り、通信の暗号化・セキュリティ設定・Cookie などを調べます。
                 結果と対策を表示します。公開ページだけでは判断できない項目は、未計測の候補として区別します。
               </p>
+              {optionalStatusCheck && <p className="mb-1.5">
+                希望する場合は、AIが必要と判断したときに限り、Apacheの状態情報が公開されているか
+                <code className="mx-1">/server-status?auto</code>を追加で最大1回確認できます。
+              </p>}
               <h3 className="mb-1 mt-2 font-semibold">行わないこと</h3>
               <ul className="list-disc space-y-0.5 pl-4">
                 {prohibited.map((p) => (
@@ -312,6 +318,10 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
               <input type="checkbox" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)} className="mt-0.5 rounded border-zinc-300" />
               <span>このサイトの管理者として、上記の内容で診断することに同意します。</span>
             </label>
+            {optionalStatusCheck && <label className="flex cursor-pointer items-start gap-2.5 text-xs">
+              <input type="checkbox" checked={statusCheckConsent} onChange={(e) => setStatusCheckConsent(e.target.checked)} className="mt-0.5 rounded border-zinc-300" />
+              <span>AIが提案した場合、上記の固定パスへの追加の読み取りを最大1回許可します（任意）。</span>
+            </label>}
             <div className="flex justify-end">
               <button type="button" disabled={busy || !confirmed} onClick={confirmScope} className="rounded-lg bg-zinc-900 px-4 py-2 text-xs font-semibold text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-white dark:text-zinc-900">
                 {busy ? "開始しています…" : "診断を開始"}
