@@ -4556,9 +4556,11 @@ class AssessmentService:
             raise _Stopped()
         if self._is_external_service_asset():
             profile = self._l2_profile()
+            root_contract = (profile.get("root_access") if profile and
+                             urllib.parse.urlsplit(self.a.target_url).path in ("", "/") else None)
             l1_findings = analyze_l1_service_response(
                 res, ev, self.a.target_url, self.cve_monitor,
-                root_access=profile.get("root_access") if profile else None,
+                root_access=root_contract,
             )
             for f in l1_findings:
                 self._upsert_finding(f)

@@ -126,6 +126,13 @@ class TestIndependentAccessControlLab(unittest.TestCase):
                          "spec_evidence": []})
         self.assertEqual(next(f for f in findings if f["id"] == "f_l1_unauth_api")["verdict"],
                          "candidate")
+        unrelated = analyze_l1_service_response(
+            observed, {"audit_hash": "lab-proof", "saved_at": 1},
+            "http://owned-access.example.test/public",
+            root_access={"requirement": "authentication_required", "spec_status": "confirmed",
+                         "spec_evidence": ["owner API specification section 3"]})
+        self.assertEqual(next(f for f in unrelated if f["id"] == "f_l1_unauth_api")["verdict"],
+                         "candidate")
 
     def test_local_planner_receives_only_measured_surface_not_lab_truth(self):
         lab = AccessControlLab("unauth_exposure")

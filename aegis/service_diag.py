@@ -176,6 +176,8 @@ def analyze_l1_service_response(
     status_code = res.get("status")
     is_redirect = isinstance(status_code, int) and 300 <= status_code < 400
     parsed_url = urllib.parse.urlparse(target_url)
+    if parsed_url.path not in ("", "/"):
+        root_access = None
     is_https = parsed_url.scheme.lower() == "https"
     tls_info = res.get("tls") or {}
     set_cookies: list[str] = [clean_target_text(c, 1024) for c in (res.get("set_cookies") or [])[:50]]
