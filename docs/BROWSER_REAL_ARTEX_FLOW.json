@@ -27,10 +27,11 @@
     "assessments/scan_001/logs",
     "assessments/scan_001/events"
   ],
-  "elapsed_start_to_visible_finding_s": 1.252,
+  "elapsed_start_to_visible_finding_s": 1.771,
   "idle_seconds": 0,
   "idle_api_requests": 0,
   "sse_blocked": false,
+  "silent_change_recovered_s": null,
   "target_paths": [
     "/",
     "/server-status?auto"
