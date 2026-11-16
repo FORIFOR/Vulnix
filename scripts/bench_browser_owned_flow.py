@@ -205,9 +205,13 @@ def main() -> None:
                             plan = snap["artex_plan"]["plan"]
                             assert plan["engine"]["kind"] == ("artex-binary" if real_bin else "unverified")
                             if real_bin:
+                                assert plan["engine"]["pinned"] is True
                                 assert model.requests, "the real ARTEX did not call the local model"
                                 model_input = json.dumps(model.requests, ensure_ascii=False)
                                 assert HOST not in model_input and target not in model_input
+                                page.get_by_role("tab", name="診断").click()
+                                page.get_by_text("診断エンジン:", exact=False).first.wait_for(timeout=10000)
+                                page.get_by_text("AIモデル:", exact=False).first.wait_for(timeout=10000)
                             else:
                                 assert len(model.requests) == 0, len(model.requests)
                             assert not page_errors, page_errors
@@ -245,6 +249,7 @@ def main() -> None:
                                               "target_paths": list(site.seen), "local_model_calls": len(model.requests),
                                               "engine_kind": plan["engine"]["kind"],
                                               "model_input_excludes_host": True if real_bin else None,
+                                              "engine_and_model_visible": True if real_bin else None,
                                               "status_finding": "detected", "page_errors": len(page_errors)},
                                              ensure_ascii=False, indent=2))
                         finally:
