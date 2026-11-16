@@ -91,10 +91,11 @@ def reproduction_verdict(result: dict | None, check: str, rule: dict | None = No
     if not result or result.get("check") != check or check not in REPRODUCTION_MARKERS:
         return "unverified"
     if check == "idor":
-        response = result.get("response")
         if (result.get("request_path") != "/api/accounts/B/secret"
-                or result.get("request_headers") != {"X-Test-Account": "acct_A"}
-                or not isinstance(response, dict)
+                or result.get("request_headers") != {"X-Test-Account": "acct_A"}):
+            return "unverified"
+        response = result.get("response")
+        if (not isinstance(response, dict)
                 or response.get("Check") != "idor_cross_account_access"
                 or response.get("established") is not True
                 or response.get("caller_account") != "acct_A"
