@@ -4561,6 +4561,7 @@ class AssessmentService:
             l1_findings = analyze_l1_service_response(
                 res, ev, self.a.target_url, self.cve_monitor,
                 root_access=root_contract,
+                cookie_policy=profile.get("cookie_policy") if profile else None,
             )
             for f in l1_findings:
                 self._upsert_finding(f)

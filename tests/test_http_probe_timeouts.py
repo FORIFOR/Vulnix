@@ -685,7 +685,9 @@ class TestManagedEdgeServerHeader(unittest.TestCase):
         for url in ("https://svc.example/", "http://svc.example/"):
             fs = analyze_l1_service_response(res, {"evidence_id": "ev_t"}, url)
             self.assertTrue(fs)
-            self.assertEqual({f["verdict"] for f in fs}, {"detected"}, url)
+            self.assertNotIn("proven", {f["verdict"] for f in fs}, url)
+            self.assertEqual(next(f for f in fs if f["id"] == "f_l1_cookies")["verdict"], "candidate")
+            self.assertEqual({f["verdict"] for f in fs if f["id"] != "f_l1_cookies"}, {"detected"})
 
 
 class TestProvenIsOnlyAnL2Reproduction(unittest.TestCase):
