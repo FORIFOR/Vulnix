@@ -290,6 +290,20 @@ def validate_profile(raw, source: str = "<profile>") -> dict:
     checks_raw = raw.get("checks")
     _need(isinstance(checks_raw, list) and checks_raw, where, "`checks` must be a non-empty list")
     checks = [_validate_check(c, f"{where} checks[{i}]", tokens, paths) for i, c in enumerate(checks_raw)]
+    root_access = None
+    if raw.get("root_access") is not None:
+        root = raw["root_access"]
+        _need(isinstance(root, dict) and set(root) == {"requirement", "spec_status", "spec_evidence"},
+              where, "`root_access` must contain only requirement, spec_status and spec_evidence")
+        _need(root["requirement"] in ("public", "authentication_required"), where,
+              "`root_access.requirement` must be public or authentication_required")
+        _need(root["spec_status"] in SPEC_STATUSES, where,
+              "`root_access.spec_status` must be confirmed or placeholder")
+        evidence = _str_list(root["spec_evidence"], where, "root_access.spec_evidence", required=False)
+        _need(root["spec_status"] != "confirmed" or bool(evidence), where,
+              "confirmed root access needs owner specification evidence")
+        root_access = {"requirement": root["requirement"], "spec_status": root["spec_status"],
+                       "spec_evidence": evidence}
     for c in checks:
         # Two roles played by one account would make the comparison meaningless.
         for pre in c["preconditions"]:
@@ -310,6 +324,7 @@ def validate_profile(raw, source: str = "<profile>") -> dict:
         "tokens": tokens,
         "paths": paths,
         "distinct_tokens": distinct,
+        "root_access": root_access,
         "checks": checks,
     }
 
@@ -463,6 +478,8 @@ class L2RuleSet:
                     c["spec_status"] = "unaccepted"
                     c["spec_note"] = ("このプロファイルの内容は管理者にまだ承認されていません"
                                       "（承認後に変更された場合も再承認が必要です）。")
+            if profile.get("root_access") and profile["root_access"]["spec_status"] == "confirmed":
+                profile["root_access"]["spec_status"] = "unaccepted"
             profile["spec_status"] = "unaccepted"
         return held
 

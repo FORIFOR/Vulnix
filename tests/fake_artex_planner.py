@@ -31,7 +31,7 @@ allowed = ALLOWED + (["Bash"] if mode == "bad_tools" else [])
 calls = [{"name": "add_intent", "allowed": True}]
 if mode == "bad_call":
     calls.append({"name": "WebFetch", "allowed": True})
-intents = req.get("fake_intents") or INTENTS
+intents = req["fake_intents"] if "fake_intents" in req else INTENTS
 # like real ARTEX: an intent naming an asset that does not exist is not stored
 seeded = {t.get("asset_id") for t in req.get("targets") or []}
 intents = [it for it in intents if all(a in seeded for a in it.get("asset_ids") or [])]
