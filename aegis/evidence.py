@@ -101,7 +101,9 @@ def reproduction_verdict(result: dict | None, check: str, rule: dict | None = No
                 or response.get("resource_owner") != "acct_B"
                 or response.get("resource_id") != "res_b_001"
                 or response.get("confidential_marker") != REPRODUCTION_MARKERS["idor"]):
-            if result.get("status") in REPRODUCTION_DENY_STATUSES["idor"] and result.get("established") is False:
+            if (result.get("status") in REPRODUCTION_DENY_STATUSES["idor"]
+                    and result.get("established") is False
+                    and result.get("verdict") == "not_reproduced"):
                 return "not_reproduced"
             return "unverified"
     if (result.get("status") == 200 and result.get("established") is True

@@ -156,6 +156,7 @@ class TestReproductionVerdict(unittest.TestCase):
         for result in (None, {}, {"check": "idor", "status": 500, "established": False, "verdict": "not_reproduced"},
                        {"check": "idor", "status": 200, "established": False, "verdict": "not_reproduced"},
                        {"check": "idor", "status": 403, "established": True, "verdict": "not_reproduced"},
+                       {"check": "idor", "status": 403, "established": False, "verdict": "proven"},
                        {"check": "idor", "status": 200, "established": True, "verdict": "proven", "response": {}},
                        {"check": "sqli", "status": 403, "established": False, "verdict": "not_reproduced"}):
             with self.subTest(result=result):
