@@ -156,6 +156,7 @@ class TestReproductionVerdict(unittest.TestCase):
         for result in (None, {}, {"check": "idor", "status": 500, "established": False, "verdict": "not_reproduced"},
                        {"check": "idor", "status": 200, "established": False, "verdict": "not_reproduced"},
                        {"check": "idor", "status": 403, "established": True, "verdict": "not_reproduced"},
+                       {"check": "idor", "status": 403, "established": False, "verdict": "proven"},
                        {"check": "idor", "status": 200, "established": True, "verdict": "proven", "response": {}},
                        {"check": "sqli", "status": 403, "established": False, "verdict": "not_reproduced"}):
             with self.subTest(result=result):
@@ -163,6 +164,24 @@ class TestReproductionVerdict(unittest.TestCase):
 
     def test_agreeing_marker_and_http_results(self):
         self.assertEqual(reproduction_verdict({"check": "idor", "status": 200, "established": True,
-                         "verdict": "proven", "response": {"marker": "VULNIX_LAB_IDOR_PROVEN"}}, "idor"), "proven")
+                         "verdict": "proven", "request_path": "/api/accounts/B/secret",
+                         "request_headers": {"X-Test-Account": "acct_A"},
+                         "response": {"Check": "idor_cross_account_access", "established": True,
+                                      "caller_account": "acct_A", "resource_owner": "acct_B",
+                                      "resource_id": "res_b_001",
+                                      "confidential_marker": "VULNIX_LAB_IDOR_PROVEN"}}, "idor"), "proven")
         self.assertEqual(reproduction_verdict({"check": "idor", "status": 403, "established": False,
-                         "verdict": "not_reproduced"}, "idor"), "not_reproduced")
+                         "verdict": "not_reproduced", "request_path": "/api/accounts/B/secret",
+                         "request_headers": {"X-Test-Account": "acct_A"}}, "idor"), "not_reproduced")
+
+    def test_a_denial_on_the_wrong_resource_cannot_clear_idor(self):
+        self.assertEqual(reproduction_verdict({"check": "idor", "status": 403, "established": False,
+                         "verdict": "not_reproduced", "request_path": "/wrong-resource",
+                         "request_headers": {"X-Test-Account": "acct_A"}}, "idor"), "unverified")
+
+    def test_marker_in_a_decoy_message_is_not_cross_account_proof(self):
+        self.assertEqual(reproduction_verdict({"check": "idor", "status": 200, "established": True,
+                         "verdict": "proven", "request_path": "/api/accounts/B/secret",
+                         "request_headers": {"X-Test-Account": "acct_A"},
+                         "response": {"message": "VULNIX_LAB_IDOR_PROVEN", "resource_owner": "acct_A"}},
+                         "idor"), "unverified")

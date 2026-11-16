@@ -518,14 +518,14 @@ def analyze_l1_service_response(
     media_type = content_type.lower().split(";", 1)[0].strip()
     if status_code == 200 and (media_type == "application/json" or media_type.endswith("+json")):
         r_score, r_rat = compute_finding_risk_score(
-            "medium", "detected", internet_facing=is_https
+            "medium", "candidate", internet_facing=is_https
         )
         findings.append(
             {
                 "id": "f_l1_unauth_api",
-                "title": "未認証リクエストに対するJSON API応答の返却（認証境界の確認が必要）",
+                "title": "未認証JSON応答の公開範囲を確認する候補",
                 "severity": "medium",
-                "verdict": "detected",
+                "verdict": "candidate",
                 "category": "APIアクセス制御",
                 "cve": [],
                 "risk_level": "L1",
@@ -533,8 +533,8 @@ def analyze_l1_service_response(
                 "risk_score": r_score,
                 "risk_rationale": r_rat,
                 "summary": f"認証ヘッダーなしのGETリクエスト（{target_url}）に対して HTTP 200 ({content_type}) が返却されました。公開エンドポイントとして意図されたものか確認が必要です。",
-                "why_detected": "未認証の読み取り専用プローブに対して JSON ペイロードが返却されたためです。",
-                "caveat": "公開ヘルスチェック等の場合は正常ですが、保護対象APIの場合は認可ミドルウェアの適用漏れがないか確認が必要です。",
+                "why_detected": "未認証の読み取り専用プローブでJSON応答を観測しました。保護対象かどうかは、この応答だけでは判定できません。",
+                "caveat": "公開APIでは正常な応答です。保護対象であることを示す独立した根拠が揃うまで脆弱性とは判定しません。",
                 "impact": "認証が必須であるべきAPIが未認証で応答している場合、内部ステータスやメタデータが外部へ露出する恐れがあります。",
                 "evidence": [
                     _enrich_ev(

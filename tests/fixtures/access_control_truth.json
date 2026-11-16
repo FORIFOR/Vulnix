@@ -1,0 +1,9 @@
+{
+  "public_json": {"protected_root": false, "unauth_exposure": false, "cross_account_access": false},
+  "auth_required_json": {"protected_root": true, "unauth_exposure": false, "cross_account_access": false},
+  "unauth_exposure": {"protected_root": true, "unauth_exposure": true, "cross_account_access": true},
+  "idor_vulnerable": {"protected_root": false, "unauth_exposure": false, "cross_account_access": true},
+  "denied_403": {"protected_root": false, "unauth_exposure": false, "cross_account_access": false},
+  "denied_404": {"protected_root": false, "unauth_exposure": false, "cross_account_access": false},
+  "confusing_200": {"protected_root": false, "unauth_exposure": false, "cross_account_access": false}
+}

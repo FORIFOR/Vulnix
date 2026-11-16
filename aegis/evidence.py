@@ -90,6 +90,23 @@ def reproduction_verdict(result: dict | None, check: str, rule: dict | None = No
         return evaluate(worker_rule, result)["verdict"]
     if not result or result.get("check") != check or check not in REPRODUCTION_MARKERS:
         return "unverified"
+    if check == "idor":
+        if (result.get("request_path") != "/api/accounts/B/secret"
+                or result.get("request_headers") != {"X-Test-Account": "acct_A"}):
+            return "unverified"
+        response = result.get("response")
+        if (not isinstance(response, dict)
+                or response.get("Check") != "idor_cross_account_access"
+                or response.get("established") is not True
+                or response.get("caller_account") != "acct_A"
+                or response.get("resource_owner") != "acct_B"
+                or response.get("resource_id") != "res_b_001"
+                or response.get("confidential_marker") != REPRODUCTION_MARKERS["idor"]):
+            if (result.get("status") in REPRODUCTION_DENY_STATUSES["idor"]
+                    and result.get("established") is False
+                    and result.get("verdict") == "not_reproduced"):
+                return "not_reproduced"
+            return "unverified"
     if (result.get("status") == 200 and result.get("established") is True
             and result.get("verdict") == "proven"
             and REPRODUCTION_MARKERS[check] in json.dumps(result.get("response"))):
