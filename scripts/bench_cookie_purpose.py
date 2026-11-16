@@ -1,6 +1,7 @@
 """Same loopback Cookie responses, old and current L1 analyzer, independent labels."""
 from __future__ import annotations
 
+import argparse
 import json
 import subprocess
 import threading
@@ -29,8 +30,14 @@ def _baseline_analyzer():
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--current-only", action="store_true",
+                        help="Use current analyzer without historical git checkout")
+    args = parser.parse_args()
     assert set(COOKIES) == set(TRUTH) == set(OWNER)
-    analyzers = {"baseline": _baseline_analyzer(), "current": analyze_l1_service_response}
+    analyzers = {"current": analyze_l1_service_response}
+    if not args.current_only:
+        analyzers = {"baseline": _baseline_analyzer(), **analyzers}
     counts = {name: {"tp": 0, "fp": 0, "fn": 0, "tn": 0, "candidate": 0,
                      "analyzer_ms": 0.0} for name in analyzers}
     cases = []
