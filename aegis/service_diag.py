@@ -385,9 +385,12 @@ def analyze_l1_service_response(
     acao = headers_lower.get("access-control-allow-origin", "")
     acac = headers_lower.get("access-control-allow-credentials", "").lower()
     probe_origin = str(res.get("cors_probe_origin", "https://untrusted-origin.example"))
-    # "null" is as untrusted as a reflected origin (sandboxed frames, local files)
-    if acao in ("*", "null") or (acao and probe_origin and acao == probe_origin):
-        sev = "high" if (acao in (probe_origin, "null") and acac == "true") else "medium"
+    # A public response with ACAO * or a reflected origin is not by itself a
+    # credentialed cross-origin exposure. Browsers reject ACAO * together with
+    # credentials; require an observed credentialed policy before detection.
+    # "null" represents untrusted sandboxed/file origins.
+    if acac == "true" and (acao == "null" or (acao and probe_origin and acao == probe_origin)):
+        sev = "high"
         r_score, r_rat = compute_finding_risk_score(
             sev, "detected", internet_facing=is_https
         )
@@ -401,7 +404,7 @@ def analyze_l1_service_response(
                 "category": "CORS・オリジン境界",
                 "cve": [],
                 "risk_level": "L1",
-                "help_term": "security_headers",
+                "help_term": "cors",
                 "risk_score": r_score,
                 "risk_rationale": r_rat,
                 "summary": (
@@ -410,7 +413,12 @@ def analyze_l1_service_response(
                     f"(Allow-Credentials: {acac or '未設定'}) が返却されました。"
                 ),
                 "why_detected": f"Origin: {probe_origin} を付与した非破壊GETリクエストの応答ヘッダーで確認されました。",
-                "what_was_established": f"未承認の外部オリジンに対して Access-Control-Allow-Origin: {acao} が返却されることを確認しました。",
+                "what_was_established": (
+                    f"Origin: {probe_origin} を付けたGETへの応答で "
+                    f"Access-Control-Allow-Origin: {acao} と "
+                    "Access-Control-Allow-Credentials: true を確認しました。"
+                ),
+                "verdict_note": "確認したのはCORS応答設定です。認証付きの機密情報をブラウザから読み取れたことは実証していません。",
                 "impact": "悪意ある外部サイトからブラウザ経由でAPI応答を読み取られる（クロスオリジン情報漏えい）恐れがあります。",
                 "evidence": [
                     _enrich_ev(

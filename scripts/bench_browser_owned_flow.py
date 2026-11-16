@@ -51,6 +51,7 @@ PARSER.add_argument("--revoke-session", action="store_true",
                     help="Revoke the lab session and require the browser to hide the old result")
 PARSER.add_argument("--real-artex", action="store_true", help="Use the pinned ARTEX overlay binary supplied by CI")
 PARSER.add_argument("--chromium", action="store_true", help="Use Playwright Chromium instead of local Chrome")
+PARSER.add_argument("--cors-note", action="store_true", help="Check the observed CORS headers and unproven-data note at 390px")
 
 
 def free_port() -> int:
@@ -79,7 +80,7 @@ def main() -> None:
     if args.real_artex and (not real_bin or not Path(real_bin).is_file()):
         PARSER.error("--real-artex requires VULNIX_ARTEX_REAL_BIN pointing to the built overlay")
     command = [real_bin] if real_bin else FAKE
-    site = StatusExposureLab("vulnerable")
+    site = StatusExposureLab("vulnerable", cors_credentials=args.cors_note)
     site_thread = threading.Thread(target=site.serve_forever, daemon=True)
     site_thread.start()
     try:
@@ -205,6 +206,11 @@ def main() -> None:
                             snap = svc.snapshot()
                             assert snap["state"] == "completed", snap.get("failure")
                             assert site.seen == ["/", "/server-status?auto"], site.seen
+                            if args.cors_note:
+                                page.get_by_text("Access-Control-Allow-Credentials: true", exact=False).first.wait_for()
+                                page.get_by_text("機密情報をブラウザから読み取れたことは実証していません", exact=False).first.wait_for()
+                                assert any(f["id"] == "f_l1_cors" and f["evidence_status"] == "detected"
+                                           for f in snap["findings"])
                             plan = snap["artex_plan"]["plan"]
                             assert plan["engine"]["kind"] == ("artex-binary" if real_bin else "unverified")
                             if real_bin:
@@ -239,6 +245,15 @@ def main() -> None:
                                 revocation_hidden_s = round(time.monotonic() - revoked_at, 3)
                             if args.idle_seconds > 0:
                                 page.wait_for_timeout(args.idle_seconds * 1000)
+                            if args.cors_note:
+                                page.goto(base + "/findings/f_l1_cors?a=scan_001")
+                                page.get_by_text("観測したこと：", exact=False).first.wait_for()
+                                page.get_by_text("Access-Control-Allow-Credentials: true", exact=False).first.wait_for()
+                                page.get_by_text("機密情報をブラウザから読み取れたことは実証していません", exact=False).first.wait_for()
+                                page.get_by_text("別のサイトから、ログイン状態を使って", exact=False).first.wait_for()
+                                assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+                                page.screenshot(path=str(ROOT / "docs/CORS_390_RESULT.png"), full_page=True)
+                                assert not page_errors, page_errors
                             print(json.dumps({"viewport_width": 390,
                                               "web_mode": "production" if args.production else "development",
                                               "actions_from_site_open_to_result": len(actions),
@@ -253,6 +268,8 @@ def main() -> None:
                                               "engine_kind": plan["engine"]["kind"],
                                               "model_input_excludes_host": True if real_bin else None,
                                               "engine_and_model_visible": True if real_bin else None,
+                                              "cors_observation_and_limit_visible": args.cors_note,
+                                              "cors_detail_visible": args.cors_note,
                                               "status_finding": "detected", "page_errors": len(page_errors)},
                                              ensure_ascii=False, indent=2))
                         finally:

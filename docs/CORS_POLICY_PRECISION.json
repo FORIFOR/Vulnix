@@ -1,0 +1,87 @@
+{
+  "fixture": "tests/fixtures/cors_policy_lab.py",
+  "before": {
+    "class": "credentialed_untrusted_cors_policy",
+    "rows": [
+      {
+        "mode": "reflected_credentials",
+        "truth_unsafe_policy": true,
+        "cors_detected": true,
+        "target_gets": 1
+      },
+      {
+        "mode": "reflected_public",
+        "truth_unsafe_policy": false,
+        "cors_detected": true,
+        "target_gets": 1
+      },
+      {
+        "mode": "public_wildcard",
+        "truth_unsafe_policy": false,
+        "cors_detected": true,
+        "target_gets": 1
+      },
+      {
+        "mode": "patched",
+        "truth_unsafe_policy": false,
+        "cors_detected": false,
+        "target_gets": 1
+      },
+      {
+        "mode": "generic_200",
+        "truth_unsafe_policy": false,
+        "cors_detected": false,
+        "target_gets": 1
+      }
+    ],
+    "tp": 1,
+    "fp": 2,
+    "fn": 0,
+    "tn": 2,
+    "precision": 0.3333333333333333,
+    "recall": 1.0,
+    "false_positive_rate": 0.5
+  },
+  "after": {
+    "class": "credentialed_untrusted_cors_policy",
+    "rows": [
+      {
+        "mode": "reflected_credentials",
+        "truth_unsafe_policy": true,
+        "cors_detected": true,
+        "target_gets": 1
+      },
+      {
+        "mode": "reflected_public",
+        "truth_unsafe_policy": false,
+        "cors_detected": false,
+        "target_gets": 1
+      },
+      {
+        "mode": "public_wildcard",
+        "truth_unsafe_policy": false,
+        "cors_detected": false,
+        "target_gets": 1
+      },
+      {
+        "mode": "patched",
+        "truth_unsafe_policy": false,
+        "cors_detected": false,
+        "target_gets": 1
+      },
+      {
+        "mode": "generic_200",
+        "truth_unsafe_policy": false,
+        "cors_detected": false,
+        "target_gets": 1
+      }
+    ],
+    "tp": 1,
+    "fp": 0,
+    "fn": 0,
+    "tn": 4,
+    "precision": 1.0,
+    "recall": 1.0,
+    "false_positive_rate": 0.0
+  }
+}
