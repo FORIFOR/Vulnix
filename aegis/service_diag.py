@@ -385,9 +385,12 @@ def analyze_l1_service_response(
     acao = headers_lower.get("access-control-allow-origin", "")
     acac = headers_lower.get("access-control-allow-credentials", "").lower()
     probe_origin = str(res.get("cors_probe_origin", "https://untrusted-origin.example"))
-    # "null" is as untrusted as a reflected origin (sandboxed frames, local files)
-    if acao in ("*", "null") or (acao and probe_origin and acao == probe_origin):
-        sev = "high" if (acao in (probe_origin, "null") and acac == "true") else "medium"
+    # A public response with ACAO * or a reflected origin is not by itself a
+    # credentialed cross-origin exposure. Browsers reject ACAO * together with
+    # credentials; require an observed credentialed policy before detection.
+    # "null" represents untrusted sandboxed/file origins.
+    if acac == "true" and (acao == "null" or (acao and probe_origin and acao == probe_origin)):
+        sev = "high"
         r_score, r_rat = compute_finding_risk_score(
             sev, "detected", internet_facing=is_https
         )
