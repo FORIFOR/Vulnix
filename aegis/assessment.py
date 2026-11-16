@@ -4063,7 +4063,7 @@ class AssessmentService:
             h = {k.lower(): v for k, v in headers.items()} if valid_headers else {}
             profile = self._l2_profile() if is_ext and valid_headers else None
             current_l1 = ({f["id"]: f for f in analyze_l1_service_response(
-                res, ev_http or {}, url,
+                res, ev_http or {}, url, self.cve_monitor,
                 cookie_policy=profile.get("cookie_policy") if profile else None,
             )} if is_ext and valid_headers else {})
             for fid in ("f_headers", "f_powered", "f_l1_cors", "f_l1_cookies"):

@@ -101,7 +101,7 @@ class TestIndependentCorsPolicyLab(unittest.TestCase):
 
     def test_fix_recheck_does_not_revive_public_wildcard_as_detected(self):
         host = "owned-cors.example.test"
-        site = CorsPolicyLab("reflected_credentials")
+        site = CorsPolicyLab("reflected_credentials", server_banner="Apache/2.4.49")
         thread = threading.Thread(target=site.serve_forever, daemon=True)
         thread.start()
         try:
@@ -128,6 +128,9 @@ class TestIndependentCorsPolicyLab(unittest.TestCase):
                     self.assertEqual(snap["state"], "completed", snap.get("failure"))
                     self.assertEqual(next(f for f in snap["findings"] if f["id"] == "f_l1_cors")["verdict"],
                                      "detected")
+                    initial_server = next(f for f in snap["findings"] if f["id"] == "f_powered")
+                    self.assertIn("CVE-2021-41773", initial_server["cve"])
+                    self.assertEqual(initial_server["severity"], "high")
                     site.mode = "public_wildcard"
                     rerun = svc.verify_fix("approver")
                     item = next(i for i in rerun["defense_comparison"]["items"]
@@ -137,8 +140,10 @@ class TestIndependentCorsPolicyLab(unittest.TestCase):
                     self.assertEqual(current["risk_score"], 0)
                     self.assertEqual(current["why_detected"], current["verdict_note"])
                     self.assertEqual(current["summary"], current["verdict_note"])
-                    self.assertEqual(next(f for f in rerun["findings"] if f["id"] == "f_powered")
-                                     ["verdict"], "detected")
+                    current_server = next(f for f in rerun["findings"] if f["id"] == "f_powered")
+                    self.assertEqual(current_server["verdict"], "detected")
+                    self.assertEqual(current_server["cve"], initial_server["cve"])
+                    self.assertEqual(current_server["severity"], initial_server["severity"])
                     report = svc.report_markdown()
                     self.assertIn("**再確認の結果**: 最新のHTTP応答では", report)
                     self.assertNotIn("**なぜ検出されたか**: None", report)

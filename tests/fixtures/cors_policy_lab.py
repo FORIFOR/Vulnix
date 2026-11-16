@@ -7,15 +7,19 @@ import http.server
 class CorsPolicyLab(http.server.ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, mode: str):
+    def __init__(self, mode: str, *, server_banner: str | None = None):
         if mode not in {"reflected_credentials", "reflected_public", "public_wildcard", "patched", "generic_200"}:
             raise ValueError("unknown fixture mode")
         super().__init__(("127.0.0.1", 0), _Handler)
         self.mode = mode
+        self.server_banner = server_banner
         self.seen: list[str] = []
 
 
 class _Handler(http.server.BaseHTTPRequestHandler):
+    def version_string(self):
+        return self.server.server_banner or super().version_string()
+
     def log_message(self, *_args):
         pass
 
