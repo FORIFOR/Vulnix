@@ -1,8 +1,14 @@
 import type { Snapshot } from "./types";
 
+export class ApiHttpError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+  }
+}
+
 export async function getJSON<T>(path: string): Promise<T> {
   const res = await fetch(path, { cache: "no-store" });
-  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `HTTP ${res.status}`);
+  if (!res.ok) throw new ApiHttpError((await res.json().catch(() => ({}))).error ?? `HTTP ${res.status}`, res.status);
   return res.json();
 }
 

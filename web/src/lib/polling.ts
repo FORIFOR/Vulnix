@@ -19,8 +19,11 @@ export function needsAuthoritativeRefresh(
   return visible && now - lastSnapshotAt >= maxAgeMs;
 }
 
-export function shouldApplySnapshot(snapshotSeq: number, seenSeq: number): boolean {
-  return Number.isSafeInteger(snapshotSeq) && snapshotSeq >= seenSeq;
+export function shouldApplySnapshot(
+  snapshotSeq: number, seenSeq: number, requestSerial: number = 0, appliedSerial: number = 0,
+): boolean {
+  return Number.isSafeInteger(snapshotSeq) &&
+    (snapshotSeq > seenSeq || (snapshotSeq === seenSeq && requestSerial >= appliedSerial));
 }
 
 // A heartbeat is useful only if it covers every event the browser has seen.

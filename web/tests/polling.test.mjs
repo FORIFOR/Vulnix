@@ -31,3 +31,9 @@ test("a delayed snapshot cannot replace a newer SSE state", () => {
   assert.equal(shouldApplySnapshot(10, 10), true);
   assert.equal(shouldApplySnapshot(11, 10), true);
 });
+
+test("an older same-sequence request cannot overwrite a newer snapshot", () => {
+  assert.equal(shouldApplySnapshot(10, 10, 1, 2), false);
+  assert.equal(shouldApplySnapshot(10, 10, 2, 2), true);
+  assert.equal(shouldApplySnapshot(11, 10, 1, 2), true);
+});

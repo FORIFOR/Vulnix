@@ -45,6 +45,8 @@ PARSER.add_argument("--idle-seconds", type=float, default=0,
 PARSER.add_argument("--block-events", action="store_true", help="Drop the SSE stream to verify backup polling")
 PARSER.add_argument("--silent-change", action="store_true",
                     help="Change a lab finding without publishing an event while SSE heartbeats continue")
+PARSER.add_argument("--revoke-session", action="store_true",
+                    help="Revoke the lab session and require the browser to hide the old result")
 
 
 def free_port() -> int:
@@ -195,6 +197,7 @@ def main() -> None:
                             assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
                             idle_at = len(api_calls)
                             silent_change_recovered_s = None
+                            revocation_hidden_s = None
                             if args.silent_change:
                                 seq_before = svc.bus.last_seq
                                 with svc._lock:
@@ -204,6 +207,12 @@ def main() -> None:
                                 changed_at = time.monotonic()
                                 page.locator("h3").filter(has_text="心拍のみの更新確認").wait_for(timeout=40000)
                                 silent_change_recovered_s = round(time.monotonic() - changed_at, 3)
+                            if args.revoke_session:
+                                ops.revoke_all_sessions("browser-session-test")
+                                revoked_at = time.monotonic()
+                                page.locator("h3").filter(has_text="Apache mod_status の公開露出").wait_for(
+                                    state="detached", timeout=40000)
+                                revocation_hidden_s = round(time.monotonic() - revoked_at, 3)
                             if args.idle_seconds > 0:
                                 page.wait_for_timeout(args.idle_seconds * 1000)
                             print(json.dumps({"viewport_width": 390,
@@ -215,6 +224,7 @@ def main() -> None:
                                               "idle_api_requests": len(api_calls) - idle_at,
                                               "sse_blocked": args.block_events,
                                               "silent_change_recovered_s": silent_change_recovered_s,
+                                              "revocation_hidden_s": revocation_hidden_s,
                                               "target_paths": list(site.seen), "local_model_calls": len(model.requests),
                                               "status_finding": "detected", "page_errors": len(page_errors)},
                                              ensure_ascii=False, indent=2))
