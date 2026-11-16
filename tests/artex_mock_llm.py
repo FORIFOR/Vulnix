@@ -141,7 +141,24 @@ class MockLLM:
                         return self._send(400, json.dumps({"error": {"message": why}}).encode(), "application/json")
                 msgs = req.get("messages") or []
                 has_results = any(m.get("role") == "tool" for m in msgs if isinstance(m, dict))
-                if has_results:
+                called = [tc.get("function", {}).get("name")
+                          for m in msgs if isinstance(m, dict) and m.get("role") == "assistant"
+                          for tc in m.get("tool_calls") or [] if isinstance(tc, dict)]
+                if mock.intent_selector is not None and "list_findings" not in called:
+                    message = {"role": "assistant", "content": "",
+                               "tool_calls": [{"id": "call_list_findings", "type": "function",
+                                               "function": {"name": "list_findings", "arguments": "{}"}}]}
+                    finish = "tool_calls"
+                elif mock.intent_selector is not None and "add_intent" not in called:
+                    chosen = mock.intent_selector(msgs)
+                    if chosen:
+                        message = {"role": "assistant", "content": "",
+                                   "tool_calls": _tool_calls(_seeded_asset_id(msgs), chosen)}
+                        finish = "tool_calls"
+                    else:
+                        message = {"role": "assistant", "content": "追加検査は提案しません。"}
+                        finish = "stop"
+                elif has_results:
                     message = {"role": "assistant", "content": "规划完成：已提交探索方向。"}
                     finish = "stop"
                 else:
