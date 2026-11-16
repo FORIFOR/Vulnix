@@ -59,6 +59,16 @@ class TestCookiePurposeLab(unittest.TestCase):
         self.assertIsNone(cookie["what_was_established"])
         self.assertIn("用途を確認", cookie["remediation"]["steps"][0])
 
+    def test_session_same_site_policy_does_not_apply_to_unknown_cookie(self):
+        observed = {"status": 200, "headers": {}, "set_cookies": [
+            "auth=opaque; Secure; HttpOnly; SameSite=Lax",
+            "aux=opaque; Secure; HttpOnly; SameSite=None",
+        ]}
+        findings = analyze_l1_service_response(
+            observed, {"audit_hash": "cookie-lab-proof", "saved_at": 1},
+            "https://owned-cookie.example.test/", cookie_policy=OWNER["session_no_httponly"])
+        self.assertFalse([f for f in findings if f["id"] == "f_l1_cookies"])
+
     def test_assessment_passes_only_the_accepted_site_cookie_spec(self):
         with tempfile.TemporaryDirectory() as tmp:
             svc = AssessmentService(Path(tmp), 1, l2_confinement=TEST_CONFINEMENT)

@@ -383,7 +383,8 @@ def analyze_l1_service_response(
             missing_flags.append("Secure")
         if "httponly" not in attrs:
             missing_flags.append("HttpOnly")
-        expected_same_site = cookie_policy["same_site"] if policy_confirmed else None
+        expected_same_site = (cookie_policy["same_site"] if policy_confirmed
+                              and cookie_name in cookie_policy["session"] else None)
         if expected_same_site:
             acceptable = {"Lax", "Strict"} if expected_same_site == "Lax" else {expected_same_site}
             if attrs.get("samesite", "").capitalize() not in acceptable:
