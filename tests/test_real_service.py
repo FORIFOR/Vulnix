@@ -1599,7 +1599,10 @@ class TestRemotionExport(RealServiceBase):
         self.assertEqual(out["remotion_timeline"]["events"][0]["scene"], "ownership_verified")
         self.assertTrue(out["confirmed_findings"])
         self.assertTrue(all(f["audit_hash"] for f in out["confirmed_findings"]))
-        self.assertEqual(out["summary"]["unverified_candidate_count"], len(EXAMPLE["checks"]))
+        self.assertEqual(out["summary"]["unverified_candidate_count"], len(EXAMPLE["checks"]) + 1)
+        detailed = self.svc.remotion_export(anonymize=False)
+        self.assertIn("f_l1_unauth_api", {f["id"] for f in detailed["unverified_candidates"]})
+        self.assertNotIn("f_l1_unauth_api", {f["id"] for f in detailed["confirmed_findings"]})
         self.assertEqual(out["summary"]["proven_count"] + out["summary"]["detected_count"]
                          + out["summary"]["not_reproduced_count"], len(out["confirmed_findings"]))
         self.assertIn(HOST, json.dumps(self.svc.remotion_export(anonymize=False)))
