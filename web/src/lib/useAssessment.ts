@@ -4,7 +4,7 @@
 // than what we have; duplicates are dropped and a gap triggers a full refetch,
 // so the screen always converges on server state.
 import { useCallback, useEffect, useRef, useState, type SetStateAction } from "react";
-import { heartbeatDecision, needsAuthoritativeRefresh, needsPoll, POLL_EVERY_MS, shouldApplySnapshot } from "./polling";
+import { heartbeatDecision, needsAuthoritativeRefresh, needsPoll, POLL_EVERY_MS, shouldApplyRequestFailure, shouldApplySnapshot } from "./polling";
 import { ApiHttpError, getJSON } from "./api";
 import { applyEvent, withNewerPlanner } from "./assessmentEvents";
 import type { AegisEvent, AuditEntry, Snapshot } from "./types";
@@ -60,6 +60,7 @@ export function useAssessment(id: string) {
       return s.last_seq;
     } catch (e) {
       if (accessDeniedRef.current) return null;
+      if (!shouldApplyRequestFailure(requestSerial, requestSerialRef.current, appliedSerialRef.current)) return null;
       if (e instanceof ApiHttpError && (e.status === 401 || e.status === 403)) {
         accessDeniedRef.current = true;
         setRawSnap(null);

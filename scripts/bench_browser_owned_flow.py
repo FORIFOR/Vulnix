@@ -206,6 +206,9 @@ def main() -> None:
                             snap = svc.snapshot()
                             assert snap["state"] == "completed", snap.get("failure")
                             assert site.seen == ["/", "/server-status?auto"], site.seen
+                            page.get_by_role("button", name="検証の記録").first.click()
+                            page.get_by_text("2. 診断方法：", exact=False).first.wait_for()
+                            assert page.get_by_text("EgressGuard", exact=False).count() == 0
                             if args.cors_note:
                                 page.get_by_text("Access-Control-Allow-Credentials: true", exact=False).first.wait_for()
                                 page.get_by_text("機密情報をブラウザから読み取れたことは実証していません", exact=False).first.wait_for()

@@ -168,7 +168,7 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
           <div>
             <h2 id="ownership-wizard-title" className="text-lg font-bold">サイトを診断する</h2>
             <p className="mt-0.5 text-xs text-zinc-500">
-              あなたが管理しているサイトだけを診断できます。所有確認が終わるまで、サイトへは一切アクセスしません。
+              あなたが管理しているサイトだけを診断できます。所有確認には、利用可能なGoogle連携、DNS、確認用ファイルを使います。診断は所有確認と範囲の確定後に始まります。
             </p>
           </div>
           <button type="button" onClick={onClose} className="shrink-0 whitespace-nowrap rounded-lg px-2.5 py-1 text-xs text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800">
