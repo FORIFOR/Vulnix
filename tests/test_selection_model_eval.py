@@ -83,6 +83,8 @@ class TestSelectionModelEval(unittest.TestCase):
         self.assertEqual(result["selection"]["tp"] + result["selection"]["fp"], 2)
         self.assertEqual(result["usage"], {"prompt_tokens": 900, "completion_tokens": 30})
         self.assertNotIn("test-only-key", json.dumps(result))
+        self.assertEqual(result["response_adoption_rate"], 1.0)
+        self.assertEqual(len(result["selection_errors"]), result["selection"]["fp"] + result["selection"]["fn"])
 
     def test_unusable_model_answer_is_counted_without_a_finding(self):
         expected = evaluation.run_preview()["gateway"]["first_request_sha256"]
@@ -100,6 +102,17 @@ class TestSelectionModelEval(unittest.TestCase):
         self.assertFalse(result["accepted"])
         self.assertIsNone(result["selection"])
         self.assertEqual(result["selected_case_ids"], [])
+        self.assertEqual(result["response_adoption_rate"], 0.0)
+        self.assertEqual(result["reject_reason"], "invalid_json")
+
+    def test_wrong_choices_name_false_positive_and_missed_cases(self):
+        _, mapping = evaluation.build_request()
+        truth = evaluation.truth_ids(mapping)
+        chosen = {next(iter(truth)), next(case for case in mapping if case not in truth)}
+        errors = evaluation.selection_errors(chosen, mapping)
+        self.assertEqual(sum(e["kind"] == "false_positive" for e in errors), 1)
+        self.assertEqual(sum(e["kind"] == "missed" for e in errors), len(truth) - 1)
+        self.assertEqual({e["case_id"] for e in errors}, (chosen - truth) | (truth - chosen))
 
 
 if __name__ == "__main__":

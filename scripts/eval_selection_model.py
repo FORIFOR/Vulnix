@@ -61,7 +61,7 @@ def validate_answer(content: str, mapping: dict[str, str]) -> set[str]:
 
     try:
         answer = json.loads(content, object_pairs_hook=unique_object)
-    except (ValueError, TypeError) as exc:
+    except (json.JSONDecodeError, TypeError) as exc:
         raise ValueError("answer must be plain JSON") from exc
     if not isinstance(answer, dict) or set(answer) != {"selected"} or not isinstance(answer["selected"], list):
         raise ValueError("answer shape rejected")
@@ -72,14 +72,25 @@ def validate_answer(content: str, mapping: dict[str, str]) -> set[str]:
 
 
 def score(selected: set[str], mapping: dict[str, str]) -> dict:
-    truth = json.loads((FIXTURES / "access_control_truth.json").read_text(encoding="utf-8"))
-    actual = {case_id for case_id, mode in mapping.items() if truth[mode]["idor_check_appropriate"]}
+    actual = truth_ids(mapping)
     tp, fp, fn, tn = (len(selected & actual), len(selected - actual),
                       len(actual - selected), len(set(mapping) - selected - actual))
     return {"tp": tp, "fp": fp, "fn": fn, "tn": tn,
             "precision": tp / (tp + fp) if tp + fp else None,
             "recall": tp / (tp + fn) if tp + fn else None,
             "unnecessary_check_rate": fp / len(mapping)}
+
+
+def truth_ids(mapping: dict[str, str]) -> set[str]:
+    truth = json.loads((FIXTURES / "access_control_truth.json").read_text(encoding="utf-8"))
+    return {case_id for case_id, mode in mapping.items() if truth[mode]["idor_check_appropriate"]}
+
+
+def selection_errors(selected: set[str], mapping: dict[str, str]) -> list[dict]:
+    actual = truth_ids(mapping)
+    return [{"case_id": case_id, "lab_condition": mapping[case_id],
+             "kind": "false_positive" if case_id in selected else "missed"}
+            for case_id in sorted(selected ^ actual)]
 
 
 def run_preview() -> dict:
@@ -134,14 +145,22 @@ def run_approved(*, approval_sha256: str, api_key: str, audit: AuditLog,
         try:
             selected = validate_answer(content, mapping)
             accepted = True
-        except ValueError:
+            reject_reason = None
+        except ValueError as exc:
             selected, accepted = set(), False
+            reject_reason = {"answer must be plain JSON": "invalid_json",
+                             "duplicate answer key": "duplicate_json_key",
+                             "answer shape rejected": "invalid_shape",
+                             "answer contains an invalid or repeated case": "invalid_case_id"}.get(str(exc), "invalid_answer")
         usage = response.get("usage") or {}
         usage = {k: usage[k] for k in ("prompt_tokens", "completion_tokens")
                  if isinstance(usage.get(k), int) and usage[k] >= 0}
         return {"selection": score(selected, mapping) if accepted else None, "accepted": accepted,
+                "response_adoption_rate": 1.0 if accepted else 0.0, "reject_reason": reject_reason,
+                "selection_errors": selection_errors(selected, mapping) if accepted else [],
                 "selected_case_ids": sorted(selected), "usage": usage,
                 "elapsed_s": elapsed, "gateway": gateway.report(),
+                "provider_billed_cost_usd": None,
                 "target_get": 0, "worker_launches": 0}
     finally:
         gateway.close()
