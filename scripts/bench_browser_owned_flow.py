@@ -7,6 +7,7 @@ model is contacted. Requires Chrome, Playwright and web/node_modules.
 from __future__ import annotations
 
 import argparse
+from contextlib import nullcontext
 import json
 import os
 import secrets
@@ -29,6 +30,7 @@ from playwright.sync_api import sync_playwright  # noqa: E402
 
 from aegis import assessment as assessment_module  # noqa: E402
 from aegis.assessment import AssessmentService  # noqa: E402
+from aegis.confinement import KernelConfinement  # noqa: E402
 from aegis.operators import OperatorStore, hash_password  # noqa: E402
 from aegis.server import make_handler  # noqa: E402
 from scripts.bench_status_exposure_after import HOST, STATUS_INTENT  # noqa: E402
@@ -47,6 +49,8 @@ PARSER.add_argument("--silent-change", action="store_true",
                     help="Change a lab finding without publishing an event while SSE heartbeats continue")
 PARSER.add_argument("--revoke-session", action="store_true",
                     help="Revoke the lab session and require the browser to hide the old result")
+PARSER.add_argument("--real-artex", action="store_true", help="Use the pinned ARTEX overlay binary supplied by CI")
+PARSER.add_argument("--chromium", action="store_true", help="Use Playwright Chromium instead of local Chrome")
 
 
 def free_port() -> int:
@@ -71,22 +75,29 @@ def wait_for_web(url: str, proc: subprocess.Popen) -> None:
 
 def main() -> None:
     args = PARSER.parse_args()
+    real_bin = os.environ.get("VULNIX_ARTEX_REAL_BIN") if args.real_artex else None
+    if args.real_artex and (not real_bin or not Path(real_bin).is_file()):
+        PARSER.error("--real-artex requires VULNIX_ARTEX_REAL_BIN pointing to the built overlay")
+    command = [real_bin] if real_bin else FAKE
     site = StatusExposureLab("vulnerable")
     site_thread = threading.Thread(target=site.serve_forever, daemon=True)
     site_thread.start()
     try:
         with tempfile.TemporaryDirectory() as tmp, MockLLM(intents=[STATUS_INTENT]) as model:
             data = Path(tmp)
-            env = {"AEGIS_ENV": "development", "VULNIX_REAL_SITE_LOCAL_ARTEX": "1",
+            env = {"AEGIS_ENV": "production" if real_bin else "development", "VULNIX_REAL_SITE_LOCAL_ARTEX": "1",
                    "VULNIX_REAL_SITE_INITIAL_ARTEX": "1", "VULNIX_ARTEX_LLM_MODE": "gateway-forward",
-                   "VULNIX_ARTEX_REAL_CMD": " ".join(FAKE),
+                   "VULNIX_ARTEX_REAL_CMD": " ".join(command),
+                   "VULNIX_ARTEX_EXPECTED_SHA256": os.environ.get("VULNIX_ARTEX_CI_BINARY_SHA256", ""),
                    "VULNIX_ARTEX_LLM_UPSTREAM_URL": model.url + "/chat/completions"}
             with patch.dict(os.environ, env):
                 svc = AssessmentService(data, 18081, l2_confinement=TEST_CONFINEMENT,
                                         real_site_read_only=True)
+                if real_bin and os.environ.get("VULNIX_ARTEX_CONFINE") == "1":
+                    svc._l2_confinement = KernelConfinement()
                 svc._custom_resolver = lambda name: ["127.0.0.1"] if name == HOST else []
                 svc._real_site_local_artex = True
-                svc._artex_real_cmd = FAKE
+                svc._artex_real_cmd = command
                 challenge_value = [None]
                 original_verify = assessment_module.verify_ownership_challenge
                 original_confirm = svc.confirm_asset_scope
@@ -132,10 +143,11 @@ def main() -> None:
                     wait_for_web(base, web)
                     with patch.object(assessment_module, "verify_ownership_challenge",
                                       side_effect=verify_with_lab_dns), \
-                         patch.object(assessment_module, "run_artex_planner",
-                                      side_effect=propose_status), \
+                        (nullcontext() if real_bin else patch.object(assessment_module, "run_artex_planner",
+                                                                      side_effect=propose_status)), \
                          sync_playwright() as playwright:
-                        browser = playwright.chromium.launch(channel="chrome", headless=True)
+                        browser = playwright.chromium.launch(headless=True) if args.chromium else \
+                            playwright.chromium.launch(channel="chrome", headless=True)
                         try:
                             page = browser.new_page(viewport={"width": 390, "height": 844})
                             api_calls: list[str] = []
@@ -171,11 +183,12 @@ def main() -> None:
                             started = time.monotonic()
                             page.get_by_role("button", name="診断を開始", exact=True).click()
                             actions.append("start")
-                            page.wait_for_url("**/assessments/scan_001", timeout=15000)
+                            page.wait_for_url("**/assessments/scan_001", timeout=120000 if real_bin else 15000)
                             page.get_by_role("tab", name="問題").click()
                             actions.append("open_findings")
                             try:
-                                page.locator("h3").filter(has_text="Apache mod_status の公開露出").wait_for(timeout=30000)
+                                page.locator("h3").filter(has_text="Apache mod_status の公開露出").wait_for(
+                                    timeout=120000 if real_bin else 30000)
                             except Exception:
                                 state = svc.snapshot()
                                 print(json.dumps({"state": state["state"],
@@ -189,10 +202,14 @@ def main() -> None:
                             snap = svc.snapshot()
                             assert snap["state"] == "completed", snap.get("failure")
                             assert site.seen == ["/", "/server-status?auto"], site.seen
-                            # The Python planner stand-in injects its intent without
-                            # invoking the local model; the real binary is covered by
-                            # the separate Linux integration job.
-                            assert len(model.requests) == 0, len(model.requests)
+                            plan = snap["artex_plan"]["plan"]
+                            assert plan["engine"]["kind"] == ("artex-binary" if real_bin else "unverified")
+                            if real_bin:
+                                assert model.requests, "the real ARTEX did not call the local model"
+                                model_input = json.dumps(model.requests, ensure_ascii=False)
+                                assert HOST not in model_input and target not in model_input
+                            else:
+                                assert len(model.requests) == 0, len(model.requests)
                             assert not page_errors, page_errors
                             assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
                             idle_at = len(api_calls)
@@ -226,6 +243,8 @@ def main() -> None:
                                               "silent_change_recovered_s": silent_change_recovered_s,
                                               "revocation_hidden_s": revocation_hidden_s,
                                               "target_paths": list(site.seen), "local_model_calls": len(model.requests),
+                                              "engine_kind": plan["engine"]["kind"],
+                                              "model_input_excludes_host": True if real_bin else None,
                                               "status_finding": "detected", "page_errors": len(page_errors)},
                                              ensure_ascii=False, indent=2))
                         finally:
