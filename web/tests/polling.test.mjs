@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import ts from "typescript";
 const source = readFileSync(new URL("../src/lib/polling.ts", import.meta.url), "utf8");
 const { outputText } = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } });
-const { needsPoll, needsAuthoritativeRefresh, shouldApplySnapshot, heartbeatDecision, QUIET_MS, MAX_SNAPSHOT_AGE_MS } = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`);
+const { needsPoll, needsAuthoritativeRefresh, shouldApplySnapshot, shouldApplyRequestFailure, heartbeatDecision, QUIET_MS, MAX_SNAPSHOT_AGE_MS } = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`);
 
 test("a quiet stream on a visible page is backed up by polling", () => {
   assert.equal(needsPoll(0, QUIET_MS, true), true);
@@ -36,4 +36,11 @@ test("an older same-sequence request cannot overwrite a newer snapshot", () => {
   assert.equal(shouldApplySnapshot(10, 10, 1, 2), false);
   assert.equal(shouldApplySnapshot(10, 10, 2, 2), true);
   assert.equal(shouldApplySnapshot(11, 10, 1, 2), true);
+});
+
+test("an old access error cannot revoke a newer request or applied snapshot", () => {
+  assert.equal(shouldApplyRequestFailure(1, 2, 0), false);
+  assert.equal(shouldApplyRequestFailure(1, 2, 2), false);
+  assert.equal(shouldApplyRequestFailure(2, 2, 1), true);
+  assert.equal(shouldApplyRequestFailure(2, 2, 2), true);
 });

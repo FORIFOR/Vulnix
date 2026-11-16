@@ -26,6 +26,14 @@ export function shouldApplySnapshot(
     (snapshotSeq > seenSeq || (snapshotSeq === seenSeq && requestSerial >= appliedSerial));
 }
 
+// An older failed request may complete after a newer successful read. Its
+// access error must not clear that newer state or permanently stop updates.
+export function shouldApplyRequestFailure(
+  requestSerial: number, latestIssuedSerial: number, appliedSerial: number,
+): boolean {
+  return requestSerial === latestIssuedSerial && requestSerial >= appliedSerial;
+}
+
 // A heartbeat is useful only if it covers every event the browser has seen.
 // If the server reports a newer sequence, an event was missed: re-read both
 // snapshot and audit. Malformed or stale heartbeats never suppress the backup.

@@ -5,13 +5,15 @@ import ts from "typescript";
 const source = readFileSync(new URL("../src/lib/idorEvidence.ts", import.meta.url), "utf8");
 const { outputText } = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } });
 const { latestIdorEvidence, currentIdorEvidence } = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`);
-const success = { check: "idor", request_path: "/api/accounts/B/secret", request_headers: { "X-Test-Account": "acct_A" }, status: 200, established: true, response: { caller_account: "acct_A", resource_owner: "acct_B", resource_id: "res_b_001" }, connected_ip: "127.0.0.1" };
+const marker = "VULNIX_LAB_IDOR_PROVEN";
+const ownerControl = { Check: "idor_cross_account_access", caller_account: "acct_B", resource_owner: "acct_B", resource_id: "res_b_001", confidential_marker: marker };
+const success = { check: "idor", request_path: "/api/accounts/B/secret", request_headers: { "X-Test-Account": "acct_A" }, status: 200, established: true, verdict: "proven", control_status: 200, control_verified: true, control_response: ownerControl, response: { Check: "idor_cross_account_access", established: true, caller_account: "acct_A", resource_owner: "acct_B", resource_id: "res_b_001", confidential_marker: marker }, connected_ip: "127.0.0.1" };
 const evidence = (data, id = "ev_latest") => ({ evidence_id: id, kind: "worker", saved_at: 1, audit_hash: "hash", content: JSON.stringify(data) });
 test("200 with complete cross-account evidence confirms a read", () => {
   assert.deepEqual(latestIdorEvidence([evidence(success)]), { evidenceId: "ev_latest", caller: "acct_A", owner: "acct_B", status: 200, outcome: "read" });
 });
 test("newer 403 overrides older 200 and does not require a returned resource", () => {
-  const denied = { ...success, status: 403, established: false, response: { caller_account: "acct_A", resource_owner: "acct_B" } };
+  const denied = { ...success, status: 403, established: false, verdict: "not_reproduced", response: { caller_account: "acct_A", resource_owner: "acct_B" } };
   assert.deepEqual(latestIdorEvidence([evidence(success, "ev_old"), evidence(denied)]), { evidenceId: "ev_latest", caller: "acct_A", owner: "acct_B", status: 403, outcome: "blocked" });
 });
 test("malformed latest evidence never falls back to older success", () => {
@@ -31,6 +33,14 @@ for (const data of [null, [], {}, { ...success, response: {} }, { ...success, re
     assert.equal(latestIdorEvidence([evidence(success, "ev_old"), evidence(data)]).outcome, "unknown");
   });
 }
+for (const data of [{ ...success, control_verified: false }, { ...success, control_response: null },
+  { ...success, control_status: 404 }, { ...success, response: { ...success.response, confidential_marker: "decoy" } },
+  { ...success, request_headers: {} }, { ...success, request_headers: { "X-Test-Account": "acct_A", Authorization: "extra" } },
+  { ...success, verdict: "unverified" }]) {
+  test(`missing independent proof stays unknown: ${JSON.stringify(data)}`, () => {
+    assert.equal(latestIdorEvidence([evidence(data)]).outcome, "unknown");
+  });
+}
 
 for (const verdict of ["unverified", "aborted"]) {
   test(`${verdict} after older 200 does not present stale evidence as current`, () => {
@@ -46,6 +56,12 @@ for (const [inVerification, busy] of [[true, false], [false, true]]) {
     });
   });
 }
-test("completed verification may present its attached evidence", () => {
-  assert.equal(currentIdorEvidence({ verdict: "proven", evidence: [evidence(success)] }).outcome, "read");
+test("completed backend proof may present its attached evidence", () => {
+  assert.equal(currentIdorEvidence({ verdict: "proven", evidence_status: "proven", last_run_verdict: "proven", evidence: [evidence(success)] }).outcome, "read");
+});
+test("a retained old proof cannot overstate the latest failed run", () => {
+  assert.equal(currentIdorEvidence({ verdict: "proven", evidence_status: "proven", last_run_verdict: "unverified", evidence: [evidence(success)] }).outcome, "unavailable");
+});
+test("evidence alone cannot override a candidate backend verdict", () => {
+  assert.equal(currentIdorEvidence({ verdict: "candidate", evidence_status: "candidate", evidence: [evidence(success)] }).outcome, "unknown");
 });

@@ -108,9 +108,11 @@ export function FindingCard({
               <div className="space-y-1.5 border-t border-zinc-200/80 px-3 py-2 dark:border-zinc-800">
                 <ol className="space-y-1 border-l-2 border-zinc-300 pl-2.5 text-[11px] text-zinc-600 dark:border-zinc-700 dark:text-zinc-300">
                   <li>1. 仮説形成：{f.why_detected}</li>
-                  <li>2. Gateway検査：単一使用トークン発行・EgressGuard ({labEndpoint}) 固定・egress_sentinel 隔離起動</li>
+                  {readOnly
+                    ? <li>2. 診断方法：許可済みの読み取り専用HTTP検査</li>
+                    : <li>2. Gateway検査：単一使用トークン発行・EgressGuard ({labEndpoint}) 固定・egress_sentinel 隔離起動</li>}
                   <li>
-                    3. Worker結果：
+                    {readOnly ? "3. 観測結果：" : "3. Worker結果："}
                     {busy ? " 応答待機中…" : ` 今回の判定=${f.last_run_verdict ?? f.verdict} / 監査ハッシュ #${latestEv?.audit_hash?.slice(0, 12) ?? "—"}`}
                   </li>
                 </ol>
