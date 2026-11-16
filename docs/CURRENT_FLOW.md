@@ -46,7 +46,7 @@ flowchart LR
 | P12 | `POST /api/assessments/{id}/chat` | `ask_chat` → `_safe_real_ai_explanation` または `_answer_question` | `test_ai_advisor.py`。固定項目だけ送信、応答検証、不採用なら内蔵解説 |
 | P13 | 停止・取消・期限切れ | `emergency_stop`, `_expiry_watch`, `_launch_guard`、Gateway起動世代 | `test_gateway.py`, `test_authority_ledger.py`。失効後の起動と結果採用を拒否 |
 | P14 | `/api/system/verify-controls`, `/api/cve/*`, `/api/router/*` | `server.py` `JOB_ROUTES`, `control_verification.py`, `cve.py` | `test_cve.py`, `test_server.py`。通常診断から独立 |
-| P15 | SSEと4秒の代替取得 | `useAssessment`、`SessionProvider` | `web/tests/polling.test.mjs`。切断後もsnapshotと監査ログへ収束 |
+| P15 | SSE心拍と静穏時の代替取得 | `useAssessment`、`polling.ts`、`server.py` `_sse_loop` | `web/tests/polling.test.mjs`, `test_server.py`。通し番号付き心拍で正常時の重複取得を抑え、欠落・切断時はsnapshotと監査ログへ収束 |
 | P16 | 画面内通知・承認待ち | `EventBus.publish`/`wait`, `_sse_loop`, `_decide` | `test_server.py`。メール・Webhook送信は見つからない |
 
 ## 時系列と異常系
@@ -149,11 +149,11 @@ AIにはホスト名、URL、認証情報、個人情報、応答本文、秘密
 
 別の390px幅の本番ビルド通し測定ではブラウザAPI要求12回、ログイン後の操作8回だった。**Python製ARTEX代役**を使ったため、この値を実ARTEX経路のAPI回数や操作数とみなさない。詳細は[測定資料](STATUS_EXPOSURE_INTEGRATION.md)。
 
-ログイン画面の重複した`/api/auth/me`取得と監査ログの同一ファイル二度読みは削減済み。静かなSSEの4秒再取得、使途未確認の`FeedMonitor.sync_from_urls`は未変更。外部AI解説のドル建て予算予約は後続Draft PRのコードで実装したが、運用料金の妥当性と実請求額は未照合。390px幅の一連操作はPython製ARTEX代役で[模擬環境の通し測定](STATUS_EXPOSURE_INTEGRATION.md)を行った。公開βの所有確認→実サイト診断→結果表示、実Abliteration AIの採用可能な日本語解説、実ARTEXを含むブラウザ完走、実サイト全般の精度は未確認または未完成。公開βで開発ブランチの機能が動いていると扱わない。
+ログイン画面の重複した`/api/auth/me`取得と監査ログの同一ファイル二度読みは削減済み。P15は正常なSSE心拍の間だけ静穏時の重複取得を抑え、24秒の同一模擬条件で待機時API要求12→6回だった。使途未確認の`FeedMonitor.sync_from_urls`は未変更。外部AI解説のドル建て予算予約は後続Draft PRのコードで実装したが、運用料金の妥当性と実請求額は未照合。390px幅の一連操作はPython製ARTEX代役で[模擬環境の通し測定](STATUS_EXPOSURE_INTEGRATION.md)を行った。公開βの所有確認→実サイト診断→結果表示、実Abliteration AIの採用可能な日本語解説、実ARTEXを含むブラウザ完走、実サイト全般の精度は未確認または未完成。公開βで開発ブランチの機能が動いていると扱わない。
 
 ## 次の変更順序
 
 1. P12の外部AI費用上限はDraft PRで送信前の最悪値予約・同時要求・再起動後の累計を実装した。独立レビュー、料金設定と実請求額の照合を経るまで公開βでは有効にしない。
-2. P15の静かなSSE時の再取得について、監査ログの鮮度と失効通知の遅れを計測してから通信削減を判断する。停止・取消が画面に届く保証は維持する。
+2. P15は正常なSSEで待機時API要求を削減した。Cloudflare等の中継を挟んだ監査ログの鮮度と失効通知の遅れを別途測る。停止・取消が画面に届く保証は維持する。
 3. 同一の独立ラボでブラウザのURL登録から結果表示までを390px幅で通し、API回数と利用者操作数を代役Plannerで計測した。実ARTEXとローカル模擬モデルを同じブラウザ経路で実行し、機密値の外部送信を検査する段階は残る。
 4. P09/P12の採用率・実トークン・費用と公開βの実サイト経路は、必要な承認と所有確認を得た後に別途検証する。実サイトL2は引き続き禁止する。

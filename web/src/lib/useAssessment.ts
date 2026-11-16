@@ -4,7 +4,7 @@
 // than what we have; duplicates are dropped and a gap triggers a full refetch,
 // so the screen always converges on server state.
 import { useCallback, useEffect, useRef, useState, type SetStateAction } from "react";
-import { needsPoll, POLL_EVERY_MS } from "./polling";
+import { heartbeatDecision, needsPoll, POLL_EVERY_MS } from "./polling";
 import { getJSON } from "./api";
 import { applyEvent, withNewerPlanner } from "./assessmentEvents";
 import type { AegisEvent, AuditEntry, Snapshot } from "./types";
@@ -83,6 +83,18 @@ export function useAssessment(id: string) {
       es = new EventSource(`/api/assessments/${id}/events?after=${last}`);
       es.onopen = () => setConn("live");
       es.onerror = () => setConn(es?.readyState === EventSource.CLOSED ? "offline" : "reconnecting");
+      es.addEventListener("heartbeat", (message) => {
+        let serverSeq: unknown;
+        try {
+          serverSeq = (JSON.parse((message as MessageEvent).data) as { seq?: unknown }).seq;
+        } catch {
+          return; // malformed data must not disable the fallback
+        }
+        const decision = heartbeatDecision(serverSeq, seqRef.current);
+        if (decision === "ignore") return;
+        lastEventAt = Date.now();
+        if (decision === "refresh") void refetch();
+      });
       es.onmessage = (m) => {
         lastEventAt = Date.now();
         const ev = JSON.parse(m.data) as AegisEvent;

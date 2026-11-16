@@ -42,6 +42,7 @@ PARSER = argparse.ArgumentParser()
 PARSER.add_argument("--production", action="store_true", help="Use an already built Next.js production bundle")
 PARSER.add_argument("--idle-seconds", type=float, default=0,
                     help="Count backup API requests after the completed result remains visible")
+PARSER.add_argument("--block-events", action="store_true", help="Drop the SSE stream to verify backup polling")
 
 
 def free_port() -> int:
@@ -138,6 +139,8 @@ def main() -> None:
                             page.on("request", lambda req: api_calls.append(req.url.split("/api/", 1)[1].split("?", 1)[0])
                                     if "/api/" in req.url else None)
                             page.on("pageerror", lambda error: page_errors.append(str(error)))
+                            if args.block_events:
+                                page.route("**/api/assessments/*/events*", lambda route: route.abort())
                             page.goto(base + "/login")
                             page.get_by_label("ユーザー名", exact=True).fill("qa")
                             page.get_by_label("パスワード", exact=True).fill(password)
@@ -198,6 +201,7 @@ def main() -> None:
                                               "api_paths": api_calls, "elapsed_start_to_visible_finding_s": elapsed,
                                               "idle_seconds": args.idle_seconds,
                                               "idle_api_requests": len(api_calls) - idle_at,
+                                              "sse_blocked": args.block_events,
                                               "target_paths": list(site.seen), "local_model_calls": len(model.requests),
                                               "status_finding": "detected", "page_errors": len(page_errors)},
                                              ensure_ascii=False, indent=2))

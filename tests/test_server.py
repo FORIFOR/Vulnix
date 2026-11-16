@@ -270,6 +270,23 @@ class TestServer(unittest.TestCase):
                     break
         self.assertEqual(ids, [4, 5])
 
+    def test_idle_sse_heartbeat_reports_last_transmitted_sequence(self):
+        self.login("appr", "appr-pw")
+        last = self.get()["last_seq"]
+        req = urllib.request.Request(self.base + f"/events?after={last}",
+                                     headers={"Cookie": self.cookie})
+        with urllib.request.urlopen(req, timeout=12) as stream:
+            lines = []
+            while len(lines) < 8:
+                line = stream.readline().decode("utf-8").strip()
+                if line:
+                    lines.append(line)
+                if line.startswith("data: "):
+                    break
+        self.assertIn("event: heartbeat", lines)
+        sent = next(line for line in lines if line.startswith("data: "))
+        self.assertEqual(json.loads(sent.removeprefix("data: "))["seq"], last)
+
     def test_chat_and_report_and_history(self):
         self.login("op", "op-pw")
         code, body = self.post("/chat", {"question": "なぜ検出されたのですか？", "term": "idor"})

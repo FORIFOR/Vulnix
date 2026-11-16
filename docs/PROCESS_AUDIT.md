@@ -1,5 +1,7 @@
 # 処理系統監査と段階的な最適化
 
+最新の開発コードとP01〜P16の対応表は[CURRENT_FLOW.md](CURRENT_FLOW.md)を参照。以下は監査時点の履歴を含む。後続DraftではP15のSSEへ通し番号付き心拍を追加し、正常な接続での静穏時再取得を削減した。390px幅・独立ラボ・Next.js本番ビルドの24秒待機でAPI要求12→6回、SSE遮断時にはsnapshotと監査ログの代替取得が続いた。[測定値](STATUS_EXPOSURE_INTEGRATION.md)は各1回であり、Cloudflare経由の遅延や失効通知の遅れは未測定。
+
 対象: `codex/flow-audit-gates`（基礎監査は`codex/process-chain-optimization`）。起点は [REQUEST_FLOW.md](REQUEST_FLOW.md)。実コードの機械抽出結果は [PROCESS_INVENTORY.json](PROCESS_INVENTORY.json)、再生成は `python3 scripts/flow_inventory.py > docs/PROCESS_INVENTORY.json`。この抽出は**ソースの条件式・定義・呼び出し箇所の一覧**であり、動的に構成するパスと環境変数の実行先をすべて解決した呼び出しグラフではない。以下の手動追跡と組み合わせて読む。
 
 ## 後続Draft PR #53〜#55の現在地
