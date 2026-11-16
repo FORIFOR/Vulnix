@@ -43,8 +43,16 @@ def build_request() -> tuple[dict, dict[str, str]]:
 
 
 def validate_answer(content: str, mapping: dict[str, str]) -> set[str]:
+    def unique_object(pairs: list[tuple[str, object]]) -> dict:
+        out = {}
+        for key, value in pairs:
+            if key in out:
+                raise ValueError("duplicate answer key")
+            out[key] = value
+        return out
+
     try:
-        answer = json.loads(content)
+        answer = json.loads(content, object_pairs_hook=unique_object)
     except (ValueError, TypeError) as exc:
         raise ValueError("answer must be plain JSON") from exc
     if not isinstance(answer, dict) or set(answer) != {"selected"} or not isinstance(answer["selected"], list):

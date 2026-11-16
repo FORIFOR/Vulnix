@@ -37,6 +37,8 @@ class TestSelectionModelEval(unittest.TestCase):
                 evaluation.validate_answer(json.dumps(bad), mapping)
         with self.assertRaises(ValueError):
             evaluation.validate_answer("```json\n" + json.dumps(valid) + "\n```", mapping)
+        with self.assertRaises(ValueError):
+            evaluation.validate_answer('{"selected":["C01"],"selected":["C02"]}', mapping)
 
     def test_preview_is_one_local_gateway_call_and_labels_are_separate(self):
         report = evaluation.run_preview()
