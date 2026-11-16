@@ -1787,9 +1787,9 @@ class AssessmentService:
                                 if f.get("id") in ("f_banner", "f_idor", "f_sqli")
                                 and evidence_status(f) in ("detected", "proven")]
                 if getattr(self, "_lab_account_resource_observed", None) is not None:
-                    observations.append({"title": "Measured account resource link",
-                                         "detail": ("present" if self._lab_account_resource_observed
-                                                    else "absent")})
+                    surface = "present" if self._lab_account_resource_observed else "absent"
+                    observations.append({"title": f"Measured account resource link: {surface}",
+                                         "detail": surface})
                 request = {"goal": "登録済みの検証対象について、許可された非破壊の検証で確認すべき脆弱性の方向を計画する",
                            "targets": targets, "observations": observations, "max_turns": 6}
             gen = self._run_generation

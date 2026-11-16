@@ -23,6 +23,7 @@ from tests.fixtures.access_control_lab import AccessControlLab, MODES
 from tests.test_artex_bridge import FAKE
 from tests.artex_mock_llm import MockLLM
 from tests import TEST_CONFINEMENT
+from scripts.bench_access_control import _adaptive_intents
 
 
 TRUTH = json.loads((Path(__file__).parent / "fixtures/access_control_truth.json").read_text())
@@ -170,10 +171,7 @@ class TestIndependentAccessControlLab(unittest.TestCase):
             thread.join(timeout=2)
 
     def test_adaptive_mock_reads_artex_facts_before_proposing_idor(self):
-        intent = {"summary": "IDOR cross-account access-control verification",
-                  "asset_ids": [1], "priority": 7}
-        with MockLLM(intent_selector=lambda messages: [intent]
-                          if "present" in json.dumps(messages) else []) as model:
+        with MockLLM(intent_selector=_adaptive_intents) as model:
             def ask(messages):
                 req = Request(model.url + "/chat/completions",
                               data=json.dumps({"model": "mock", "messages": messages}).encode(),
@@ -184,11 +182,11 @@ class TestIndependentAccessControlLab(unittest.TestCase):
             lookup = ask(initial)
             self.assertEqual(lookup["tool_calls"][0]["function"]["name"], "list_facts")
             measured = initial + [lookup, {"role": "tool", "tool_call_id": "call_list_facts",
-                                          "content": json.dumps({"title": "Measured account resource link",
+                                          "content": json.dumps({"title": "Measured account resource link: present",
                                                                  "detail": "present"})}]
             proposed = ask(measured)
             self.assertEqual(proposed["tool_calls"][0]["function"]["name"], "add_intent")
             absent = initial + [lookup, {"role": "tool", "tool_call_id": "call_list_facts",
-                                        "content": json.dumps({"title": "Measured account resource link",
+                                        "content": json.dumps({"title": "Measured account resource link: absent",
                                                                "detail": "absent"})}]
             self.assertNotIn("tool_calls", ask(absent))

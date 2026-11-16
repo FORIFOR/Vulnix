@@ -37,7 +37,7 @@ def _adaptive_intents(messages: list[dict]) -> list[dict]:
     # false selection, so this is not a perfect oracle.
     prompt = json.dumps(messages, ensure_ascii=False)
     import re
-    return [INTENT] if re.search(r"Measured account resource link.{0,2000}present", prompt) else []
+    return [INTENT] if re.search(r"Measured account resource link: present", prompt) else []
 
 
 def _measure(mode: str, strategy: str) -> dict:
