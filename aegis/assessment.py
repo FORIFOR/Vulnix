@@ -4070,10 +4070,10 @@ class AssessmentService:
                 if fid not in self.a.findings:
                     continue
                 finding = self.a.findings[fid]
-                if fid in ("f_l1_cors", "f_l1_cookies") and is_ext and valid_headers:
-                    # Rechecks must use the same evidence threshold as the first run.
-                    # A public wildcard CORS policy and an ordinary preference cookie
-                    # do not become vulnerabilities merely because they are present.
+                if is_ext and valid_headers:
+                    # Rechecks use the first run's evidence thresholds for all
+                    # header findings. This covers Server as well as X-Powered-By,
+                    # credentialed CORS and approved Cookie purposes.
                     observed = current_l1.get(fid)
                     verdict = observed["verdict"] if observed else "not_reproduced"
                     note = (observed["verdict_note"] if observed and observed.get("verdict_note") else
@@ -4090,7 +4090,7 @@ class AssessmentService:
                         "risk_score": (observed or {}).get("risk_score", risk_score),
                         "risk_rationale": (observed or {}).get("risk_rationale", risk_rationale),
                         "verdict_basis": (observed or {}).get("verdict_basis", "l1_recheck_observation"),
-                        "why_detected": (observed or {}).get("why_detected"),
+                        "why_detected": (observed or {}).get("why_detected") or note,
                         "impact": (observed or {}).get("impact"),
                         "caveat": (observed or {}).get(
                             "caveat", "今回の確認では以前の条件を再現できませんでした。対象全体の安全性は未確認です。"),
@@ -5277,17 +5277,24 @@ class AssessmentService:
         for p in s["phases"]:
             lines.append(f"- **{p['label']}**: {p['status']} {('— ' + p['detail']) if p['detail'] else ''}")
         lines.append("")
-        lines.append("## 2. 検出された問題と実証結果")
+        lines.append("## 2. 診断結果と実証状況")
         real_findings = [f for f in s["findings"] if not f.get("demo_fixture")]
         if not real_findings:
             lines.append("- 実環境の検出結果はまだありません（未診断または検査前）。")
         for f in real_findings:
+            reason_label = ("再確認の結果" if f["evidence_status"] == "not_reproduced" else
+                            "確認できなかった理由" if f["evidence_status"] == "incomplete" else
+                            "なぜ確認候補か" if f["evidence_status"] == "candidate" else
+                            "なぜ検出されたか")
+            reason_text = ((f.get("verdict_note") or f["summary"])
+                           if f["evidence_status"] in ("not_reproduced", "incomplete") else
+                           (f.get("why_detected") or f["summary"]))
             lines.extend([
                 f"### [{f['severity'].upper()}] {f['title']} ({EVIDENCE_LABELS[f['evidence_status']]})",
                 f"- **カテゴリ**: {f['category']} / **危険度**: {f['risk_level']}",
                 f"- **関連CVE**: {', '.join(f['cve']) if f['cve'] else 'なし'}",
                 f"- **概要**: {f['summary']}",
-                f"- **なぜ検出されたか**: {f.get('why_detected', '—')}",
+                f"- **{reason_label}**: {reason_text}",
                 f"- **成立内容 / 検証結果**: {f.get('what_was_established') or f.get('verdict_note') or f.get('caveat') or '—'}",
                 "- **証拠**:",
             ])

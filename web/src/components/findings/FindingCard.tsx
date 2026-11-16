@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import { postJSON } from "@/lib/api";
+import { findingReason } from "@/lib/findingReason";
 import type { Finding, Snapshot } from "@/lib/types";
 import { canApprove, useSession } from "@/lib/useSession";
 import { HelpPopover } from "../learning/HelpPopover";
@@ -28,6 +29,7 @@ export function FindingCard({
   const [showLog, setShowLog] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const latestEv = f.evidence.at(-1);
+  const reason = findingReason(f);
   // L2 on a real service: an explicit, per-item approval by an approver.
   const needsApproval = Boolean(f.requires_l2_approval);
   // A rule that is not confirmed against the target API can never run (the server refuses it too).
@@ -109,7 +111,7 @@ export function FindingCard({
             {(showLog || busy) && (
               <div className="space-y-1.5 border-t border-zinc-200/80 px-3 py-2 dark:border-zinc-800">
                 <ol className="space-y-1 border-l-2 border-zinc-300 pl-2.5 text-[11px] text-zinc-600 dark:border-zinc-700 dark:text-zinc-300">
-                  <li>1. 仮説形成：{f.why_detected}</li>
+                  <li>1. {reason.heading}：{reason.text}</li>
                   {readOnly
                     ? <li>2. 診断方法：許可済みの読み取り専用HTTP検査</li>
                     : <li>2. Gateway検査：単一使用トークン発行・EgressGuard ({labEndpoint}) 固定・egress_sentinel 隔離起動</li>}

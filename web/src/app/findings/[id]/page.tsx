@@ -11,6 +11,7 @@ import { RemediationPanel } from "@/components/findings/RemediationPanel";
 import { HelpPopover } from "@/components/learning/HelpPopover";
 import { Card, FixtureBadge, Pill, SeverityBadge, VerdictBadge } from "@/components/ui";
 import { postJSON } from "@/lib/api";
+import { findingReason } from "@/lib/findingReason";
 import type { Snapshot } from "@/lib/types";
 import { useAssessment } from "@/lib/useAssessment";
 
@@ -23,6 +24,7 @@ function Detail() {
   if (!snap) return <p className="p-6 text-sm">{error ? `読み込めませんでした：${error}` : "読み込み中…"}</p>;
   const f = snap.findings.find((x) => x.id === id);
   if (!f) return <p className="p-6 text-sm">この問題は見つかりません。</p>;
+  const reason = findingReason(f);
 
   const runLiveVerify = async () => {
     setBusy(true);
@@ -90,8 +92,8 @@ function Detail() {
       </Card>
 
       <Card>
-        <h2 className="mb-1 text-sm font-semibold">{f.evidence_status === "candidate" ? "なぜ確認候補になったか" : "なぜ検出されたか"}</h2>
-        <p className="text-sm">{f.why_detected}</p>
+        <h2 className="mb-1 text-sm font-semibold">{reason.heading}</h2>
+        <p className="text-sm">{reason.text}</p>
         <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
           <dt className="text-zinc-500">実行主体</dt><dd>{f.executor.agent}</dd>
           <dt className="text-zinc-500">モデル</dt><dd>{f.executor.model}</dd>
