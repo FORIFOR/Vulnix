@@ -1,0 +1,16 @@
+{
+  "public_json": {"root_requirement": "public", "account_resource_requirement": "none"},
+  "auth_required_json": {"root_requirement": "authentication_required", "account_resource_requirement": "none"},
+  "unauth_exposure": {"root_requirement": "authentication_required", "account_resource_requirement": "authentication_required"},
+  "idor_vulnerable": {"root_requirement": "public", "account_resource_requirement": "authentication_required"},
+  "denied_403": {"root_requirement": "public", "account_resource_requirement": "authentication_required"},
+  "denied_404": {"root_requirement": "public", "account_resource_requirement": "authentication_required"},
+  "confusing_200": {"root_requirement": "public", "account_resource_requirement": "authentication_required"},
+  "public_json_marker": {"root_requirement": "public", "account_resource_requirement": "none"},
+  "protected_json_decoy": {"root_requirement": "authentication_required", "account_resource_requirement": "none"},
+  "auth_required_account_api": {"root_requirement": "authentication_required", "account_resource_requirement": "authentication_required"},
+  "public_account_directory": {"root_requirement": "public", "account_resource_requirement": "public"},
+  "idor_owner_missing": {"root_requirement": "public", "account_resource_requirement": "authentication_required"},
+  "idor_decoy_marker": {"root_requirement": "public", "account_resource_requirement": "authentication_required"},
+  "unknown_json": {"root_requirement": "unspecified", "account_resource_requirement": "none"}
+}

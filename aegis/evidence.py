@@ -95,6 +95,16 @@ def reproduction_verdict(result: dict | None, check: str, rule: dict | None = No
                 or result.get("request_headers") != {"X-Test-Account": "acct_A"}):
             return "unverified"
         response = result.get("response")
+        owner = result.get("control_response")
+        if (result.get("control_status") != 200
+                or result.get("control_verified") is not True
+                or not isinstance(owner, dict)
+                or owner.get("Check") != "idor_cross_account_access"
+                or owner.get("caller_account") != "acct_B"
+                or owner.get("resource_owner") != "acct_B"
+                or owner.get("resource_id") != "res_b_001"
+                or owner.get("confidential_marker") != REPRODUCTION_MARKERS["idor"]):
+            return "unverified"
         if (not isinstance(response, dict)
                 or response.get("Check") != "idor_cross_account_access"
                 or response.get("established") is not True

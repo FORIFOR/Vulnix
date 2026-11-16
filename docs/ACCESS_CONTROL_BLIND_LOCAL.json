@@ -1,0 +1,1472 @@
+{
+  "fixed_l1": [
+    {
+      "mode": "public_json",
+      "truth": {
+        "protected_root": false,
+        "unauth_exposure": false,
+        "cross_account_access": false,
+        "idor_check_appropriate": false
+      },
+      "strategy": "fixed_l1",
+      "elapsed_s": 0.063,
+      "target_requests": [
+        [
+          "/",
+          null
+        ]
+      ],
+      "root_exposure_detected": false,
+      "idor_verdict": "candidate",
+      "idor_proven": false,
+      "plan_adopted": false,
+      "engine_kind": null,
+      "local_model_calls": 0,
+      "ai_est_tokens": null,
+      "hypothetical_model_cost_usd": null,
+      "paid_model_cost_usd": 0,
+      "gateway_calls": 1,
+      "worker_launches": 1,
+      "state_saves": 3,
+      "ledger_commits": 3
+    },
+    {
+      "mode": "auth_required_json",
+      "truth": {
+        "protected_root": true,
+        "unauth_exposure": false,
+        "cross_account_access": false,
+        "idor_check_appropriate": false
+      },
+      "strategy": "fixed_l1",
+      "elapsed_s": 0.071,
+      "target_requests": [
+        [
+          "/",
+          null
+        ]
+      ],
+      "root_exposure_detected": false,
+      "idor_verdict": "candidate",
+      "idor_proven": false,
+      "plan_adopted": false,
+      "engine_kind": null,
+      "local_model_calls": 0,
+      "ai_est_tokens": null,
+      "hypothetical_model_cost_usd": null,
+      "paid_model_cost_usd": 0,
+      "gateway_calls": 1,
+      "worker_launches": 1,
+      "state_saves": 3,
+      "ledger_commits": 3
+    },
+    {
+      "mode": "unauth_exposure",
+      "truth": {
+        "protected_root": true,
+        "unauth_exposure": true,
+        "cross_account_access": true,
+        "idor_check_appropriate": true
+      },
+      "strategy": "fixed_l1",
+      "elapsed_s": 0.06,
+      "target_requests": [
+        [
+          "/",
+          null
+        ]
+      ],
+      "root_exposure_detected": true,
+      "idor_verdict": "candidate",
+      "idor_proven": false,
+      "plan_adopted": false,
+      "engine_kind": null,
+      "local_model_calls": 0,
+      "ai_est_tokens": null,
+      "hypothetical_model_cost_usd": null,
+      "paid_model_cost_usd": 0,
+      "gateway_calls": 1,
+      "worker_launches": 1,
+      "state_saves": 3,
+      "ledger_commits": 3
+    },
+    {
+      "mode": "idor_vulnerable",
+      "truth": {
+        "protected_root": false,
+        "unauth_exposure": false,
+        "cross_account_access": true,
+        "idor_check_appropriate": true
+      },
+      "strategy": "fixed_l1",
+      "elapsed_s": 0.063,
+      "target_requests": [
+        [
+          "/",
+          null
+        ]
+      ],
+      "root_exposure_detected": false,
+      "idor_verdict": "candidate",
+      "idor_proven": false,
+      "plan_adopted": false,
+      "engine_kind": null,
+      "local_model_calls": 0,
+      "ai_est_tokens": null,
+      "hypothetical_model_cost_usd": null,
+      "paid_model_cost_usd": 0,
+      "gateway_calls": 1,
+      "worker_launches": 1,
+      "state_saves": 3,
+      "ledger_commits": 3
+    },
+    {
+      "mode": "denied_403",
+      "truth": {
+        "protected_root": false,
+        "unauth_exposure": false,
+        "cross_account_access": false,
+        "idor_check_appropriate": true
+      },
+      "strategy": "fixed_l1",
+      "elapsed_s": 0.068,
+      "target_requests": [
+        [
+          "/",
+          null
+        ]
+      ],
+      "root_exposure_detected": false,
+      "idor_verdict": "candidate",
+      "idor_proven": false,
+      "plan_adopted": false,
+      "engine_kind": null,
+      "local_model_calls": 0,
+      "ai_est_tokens": null,
+      "hypothetical_model_cost_usd": null,
+      "paid_model_cost_usd": 0,
+      "gateway_calls": 1,
+      "worker_launches": 1,
+      "state_saves": 3,
+      "ledger_commits": 3
+    },
+    {
+      "mode": "denied_404",
+      "truth": {
+        "protected_root": false,
+        "unauth_exposure": false,
+        "cross_account_access": false,
+        "idor_check_appropriate": true
+      },
+      "strategy": "fixed_l1",
+      "elapsed_s": 0.067,
+      "target_requests": [
+        [
+          "/",
+          null
+        ]
+      ],
+      "root_exposure_detected": false,
+      "idor_verdict": "candidate",
+      "idor_proven": false,
+      "plan_adopted": false,
+      "engine_kind": null,
+      "local_model_calls": 0,
+      "ai_est_tokens": null,
+      "hypothetical_model_cost_usd": null,
+      "paid_model_cost_usd": 0,
+      "gateway_calls": 1,
+      "worker_launches": 1,
+      "state_saves": 3,
+      "ledger_commits": 3
+    },
+    {
+      "mode": "confusing_200",
+      "truth": {
+        "protected_root": false,
+        "unauth_exposure": false,
+        "cross_account_access": false,
+        "idor_check_appropriate": true
+      },
+      "strategy": "fixed_l1",
+      "elapsed_s": 0.065,
+      "target_requests": [
+        [
+          "/",
+          null
+        ]
+      ],
+      "root_exposure_detected": false,
+      "idor_verdict": "candidate",
+      "idor_proven": false,
+      "plan_adopted": false,
+      "engine_kind": null,
+      "local_model_calls": 0,
+      "ai_est_tokens": null,
+      "hypothetical_model_cost_usd": null,
+      "paid_model_cost_usd": 0,
+      "gateway_calls": 1,
+      "worker_launches": 1,
+      "state_saves": 3,
+      "ledger_commits": 3
+    },
+    {
+      "mode": "public_json_marker",
+      "truth": {
+        "protected_root": false,
+        "unauth_exposure": false,
+        "cross_account_access": false,
+        "idor_check_appropriate": false
+      },
+      "strategy": "fixed_l1",
+      "elapsed_s": 0.064,
+      "target_requests": [
+        [
+          "/",
+          null
+        ]
+      ],
+      "root_exposure_detected": false,
+      "idor_verdict": "candidate",
+      "idor_proven": false,
+      "plan_adopted": false,
+      "engine_kind": null,
+      "local_model_calls": 0,
+      "ai_est_tokens": null,
+      "hypothetical_model_cost_usd": null,
+      "paid_model_cost_usd": 0,
+      "gateway_calls": 1,
+      "worker_launches": 1,
+      "state_saves": 3,
+      "ledger_commits": 3
+    },
+    {
+      "mode": "protected_json_decoy",
+      "truth": {
+        "protected_root": true,
+        "unauth_exposure": true,
+        "cross_account_access": false,
+        "idor_check_appropriate": false
+      },
+      "strategy": "fixed_l1",
+      "elapsed_s": 0.064,
+      "target_requests": [
+        [
+          "/",
+          null
+        ]
+      ],
+      "root_exposure_detected": true,
+      "idor_verdict": "candidate",
+      "idor_proven": false,
+      "plan_adopted": false,
+      "engine_kind": null,
+      "local_model_calls": 0,
+      "ai_est_tokens": null,
+      "hypothetical_model_cost_usd": null,
+      "paid_model_cost_usd": 0,
+      "gateway_calls": 1,
+      "worker_launches": 1,
+      "state_saves": 3,
+      "ledger_commits": 3
+    },
+    {
+      "mode": "auth_required_account_api",
+      "truth": {
+        "protected_root": true,
+        "unauth_exposure": false,
+        "cross_account_access": false,
+        "idor_check_appropriate": true
+      },
+      "strategy": "fixed_l1",
+      "elapsed_s": 0.062,
+      "target_requests": [
+        [
+          "/",
+          null
+        ]
+      ],
+      "root_exposure_detected": false,
+      "idor_verdict": "candidate",
+      "idor_proven": false,
+      "plan_adopted": false,
+      "engine_kind": null,
+      "local_model_calls": 0,
+      "ai_est_tokens": null,
+      "hypothetical_model_cost_usd": null,
+      "paid_model_cost_usd": 0,
+      "gateway_calls": 1,
+      "worker_launches": 1,
+      "state_saves": 3,
+      "ledger_commits": 3
+    },
+    {
+      "mode": "public_account_directory",
+      "truth": {
+        "protected_root": false,
+        "unauth_exposure": false,
+        "cross_account_access": false,
+        "idor_check_appropriate": false
+      },
+      "strategy": "fixed_l1",
+      "elapsed_s": 0.065,
+      "target_requests": [
+        [
+          "/",
+          null
+        ]
+      ],
+      "root_exposure_detected": false,
+      "idor_verdict": "candidate",
+      "idor_proven": false,
+      "plan_adopted": false,
+      "engine_kind": null,
+      "local_model_calls": 0,
+      "ai_est_tokens": null,
+      "hypothetical_model_cost_usd": null,
+      "paid_model_cost_usd": 0,
+      "gateway_calls": 1,
+      "worker_launches": 1,
+      "state_saves": 3,
+      "ledger_commits": 3
+    },
+    {
+      "mode": "idor_owner_missing",
+      "truth": {
+        "protected_root": false,
+        "unauth_exposure": false,
+        "cross_account_access": false,
+        "idor_check_appropriate": true
+      },
+      "strategy": "fixed_l1",
+      "elapsed_s": 0.064,
+      "target_requests": [
+        [
+          "/",
+          null
+        ]
+      ],
+      "root_exposure_detected": false,
+      "idor_verdict": "candidate",
+      "idor_proven": false,
+      "plan_adopted": false,
+      "engine_kind": null,
+      "local_model_calls": 0,
+      "ai_est_tokens": null,
+      "hypothetical_model_cost_usd": null,
+      "paid_model_cost_usd": 0,
+      "gateway_calls": 1,
+      "worker_launches": 1,
+      "state_saves": 3,
+      "ledger_commits": 3
+    },
+    {
+      "mode": "idor_decoy_marker",
+      "truth": {
+        "protected_root": false,
+        "unauth_exposure": false,
+        "cross_account_access": false,
+        "idor_check_appropriate": true
+      },
+      "strategy": "fixed_l1",
+      "elapsed_s": 0.064,
+      "target_requests": [
+        [
+          "/",
+          null
+        ]
+      ],
+      "root_exposure_detected": false,
+      "idor_verdict": "candidate",
+      "idor_proven": false,
+      "plan_adopted": false,
+      "engine_kind": null,
+      "local_model_calls": 0,
+      "ai_est_tokens": null,
+      "hypothetical_model_cost_usd": null,
+      "paid_model_cost_usd": 0,
+      "gateway_calls": 1,
+      "worker_launches": 1,
+      "state_saves": 3,
+      "ledger_commits": 3
+    },
+    {
+      "mode": "unknown_json",
+      "truth": {
+        "protected_root": false,
+        "unauth_exposure": false,
+        "cross_account_access": false,
+        "idor_check_appropriate": false
+      },
+      "strategy": "fixed_l1",
+      "elapsed_s": 0.093,
+      "target_requests": [
+        [
+          "/",
+          null
+        ]
+      ],
+      "root_exposure_detected": false,
+      "idor_verdict": "candidate",
+      "idor_proven": false,
+      "plan_adopted": false,
+      "engine_kind": null,
+      "local_model_calls": 0,
+      "ai_est_tokens": null,
+      "hypothetical_model_cost_usd": null,
+      "paid_model_cost_usd": 0,
+      "gateway_calls": 1,
+      "worker_launches": 1,
+      "state_saves": 3,
+      "ledger_commits": 3
+    }
+  ],
+  "artex_plan": [
+    {
+      "mode": "public_json",
+      "truth": {
+        "protected_root": false,
+        "unauth_exposure": false,
+        "cross_account_access": false,
+        "idor_check_appropriate": false
+      },
+      "strategy": "always",
+      "elapsed_s": 0.64,
+      "target_requests": [
+        [
+          "/",
+          null
+        ],
+        [
+          "/api/accounts/B/secret",
+          "acct_B"
+        ]
+      ],
+      "root_exposure_detected": false,
+      "idor_verdict": "unverified",
+      "idor_proven": false,
+      "plan_adopted": true,
+      "engine_kind": "unverified",
+      "local_model_calls": 0,
+      "ai_est_tokens": 0,
+      "hypothetical_model_cost_usd": 0.0,
+      "paid_model_cost_usd": 0,
+      "gateway_calls": 2,
+      "worker_launches": 2,
+      "state_saves": 5,
+      "ledger_commits": 5
+    },
+    {
+      "mode": "auth_required_json",
+      "truth": {
+        "protected_root": true,
+        "unauth_exposure": false,
+        "cross_account_access": false,
+        "idor_check_appropriate": false
+      },
+      "strategy": "always",
+      "elapsed_s": 0.633,
+      "target_requests": [
+        [
+          "/",
+          null
+        ],
+        [
+          "/api/accounts/B/secret",
+          "acct_B"
+        ]
+      ],
+      "root_exposure_detected": false,
+      "idor_verdict": "unverified",
+      "idor_proven": false,
+      "plan_adopted": true,
+      "engine_kind": "unverified",
+      "local_model_calls": 0,
+      "ai_est_tokens": 0,
+      "hypothetical_model_cost_usd": 0.0,
+      "paid_model_cost_usd": 0,
+      "gateway_calls": 2,
+      "worker_launches": 2,
+      "state_saves": 5,
+      "ledger_commits": 5
+    },
+    {
+      "mode": "unauth_exposure",
+      "truth": {
+        "protected_root": true,
+        "unauth_exposure": true,
+        "cross_account_access": true,
+        "idor_check_appropriate": true
+      },
+      "strategy": "always",
+      "elapsed_s": 0.636,
+      "target_requests": [
+        [
+          "/",
+          null
+        ],
+        [
+          "/api/accounts/B/secret",
+          "acct_B"
+        ],
+        [
+          "/api/accounts/B/secret",
+          "acct_A"
+        ]
+      ],
+      "root_exposure_detected": true,
+      "idor_verdict": "proven",
+      "idor_proven": true,
+      "plan_adopted": true,
+      "engine_kind": "unverified",
+      "local_model_calls": 0,
+      "ai_est_tokens": 0,
+      "hypothetical_model_cost_usd": 0.0,
+      "paid_model_cost_usd": 0,
+      "gateway_calls": 2,
+      "worker_launches": 2,
+      "state_saves": 5,
+      "ledger_commits": 5
+    },
+    {
+      "mode": "idor_vulnerable",
+      "truth": {
+        "protected_root": false,
+        "unauth_exposure": false,
+        "cross_account_access": true,
+        "idor_check_appropriate": true
+      },
+      "strategy": "always",
+      "elapsed_s": 0.639,
+      "target_requests": [
+        [
+          "/",
+          null
+        ],
+        [
+          "/api/accounts/B/secret",
+          "acct_B"
+        ],
+        [
+          "/api/accounts/B/secret",
+          "acct_A"
+        ]
+      ],
+      "root_exposure_detected": false,
+      "idor_verdict": "proven",
+      "idor_proven": true,
+      "plan_adopted": true,
+      "engine_kind": "unverified",
+      "local_model_calls": 0,
+      "ai_est_tokens": 0,
+      "hypothetical_model_cost_usd": 0.0,
+      "paid_model_cost_usd": 0,
+      "gateway_calls": 2,
+      "worker_launches": 2,
+      "state_saves": 5,
+      "ledger_commits": 5
+    },
+    {
+      "mode": "denied_403",
+      "truth": {
+        "protected_root": false,
+        "unauth_exposure": false,
+        "cross_account_access": false,
+        "idor_check_appropriate": true
+      },
+      "strategy": "always",
+      "elapsed_s": 0.635,
+      "target_requests": [
+        [
+          "/",
+          null
+        ],
+        [
+          "/api/accounts/B/secret",
+          "acct_B"
+        ],
+        [
+          "/api/accounts/B/secret",
+          "acct_A"
+        ]
+      ],
+      "root_exposure_detected": false,
+      "idor_verdict": "not_reproduced",
+      "idor_proven": false,
+      "plan_adopted": true,
+      "engine_kind": "unverified",
+      "local_model_calls": 0,
+      "ai_est_tokens": 0,
+      "hypothetical_model_cost_usd": 0.0,
+      "paid_model_cost_usd": 0,
+      "gateway_calls": 2,
+      "worker_launches": 2,
+      "state_saves": 5,
+      "ledger_commits": 5
+    },
+    {
+      "mode": "denied_404",
+      "truth": {
+        "protected_root": false,
+        "unauth_exposure": false,
+        "cross_account_access": false,
+        "idor_check_appropriate": true
+      },
+      "strategy": "always",
+      "elapsed_s": 0.631,
+      "target_requests": [
+        [
+          "/",
+          null
+        ],
+        [
+          "/api/accounts/B/secret",
+          "acct_B"
+        ]
+      ],
+      "root_exposure_detected": false,
+      "idor_verdict": "unverified",
+      "idor_proven": false,
+      "plan_adopted": true,
+      "engine_kind": "unverified",
+      "local_model_calls": 0,
+      "ai_est_tokens": 0,
+      "hypothetical_model_cost_usd": 0.0,
+      "paid_model_cost_usd": 0,
+      "gateway_calls": 2,
+      "worker_launches": 2,
+      "state_saves": 5,
+      "ledger_commits": 5
+    },
+    {
+      "mode": "confusing_200",
+      "truth": {
+        "protected_root": false,
+        "unauth_exposure": false,
+        "cross_account_access": false,
+        "idor_check_appropriate": true
+      },
+      "strategy": "always",
+      "elapsed_s": 0.636,
+      "target_requests": [
+        [
+          "/",
+          null
+        ],
+        [
+          "/api/accounts/B/secret",
+          "acct_B"
+        ],
+        [
+          "/api/accounts/B/secret",
+          "acct_A"
+        ]
+      ],
+      "root_exposure_detected": false,
+      "idor_verdict": "unverified",
+      "idor_proven": false,
+      "plan_adopted": true,
+      "engine_kind": "unverified",
+      "local_model_calls": 0,
+      "ai_est_tokens": 0,
+      "hypothetical_model_cost_usd": 0.0,
+      "paid_model_cost_usd": 0,
+      "gateway_calls": 2,
+      "worker_launches": 2,
+      "state_saves": 5,
+      "ledger_commits": 5
+    },
+    {
+      "mode": "public_json_marker",
+      "truth": {
+        "protected_root": false,
+        "unauth_exposure": false,
+        "cross_account_access": false,
+        "idor_check_appropriate": false
+      },
+      "strategy": "always",
+      "elapsed_s": 0.628,
+      "target_requests": [
+        [
+          "/",
+          null
+        ],
+        [
+          "/api/accounts/B/secret",
+          "acct_B"
+        ]
+      ],
+      "root_exposure_detected": false,
+      "idor_verdict": "unverified",
+      "idor_proven": false,
+      "plan_adopted": true,
+      "engine_kind": "unverified",
+      "local_model_calls": 0,
+      "ai_est_tokens": 0,
+      "hypothetical_model_cost_usd": 0.0,
+      "paid_model_cost_usd": 0,
+      "gateway_calls": 2,
+      "worker_launches": 2,
+      "state_saves": 5,
+      "ledger_commits": 5
+    },
+    {
+      "mode": "protected_json_decoy",
+      "truth": {
+        "protected_root": true,
+        "unauth_exposure": true,
+        "cross_account_access": false,
+        "idor_check_appropriate": false
+      },
+      "strategy": "always",
+      "elapsed_s": 0.63,
+      "target_requests": [
+        [
+          "/",
+          null
+        ],
+        [
+          "/api/accounts/B/secret",
+          "acct_B"
+        ]
+      ],
+      "root_exposure_detected": true,
+      "idor_verdict": "unverified",
+      "idor_proven": false,
+      "plan_adopted": true,
+      "engine_kind": "unverified",
+      "local_model_calls": 0,
+      "ai_est_tokens": 0,
+      "hypothetical_model_cost_usd": 0.0,
+      "paid_model_cost_usd": 0,
+      "gateway_calls": 2,
+      "worker_launches": 2,
+      "state_saves": 5,
+      "ledger_commits": 5
+    },
+    {
+      "mode": "auth_required_account_api",
+      "truth": {
+        "protected_root": true,
+        "unauth_exposure": false,
+        "cross_account_access": false,
+        "idor_check_appropriate": true
+      },
+      "strategy": "always",
+      "elapsed_s": 0.635,
+      "target_requests": [
+        [
+          "/",
+          null
+        ],
+        [
+          "/api/accounts/B/secret",
+          "acct_B"
+        ],
+        [
+          "/api/accounts/B/secret",
+          "acct_A"
+        ]
+      ],
+      "root_exposure_detected": false,
+      "idor_verdict": "not_reproduced",
+      "idor_proven": false,
+      "plan_adopted": true,
+      "engine_kind": "unverified",
+      "local_model_calls": 0,
+      "ai_est_tokens": 0,
+      "hypothetical_model_cost_usd": 0.0,
+      "paid_model_cost_usd": 0,
+      "gateway_calls": 2,
+      "worker_launches": 2,
+      "state_saves": 5,
+      "ledger_commits": 5
+    },
+    {
+      "mode": "public_account_directory",
+      "truth": {
+        "protected_root": false,
+        "unauth_exposure": false,
+        "cross_account_access": false,
+        "idor_check_appropriate": false
+      },
+      "strategy": "always",
+      "elapsed_s": 0.634,
+      "target_requests": [
+        [
+          "/",
+          null
+        ],
+        [
+          "/api/accounts/B/secret",
+          "acct_B"
+        ]
+      ],
+      "root_exposure_detected": false,
+      "idor_verdict": "unverified",
+      "idor_proven": false,
+      "plan_adopted": true,
+      "engine_kind": "unverified",
+      "local_model_calls": 0,
+      "ai_est_tokens": 0,
+      "hypothetical_model_cost_usd": 0.0,
+      "paid_model_cost_usd": 0,
+      "gateway_calls": 2,
+      "worker_launches": 2,
+      "state_saves": 5,
+      "ledger_commits": 5
+    },
+    {
+      "mode": "idor_owner_missing",
+      "truth": {
+        "protected_root": false,
+        "unauth_exposure": false,
+        "cross_account_access": false,
+        "idor_check_appropriate": true
+      },
+      "strategy": "always",
+      "elapsed_s": 0.632,
+      "target_requests": [
+        [
+          "/",
+          null
+        ],
+        [
+          "/api/accounts/B/secret",
+          "acct_B"
+        ]
+      ],
+      "root_exposure_detected": false,
+      "idor_verdict": "unverified",
+      "idor_proven": false,
+      "plan_adopted": true,
+      "engine_kind": "unverified",
+      "local_model_calls": 0,
+      "ai_est_tokens": 0,
+      "hypothetical_model_cost_usd": 0.0,
+      "paid_model_cost_usd": 0,
+      "gateway_calls": 2,
+      "worker_launches": 2,
+      "state_saves": 5,
+      "ledger_commits": 5
+    },
+    {
+      "mode": "idor_decoy_marker",
+      "truth": {
+        "protected_root": false,
+        "unauth_exposure": false,
+        "cross_account_access": false,
+        "idor_check_appropriate": true
+      },
+      "strategy": "always",
+      "elapsed_s": 0.632,
+      "target_requests": [
+        [
+          "/",
+          null
+        ],
+        [
+          "/api/accounts/B/secret",
+          "acct_B"
+        ],
+        [
+          "/api/accounts/B/secret",
+          "acct_A"
+        ]
+      ],
+      "root_exposure_detected": false,
+      "idor_verdict": "unverified",
+      "idor_proven": false,
+      "plan_adopted": true,
+      "engine_kind": "unverified",
+      "local_model_calls": 0,
+      "ai_est_tokens": 0,
+      "hypothetical_model_cost_usd": 0.0,
+      "paid_model_cost_usd": 0,
+      "gateway_calls": 2,
+      "worker_launches": 2,
+      "state_saves": 5,
+      "ledger_commits": 5
+    },
+    {
+      "mode": "unknown_json",
+      "truth": {
+        "protected_root": false,
+        "unauth_exposure": false,
+        "cross_account_access": false,
+        "idor_check_appropriate": false
+      },
+      "strategy": "always",
+      "elapsed_s": 0.628,
+      "target_requests": [
+        [
+          "/",
+          null
+        ],
+        [
+          "/api/accounts/B/secret",
+          "acct_B"
+        ]
+      ],
+      "root_exposure_detected": false,
+      "idor_verdict": "unverified",
+      "idor_proven": false,
+      "plan_adopted": true,
+      "engine_kind": "unverified",
+      "local_model_calls": 0,
+      "ai_est_tokens": 0,
+      "hypothetical_model_cost_usd": 0.0,
+      "paid_model_cost_usd": 0,
+      "gateway_calls": 2,
+      "worker_launches": 2,
+      "state_saves": 5,
+      "ledger_commits": 5
+    }
+  ],
+  "adaptive_plan": [
+    {
+      "mode": "public_json",
+      "truth": {
+        "protected_root": false,
+        "unauth_exposure": false,
+        "cross_account_access": false,
+        "idor_check_appropriate": false
+      },
+      "strategy": "adaptive",
+      "elapsed_s": 0.566,
+      "target_requests": [
+        [
+          "/",
+          null
+        ]
+      ],
+      "root_exposure_detected": false,
+      "idor_verdict": "candidate",
+      "idor_proven": false,
+      "plan_adopted": false,
+      "engine_kind": "unverified",
+      "local_model_calls": 0,
+      "ai_est_tokens": 0,
+      "hypothetical_model_cost_usd": 0.0,
+      "paid_model_cost_usd": 0,
+      "gateway_calls": 1,
+      "worker_launches": 1,
+      "state_saves": 4,
+      "ledger_commits": 4
+    },
+    {
+      "mode": "auth_required_json",
+      "truth": {
+        "protected_root": true,
+        "unauth_exposure": false,
+        "cross_account_access": false,
+        "idor_check_appropriate": false
+      },
+      "strategy": "adaptive",
+      "elapsed_s": 0.569,
+      "target_requests": [
+        [
+          "/",
+          null
+        ]
+      ],
+      "root_exposure_detected": false,
+      "idor_verdict": "candidate",
+      "idor_proven": false,
+      "plan_adopted": false,
+      "engine_kind": "unverified",
+      "local_model_calls": 0,
+      "ai_est_tokens": 0,
+      "hypothetical_model_cost_usd": 0.0,
+      "paid_model_cost_usd": 0,
+      "gateway_calls": 1,
+      "worker_launches": 1,
+      "state_saves": 4,
+      "ledger_commits": 4
+    },
+    {
+      "mode": "unauth_exposure",
+      "truth": {
+        "protected_root": true,
+        "unauth_exposure": true,
+        "cross_account_access": true,
+        "idor_check_appropriate": true
+      },
+      "strategy": "adaptive",
+      "elapsed_s": 0.636,
+      "target_requests": [
+        [
+          "/",
+          null
+        ],
+        [
+          "/api/accounts/B/secret",
+          "acct_B"
+        ],
+        [
+          "/api/accounts/B/secret",
+          "acct_A"
+        ]
+      ],
+      "root_exposure_detected": true,
+      "idor_verdict": "proven",
+      "idor_proven": true,
+      "plan_adopted": true,
+      "engine_kind": "unverified",
+      "local_model_calls": 0,
+      "ai_est_tokens": 0,
+      "hypothetical_model_cost_usd": 0.0,
+      "paid_model_cost_usd": 0,
+      "gateway_calls": 2,
+      "worker_launches": 2,
+      "state_saves": 5,
+      "ledger_commits": 5
+    },
+    {
+      "mode": "idor_vulnerable",
+      "truth": {
+        "protected_root": false,
+        "unauth_exposure": false,
+        "cross_account_access": true,
+        "idor_check_appropriate": true
+      },
+      "strategy": "adaptive",
+      "elapsed_s": 0.638,
+      "target_requests": [
+        [
+          "/",
+          null
+        ],
+        [
+          "/api/accounts/B/secret",
+          "acct_B"
+        ],
+        [
+          "/api/accounts/B/secret",
+          "acct_A"
+        ]
+      ],
+      "root_exposure_detected": false,
+      "idor_verdict": "proven",
+      "idor_proven": true,
+      "plan_adopted": true,
+      "engine_kind": "unverified",
+      "local_model_calls": 0,
+      "ai_est_tokens": 0,
+      "hypothetical_model_cost_usd": 0.0,
+      "paid_model_cost_usd": 0,
+      "gateway_calls": 2,
+      "worker_launches": 2,
+      "state_saves": 5,
+      "ledger_commits": 5
+    },
+    {
+      "mode": "denied_403",
+      "truth": {
+        "protected_root": false,
+        "unauth_exposure": false,
+        "cross_account_access": false,
+        "idor_check_appropriate": true
+      },
+      "strategy": "adaptive",
+      "elapsed_s": 0.631,
+      "target_requests": [
+        [
+          "/",
+          null
+        ],
+        [
+          "/api/accounts/B/secret",
+          "acct_B"
+        ],
+        [
+          "/api/accounts/B/secret",
+          "acct_A"
+        ]
+      ],
+      "root_exposure_detected": false,
+      "idor_verdict": "not_reproduced",
+      "idor_proven": false,
+      "plan_adopted": true,
+      "engine_kind": "unverified",
+      "local_model_calls": 0,
+      "ai_est_tokens": 0,
+      "hypothetical_model_cost_usd": 0.0,
+      "paid_model_cost_usd": 0,
+      "gateway_calls": 2,
+      "worker_launches": 2,
+      "state_saves": 5,
+      "ledger_commits": 5
+    },
+    {
+      "mode": "denied_404",
+      "truth": {
+        "protected_root": false,
+        "unauth_exposure": false,
+        "cross_account_access": false,
+        "idor_check_appropriate": true
+      },
+      "strategy": "adaptive",
+      "elapsed_s": 0.639,
+      "target_requests": [
+        [
+          "/",
+          null
+        ],
+        [
+          "/api/accounts/B/secret",
+          "acct_B"
+        ]
+      ],
+      "root_exposure_detected": false,
+      "idor_verdict": "unverified",
+      "idor_proven": false,
+      "plan_adopted": true,
+      "engine_kind": "unverified",
+      "local_model_calls": 0,
+      "ai_est_tokens": 0,
+      "hypothetical_model_cost_usd": 0.0,
+      "paid_model_cost_usd": 0,
+      "gateway_calls": 2,
+      "worker_launches": 2,
+      "state_saves": 5,
+      "ledger_commits": 5
+    },
+    {
+      "mode": "confusing_200",
+      "truth": {
+        "protected_root": false,
+        "unauth_exposure": false,
+        "cross_account_access": false,
+        "idor_check_appropriate": true
+      },
+      "strategy": "adaptive",
+      "elapsed_s": 0.633,
+      "target_requests": [
+        [
+          "/",
+          null
+        ],
+        [
+          "/api/accounts/B/secret",
+          "acct_B"
+        ],
+        [
+          "/api/accounts/B/secret",
+          "acct_A"
+        ]
+      ],
+      "root_exposure_detected": false,
+      "idor_verdict": "unverified",
+      "idor_proven": false,
+      "plan_adopted": true,
+      "engine_kind": "unverified",
+      "local_model_calls": 0,
+      "ai_est_tokens": 0,
+      "hypothetical_model_cost_usd": 0.0,
+      "paid_model_cost_usd": 0,
+      "gateway_calls": 2,
+      "worker_launches": 2,
+      "state_saves": 5,
+      "ledger_commits": 5
+    },
+    {
+      "mode": "public_json_marker",
+      "truth": {
+        "protected_root": false,
+        "unauth_exposure": false,
+        "cross_account_access": false,
+        "idor_check_appropriate": false
+      },
+      "strategy": "adaptive",
+      "elapsed_s": 0.567,
+      "target_requests": [
+        [
+          "/",
+          null
+        ]
+      ],
+      "root_exposure_detected": false,
+      "idor_verdict": "candidate",
+      "idor_proven": false,
+      "plan_adopted": false,
+      "engine_kind": "unverified",
+      "local_model_calls": 0,
+      "ai_est_tokens": 0,
+      "hypothetical_model_cost_usd": 0.0,
+      "paid_model_cost_usd": 0,
+      "gateway_calls": 1,
+      "worker_launches": 1,
+      "state_saves": 4,
+      "ledger_commits": 4
+    },
+    {
+      "mode": "protected_json_decoy",
+      "truth": {
+        "protected_root": true,
+        "unauth_exposure": true,
+        "cross_account_access": false,
+        "idor_check_appropriate": false
+      },
+      "strategy": "adaptive",
+      "elapsed_s": 0.567,
+      "target_requests": [
+        [
+          "/",
+          null
+        ]
+      ],
+      "root_exposure_detected": true,
+      "idor_verdict": "candidate",
+      "idor_proven": false,
+      "plan_adopted": false,
+      "engine_kind": "unverified",
+      "local_model_calls": 0,
+      "ai_est_tokens": 0,
+      "hypothetical_model_cost_usd": 0.0,
+      "paid_model_cost_usd": 0,
+      "gateway_calls": 1,
+      "worker_launches": 1,
+      "state_saves": 4,
+      "ledger_commits": 4
+    },
+    {
+      "mode": "auth_required_account_api",
+      "truth": {
+        "protected_root": true,
+        "unauth_exposure": false,
+        "cross_account_access": false,
+        "idor_check_appropriate": true
+      },
+      "strategy": "adaptive",
+      "elapsed_s": 0.635,
+      "target_requests": [
+        [
+          "/",
+          null
+        ],
+        [
+          "/api/accounts/B/secret",
+          "acct_B"
+        ],
+        [
+          "/api/accounts/B/secret",
+          "acct_A"
+        ]
+      ],
+      "root_exposure_detected": false,
+      "idor_verdict": "not_reproduced",
+      "idor_proven": false,
+      "plan_adopted": true,
+      "engine_kind": "unverified",
+      "local_model_calls": 0,
+      "ai_est_tokens": 0,
+      "hypothetical_model_cost_usd": 0.0,
+      "paid_model_cost_usd": 0,
+      "gateway_calls": 2,
+      "worker_launches": 2,
+      "state_saves": 5,
+      "ledger_commits": 5
+    },
+    {
+      "mode": "public_account_directory",
+      "truth": {
+        "protected_root": false,
+        "unauth_exposure": false,
+        "cross_account_access": false,
+        "idor_check_appropriate": false
+      },
+      "strategy": "adaptive",
+      "elapsed_s": 0.632,
+      "target_requests": [
+        [
+          "/",
+          null
+        ],
+        [
+          "/api/accounts/B/secret",
+          "acct_B"
+        ]
+      ],
+      "root_exposure_detected": false,
+      "idor_verdict": "unverified",
+      "idor_proven": false,
+      "plan_adopted": true,
+      "engine_kind": "unverified",
+      "local_model_calls": 0,
+      "ai_est_tokens": 0,
+      "hypothetical_model_cost_usd": 0.0,
+      "paid_model_cost_usd": 0,
+      "gateway_calls": 2,
+      "worker_launches": 2,
+      "state_saves": 5,
+      "ledger_commits": 5
+    },
+    {
+      "mode": "idor_owner_missing",
+      "truth": {
+        "protected_root": false,
+        "unauth_exposure": false,
+        "cross_account_access": false,
+        "idor_check_appropriate": true
+      },
+      "strategy": "adaptive",
+      "elapsed_s": 0.637,
+      "target_requests": [
+        [
+          "/",
+          null
+        ],
+        [
+          "/api/accounts/B/secret",
+          "acct_B"
+        ]
+      ],
+      "root_exposure_detected": false,
+      "idor_verdict": "unverified",
+      "idor_proven": false,
+      "plan_adopted": true,
+      "engine_kind": "unverified",
+      "local_model_calls": 0,
+      "ai_est_tokens": 0,
+      "hypothetical_model_cost_usd": 0.0,
+      "paid_model_cost_usd": 0,
+      "gateway_calls": 2,
+      "worker_launches": 2,
+      "state_saves": 5,
+      "ledger_commits": 5
+    },
+    {
+      "mode": "idor_decoy_marker",
+      "truth": {
+        "protected_root": false,
+        "unauth_exposure": false,
+        "cross_account_access": false,
+        "idor_check_appropriate": true
+      },
+      "strategy": "adaptive",
+      "elapsed_s": 0.634,
+      "target_requests": [
+        [
+          "/",
+          null
+        ],
+        [
+          "/api/accounts/B/secret",
+          "acct_B"
+        ],
+        [
+          "/api/accounts/B/secret",
+          "acct_A"
+        ]
+      ],
+      "root_exposure_detected": false,
+      "idor_verdict": "unverified",
+      "idor_proven": false,
+      "plan_adopted": true,
+      "engine_kind": "unverified",
+      "local_model_calls": 0,
+      "ai_est_tokens": 0,
+      "hypothetical_model_cost_usd": 0.0,
+      "paid_model_cost_usd": 0,
+      "gateway_calls": 2,
+      "worker_launches": 2,
+      "state_saves": 5,
+      "ledger_commits": 5
+    },
+    {
+      "mode": "unknown_json",
+      "truth": {
+        "protected_root": false,
+        "unauth_exposure": false,
+        "cross_account_access": false,
+        "idor_check_appropriate": false
+      },
+      "strategy": "adaptive",
+      "elapsed_s": 0.572,
+      "target_requests": [
+        [
+          "/",
+          null
+        ]
+      ],
+      "root_exposure_detected": false,
+      "idor_verdict": "candidate",
+      "idor_proven": false,
+      "plan_adopted": false,
+      "engine_kind": "unverified",
+      "local_model_calls": 0,
+      "ai_est_tokens": 0,
+      "hypothetical_model_cost_usd": 0.0,
+      "paid_model_cost_usd": 0,
+      "gateway_calls": 1,
+      "worker_launches": 1,
+      "state_saves": 4,
+      "ledger_commits": 4
+    }
+  ],
+  "fixed_root_exposure_quality": {
+    "tp": 2,
+    "fp": 0,
+    "fn": 0,
+    "tn": 12,
+    "precision": 1.0,
+    "recall": 1.0,
+    "false_positive_rate": 0.0
+  },
+  "artex_root_exposure_quality": {
+    "tp": 2,
+    "fp": 0,
+    "fn": 0,
+    "tn": 12,
+    "precision": 1.0,
+    "recall": 1.0,
+    "false_positive_rate": 0.0
+  },
+  "fixed_idor_quality": {
+    "tp": 0,
+    "fp": 0,
+    "fn": 2,
+    "tn": 12,
+    "precision": null,
+    "recall": 0.0,
+    "false_positive_rate": 0.0
+  },
+  "artex_idor_quality": {
+    "tp": 2,
+    "fp": 0,
+    "fn": 0,
+    "tn": 12,
+    "precision": 1.0,
+    "recall": 1.0,
+    "false_positive_rate": 0.0
+  },
+  "adaptive_idor_quality": {
+    "tp": 2,
+    "fp": 0,
+    "fn": 0,
+    "tn": 12,
+    "precision": 1.0,
+    "recall": 1.0,
+    "false_positive_rate": 0.0
+  },
+  "always_selection_quality": {
+    "tp": 8,
+    "fp": 6,
+    "fn": 0,
+    "tn": 0,
+    "precision": 0.5714285714285714,
+    "recall": 1.0,
+    "false_positive_rate": 1.0
+  },
+  "adaptive_selection_quality": {
+    "tp": 8,
+    "fp": 1,
+    "fn": 0,
+    "tn": 5,
+    "precision": 0.8888888888888888,
+    "recall": 1.0,
+    "false_positive_rate": 0.16666666666666666
+  },
+  "plan_adoption": 1.0
+}

@@ -1781,8 +1781,15 @@ class AssessmentService:
                                                       fingerprint=fingerprint)
             else:
                 targets = self._artex_targets_locked()
-                observations = [{"title": clean_target_text(f["title"], 200), "detail": clean_target_text(f.get("summary", ""), 400)}
-                                for f in self.a.findings.values() if f.get("id") in ("f_banner", "f_idor", "f_sqli")]
+                observations = [{"title": clean_target_text(f["title"], 200),
+                                 "detail": clean_target_text(f.get("summary", ""), 400)}
+                                for f in self.a.findings.values()
+                                if f.get("id") in ("f_banner", "f_idor", "f_sqli")
+                                and evidence_status(f) in ("detected", "proven")]
+                if getattr(self, "_lab_account_resource_observed", None) is not None:
+                    observations.append({"title": "Measured account resource link",
+                                         "detail": ("present" if self._lab_account_resource_observed
+                                                    else "absent")})
                 request = {"goal": "登録済みの検証対象について、許可された非破壊の検証で確認すべき脆弱性の方向を計画する",
                            "targets": targets, "observations": observations, "max_turns": 6}
             gen = self._run_generation
@@ -4548,8 +4555,10 @@ class AssessmentService:
         if self._stale_runner():
             raise _Stopped()
         if self._is_external_service_asset():
+            profile = self._l2_profile()
             l1_findings = analyze_l1_service_response(
-                res, ev, self.a.target_url, self.cve_monitor
+                res, ev, self.a.target_url, self.cve_monitor,
+                root_access=profile.get("root_access") if profile else None,
             )
             for f in l1_findings:
                 self._upsert_finding(f)
@@ -4560,6 +4569,10 @@ class AssessmentService:
             return "f_powered" if "f_powered" in self.a.findings else ""
 
         h = {k.lower(): v for k, v in res["headers"].items()}
+        # Only the presence of this fixed, observed link reaches the local ARTEX
+        # planner. The response body, owner specification and truth labels do not.
+        self._lab_account_resource_observed = bool(re.fullmatch(
+            r'</api/accounts/B/secret>; rel="account-resource"', str(h.get("link", ""))))
         banner = h.get("server", "")
         bid = "f_banner"
         # CVE candidates come from the catalog engine (detection only, not proof).

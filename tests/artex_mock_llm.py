@@ -16,6 +16,7 @@ import http.server
 import json
 import re
 import threading
+from collections.abc import Callable
 
 INTENTS = [
     {"summary": "对 /api/search 的 q 参数进行 SQL 注入边界的非破坏性验证", "asset_ids": [1], "priority": 8},
@@ -107,10 +108,12 @@ class MockLLM:
     carries a secret-looking string, to prove the gateway never logs or shows it)."""
 
     def __init__(self, port: int = 0, *, strict: bool = False, fail_at: int | None = None,
-                 fail_status: int = 402, intents: list[dict] | None = None):
+                 fail_status: int = 402, intents: list[dict] | None = None,
+                 intent_selector: Callable[[list[dict]], list[dict]] | None = None):
         self.requests: list[dict] = []
         self.strict, self.fail_at, self.fail_status = strict, fail_at, fail_status
         self.intents = intents
+        self.intent_selector = intent_selector
         mock = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -142,9 +145,15 @@ class MockLLM:
                     message = {"role": "assistant", "content": "规划完成：已提交探索方向。"}
                     finish = "stop"
                 else:
-                    message = {"role": "assistant", "content": "",
-                               "tool_calls": _tool_calls(_seeded_asset_id(msgs), mock.intents)}
-                    finish = "tool_calls"
+                    chosen = (mock.intent_selector(msgs) if mock.intent_selector is not None
+                              else mock.intents)
+                    if chosen == []:
+                        message = {"role": "assistant", "content": "追加検査は提案しません。"}
+                        finish = "stop"
+                    else:
+                        message = {"role": "assistant", "content": "",
+                                   "tool_calls": _tool_calls(_seeded_asset_id(msgs), chosen)}
+                        finish = "tool_calls"
                 if req.get("stream"):
                     self._stream(message, finish)
                 else:

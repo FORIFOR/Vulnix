@@ -174,15 +174,15 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         # 2. Safe IDOR / BOLA reproduction endpoint between two test accounts
         if raw_path == "/api/accounts/B/secret":
             caller = self.headers.get("X-Test-Account", "acct_A")
-            if self._mode == "vulnerable":
+            if self._mode == "vulnerable" or caller == "acct_B":
                 payload = json.dumps({
                     "Check": "idor_cross_account_access",
-                    "established": True,
+                    "established": caller != "acct_B",
                     "caller_account": caller,
                     "resource_owner": "acct_B",
                     "resource_id": "res_b_001",
                     "confidential_marker": "VULNIX_LAB_IDOR_PROVEN",
-                    "detail": f"テストアカウント {caller} から acct_B の保護リソース res_b_001 の取得が成立しました。",
+                    "detail": f"テストアカウント {caller} が acct_B の模擬資源 res_b_001 を取得しました。",
                 }, ensure_ascii=False).encode("utf-8")
                 return self._send(200, payload, "application/json; charset=utf-8")
             payload = json.dumps({

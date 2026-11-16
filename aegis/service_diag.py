@@ -163,6 +163,7 @@ def analyze_l1_service_response(
     ev: dict,
     target_url: str,
     cve_monitor: Optional[cve.FeedMonitor] = None,
+    *, root_access: Optional[dict] = None,
 ) -> list[dict]:
     """Analyze a read-only L1 ``http_probe`` response for an external HTTPS service."""
     findings: list[dict] = []
@@ -516,16 +517,24 @@ def analyze_l1_service_response(
     # 6. Unauthenticated API access control boundary check
     content_type = headers_lower.get("content-type", "")
     media_type = content_type.lower().split(";", 1)[0].strip()
-    if status_code == 200 and (media_type == "application/json" or media_type.endswith("+json")):
+    if status_code == 200 and (media_type == "application/json" or media_type.endswith("+json")) \
+            and not (root_access and root_access.get("spec_status") == "confirmed"
+                     and root_access.get("requirement") == "public"):
+        protected = bool(root_access and root_access.get("spec_status") == "confirmed"
+                         and root_access.get("requirement") == "authentication_required"
+                         and root_access.get("spec_evidence"))
+        verdict = "detected" if protected else "candidate"
         r_score, r_rat = compute_finding_risk_score(
-            "medium", "candidate", internet_facing=is_https
+            "medium", verdict, internet_facing=is_https
         )
         findings.append(
             {
                 "id": "f_l1_unauth_api",
-                "title": "未認証JSON応答の公開範囲を確認する候補",
+                "title": ("所有者仕様で認証必須のJSON応答が未認証で取得可能"
+                          if protected else "未認証JSON応答の公開範囲を確認する候補"),
                 "severity": "medium",
-                "verdict": "candidate",
+                "verdict": verdict,
+                "verdict_basis": "owner_spec_and_l1_observation" if protected else "unverified_scope",
                 "category": "APIアクセス制御",
                 "cve": [],
                 "risk_level": "L1",
@@ -533,8 +542,13 @@ def analyze_l1_service_response(
                 "risk_score": r_score,
                 "risk_rationale": r_rat,
                 "summary": f"認証ヘッダーなしのGETリクエスト（{target_url}）に対して HTTP 200 ({content_type}) が返却されました。公開エンドポイントとして意図されたものか確認が必要です。",
-                "why_detected": "未認証の読み取り専用プローブでJSON応答を観測しました。保護対象かどうかは、この応答だけでは判定できません。",
-                "caveat": "公開APIでは正常な応答です。保護対象であることを示す独立した根拠が揃うまで脆弱性とは判定しません。",
+                "why_detected": ("管理者承認済みの所有者仕様でルートが認証必須と定められ、"
+                                 "未認証の読み取り専用GETでJSON応答を観測しました。"
+                                 if protected else "未認証の読み取り専用プローブでJSON応答を観測しました。保護対象かどうかは、この応答だけでは判定できません。"),
+                "what_was_established": ("認証ヘッダーなしのGETでHTTP 200のJSON応答を取得しました。"
+                                         if protected else None),
+                "caveat": ("認証要件との不一致を観測しました。応答内容が機密情報か、他ユーザーの情報を読めたかは未実証です。"
+                           if protected else "公開APIでは正常な応答です。保護対象であることを示す独立した根拠が揃うまで脆弱性とは判定しません。"),
                 "impact": "認証が必須であるべきAPIが未認証で応答している場合、内部ステータスやメタデータが外部へ露出する恐れがあります。",
                 "evidence": [
                     _enrich_ev(

@@ -26,17 +26,34 @@ from tests.fixtures.access_control_lab import AccessControlLab  # noqa: E402
 from tests.test_artex_bridge import FAKE  # noqa: E402
 
 TRUTH = json.loads((Path(__file__).resolve().parents[1] / "tests/fixtures/access_control_truth.json").read_text())
+OWNER_SPECS = json.loads((Path(__file__).resolve().parents[1] /
+                          "tests/fixtures/access_control_owner_specs.json").read_text())
 INTENT = {"summary": "IDOR cross-account access-control verification", "asset_ids": [1], "priority": 7}
 
 
-def _measure(mode: str, planned: bool) -> dict:
+def _adaptive_intents(messages: list[dict]) -> list[dict]:
+    # This test-only model reads measured structure, not the truth table, mode
+    # name or response body. One public account directory is deliberately a
+    # false selection, so this is not a perfect oracle.
+    prompt = json.dumps(messages, ensure_ascii=False)
+    import re
+    return [INTENT] if re.search(r"Measured account resource link.{0,300}present", prompt) else []
+
+
+def _measure(mode: str, strategy: str) -> dict:
     lab = AccessControlLab(mode)
     thread = threading.Thread(target=lab.serve_forever, daemon=True)
     thread.start()
     real_bin = os.environ.get("VULNIX_ARTEX_REAL_BIN")
     command = [real_bin] if real_bin else FAKE
+    owner = OWNER_SPECS[mode]
+    requirement = owner["root_requirement"]
+    root_access = {"requirement": (requirement if requirement != "unspecified" else "public"),
+                   "spec_status": "placeholder" if requirement == "unspecified" else "confirmed",
+                   "spec_evidence": [] if requirement == "unspecified" else ["owner API contract v1"]}
     try:
-        with tempfile.TemporaryDirectory() as tmp, MockLLM(intents=[INTENT]) as model:
+        with tempfile.TemporaryDirectory() as tmp, MockLLM(
+                intents=[INTENT], intent_selector=_adaptive_intents if strategy == "adaptive" else None) as model:
             env = {"AEGIS_ENV": "production" if real_bin else "development",
                    "VULNIX_ARTEX_REAL_CMD": shlex.join(command),
                    "VULNIX_ARTEX_EXPECTED_SHA256": os.environ.get("VULNIX_ARTEX_CI_BINARY_SHA256", ""),
@@ -62,17 +79,20 @@ def _measure(mode: str, planned: bool) -> dict:
                         if result is None:
                             raise RuntimeError("fixed root probe was refused")
                         svc._analyze(result, ev)
-                        l1 = analyze_l1_service_response(result, ev, svc.a.target_url)
+                        l1 = analyze_l1_service_response(result, ev, svc.a.target_url,
+                                                         root_access=root_access)
                         root_detected = any(f["id"] == "f_l1_unauth_api" and f["verdict"] == "detected"
                                             for f in l1)
                         adopted = False
                         verdict = "candidate"
                         plan_engine = None
                         gateway_meta = {}
-                        if planned:
+                        if strategy != "fixed_l1":
                             original = assessment_module.run_artex_planner
                             def inject(cmd, request, **kwargs):
-                                return original(cmd, {**request, "fake_intents": [INTENT]}, **kwargs)
+                                chosen = ([INTENT] if strategy == "always"
+                                          or svc._lab_account_resource_observed else [])
+                                return original(cmd, {**request, "fake_intents": chosen}, **kwargs)
                             with patch.object(assessment_module, "run_artex_planner",
                                               original if real_bin else inject):
                                 snap = svc.plan_with_artex("planner")
@@ -85,9 +105,15 @@ def _measure(mode: str, planned: bool) -> dict:
                                 svc.execute_artex_item(selected[0]["id"], "reviewer",
                                                        roles=("operator", "approver"))
                                 verdict = svc.a.findings["f_idor"]["verdict"]
+                            if real_bin:
+                                model_payload = json.dumps(model.requests, ensure_ascii=False)
+                                assert mode not in model_payload
+                                assert '"truth"' not in model_payload
+                                assert "VULNIX_LAB_IDOR_PROVEN" not in model_payload
                         counts.update(gateway_calls=gw.call_count, worker_launches=workers.call_count,
                                       state_saves=saves.call_count, ledger_commits=commits.call_count)
-                        return {"mode": mode, "truth": TRUTH[mode], "elapsed_s": round(time.monotonic()-start, 3),
+                        return {"mode": mode, "truth": TRUTH[mode], "strategy": strategy,
+                                "elapsed_s": round(time.monotonic()-start, 3),
                                 "target_requests": list(lab.seen), "root_exposure_detected": root_detected,
                                 "idor_verdict": verdict, "idor_proven": verdict == "proven",
                                 "plan_adopted": adopted, "engine_kind": plan_engine,
@@ -115,23 +141,33 @@ def _quality(rows: list[dict], truth_key: str, observed_key: str) -> dict:
 
 
 def main() -> None:
-    before = [_measure(mode, False) for mode in TRUTH]
-    after = [_measure(mode, True) for mode in TRUTH]
-    out = {"fixed_l1": before, "artex_plan": after,
+    assert set(TRUTH) == set(OWNER_SPECS)
+    before = [_measure(mode, "fixed_l1") for mode in TRUTH]
+    after = [_measure(mode, "always") for mode in TRUTH]
+    adaptive = [_measure(mode, "adaptive") for mode in TRUTH]
+    out = {"fixed_l1": before, "artex_plan": after, "adaptive_plan": adaptive,
            "fixed_root_exposure_quality": _quality(before, "unauth_exposure", "root_exposure_detected"),
            "artex_root_exposure_quality": _quality(after, "unauth_exposure", "root_exposure_detected"),
            "fixed_idor_quality": _quality(before, "cross_account_access", "idor_proven"),
            "artex_idor_quality": _quality(after, "cross_account_access", "idor_proven"),
+           "adaptive_idor_quality": _quality(adaptive, "cross_account_access", "idor_proven"),
+           "always_selection_quality": _quality(after, "idor_check_appropriate", "plan_adopted"),
+           "adaptive_selection_quality": _quality(adaptive, "idor_check_appropriate", "plan_adopted"),
            "plan_adoption": sum(r["plan_adopted"] for r in after) / len(after)}
     assert out["fixed_root_exposure_quality"]["fp"] == 0
     assert out["artex_root_exposure_quality"]["fp"] == 0
+    assert out["fixed_root_exposure_quality"]["fn"] == 0
     assert out["artex_idor_quality"]["tp"] == 2
     assert out["artex_idor_quality"]["fp"] == 0
+    assert out["adaptive_idor_quality"]["tp"] == 2
+    assert out["adaptive_idor_quality"]["fp"] == 0
+    assert out["adaptive_selection_quality"]["fp"] < out["always_selection_quality"]["fp"]
+    assert out["adaptive_selection_quality"]["fn"] == 0
     assert all(len(r["target_requests"]) == 1 for r in before)
-    assert all(len(r["target_requests"]) == 2 for r in after)
+    assert sum(len(r["target_requests"]) for r in adaptive) < sum(len(r["target_requests"]) for r in after)
     assert out["plan_adoption"] == 1.0
     if os.environ.get("VULNIX_ARTEX_REAL_BIN"):
-        assert all(r["engine_kind"] == "artex-binary" for r in after)
+        assert all(r["engine_kind"] == "artex-binary" for r in after + adaptive)
     print(json.dumps(out, ensure_ascii=False, indent=2))
 
 

@@ -1101,10 +1101,30 @@ class TestL1Diagnosis(RealServiceBase):
         report = self.svc.report_markdown()
         self.assertIn("所有確認済みの実サービス", report)
         self.assertNotIn("架空", report)
-        self.assertIsNone(snap["history"])                       # no fictional history on a real service
+        self.assertIsNone(snap["history"])
         primary = self.svc.assets()[0]
         self.assertEqual((primary["name"], primary["previous_risk_score"]), (HOST, None))
         self.assertNotIn("ローカル模擬ラボ", report)
+
+    def test_confirmed_owner_root_requirement_is_detected_without_leak_claim(self):
+        self.onboard()
+        self.svc.l2.profiles["example"]["root_access"] = {
+            "requirement": "authentication_required", "spec_status": "confirmed",
+            "spec_evidence": ["owner API specification section 3"]}
+        snap = self.run_l1()
+        finding = next(f for f in snap["findings"] if f["id"] == "f_l1_unauth_api")
+        self.assertEqual(finding["verdict"], "detected")
+        self.assertEqual(finding["evidence_status"], "detected")
+        self.assertIn("未実証", finding["caveat"])
+        self.assertTrue(finding["evidence"][0]["audit_hash"])
+
+    def test_confirmed_public_root_requirement_does_not_create_access_finding(self):
+        self.onboard()
+        self.svc.l2.profiles["example"]["root_access"] = {
+            "requirement": "public", "spec_status": "confirmed",
+            "spec_evidence": ["owner API specification section 2"]}
+        snap = self.run_l1()
+        self.assertNotIn("f_l1_unauth_api", {f["id"] for f in snap["findings"]})
 
     def test_read_only_mode_says_so_instead_of_promising_an_l2(self):
         # public beta: no L2 ever runs on a real site, so the run must not say one is waiting
