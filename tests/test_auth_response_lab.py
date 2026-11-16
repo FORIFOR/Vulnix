@@ -2,12 +2,16 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from urllib.request import urlopen
 
+from aegis.assessment import AssessmentService
 from aegis.service_diag import analyze_l1_service_response
+from tests import TEST_CONFINEMENT
 from tests.fixtures.auth_response_lab import AuthResponseLab, BODIES
 
 
@@ -36,6 +40,40 @@ class TestAuthResponseLab(unittest.TestCase):
                     finding = next(f for f in findings if f["id"] == "f_l1_unauth_api")
                     self.assertEqual(finding["verdict"] == "detected", exposes_data)
                     self.assertEqual(lab.seen, ["/"])
+                finally:
+                    lab.shutdown()
+                    lab.server_close()
+                    thread.join(timeout=2)
+
+    def test_gateway_worker_root_probe_keeps_the_same_six_labels(self):
+        for mode, exposes_data in TRUTH.items():
+            with self.subTest(mode=mode):
+                lab = AuthResponseLab(mode)
+                thread = threading.Thread(target=lab.serve_forever, daemon=True)
+                thread.start()
+                try:
+                    with tempfile.TemporaryDirectory() as tmp, patch.dict("os.environ", {"AEGIS_ENV": "development"}):
+                        svc = AssessmentService(Path(tmp), lab.server_port,
+                                                l2_confinement=TEST_CONFINEMENT, verify_seconds=0.1)
+                        try:
+                            with patch.object(svc.gateway, "execute", wraps=svc.gateway.execute) as gateway, \
+                                 patch.object(svc.workers, "run", wraps=svc.workers.run) as workers:
+                                observed, ev = svc._exec("http_probe", "read_only_probe",
+                                                         {"url": svc.a.target_url, "method": "GET"},
+                                                         approval_actor="policy:auto-L1")
+                            self.assertIsNotNone(observed)
+                            self.assertEqual(gateway.call_count, 1)
+                            self.assertEqual(workers.call_count, 1)
+                            findings = analyze_l1_service_response(
+                                observed, ev, svc.a.target_url,
+                                root_access={"requirement": "authentication_required",
+                                             "spec_status": "confirmed",
+                                             "spec_evidence": ["owner API contract v1"]})
+                            finding = next(f for f in findings if f["id"] == "f_l1_unauth_api")
+                            self.assertEqual(finding["verdict"] == "detected", exposes_data)
+                            self.assertEqual(lab.seen, ["/"])
+                        finally:
+                            svc.close()
                 finally:
                     lab.shutdown()
                     lab.server_close()
