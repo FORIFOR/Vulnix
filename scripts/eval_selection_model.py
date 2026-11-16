@@ -6,12 +6,18 @@ Truth labels stay local. This module cannot contact a paid model or a target.
 from __future__ import annotations
 
 import json
+import hmac
+import time
+from functools import partial
 from pathlib import Path
 
+from aegis.ai_advisor import _external_transport
+from aegis.audit import AuditLog
 from aegis.planner_llm_gateway import Budget, PlannerLLMGateway
 FIXTURES = Path(__file__).resolve().parents[1] / "tests" / "fixtures"
 MEASUREMENTS = Path(__file__).resolve().parents[1] / "docs" / "ACCESS_CONTROL_BLIND_REAL_ARTEX.json"
 MODEL = "abliterated-model"
+ENDPOINT = "https://api.abliteration.ai/v1/chat/completions"
 SYSTEM = (
     "You are choosing whether an isolated, authorized lab should run one read-only "
     "cross-account resource access check. Review the owner's access requirements and "
@@ -99,6 +105,44 @@ def run_preview() -> dict:
                 "gateway": gateway.report(), "mock_selection": score(selected, mapping),
                 "mock_note": "Fixed local rule; NOT Abliteration AI performance",
                 "paid_model_cost_usd": 0}
+    finally:
+        gateway.close()
+
+
+def run_approved(*, approval_sha256: str, api_key: str, audit: AuditLog,
+                 transport=None) -> dict:
+    """One explicitly approved model call; returns only aggregate quality and usage."""
+    request, mapping = build_request()
+    preview = run_preview()["gateway"]
+    if not hmac.compare_digest(approval_sha256, preview["first_request_sha256"]):
+        raise ValueError("approval does not match the fixed preview")
+    if not api_key or audit is None:
+        raise ValueError("a server-side key and durable audit are required")
+    gateway = PlannerLLMGateway(
+        mode="forward", model=MODEL, upstream_url=ENDPOINT, api_key=api_key,
+        budget=Budget(max_calls=1, max_total_tokens=2000, max_cost_usd=0.01,
+                      usd_per_1k_input=0.001, usd_per_1k_output=0.003),
+        approval={"max_calls": 1, "first_request_sha256": approval_sha256},
+        audit=audit, transport=transport or partial(_external_transport, timeout_s=30))
+    try:
+        started = time.monotonic()
+        status, response = gateway.handle(json.dumps(request).encode(), f"Bearer {gateway.token}")
+        elapsed = round(time.monotonic() - started, 3)
+        if status != 200:
+            raise ValueError(f"model exchange rejected (status {status})")
+        content = response["choices"][0]["message"]["content"]
+        try:
+            selected = validate_answer(content, mapping)
+            accepted = True
+        except ValueError:
+            selected, accepted = set(), False
+        usage = response.get("usage") or {}
+        usage = {k: usage[k] for k in ("prompt_tokens", "completion_tokens")
+                 if isinstance(usage.get(k), int) and usage[k] >= 0}
+        return {"selection": score(selected, mapping) if accepted else None, "accepted": accepted,
+                "selected_case_ids": sorted(selected), "usage": usage,
+                "elapsed_s": elapsed, "gateway": gateway.report(),
+                "target_get": 0, "worker_launches": 0}
     finally:
         gateway.close()
 

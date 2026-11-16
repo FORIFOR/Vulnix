@@ -1,8 +1,11 @@
 """Blind, sendable selection fixture; no external model is called by these tests."""
 import json
+import tempfile
 import unittest
+from pathlib import Path
 
 from scripts import eval_selection_model as evaluation
+from aegis.audit import AuditLog
 
 
 class TestSelectionModelEval(unittest.TestCase):
@@ -53,6 +56,50 @@ class TestSelectionModelEval(unittest.TestCase):
         self.assertEqual(report["mock_selection"]["fn"], 0)
         self.assertEqual(report["mock_selection"]["tp"], 8)
         self.assertEqual(len(report["preview_request"]["messages"]), 2)
+
+    def test_approved_path_uses_same_hash_one_call_and_durable_audit(self):
+        expected = evaluation.run_preview()["gateway"]["first_request_sha256"]
+        seen = []
+
+        def local_transport(url, headers, body):
+            seen.append((url, headers, json.loads(body)))
+            ids = [c["id"] for c in json.loads(seen[-1][2]["messages"][1]["content"])["cases"][:2]]
+            return json.dumps({"choices": [{"message": {"role": "assistant",
+                                                      "content": json.dumps({"selected": ids})}}],
+                               "usage": {"prompt_tokens": 900, "completion_tokens": 30}}).encode()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            audit = AuditLog(Path(tmp) / "audit.jsonl")
+            with self.assertRaises(ValueError):
+                evaluation.run_approved(approval_sha256="0" * 64, api_key="test-only-key",
+                                        audit=audit, transport=local_transport)
+            self.assertEqual(seen, [])
+            result = evaluation.run_approved(approval_sha256=expected, api_key="test-only-key",
+                                             audit=audit, transport=local_transport)
+            self.assertTrue(audit.verify())
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0][0], "https://api.abliteration.ai/v1/chat/completions")
+        self.assertEqual(result["gateway"]["calls"], 1)
+        self.assertEqual(result["selection"]["tp"] + result["selection"]["fp"], 2)
+        self.assertEqual(result["usage"], {"prompt_tokens": 900, "completion_tokens": 30})
+        self.assertNotIn("test-only-key", json.dumps(result))
+
+    def test_unusable_model_answer_is_counted_without_a_finding(self):
+        expected = evaluation.run_preview()["gateway"]["first_request_sha256"]
+        calls = []
+
+        def bad_transport(*args):
+            calls.append(args)
+            return json.dumps({"choices": [{"message": {"role": "assistant", "content": "maybe"}}]}).encode()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = evaluation.run_approved(
+                approval_sha256=expected, api_key="test-only-key",
+                audit=AuditLog(Path(tmp) / "audit.jsonl"), transport=bad_transport)
+        self.assertEqual(len(calls), 1)
+        self.assertFalse(result["accepted"])
+        self.assertIsNone(result["selection"])
+        self.assertEqual(result["selected_case_ids"], [])
 
 
 if __name__ == "__main__":
