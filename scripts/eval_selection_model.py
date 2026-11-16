@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import hmac
+import os
 import time
 from functools import partial
 from pathlib import Path
@@ -18,6 +19,7 @@ FIXTURES = Path(__file__).resolve().parents[1] / "tests" / "fixtures"
 MEASUREMENTS = Path(__file__).resolve().parents[1] / "docs" / "ACCESS_CONTROL_BLIND_REAL_ARTEX.json"
 MODEL = "abliterated-model"
 ENDPOINT = "https://api.abliteration.ai/v1/chat/completions"
+APPROVAL_DIR = Path.home() / ".local" / "share" / "vulnix" / "selection-eval-approvals"
 SYSTEM = (
     "You are choosing whether an isolated, authorized lab should run one read-only "
     "cross-account resource access check. Review the owner's access requirements and "
@@ -78,7 +80,8 @@ def score(selected: set[str], mapping: dict[str, str]) -> dict:
     return {"tp": tp, "fp": fp, "fn": fn, "tn": tn,
             "precision": tp / (tp + fp) if tp + fp else None,
             "recall": tp / (tp + fn) if tp + fn else None,
-            "unnecessary_check_rate": fp / len(mapping)}
+            "unnecessary_check_rate": fp / (tp + fp) if tp + fp else None,
+            "unnecessary_case_rate": fp / len(mapping)}
 
 
 def truth_ids(mapping: dict[str, str]) -> set[str]:
@@ -136,19 +139,46 @@ def run_approved(*, approval_sha256: str, api_key: str, audit: AuditLog,
         approval={"max_calls": 1, "first_request_sha256": approval_sha256},
         audit=audit, transport=transport or partial(_external_transport, timeout_s=30))
     try:
+        # One owner approval must survive a process restart and a failed upstream call.
+        # O_EXCL also prevents two processes on this host from consuming it together.
+        APPROVAL_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if APPROVAL_DIR.stat().st_mode & 0o077:
+            raise ValueError("approval store permissions are too broad")
+        marker = APPROVAL_DIR / approval_sha256
+        try:
+            fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            raise ValueError("approval already consumed") from None
+        with os.fdopen(fd, "w", encoding="utf-8") as file:
+            file.write(json.dumps({"request_sha256": approval_sha256, "at": time.time()}) + "\n")
+            file.flush()
+            os.fsync(file.fileno())
+        directory_fd = os.open(APPROVAL_DIR, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+        audit.record("selection_model.approval_consumed", request_sha256=approval_sha256)
         started = time.monotonic()
         status, response = gateway.handle(json.dumps(request).encode(), f"Bearer {gateway.token}")
         elapsed = round(time.monotonic() - started, 3)
         if status != 200:
-            raise ValueError(f"model exchange rejected (status {status})")
-        content = response["choices"][0]["message"]["content"]
+            return {"selection": None, "accepted": False, "response_adoption_rate": 0.0,
+                    "reject_reason": "upstream_exchange_failed" if status == 409 else "gateway_refused",
+                    "selection_errors": [], "selected_case_ids": [], "usage": {},
+                    "finish_reason": None, "elapsed_s": elapsed, "gateway": gateway.report(),
+                    "provider_billed_cost_usd": None, "target_get": 0, "worker_launches": 0}
+        content = response["choices"][0]["message"].get("content")
         try:
+            if not isinstance(content, str):
+                raise ValueError("missing content")
             selected = validate_answer(content, mapping)
             accepted = True
             reject_reason = None
         except ValueError as exc:
             selected, accepted = set(), False
             reject_reason = {"answer must be plain JSON": "invalid_json",
+                             "missing content": "missing_content",
                              "duplicate answer key": "duplicate_json_key",
                              "answer shape rejected": "invalid_shape",
                              "answer contains an invalid or repeated case": "invalid_case_id"}.get(str(exc), "invalid_answer")
