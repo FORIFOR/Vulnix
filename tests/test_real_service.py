@@ -1078,10 +1078,13 @@ class TestL1Diagnosis(RealServiceBase):
         self.assertEqual([p for p, _ in self.fake.seen], ["/"])
         self.assertIsNone(self.fake.seen[0][1])
         by_id = {f["id"]: f for f in snap["findings"]}
-        for fid in ("f_headers", "f_l1_cookies", "f_l1_cors", "f_powered", "f_l1_unauth_api"):
+        for fid in ("f_headers", "f_l1_cookies", "f_l1_cors", "f_powered"):
             self.assertIn(fid, by_id)
             self.assertIn(by_id[fid]["evidence_status"], ("proven", "detected"))
             self.assertTrue(by_id[fid]["evidence"][0]["audit_hash"])
+        # A JSON 200 at the root has no independent protected-scope evidence.
+        self.assertEqual(by_id["f_l1_unauth_api"]["evidence_status"], "candidate")
+        self.assertEqual(by_id["f_l1_unauth_api"]["risk_score"], 0)
         l2 = [by_id[c["finding"]["id"]] for c in EXAMPLE["checks"]]
         self.assertEqual({f["evidence_status"] for f in l2}, {"candidate"})
         self.assertFalse(any(f.get("demo_fixture") for f in snap["findings"]))

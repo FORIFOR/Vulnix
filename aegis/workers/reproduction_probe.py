@@ -150,6 +150,14 @@ def run_lab_check(a) -> dict:
     except ValueError:
         parsed_body = None
     established = obs["status"] == 200 and spec["marker"] in raw_body
+    if a.check == "idor":
+        established = (established and isinstance(parsed_body, dict)
+                       and parsed_body.get("Check") == "idor_cross_account_access"
+                       and parsed_body.get("established") is True
+                       and parsed_body.get("caller_account") == "acct_A"
+                       and parsed_body.get("resource_owner") == "acct_B"
+                       and parsed_body.get("resource_id") == "res_b_001"
+                       and parsed_body.get("confidential_marker") == spec["marker"])
     reason = None
     if established:
         verdict = "proven"
