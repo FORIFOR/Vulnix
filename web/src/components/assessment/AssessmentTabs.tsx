@@ -46,7 +46,7 @@ export function AssessmentTabs({ id }: { id: string }) {
   if (!snap) {
     return (
       <div className="p-6 text-sm">
-        {error ? <p role="alert" className="text-red-700">読み込めませんでした：{error}（制御プレーン `python3 -m aegis.server` が起動しているか確認してください）</p> : "読み込み中…"}
+        {error ? <p role="alert" className="text-red-700">診断結果を表示できません：{error}。ログイン状態とアクセス権を確認してください。</p> : "読み込み中…"}
       </div>
     );
   }

@@ -470,8 +470,11 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         data = json.dumps(ev, ensure_ascii=False)
                         self.wfile.write(f"id: {ev['event_id']}\ndata: {data}\n\n".encode())
                         seq = ev["seq"]
-                    if time.monotonic() - last_ping > 10:
-                        self.wfile.write(b": ping\n\n")
+                    if time.monotonic() - last_ping > 4:
+                        # A named heartbeat reaches EventSource listeners. Its seq
+                        # lets the browser detect a missing event before it skips
+                        # the quiet-stream backup fetch.
+                        self.wfile.write(f"event: heartbeat\ndata: {{\"seq\":{seq}}}\n\n".encode())
                         last_ping = time.monotonic()
                     self.wfile.flush()
             except (BrokenPipeError, ConnectionResetError):

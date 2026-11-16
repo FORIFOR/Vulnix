@@ -42,6 +42,11 @@ PARSER = argparse.ArgumentParser()
 PARSER.add_argument("--production", action="store_true", help="Use an already built Next.js production bundle")
 PARSER.add_argument("--idle-seconds", type=float, default=0,
                     help="Count backup API requests after the completed result remains visible")
+PARSER.add_argument("--block-events", action="store_true", help="Drop the SSE stream to verify backup polling")
+PARSER.add_argument("--silent-change", action="store_true",
+                    help="Change a lab finding without publishing an event while SSE heartbeats continue")
+PARSER.add_argument("--revoke-session", action="store_true",
+                    help="Revoke the lab session and require the browser to hide the old result")
 
 
 def free_port() -> int:
@@ -138,6 +143,8 @@ def main() -> None:
                             page.on("request", lambda req: api_calls.append(req.url.split("/api/", 1)[1].split("?", 1)[0])
                                     if "/api/" in req.url else None)
                             page.on("pageerror", lambda error: page_errors.append(str(error)))
+                            if args.block_events:
+                                page.route("**/api/assessments/*/events*", lambda route: route.abort())
                             page.goto(base + "/login")
                             page.get_by_label("ユーザー名", exact=True).fill("qa")
                             page.get_by_label("パスワード", exact=True).fill(password)
@@ -189,6 +196,23 @@ def main() -> None:
                             assert not page_errors, page_errors
                             assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
                             idle_at = len(api_calls)
+                            silent_change_recovered_s = None
+                            revocation_hidden_s = None
+                            if args.silent_change:
+                                seq_before = svc.bus.last_seq
+                                with svc._lock:
+                                    svc.a.findings["f_l1_apache_mod_status"]["title"] = "心拍のみの更新確認"
+                                    svc._save_state_locked()
+                                assert svc.bus.last_seq == seq_before, "silent lab change emitted an event"
+                                changed_at = time.monotonic()
+                                page.locator("h3").filter(has_text="心拍のみの更新確認").wait_for(timeout=40000)
+                                silent_change_recovered_s = round(time.monotonic() - changed_at, 3)
+                            if args.revoke_session:
+                                ops.revoke_all_sessions("browser-session-test")
+                                revoked_at = time.monotonic()
+                                page.locator("h3").filter(has_text="Apache mod_status の公開露出").wait_for(
+                                    state="detached", timeout=40000)
+                                revocation_hidden_s = round(time.monotonic() - revoked_at, 3)
                             if args.idle_seconds > 0:
                                 page.wait_for_timeout(args.idle_seconds * 1000)
                             print(json.dumps({"viewport_width": 390,
@@ -198,6 +222,9 @@ def main() -> None:
                                               "api_paths": api_calls, "elapsed_start_to_visible_finding_s": elapsed,
                                               "idle_seconds": args.idle_seconds,
                                               "idle_api_requests": len(api_calls) - idle_at,
+                                              "sse_blocked": args.block_events,
+                                              "silent_change_recovered_s": silent_change_recovered_s,
+                                              "revocation_hidden_s": revocation_hidden_s,
                                               "target_paths": list(site.seen), "local_model_calls": len(model.requests),
                                               "status_finding": "detected", "page_errors": len(page_errors)},
                                              ensure_ascii=False, indent=2))
