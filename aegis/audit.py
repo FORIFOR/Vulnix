@@ -24,15 +24,55 @@ class AuditLog:
 
     def record(self, event: str, **fields) -> dict:
         with self._lock:
-            body = {"ts": time.time(), "event": event, "fields": fields, "prev": self._prev}
-            digest = hashlib.sha256(_canon(body).encode()).hexdigest()
-            entry = {**body, "hash": digest}
-            fd = os.open(self.path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
-            with os.fdopen(fd, "a", encoding="utf-8") as f:
-                f.write(json.dumps(entry, ensure_ascii=False, sort_keys=True) + "\n")
-                f.flush()
-                os.fsync(f.fileno())
-            self._prev = digest
+            entry = self._append_locked(event, fields)
+        for listener in list(self.listeners):
+            listener(entry)
+        return entry
+
+    def _append_locked(self, event: str, fields: dict) -> dict:
+        body = {"ts": time.time(), "event": event, "fields": fields, "prev": self._prev}
+        digest = hashlib.sha256(_canon(body).encode()).hexdigest()
+        entry = {**body, "hash": digest}
+        fd = os.open(self.path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False, sort_keys=True) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        self._prev = digest
+        return entry
+
+    def record_with_budget(self, event: str, *, reserve_micro_usd: int,
+                           cap_micro_usd: int, **fields) -> dict:
+        """Durably reserve a real advisor call before forwarding it.
+
+        The control plane holds one process claim per data directory. This lock
+        serializes every audit write and every reservation inside that process.
+        Missing usage on an earlier external send fails closed; it cannot be priced
+        after the fact. Failed model responses keep their reservation.
+        """
+        if event != "advisor.safe_send_requested" or fields.get("endpoint_kind") != "external":
+            raise ValueError("advisor budget applies only to external sends")
+        if (not isinstance(reserve_micro_usd, int) or isinstance(reserve_micro_usd, bool)
+                or not isinstance(cap_micro_usd, int) or isinstance(cap_micro_usd, bool)
+                or reserve_micro_usd <= 0 or cap_micro_usd <= 0):
+            raise ValueError("invalid advisor budget")
+        with self._lock:
+            entries, valid = self.verified_entries()
+            if not valid:
+                raise ValueError("audit chain invalid")
+            spent = 0
+            for previous in entries:
+                if (previous.get("event") != "advisor.safe_send_requested"
+                        or previous.get("fields", {}).get("endpoint_kind") != "external"):
+                    continue
+                amount = previous["fields"].get("reserved_micro_usd")
+                if not isinstance(amount, int) or isinstance(amount, bool) or amount <= 0:
+                    raise ValueError("unpriced external advisor send")
+                spent += amount
+            if spent + reserve_micro_usd > cap_micro_usd:
+                raise ValueError("advisor budget exceeded")
+            entry = self._append_locked(event, {**fields, "reserved_micro_usd": reserve_micro_usd,
+                                                "budget_cap_micro_usd": cap_micro_usd})
         for listener in list(self.listeners):
             listener(entry)
         return entry

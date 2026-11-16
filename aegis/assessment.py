@@ -24,6 +24,7 @@ import time
 import urllib.parse
 import weakref
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_FLOOR
 from pathlib import Path
 
 from . import cve
@@ -4866,13 +4867,47 @@ class AssessmentService:
                 advisor = ExternalAbliterationAdvisor(url, model=backend._model, api_key=backend._key or "")
             # Construct and inspect the exact allow-listed shape before any network call.
             body, _ = advisor.build_request([finding])
+            external = host not in ("127.0.0.1", "::1")
+            if external:
+                if os.environ.get("VULNIX_ADVISOR_PRICE_MODEL", "") != backend._model:
+                    raise AdvisorError("advisor model price is not configured")
+                def positive_usd(name: str) -> Decimal:
+                    try:
+                        value = Decimal(os.environ.get(name, ""))
+                    except InvalidOperation:
+                        raise AdvisorError("advisor cost configuration missing") from None
+                    if not value.is_finite() or value <= 0:
+                        raise AdvisorError("advisor cost configuration invalid")
+                    return value
+
+                cap = positive_usd("VULNIX_ADVISOR_MAX_COST_USD")
+                input_price = positive_usd("VULNIX_ADVISOR_USD_PER_1K_INPUT")
+                output_price = positive_usd("VULNIX_ADVISOR_USD_PER_1K_OUTPUT")
+                output_limit = json.loads(body).get("max_tokens")
+                if not isinstance(output_limit, int) or not 0 < output_limit <= 2048:
+                    raise AdvisorError("advisor output cap missing")
+                # UTF-8 bytes are a conservative bound for prompt tokens. Reserve
+                # the full completion even if the upstream fails after receiving it.
+                reserve_micro_usd = int(((Decimal(len(body)) * input_price
+                                          + Decimal(output_limit) * output_price) * 1000)
+                                        .to_integral_value(rounding=ROUND_CEILING))
+                cap_micro_usd = int((cap * 1_000_000).to_integral_value(rounding=ROUND_FLOOR))
             with self._lock:
                 if (generation != self._run_generation or not self._is_external_service_asset()
                         or self.a.state != "completed" or not self._real_site_safe_ai):
                     return None
-                self.audit.record("advisor.safe_send_requested", actor=actor, finding_id=finding_id,
-                                  model=backend._model, payload_sha256=hashlib.sha256(body).hexdigest(),
-                                  endpoint_kind="loopback_mock" if host in ("127.0.0.1", "::1") else "external")
+                audit_fields = {"actor": actor, "finding_id": finding_id, "model": backend._model,
+                                "payload_sha256": hashlib.sha256(body).hexdigest(),
+                                "endpoint_kind": "external" if external else "loopback_mock"}
+                if external:
+                    try:
+                        self.audit.record_with_budget("advisor.safe_send_requested",
+                                                      reserve_micro_usd=reserve_micro_usd,
+                                                      cap_micro_usd=cap_micro_usd, **audit_fields)
+                    except ValueError:
+                        raise AdvisorError("advisor budget refused") from None
+                else:
+                    self.audit.record("advisor.safe_send_requested", **audit_fields)
             outcome["model_attempted"] = True
             result = advisor.advise([finding])
         except AdvisorError as exc:

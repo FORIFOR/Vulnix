@@ -3,12 +3,17 @@ from __future__ import annotations
 
 import ast
 import dataclasses
+import hashlib
 import json
+import os
+import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from aegis import ai_advisor as adv
+from aegis.audit import AuditLog
 from aegis.abliteration_server import start_abliteration_server
 from aegis.router import AbliterationBackend, sanitize_proposal
 from tests.test_real_service import HOST, RealServiceBase
@@ -385,7 +390,113 @@ class TestNoPathFromAdviceToAWorker(unittest.TestCase):
         self.assertEqual(r.status, "proposal_only")
 
 
+class TestAdvisorAuditBudget(unittest.TestCase):
+    def test_budget_survives_reopen_and_counts_concurrent_reservations(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "audit.jsonl"
+            audit = AuditLog(path)
+            outcomes = []
+
+            def reserve():
+                try:
+                    audit.record_with_budget("advisor.safe_send_requested", reserve_micro_usd=300_000,
+                                             cap_micro_usd=500_000, endpoint_kind="external")
+                    outcomes.append("sent")
+                except ValueError:
+                    outcomes.append("refused")
+
+            threads = [threading.Thread(target=reserve) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+            self.assertCountEqual(outcomes, ["sent", "refused"])
+            reopened = AuditLog(path)
+            with self.assertRaises(ValueError):
+                reopened.record_with_budget("advisor.safe_send_requested", reserve_micro_usd=300_000,
+                                            cap_micro_usd=500_000, endpoint_kind="external")
+            self.assertEqual(len(reopened.entries()), 1)
+
+    def test_tampered_or_unpriced_prior_send_refuses_reservation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "audit.jsonl"
+            audit = AuditLog(path)
+            audit.record("advisor.safe_send_requested", endpoint_kind="external")
+            with self.assertRaises(ValueError):
+                audit.record_with_budget("advisor.safe_send_requested", reserve_micro_usd=1,
+                                         cap_micro_usd=500_000, endpoint_kind="external")
+            path.write_text(path.read_text().replace('"external"', '"tampered"'))
+            with self.assertRaises(ValueError):
+                audit.record_with_budget("advisor.safe_send_requested", reserve_micro_usd=1,
+                                         cap_micro_usd=500_000, endpoint_kind="external")
+
+
 class TestServiceIntegration(RealServiceBase):
+    def test_external_advisor_requires_a_durable_budget_before_sending(self):
+        self.onboard()
+        self.run_l1()
+        calls = []
+        self.svc._chat_backend = AbliterationBackend(
+            "https://api.abliteration.ai/v1/chat/completions", model="mock", api_key="test-key")
+        self.svc._real_site_safe_ai = True
+        with patch.object(adv, "_external_transport", side_effect=lambda *a, **k: calls.append(a) or b"{}"):
+            for config in (
+                {"VULNIX_ADVISOR_PRICE_MODEL": "mock", "VULNIX_ADVISOR_MAX_COST_USD": "",
+                 "VULNIX_ADVISOR_USD_PER_1K_INPUT": "", "VULNIX_ADVISOR_USD_PER_1K_OUTPUT": ""},
+                {"VULNIX_ADVISOR_PRICE_MODEL": "wrong-model", "VULNIX_ADVISOR_MAX_COST_USD": "0.50",
+                 "VULNIX_ADVISOR_USD_PER_1K_INPUT": "0.10", "VULNIX_ADVISOR_USD_PER_1K_OUTPUT": "0.10"},
+            ):
+                with self.subTest(config=config), patch.dict(os.environ, config):
+                    result = self.svc.ask_chat("解説", "appr", finding_id="f_headers", safe_advice=True)
+                    self.assertEqual(result["message"]["source"], "builtin")
+        self.assertEqual(calls, [])
+
+    def test_external_advisor_refuses_zero_negative_or_nonfinite_prices(self):
+        self.onboard()
+        self.run_l1()
+        calls = []
+        self.svc._chat_backend = AbliterationBackend(
+            "https://api.abliteration.ai/v1/chat/completions", model="mock", api_key="test-key")
+        self.svc._real_site_safe_ai = True
+        with patch.object(adv, "_external_transport", side_effect=lambda *a, **k: calls.append(a) or b"{}"):
+            for value in ("0", "-1", "NaN", "Infinity"):
+                with self.subTest(value=value), patch.dict(os.environ, {
+                    "VULNIX_ADVISOR_PRICE_MODEL": "mock",
+                    "VULNIX_ADVISOR_MAX_COST_USD": "0.50",
+                    "VULNIX_ADVISOR_USD_PER_1K_INPUT": value,
+                    "VULNIX_ADVISOR_USD_PER_1K_OUTPUT": "0.10",
+                }):
+                    result = self.svc.ask_chat("解説", "appr", finding_id="f_headers", safe_advice=True)
+                    self.assertEqual(result["message"]["source"], "builtin")
+        self.assertEqual(calls, [])
+
+    def test_external_advisor_reserves_before_send_and_refuses_second_call(self):
+        self.onboard()
+        self.run_l1()
+        calls = []
+        self.svc._chat_backend = AbliterationBackend(
+            "https://api.abliteration.ai/v1/chat/completions", model="mock", api_key="test-key")
+        self.svc._real_site_safe_ai = True
+        item = _ok_item(remediation=[_rem("CSPを適切に設定する", "set_csp")],
+                        next_checks=[_chk("confirm_fix", "l1_recheck_security_headers")])
+        reply = json.dumps({"choices": [{"message": {"content": _advice_reply([item])([])}}]}).encode()
+        env = {"VULNIX_ADVISOR_PRICE_MODEL": "mock",
+               "VULNIX_ADVISOR_MAX_COST_USD": "0.50",
+               "VULNIX_ADVISOR_USD_PER_1K_INPUT": "0.10",
+               "VULNIX_ADVISOR_USD_PER_1K_OUTPUT": "0.10"}
+        with patch.object(adv, "_external_transport", side_effect=lambda *a, **k: calls.append(a) or reply):
+            with patch.dict(os.environ, env):
+                first = self.svc.ask_chat("解説", "appr", finding_id="f_headers", safe_advice=True)
+                second = self.svc.ask_chat("解説", "appr", finding_id="f_headers", safe_advice=True)
+        self.assertEqual(first["message"]["source"], "external_model")
+        self.assertEqual(second["message"]["source"], "builtin")
+        self.assertEqual(len(calls), 1)
+        reserved = [e for e in self.svc.audit.entries() if e["event"] == "advisor.safe_send_requested"]
+        self.assertEqual(len(reserved), 1)
+        self.assertGreater(reserved[0]["fields"]["reserved_micro_usd"], 0)
+        self.assertEqual(reserved[0]["fields"]["payload_sha256"], hashlib.sha256(calls[0][2]).hexdigest())
+
+
     def test_real_site_uses_only_allowlisted_finding_for_requested_ai_explanation(self):
         self.onboard()
         self.run_l1()
