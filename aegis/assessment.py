@@ -4061,17 +4061,38 @@ class AssessmentService:
             headers = (res or {}).get("headers")
             valid_headers = isinstance(headers, dict) and (res or {}).get("status") is not None
             h = {k.lower(): v for k, v in headers.items()} if valid_headers else {}
+            profile = self._l2_profile() if is_ext and valid_headers else None
+            current_l1 = ({f["id"]: f for f in analyze_l1_service_response(
+                res, ev_http or {}, url,
+                cookie_policy=profile.get("cookie_policy") if profile else None,
+            )} if is_ext and valid_headers else {})
             for fid in ("f_headers", "f_powered", "f_l1_cors", "f_l1_cookies"):
                 if fid not in self.a.findings:
                     continue
                 finding = self.a.findings[fid]
+                if fid in ("f_l1_cors", "f_l1_cookies") and is_ext and valid_headers:
+                    # Rechecks must use the same evidence threshold as the first run.
+                    # A public wildcard CORS policy and an ordinary preference cookie
+                    # do not become vulnerabilities merely because they are present.
+                    observed = current_l1.get(fid)
+                    verdict = observed["verdict"] if observed else "not_reproduced"
+                    note = (observed["verdict_note"] if observed and observed.get("verdict_note") else
+                            observed["what_was_established"] if observed and observed.get("what_was_established") else
+                            "最新のHTTP応答では、以前の設定不備を再現できませんでした。")
+                    latest_ids[fid] = ev_http["evidence_id"] if ev_http else None
+                    self._upsert_finding({
+                        **finding, **(observed or {}), "verdict": verdict,
+                        "summary": (observed or {}).get("summary", note),
+                        "what_was_established": observed.get("what_was_established") if observed else None,
+                        "verdict_note": note,
+                        "cookie_checks": (observed or {}).get("cookie_checks", []) if fid == "f_l1_cookies" else finding.get("cookie_checks"),
+                        "evidence": finding["evidence"] + ([ev_http] if ev_http else []),
+                    })
+                    continue
                 if fid == "f_headers":
                     remains = any(not h.get(k) for k in ("content-security-policy", "x-content-type-options", "strict-transport-security"))
                 elif fid == "f_powered":
                     remains = bool(h.get("x-powered-by"))
-                elif fid == "f_l1_cors":
-                    acao = h.get("access-control-allow-origin", "")
-                    remains = acao in ("*", "https://untrusted-origin.example")
                 else:
                     sc = " ".join((res or {}).get("set_cookies") or [h.get("set-cookie", "")]).lower()
                     remains = bool(sc.strip()) and any(flag not in sc for flag in ("secure", "httponly", "samesite"))

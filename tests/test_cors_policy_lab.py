@@ -98,3 +98,45 @@ class TestIndependentCorsPolicyLab(unittest.TestCase):
                     site.shutdown()
                     site.server_close()
                     thread.join(timeout=2)
+
+    def test_fix_recheck_does_not_revive_public_wildcard_as_detected(self):
+        host = "owned-cors.example.test"
+        site = CorsPolicyLab("reflected_credentials")
+        thread = threading.Thread(target=site.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                svc = AssessmentService(Path(tmp), 18081, l2_confinement=TEST_CONFINEMENT,
+                                        real_site_read_only=False)
+                svc._custom_resolver = lambda name: ["127.0.0.1"] if name == host else []
+                url = f"http://{host}:{site.server_port}/"
+                try:
+                    challenge = svc.issue_ownership_challenge(url=url)["challenge"]
+                    svc.verify_asset_ownership(
+                        url_or_host=url, method="dns_txt",
+                        dns_lookup=lambda name: [f'{name} text = "{challenge["dns_txt_value"]}"'],
+                    )
+                    svc.confirm_asset_scope(url_or_host=url, confirmed_prohibited=True,
+                                            activate_workspace=True, allow_loopback_test=True)
+                    svc.start()
+                    deadline = time.monotonic() + 20
+                    while time.monotonic() < deadline:
+                        snap = svc.snapshot()
+                        if snap["state"] in ("completed", "failed"):
+                            break
+                        time.sleep(0.02)
+                    self.assertEqual(snap["state"], "completed", snap.get("failure"))
+                    self.assertEqual(next(f for f in snap["findings"] if f["id"] == "f_l1_cors")["verdict"],
+                                     "detected")
+                    site.mode = "public_wildcard"
+                    rerun = svc.verify_fix("approver")
+                    item = next(i for i in rerun["defense_comparison"]["items"]
+                                if i["id"] == "f_l1_cors")
+                    self.assertEqual(item["after_verdict"], "not_reproduced")
+                    self.assertEqual(site.seen, ["/", "/"])
+                finally:
+                    svc.close()
+        finally:
+            site.shutdown()
+            site.server_close()
+            thread.join(timeout=2)
