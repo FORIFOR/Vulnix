@@ -6,6 +6,7 @@ import { postJSON } from "@/lib/api";
 import type { Finding, Snapshot } from "@/lib/types";
 import { canApprove, useSession } from "@/lib/useSession";
 import { HelpPopover } from "../learning/HelpPopover";
+import { CookieCheckList } from "./CookieCheckList";
 import { Card, FixtureBadge, Pill, SeverityBadge, VerdictBadge } from "../ui";
 
 export function FindingCard({
@@ -74,6 +75,7 @@ export function FindingCard({
           {f.help_term && <HelpPopover term={f.help_term} context={f.why_detected} findingId={f.id} />}
         </h3>
         <p className="mt-1 text-sm text-zinc-700 dark:text-zinc-300">{f.what_was_established ?? f.summary}</p>
+        {f.cookie_checks && f.cookie_checks.length > 0 && <CookieCheckList checks={f.cookie_checks} />}
         {f.verdict_note && (
           <p className="mt-1.5 rounded bg-zinc-100 px-2 py-1 text-xs text-zinc-700 dark:bg-zinc-800/80 dark:text-zinc-300">
             {f.verdict_note}

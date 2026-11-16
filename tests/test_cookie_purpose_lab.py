@@ -69,6 +69,27 @@ class TestCookiePurposeLab(unittest.TestCase):
             "https://owned-cookie.example.test/", cookie_policy=OWNER["session_no_httponly"])
         self.assertFalse([f for f in findings if f["id"] == "f_l1_cookies"])
 
+    def test_mixed_cookies_keep_individual_verdicts_without_values(self):
+        observed = {"status": 200, "headers": {}, "set_cookies": [
+            "auth=secret-token; Secure; SameSite=Lax",
+            "lang=ja; SameSite=Lax",
+            "unknown=private-value; SameSite=Lax",
+        ]}
+        findings = analyze_l1_service_response(
+            observed, {"audit_hash": "cookie-lab-proof", "saved_at": 1},
+            "https://owned-cookie.example.test/", cookie_policy=OWNER["session_no_httponly"])
+        cookie = next(f for f in findings if f["id"] == "f_l1_cookies")
+        self.assertEqual(cookie["verdict"], "detected")
+        self.assertEqual(cookie["cookie_checks"], [
+            {"name": "auth", "purpose": "session", "verdict": "detected", "gaps": ["HttpOnly"]},
+            {"name": "lang", "purpose": "non_session", "verdict": "none", "gaps": []},
+            {"name": "unknown", "purpose": "unknown", "verdict": "candidate", "gaps": ["Secure", "HttpOnly"]},
+        ])
+        self.assertNotIn("secret-token", json.dumps(cookie, ensure_ascii=False))
+        self.assertNotIn("private-value", json.dumps(cookie, ensure_ascii=False))
+        self.assertIn("未確認", cookie["summary"])
+        self.assertNotIn("unknown", cookie["what_was_established"])
+
     def test_assessment_passes_only_the_accepted_site_cookie_spec(self):
         with tempfile.TemporaryDirectory() as tmp:
             svc = AssessmentService(Path(tmp), 1, l2_confinement=TEST_CONFINEMENT)
@@ -83,6 +104,8 @@ class TestCookiePurposeLab(unittest.TestCase):
                      patch.object(svc, "_l2_candidates", return_value=[]):
                     svc._analyze(observed, ev)
                 self.assertEqual(svc.a.findings["f_l1_cookies"]["verdict"], "detected")
+                public = next(f for f in svc.snapshot()["findings"] if f["id"] == "f_l1_cookies")
+                self.assertEqual(public["cookie_checks"][0]["name"], "auth")
                 svc.a.findings.clear()
                 profile["cookie_policy"] = {**profile["cookie_policy"], "status": "unaccepted"}
                 with patch.object(svc, "_is_external_service_asset", return_value=True), \
