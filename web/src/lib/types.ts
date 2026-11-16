@@ -251,6 +251,8 @@ export interface Snapshot {
   defense_comparison?: DefenseComparison | null;
   cve_status?: CveStatus;
   artex_plan?: ArtexPlanView | null;
+  /** Display-only provenance. It survives restart; executable plan items do not. */
+  plan_source?: { engine: "artex-binary" | "unverified"; pinned: boolean; model: string | null } | null;
   artex_tasks?: {
     id: string;
     phase: string;
