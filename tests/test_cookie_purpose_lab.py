@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -22,6 +23,66 @@ OWNER = json.loads((FIXTURES / "cookie_owner_specs.json").read_text())
 
 
 class TestCookiePurposeLab(unittest.TestCase):
+    def test_fix_recheck_preserves_owner_cookie_purpose(self):
+        host = "owned-cookie.example.test"
+        lab = CookiePurposeLab("session_no_httponly")
+        thread = threading.Thread(target=lab.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                svc = AssessmentService(Path(tmp), 18081, l2_confinement=TEST_CONFINEMENT,
+                                        real_site_read_only=False)
+                svc._custom_resolver = lambda name: ["127.0.0.1"] if name == host else []
+                url = f"http://{host}:{lab.server_port}/"
+                try:
+                    challenge = svc.issue_ownership_challenge(url=url)["challenge"]
+                    svc.verify_asset_ownership(
+                        url_or_host=url, method="dns_txt",
+                        dns_lookup=lambda name: [f'{name} text = "{challenge["dns_txt_value"]}"'],
+                    )
+                    svc.confirm_asset_scope(url_or_host=url, confirmed_prohibited=True,
+                                            activate_workspace=True, allow_loopback_test=True)
+                    profile = validate_profile({
+                        **json.loads((FIXTURES / "l2_profiles/example.json").read_text()),
+                        "cookie_policy": OWNER["session_no_httponly"],
+                    })
+                    profile["checks"] = []
+                    with patch.object(svc, "_l2_profile", return_value=profile):
+                        svc.start()
+                        deadline = time.monotonic() + 20
+                        while time.monotonic() < deadline:
+                            snap = svc.snapshot()
+                            if snap["state"] in ("completed", "failed"):
+                                break
+                            time.sleep(0.02)
+                        self.assertEqual(snap["state"], "completed", snap.get("failure"))
+                        self.assertEqual(next(f for f in snap["findings"] if f["id"] == "f_l1_cookies")["verdict"],
+                                         "detected")
+                        lab.mode = "language_plain"
+                        rerun = svc.verify_fix("approver")
+                        item = next(i for i in rerun["defense_comparison"]["items"]
+                                    if i["id"] == "f_l1_cookies")
+                        self.assertEqual(item["after_verdict"], "not_reproduced")
+                        current = next(f for f in rerun["findings"] if f["id"] == "f_l1_cookies")
+                        self.assertEqual(current["cookie_checks"], [])
+                        self.assertEqual(current["risk_score"], 0)
+                        self.assertEqual(current["why_detected"], current["verdict_note"])
+                        lab.mode = "session_like_unknown"
+                        rerun = svc.verify_fix("approver")
+                        item = next(i for i in rerun["defense_comparison"]["items"]
+                                    if i["id"] == "f_l1_cookies")
+                        self.assertEqual(item["after_verdict"], "candidate")
+                        finding = next(f for f in rerun["findings"] if f["id"] == "f_l1_cookies")
+                        self.assertIsNone(finding["what_was_established"])
+                        self.assertEqual(finding["cookie_checks"][0]["purpose"], "unknown")
+                        self.assertEqual(lab.seen, ["/", "/", "/"])
+                finally:
+                    svc.close()
+        finally:
+            lab.shutdown()
+            lab.server_close()
+            thread.join(timeout=2)
+
     def test_independent_conditions_and_owner_specs_match(self):
         self.assertEqual(set(COOKIES), set(TRUTH))
         self.assertEqual(set(COOKIES), set(OWNER))

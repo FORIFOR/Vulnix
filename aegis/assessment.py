@@ -53,7 +53,7 @@ from .runtime import WorkerPool
 from .secrets_store import EncryptedSecretStore
 from .l2_rules import BUILTIN_PROFILE_DIR, L2RuleSet, site_profile_dirs
 from .service_diag import (analyze_l1_service_response, analyze_status_marker_report,
-                           build_l2_candidates, clean_target_text)
+                           build_l2_candidates, clean_target_text, compute_finding_risk_score)
 from .google_ownership import METHOD as GOOGLE_METHOD, covering_property
 
 SEVERITY_WEIGHT = {"critical": 40, "high": 25, "medium": 10, "low": 3, "info": 0}
@@ -4061,17 +4061,49 @@ class AssessmentService:
             headers = (res or {}).get("headers")
             valid_headers = isinstance(headers, dict) and (res or {}).get("status") is not None
             h = {k.lower(): v for k, v in headers.items()} if valid_headers else {}
+            profile = self._l2_profile() if is_ext and valid_headers else None
+            current_l1 = ({f["id"]: f for f in analyze_l1_service_response(
+                res, ev_http or {}, url, self.cve_monitor,
+                cookie_policy=profile.get("cookie_policy") if profile else None,
+            )} if is_ext and valid_headers else {})
             for fid in ("f_headers", "f_powered", "f_l1_cors", "f_l1_cookies"):
                 if fid not in self.a.findings:
                     continue
                 finding = self.a.findings[fid]
+                if is_ext and valid_headers:
+                    # Rechecks use the first run's evidence thresholds for all
+                    # header findings. This covers Server as well as X-Powered-By,
+                    # credentialed CORS and approved Cookie purposes.
+                    observed = current_l1.get(fid)
+                    verdict = observed["verdict"] if observed else "not_reproduced"
+                    note = (observed["verdict_note"] if observed and observed.get("verdict_note") else
+                            observed["what_was_established"] if observed and observed.get("what_was_established") else
+                            "最新のHTTP応答では、以前の設定不備を再現できませんでした。")
+                    risk_score, risk_rationale = compute_finding_risk_score(
+                        finding["severity"], verdict,
+                        internet_facing=urllib.parse.urlsplit(url).scheme == "https",
+                    )
+                    latest_ids[fid] = ev_http["evidence_id"] if ev_http else None
+                    self._upsert_finding({
+                        **finding, **(observed or {}), "verdict": verdict,
+                        "summary": (observed or {}).get("summary", note),
+                        "risk_score": (observed or {}).get("risk_score", risk_score),
+                        "risk_rationale": (observed or {}).get("risk_rationale", risk_rationale),
+                        "verdict_basis": (observed or {}).get("verdict_basis", "l1_recheck_observation"),
+                        "why_detected": (observed or {}).get("why_detected") or note,
+                        "impact": (observed or {}).get("impact"),
+                        "caveat": (observed or {}).get(
+                            "caveat", "今回の確認では以前の条件を再現できませんでした。対象全体の安全性は未確認です。"),
+                        "what_was_established": observed.get("what_was_established") if observed else None,
+                        "verdict_note": note,
+                        "cookie_checks": (observed or {}).get("cookie_checks", []) if fid == "f_l1_cookies" else finding.get("cookie_checks"),
+                        "evidence": finding["evidence"] + ([ev_http] if ev_http else []),
+                    })
+                    continue
                 if fid == "f_headers":
                     remains = any(not h.get(k) for k in ("content-security-policy", "x-content-type-options", "strict-transport-security"))
                 elif fid == "f_powered":
                     remains = bool(h.get("x-powered-by"))
-                elif fid == "f_l1_cors":
-                    acao = h.get("access-control-allow-origin", "")
-                    remains = acao in ("*", "https://untrusted-origin.example")
                 else:
                     sc = " ".join((res or {}).get("set_cookies") or [h.get("set-cookie", "")]).lower()
                     remains = bool(sc.strip()) and any(flag not in sc for flag in ("secure", "httponly", "samesite"))
@@ -5245,17 +5277,24 @@ class AssessmentService:
         for p in s["phases"]:
             lines.append(f"- **{p['label']}**: {p['status']} {('— ' + p['detail']) if p['detail'] else ''}")
         lines.append("")
-        lines.append("## 2. 検出された問題と実証結果")
+        lines.append("## 2. 診断結果と実証状況")
         real_findings = [f for f in s["findings"] if not f.get("demo_fixture")]
         if not real_findings:
             lines.append("- 実環境の検出結果はまだありません（未診断または検査前）。")
         for f in real_findings:
+            reason_label = ("再確認の結果" if f["evidence_status"] == "not_reproduced" else
+                            "確認できなかった理由" if f["evidence_status"] == "incomplete" else
+                            "なぜ確認候補か" if f["evidence_status"] == "candidate" else
+                            "なぜ検出されたか")
+            reason_text = ((f.get("verdict_note") or f["summary"])
+                           if f["evidence_status"] in ("not_reproduced", "incomplete") else
+                           (f.get("why_detected") or f["summary"]))
             lines.extend([
                 f"### [{f['severity'].upper()}] {f['title']} ({EVIDENCE_LABELS[f['evidence_status']]})",
                 f"- **カテゴリ**: {f['category']} / **危険度**: {f['risk_level']}",
                 f"- **関連CVE**: {', '.join(f['cve']) if f['cve'] else 'なし'}",
                 f"- **概要**: {f['summary']}",
-                f"- **なぜ検出されたか**: {f.get('why_detected', '—')}",
+                f"- **{reason_label}**: {reason_text}",
                 f"- **成立内容 / 検証結果**: {f.get('what_was_established') or f.get('verdict_note') or f.get('caveat') or '—'}",
                 "- **証拠**:",
             ])
