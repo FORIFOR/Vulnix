@@ -209,6 +209,18 @@ jobs:
           VULNIX_NO_ENV_LOCAL=1 python3 -m scripts.bench_access_control > "$RUNNER_TEMP/access-control-comparison.json"
           test -s "$RUNNER_TEMP/access-control-comparison.json"
 
+      - name: Five-class blind evaluation from independent lab evidence
+        run: |
+          VULNIX_NO_ENV_LOCAL=1 python3 -m scripts.bench_cors_policy_precision > "$RUNNER_TEMP/cors-policy-comparison.json"
+          VULNIX_NO_ENV_LOCAL=1 python3 -m scripts.bench_cookie_purpose --current-only > "$RUNNER_TEMP/cookie-purpose-current.json"
+          VULNIX_NO_ENV_LOCAL=1 python3 -m scripts.bench_multiclass \
+            --cors-file "$RUNNER_TEMP/cors-policy-comparison.json" \
+            --cookie-file "$RUNNER_TEMP/cookie-purpose-current.json" \
+            --access-file "$RUNNER_TEMP/access-control-comparison.json" \
+            --status-file "$RUNNER_TEMP/status-exposure-comparison.json" \
+            > "$RUNNER_TEMP/multiclass-comparison.json"
+          test -s "$RUNNER_TEMP/multiclass-comparison.json"
+
       - name: Set up Node.js for the owned-site browser path
         uses: actions/setup-node@v4
         with:
@@ -243,6 +255,7 @@ jobs:
             ${{ runner.temp }}/artex-binary.sha256
             ${{ runner.temp }}/artex-gateway.forward.json
             ${{ runner.temp }}/artex-gateway.preview.json
+            ${{ runner.temp }}/multiclass-comparison.json
             ${{ runner.temp }}/status-exposure-comparison.json
             ${{ runner.temp }}/access-control-comparison.json
             ${{ runner.temp }}/real-artex-browser-flow.json
