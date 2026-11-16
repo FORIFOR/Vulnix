@@ -87,6 +87,7 @@ class TestIndependentCorsPolicyLab(unittest.TestCase):
                             self.assertEqual(bool(cors), expected)
                             if cors:
                                 self.assertEqual(cors[0]["evidence_status"], "detected")
+                                self.assertEqual(cors[0]["help_term"], "cors")
                                 self.assertTrue(cors[0]["evidence"][0]["audit_hash"])
                                 self.assertIn("Access-Control-Allow-Credentials: true",
                                               cors[0]["what_was_established"])

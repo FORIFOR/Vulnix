@@ -404,7 +404,7 @@ def analyze_l1_service_response(
                 "category": "CORS・オリジン境界",
                 "cve": [],
                 "risk_level": "L1",
-                "help_term": "security_headers",
+                "help_term": "cors",
                 "risk_score": r_score,
                 "risk_rationale": r_rat,
                 "summary": (

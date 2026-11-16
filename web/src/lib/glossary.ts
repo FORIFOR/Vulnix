@@ -30,6 +30,12 @@ export const GLOSSARY: Record<string, Term> = {
     detail: "Content-Security-Policy はスクリプトの読み込み元を制限し、Strict-Transport-Security はHTTPSを強制します。",
     expert: "単体で直接の侵害につながることは少なく、XSS等の被害軽減策として評価します。CSPは unsafe-inline の有無まで確認が必要です。",
   },
+  cors: {
+    title: "CORSの許可設定",
+    easy: "別のサイトから、ログイン状態を使って応答を読ませるかどうかの設定です。",
+    detail: "未信頼のサイトを資格情報付きで許可する応答設定を確認しました。実際に機密情報が読めたかは、この確認だけでは分かりません。",
+    expert: "Access-Control-Allow-Origin と Access-Control-Allow-Credentials の組合せを、送信した Origin に対する応答で評価します。情報漏えいの実証には保護対象の応答を別途検証する必要があります。",
+  },
   info_disclosure: {
     title: "情報露出",
     easy: "使っているソフトの種類やバージョンが外から見えてしまう状態です。",

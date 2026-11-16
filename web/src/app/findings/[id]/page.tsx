@@ -75,9 +75,9 @@ function Detail() {
       <Card>
         <h2 className="mb-1 text-sm font-semibold">何が危険か</h2>
         <p className="text-sm">{f.summary}</p>
-        {f.what_was_established && f.evidence_status === "proven" && (
-          <p className="mt-2 rounded-lg bg-red-50 p-2 text-sm dark:bg-red-950/30">
-            <span className="font-semibold">実証で成立したこと：</span>{f.what_was_established}
+        {f.what_was_established && (f.evidence_status === "detected" || f.evidence_status === "proven") && (
+          <p className={`mt-2 rounded-lg p-2 text-sm ${f.evidence_status === "proven" ? "bg-red-50 dark:bg-red-950/30" : "bg-sky-50 dark:bg-sky-950/30"}`}>
+            <span className="font-semibold">{f.evidence_status === "proven" ? "実証で成立したこと：" : "観測したこと："}</span>{f.what_was_established}
           </p>
         )}
         {f.verdict_note && <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">{f.verdict_note}</p>}
