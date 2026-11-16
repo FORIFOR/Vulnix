@@ -73,7 +73,7 @@ export function ArtexPlanPanel({ snap, onUpdate }: {
               : "bg-amber-100 text-amber-900 dark:bg-amber-900/50 dark:text-amber-100"}>
               {realSite ? `診断エンジン: ${plan.engine.label}` : plan.engine.label}
             </Pill>
-            {realSite && <span className="text-zinc-500">AIモデル: {plan.llm_model || "未記録"}</span>}
+            {realSite && <span className="text-zinc-500">AIモデル: {snap.plan_source?.model || "利用を確認できず"}</span>}
             {!realSite && plan.isolation && (
               <Pill className={plan.isolation.confined ? "bg-emerald-100 text-emerald-900 dark:bg-emerald-900/50 dark:text-emerald-100"
                 : "bg-red-100 text-red-900 dark:bg-red-900/50 dark:text-red-100"}>

@@ -86,6 +86,9 @@ class Assessment:
     activity: dict | None = None
     stop_report: dict | None = None
     chat_messages: list[dict] = field(default_factory=list)
+    # Display-only provenance of the most recent plan in this workspace.
+    # Executable ARTEX items are deliberately never restored after a restart.
+    plan_source: dict | None = None
     defense_comparison: dict | None = None
     # completed runs, newest first: {"at", "asset", "score", "label", "counts", "findings"}
     run_history: list[dict] = field(default_factory=list)
@@ -1477,6 +1480,7 @@ class AssessmentService:
                 "activity": self.a.activity,
                 "stop_report": self.a.stop_report,
                 "chat_messages": self.a.chat_messages,
+                "plan_source": self.a.plan_source,
                 "defense_comparison": self.a.defense_comparison,
                 "run_history": self.a.run_history,
                 "failure": self.a.failure,
@@ -1642,6 +1646,14 @@ class AssessmentService:
         self._state_had_ledger_flag = bool(data.get("authority_ledger"))
         if isinstance(data.get("chat_messages"), list):
             self.a.chat_messages = [dict(m) for m in data["chat_messages"] if isinstance(m, dict)]
+        source = data.get("plan_source")
+        if (isinstance(source, dict) and source.get("engine") in ("artex-binary", "unverified")
+                and type(source.get("pinned")) is bool
+                and (source.get("model") is None
+                     or (isinstance(source.get("model"), str) and len(source["model"]) <= 120))):
+            self.a.plan_source = {"engine": source["engine"],
+                                  "pinned": source["pinned"] if source["engine"] == "artex-binary" else False,
+                                  "model": source.get("model")}
         if isinstance(data.get("stop_report"), dict):
             self.a.stop_report = dict(data["stop_report"])
         if isinstance(data.get("defense_comparison"), dict):
@@ -1927,12 +1939,30 @@ class AssessmentService:
                 "advisories": [{"intent_id": a.intent_id, "summary": clean_target_text(a.intent_summary, 500),
                                 "reason": a.reason} for a in rec.advisories],
             }
-        self.audit.record("artex.plan_received", actor=actor, run_id=run_id, engine_kind=prov.get("kind"),
-                          engine_pinned=bool(prov.get("pinned")), engine_sha256=prov.get("sha256"),
-                          artex_commit=prov.get("artex_commit"), intents=len(run.intents), items=len(rec.items),
-                          advisories=len(rec.advisories), denied_tool_calls=len(run.denied_tool_calls))
-        for a in rec.advisories:
-            self.audit.record("artex.intent_advisory", run_id=run_id, intent=a.intent_id, reason=a.reason)
+        try:
+            self.audit.record("artex.plan_received", actor=actor, run_id=run_id, engine_kind=prov.get("kind"),
+                              engine_pinned=bool(prov.get("pinned")), engine_sha256=prov.get("sha256"),
+                              artex_commit=prov.get("artex_commit"), intents=len(run.intents), items=len(rec.items),
+                              advisories=len(rec.advisories), denied_tool_calls=len(run.denied_tool_calls))
+            for a in rec.advisories:
+                self.audit.record("artex.intent_advisory", run_id=run_id, intent=a.intent_id, reason=a.reason)
+        except Exception:
+            with self._lock:
+                if (self._artex_plan or {}).get("run_id") == run_id:
+                    self._artex_plan = None
+                    self._artex_items = {}
+                    self.artex.tasks = [task for task in self.artex.tasks if task.phase != "artex"]
+            raise
+        model_report = gateway.report() if gateway is not None else {}
+        used_model = (model_report.get("model") if model_report.get("mode") == "forward"
+                      and model_report.get("calls", 0) > 0 and not model_report.get("failed") else None)
+        with self._lock:
+            if gen != self._run_generation or (self._artex_plan or {}).get("run_id") != run_id:
+                raise ValueError("停止またはリセットされたため、ARTEX 計画を破棄しました")
+            self.a.plan_source = {"engine": kind, "pinned": bool(prov.get("pinned")),
+                                  "model": str(used_model)[:120] if used_model else None}
+            if self.a.state != "running":
+                self._save_state_locked()
         self.bus.publish(self.a.id, "artex.plan", artex_plan=self.artex_plan_view())
         return self.snapshot()
 
@@ -3211,6 +3241,7 @@ class AssessmentService:
         # an ARTEX plan belongs to the workspace it was made in
         self._artex_items = {}
         self._artex_plan = None
+        self.a.plan_source = None
         self._set_state("stopped" if stays_stopped else "idle")
 
     def planner_status(self) -> dict:
@@ -3269,6 +3300,7 @@ class AssessmentService:
                 "lab_endpoint": self.a.target_url if is_ext else f"127.0.0.1:{self.lab_port}",
                 "planner": self.planner_status(),
                 "artex_plan": self.artex_plan_view(),
+                "plan_source": dict(self.a.plan_source) if self.a.plan_source else None,
                 "secrets_status": self.secrets_status(),
                 "prohibited_actions": PROHIBITED_ACTIONS_SUMMARY,
                 "evidence_summary": evidence_summary(list(self.a.findings.values())),

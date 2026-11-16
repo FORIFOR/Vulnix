@@ -268,6 +268,39 @@ class ServiceBase(unittest.TestCase):
 
 
 class TestThePlanThroughTheGateway(ServiceBase):
+    def test_failed_plan_audit_cannot_leave_an_executable_or_attributed_plan(self):
+        original = self.svc.audit.record
+
+        def fail_receipt(event, **fields):
+            if event == "artex.plan_received":
+                raise OSError("audit unavailable")
+            return original(event, **fields)
+
+        with patch.object(self.svc.audit, "record", side_effect=fail_receipt):
+            with self.assertRaises(OSError):
+                self.plan()
+        snap = self.svc.snapshot()
+        self.assertIsNone(snap["plan_source"])
+        self.assertIsNone(snap["artex_plan"]["plan"])
+        self.assertFalse(self.svc._artex_items)
+
+    def test_plan_origin_survives_reopen_without_restoring_executable_items(self):
+        plan = self.plan()
+        source = self.svc.snapshot()["plan_source"]
+        self.assertEqual(source["engine"], plan["engine"]["kind"])
+        self.assertFalse(source["pinned"])
+        self.assertIsNone(source["model"])
+        reopened = AssessmentService(Path(self.tmp.name), LAB_PORT, l2_confinement=TEST_CONFINEMENT,
+                                     verify_seconds=0.1)
+        try:
+            self.assertEqual(reopened.snapshot()["plan_source"], source)
+            self.assertIsNone(reopened.artex_plan_view()["plan"])
+            with reopened._lock:
+                reopened._reset_workspace_locked()
+            self.assertIsNone(reopened.snapshot()["plan_source"])
+        finally:
+            reopened.close()
+
     def test_initial_owned_scan_plans_after_signed_root_without_extra_get(self):
         from aegis import assessment as assessment_module
         from tests.test_real_service import FakeService, HOST
@@ -1722,6 +1755,15 @@ class TestRealArtexThroughThePlannerGateway(TestRealArtexPlanner):
         self.assertGreaterEqual(gw["calls"], 2)
         self.assertTrue(self.mock.requests)
         self.assertTrue(all(r["body"].get("model") == "gateway-forced-model" for r in self.mock.requests))
+        self.assertEqual(self.svc.snapshot()["plan_source"],
+                         {"engine": "artex-binary", "pinned": True, "model": "gateway-forced-model"})
+        reopened = AssessmentService(Path(self.tmp.name), LAB_PORT, l2_confinement=TEST_CONFINEMENT,
+                                     verify_seconds=0.1)
+        try:
+            self.assertEqual(reopened.snapshot()["plan_source"], self.svc.snapshot()["plan_source"])
+            self.assertIsNone(reopened.artex_plan_view()["plan"])
+        finally:
+            reopened.close()
         self.assertEqual({i["catalog_id"] for i in plan["items"]}, {"l2_sqli", "l2_idor", "l1_http_probe"})
         # the plan still goes through the Vulnix Gateway: L1 once, L2 approver only
         self.svc.execute_artex_item(self.item(plan, "l1_http_probe")["id"], "op", roles=("operator",))
