@@ -63,8 +63,10 @@ class TestCookiePurposeLab(unittest.TestCase):
                         item = next(i for i in rerun["defense_comparison"]["items"]
                                     if i["id"] == "f_l1_cookies")
                         self.assertEqual(item["after_verdict"], "not_reproduced")
-                        self.assertEqual(next(f for f in rerun["findings"] if f["id"] == "f_l1_cookies")
-                                         ["cookie_checks"], [])
+                        current = next(f for f in rerun["findings"] if f["id"] == "f_l1_cookies")
+                        self.assertEqual(current["cookie_checks"], [])
+                        self.assertEqual(current["risk_score"], 0)
+                        self.assertIsNone(current["why_detected"])
                         lab.mode = "session_like_unknown"
                         rerun = svc.verify_fix("approver")
                         item = next(i for i in rerun["defense_comparison"]["items"]

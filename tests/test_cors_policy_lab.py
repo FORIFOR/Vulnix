@@ -133,6 +133,10 @@ class TestIndependentCorsPolicyLab(unittest.TestCase):
                     item = next(i for i in rerun["defense_comparison"]["items"]
                                 if i["id"] == "f_l1_cors")
                     self.assertEqual(item["after_verdict"], "not_reproduced")
+                    current = next(f for f in rerun["findings"] if f["id"] == "f_l1_cors")
+                    self.assertEqual(current["risk_score"], 0)
+                    self.assertIsNone(current["why_detected"])
+                    self.assertEqual(current["summary"], current["verdict_note"])
                     self.assertEqual(site.seen, ["/", "/"])
                 finally:
                     svc.close()

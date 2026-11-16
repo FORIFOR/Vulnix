@@ -53,7 +53,7 @@ from .runtime import WorkerPool
 from .secrets_store import EncryptedSecretStore
 from .l2_rules import BUILTIN_PROFILE_DIR, L2RuleSet, site_profile_dirs
 from .service_diag import (analyze_l1_service_response, analyze_status_marker_report,
-                           build_l2_candidates, clean_target_text)
+                           build_l2_candidates, clean_target_text, compute_finding_risk_score)
 from .google_ownership import METHOD as GOOGLE_METHOD, covering_property
 
 SEVERITY_WEIGHT = {"critical": 40, "high": 25, "medium": 10, "low": 3, "info": 0}
@@ -4079,10 +4079,21 @@ class AssessmentService:
                     note = (observed["verdict_note"] if observed and observed.get("verdict_note") else
                             observed["what_was_established"] if observed and observed.get("what_was_established") else
                             "最新のHTTP応答では、以前の設定不備を再現できませんでした。")
+                    risk_score, risk_rationale = compute_finding_risk_score(
+                        finding["severity"], verdict,
+                        internet_facing=urllib.parse.urlsplit(url).scheme == "https",
+                    )
                     latest_ids[fid] = ev_http["evidence_id"] if ev_http else None
                     self._upsert_finding({
                         **finding, **(observed or {}), "verdict": verdict,
                         "summary": (observed or {}).get("summary", note),
+                        "risk_score": (observed or {}).get("risk_score", risk_score),
+                        "risk_rationale": (observed or {}).get("risk_rationale", risk_rationale),
+                        "verdict_basis": (observed or {}).get("verdict_basis", "l1_recheck_observation"),
+                        "why_detected": (observed or {}).get("why_detected"),
+                        "impact": (observed or {}).get("impact"),
+                        "caveat": (observed or {}).get(
+                            "caveat", "今回の確認では以前の条件を再現できませんでした。対象全体の安全性は未確認です。"),
                         "what_was_established": observed.get("what_was_established") if observed else None,
                         "verdict_note": note,
                         "cookie_checks": (observed or {}).get("cookie_checks", []) if fid == "f_l1_cookies" else finding.get("cookie_checks"),
