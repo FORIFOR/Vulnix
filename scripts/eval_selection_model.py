@@ -9,9 +9,8 @@ import json
 from pathlib import Path
 
 from aegis.planner_llm_gateway import Budget, PlannerLLMGateway
-from tests.fixtures.access_control_lab import ACCOUNT_SURFACE
-
 FIXTURES = Path(__file__).resolve().parents[1] / "tests" / "fixtures"
+MEASUREMENTS = Path(__file__).resolve().parents[1] / "docs" / "ACCESS_CONTROL_BLIND_REAL_ARTEX.json"
 MODEL = "abliterated-model"
 SYSTEM = (
     "You are choosing whether an isolated, authorized lab should run one read-only "
@@ -26,13 +25,16 @@ SYSTEM = (
 def build_request() -> tuple[dict, dict[str, str]]:
     owners = json.loads((FIXTURES / "access_control_owner_specs.json").read_text(encoding="utf-8"))
     truth = json.loads((FIXTURES / "access_control_truth.json").read_text(encoding="utf-8"))
-    if set(owners) != set(truth):
-        raise ValueError("owner and independent truth cases differ")
+    recorded = json.loads(MEASUREMENTS.read_text(encoding="utf-8"))["adaptive_plan"]
+    observed = {row["mode"]: row["observed_account_link"] for row in recorded}
+    if len(observed) != len(recorded) or set(owners) != set(truth) or set(owners) != set(observed) \
+            or any(type(value) is not bool for value in observed.values()):
+        raise ValueError("owner, independent truth and measured cases differ")
     mapping = {f"C{i:02d}": mode for i, mode in enumerate(sorted(owners), 1)}
     cases = [{"id": case_id,
               "root_access_requirement": owners[mode]["root_requirement"],
               "account_resource_requirement": owners[mode]["account_resource_requirement"],
-              "account_resource_link_observed": mode in ACCOUNT_SURFACE}
+              "account_resource_link_observed": observed[mode]}
              for case_id, mode in mapping.items()]
     request = {"model": MODEL,
                "messages": [{"role": "system", "content": SYSTEM},
