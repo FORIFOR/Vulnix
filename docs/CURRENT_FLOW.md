@@ -57,6 +57,8 @@ flowchart LR
 | P21 | Cookie用途と応答属性の照合 | 管理者承認済みサイトプロファイル `cookie_policy` → `_analyze` → `analyze_l1_service_response` | `test_cookie_purpose_lab.py`, `bench_cookie_purpose.py`。独立10条件の1分類。用途不明は`candidate`、既知の一般用途はセッション所見にしない。新しい対象通信なし |
 | P22 | 混在Cookieの個別表示とHTTPS実測 | `analyze_l1_service_response` → `cookie_checks` → `FindingCard`/詳細画面。ローカルHTTPSサーバー→Chromium | `test_cookie_purpose_lab.py`, `cookieChecks.test.mjs`, `check_cookie_ui_390.py`, `check_cookie_https.py`。認証用・一般用途・用途不明を別表示し、Cookie値は表示しない。HTTPS6条件でブラウザ属性と判定を照合。対象通信はループバックだけ |
 | P23 | 5分類の独立ラボ採点 | 既存のCORS・Cookie・認証/IDOR・ApacheラボJSON → `bench_multiclass.py` → 分類別指標とMacro平均 | `test_multiclass_macro.py`, `MULTICLASS_BLIND_LAB.md`。比較不能な分類はARTEX欄を空欄とし、Precision未定義を除外して分母を記録。CIでは既存の実ARTEX測定JSONを再利用 |
+| P24 | 修正後のCORS・Cookie再確認 | `verify_fix` → `_verify_fix_body` → 初回と同じ `analyze_l1_service_response` → 証拠付き比較 | `test_cors_policy_lab.py`, `test_cookie_purpose_lab.py`。公開ワイルドカードや一般Cookieを再検出せず、用途不明は`candidate`。対象への再GETはGateway・Workerと既存権限の確認を通る。公開βの読み取り専用実サイトでは実行不可 |
+| P25 | 初期観測後の追加検査省略 | `_run_inner` → `safe_public_fingerprint` → 署名済み追加GET同意・根拠確認 → `artex.initial_skipped` またはP09/P10 | `test_real_service.py`, `test_status_exposure_lab.py`, `bench_initial_extra_selection.py`, `INITIAL_EXTRA_SELECTION.md`。現行実サイトカタログの追加L1はApache `mod_status`だけ。CORS・Cookieの15条件で無駄な計画を削減。AI自身の判断力の証明ではない |
 
 ## 時系列と異常系
 
@@ -105,6 +107,8 @@ ARTEX中・Worker中の停止、所有取消、期限切れ、IP変更はP13が�
 P17は診断フローの外にある固定入力の評価であり、モデル出力をP10の実行へ接続しない。P18のIDOR `proven` は所有者側の対照GETと別アカウントからのGETを要し、実サイトL2では実行しない。P19の表示はバックエンド判定を超えた脆弱性の断定をしない。P20の6条件は独立した追加測定であり、P17の承認済み14条件の入力ハッシュに含めない。
 
 P21は初回GETに含まれる`Set-Cookie`だけを評価し、追加GETを発生させない。サイトプロファイルの内容が変わった場合は従来の管理者によるハッシュ承認が必要で、未承認の用途情報は検出判定に使わない。Cookie名・属性・所有者仕様をARTEXや外部AIへ追加送信しない。
+
+P24は再GETの観測を初回と同じ判定器へ渡す。P25はP09の起動前に追加検査の適用可能性と同意を確認するだけであり、実行直前のGatewayによる再審査を省かない。現行カタログで有益な追加L1がない場合はモデルを起動せず、初回所見と監査を残す。
 
 | 外部通信先 | 発生条件・境界 |
 |---|---|
@@ -198,3 +202,4 @@ flowchart LR
 7. P21のCookie用途10条件は固定L1のTP/FP/FN/TNが3/4/1/2、所有者仕様を用いた修正後は4/0/0/6だった。これも1分類の小さなラボであり、実HTTPSのWorker経路・ARTEX選択・実サイト精度は残る。
 8. P22では混在Cookieを個別に保持し、390pxのChromiumで画面部品の表示を確認した。ループバックHTTPS6条件でも属性保存・`document.cookie`と診断判定の一致を確認した。公開βの画面通し操作や実HTTPSのGateway/Worker経路は残る。
 9. P23では5分類を同じTP/FP/FN/TN定義で採点し、分類ごとの条件数とMacro平均の分母を示す。CORS・CookieのARTEX欄は未評価のまま保ち、実ARTEX+模擬モデルと実Abliteration AIを混同しない。
+10. P24は修正後再確認で初回診断より弱いCORS・Cookie基準を使っていた回帰を修正した。P25はCORS・CookieのローカルHTTPS15条件で一律ARTEXの不要な提案15件・計画起動15回を省いた。対象GETとWorker起動は15回のまま、判定一致も15/15を維持した。実ARTEXとローカル模擬モデルの代表条件はLinux CIで別途測る。
