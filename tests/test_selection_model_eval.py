@@ -44,6 +44,8 @@ class TestSelectionModelEval(unittest.TestCase):
         report = evaluation.run_preview()
         self.assertEqual(report["gateway"]["mode"], "preview")
         self.assertEqual(report["gateway"]["calls"], 1)
+        self.assertEqual(report["gateway"]["first_request_sha256"],
+                         "52c4598a8c7563a3dc9e9d4a61c89bd6157a0e2bb0faa98a5f015c03931e6c62")
         self.assertEqual(report["gateway"]["budget"]["max_cost_usd"], 0.01)
         self.assertEqual(report["gateway"]["refused"], 0)
         self.assertEqual(report["paid_model_cost_usd"], 0)
