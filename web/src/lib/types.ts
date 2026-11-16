@@ -44,6 +44,7 @@ export interface Finding {
   what_was_established?: string;
   why_detected?: string;
   caveat?: string;
+  cookie_checks?: { name: string; purpose: "session" | "non_session" | "unknown"; verdict: "detected" | "candidate" | "none"; gaps: string[] }[];
   verdict_note?: string;
   evidence: Evidence[];
   remediation: { steps: string[]; how_to_verify: string };

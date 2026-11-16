@@ -362,12 +362,16 @@ def analyze_l1_service_response(
     # 3. Cookie Secure, HttpOnly, SameSite
     insecure_cookies: list[str] = []
     candidate_cookies: list[str] = []
+    cookie_checks: list[dict] = []
     policy_confirmed = bool(cookie_policy and cookie_policy.get("status") == "confirmed"
                             and cookie_policy.get("evidence"))
     for raw_cookie in set_cookies:
         cookie_name = raw_cookie.split("=", 1)[0].strip()[:64] or "cookie"
         if policy_confirmed and cookie_name in cookie_policy["non_session"]:
+            cookie_checks.append({"name": cookie_name, "purpose": "non_session",
+                                  "verdict": "none", "gaps": []})
             continue
+        session_cookie = bool(policy_confirmed and cookie_name in cookie_policy["session"])
         # attributes are the ";"-separated parts AFTER name=value; a cookie name or
         # value that merely contains the word "secure" does not count
         attrs = {}
@@ -383,25 +387,38 @@ def analyze_l1_service_response(
             missing_flags.append("Secure")
         if "httponly" not in attrs:
             missing_flags.append("HttpOnly")
-        expected_same_site = (cookie_policy["same_site"] if policy_confirmed
-                              and cookie_name in cookie_policy["session"] else None)
+        expected_same_site = cookie_policy["same_site"] if session_cookie else None
         if expected_same_site:
             acceptable = {"Lax", "Strict"} if expected_same_site == "Lax" else {expected_same_site}
             if attrs.get("samesite", "").capitalize() not in acceptable:
                 missing_flags.append(f"SameSite={expected_same_site}")
         elif "samesite" not in attrs:
             missing_flags.append("SameSite")
-        if missing_flags:
+        if missing_flags or ambiguous:
+            if ambiguous:
+                missing_flags.append("属性の重複・不一致")
             detail = f"{cookie_name} (未設定・不一致: {'/'.join(missing_flags)})"
-            if policy_confirmed and cookie_name in cookie_policy["session"] and not ambiguous:
+            if session_cookie and not ambiguous:
                 insecure_cookies.append(detail)
+                item_verdict = "detected"
             else:
                 candidate_cookies.append(detail)
+                item_verdict = "candidate"
+            cookie_checks.append({"name": cookie_name,
+                                  "purpose": "session" if session_cookie else "unknown",
+                                  "verdict": item_verdict, "gaps": missing_flags})
+        else:
+            cookie_checks.append({"name": cookie_name,
+                                  "purpose": "session" if session_cookie else "unknown",
+                                  "verdict": "none", "gaps": []})
 
     if insecure_cookies or candidate_cookies:
         detected = bool(insecure_cookies)
         verdict = "detected" if detected else "candidate"
-        described = insecure_cookies + candidate_cookies
+        described = "; ".join(filter(None, [
+            f"確認済みの属性不足・不一致: {'; '.join(insecure_cookies)}" if insecure_cookies else "",
+            f"用途・属性が未確認: {'; '.join(candidate_cookies)}" if candidate_cookies else "",
+        ]))
         r_score, r_rat = compute_finding_risk_score(
             "medium", verdict, internet_facing=is_https
         )
@@ -419,7 +436,8 @@ def analyze_l1_service_response(
                 "help_term": "security_headers",
                 "risk_score": r_score,
                 "risk_rationale": r_rat,
-                "summary": f"Set-Cookie の属性を観測しました: {'; '.join(described)}",
+                "summary": f"Set-Cookie の属性を観測しました: {described}",
+                "cookie_checks": cookie_checks,
                 "why_detected": ("承認済み所有者仕様で認証セッション用途を確認し、応答属性との不一致を観測しました。"
                                  if detected else "属性不足を観測しましたが、認証セッション用途は確認できていません。"),
                 "what_was_established": (f"認証セッションCookieの保護属性不足・仕様不一致（{'; '.join(insecure_cookies)}）を観測しました。"

@@ -26,4 +26,10 @@
 | Worker起動 / AI呼び出し / 有料費用 | 0 / 0 / US$0 | 0 / 0 / US$0 |
 | 診断関数の合計時間（単発） | 1.495ms | 0.843ms |
 
-時間は単発測定で高速化の証拠ではない。ラボへの取得はHTTPループバックで、Secure属性の評価にはHTTPSの対象URL条件を診断関数へ与えた。実HTTPS、Gateway・Workerを通したCookie測定、実サイト、ARTEXの検査選択、実Abliteration AIの品質はこのラボでは未検証である。既存の所有確認・範囲・組織分離・停止の制御は変更していない。
+時間は単発測定で高速化の証拠ではない。この10条件ラボへの取得はHTTPループバックで、Secure属性の評価にはHTTPSの対象URL条件を診断関数へ与えた。後述のローカルHTTPS検証を除き、Gateway・Workerを通したHTTPS Cookie測定、実サイト、ARTEXの検査選択、実Abliteration AIの品質は未検証である。既存の所有確認・範囲・組織分離・停止の制御は変更していない。
+
+## 続く検証：混在応答とローカルHTTPS
+
+認証Cookie、所有者仕様で一般用途と確認されたCookie、用途不明のCookieが同じ応答にある場合、`cookie_checks` に名前・用途・個別判定・不足属性を保存する。Cookie値は保存・表示しない。結果カードと詳細画面で個別判定を示す。実際の画面部品を本番ビルドのCSSとともに390pxのChromiumで表示し、3件の表示と横スクロールなしを確認した（`VULNIX_NO_ENV_LOCAL=1 python3 -m scripts.check_cookie_ui_390`）。これは部品の表示検証であり、公開βのログインから結果表示までの通し検証ではない。
+
+`VULNIX_NO_ENV_LOCAL=1 python3 -m scripts.check_cookie_https` は一時的な証明書を作り、ループバックHTTPS対象の応答を390pxのChromiumで各1 GET取得する。6条件すべてでL1判定と独立ラベルが一致した。HttpOnlyがあるCookieは `document.cookie` に出ず、ないCookieは出た。SecureとSameSiteの保存値も応答属性と一致した。SameSiteを省いた場合、ブラウザの保存値は既定のLaxだが、所有者仕様が要求する明示属性は応答にないため `detected` を維持する。実サイト、実HTTPSの隔離Worker経路、クロスサイト送信によるCSRF成立は未検証である。

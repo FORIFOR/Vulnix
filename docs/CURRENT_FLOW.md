@@ -1,6 +1,6 @@
 # 現行開発コードの処理系統
 
-この文書はDraft PR #53〜#72と本ブランチを依存順に重ねた開発コードの経路を示す。公開βへ反映済みという意味ではない。APIと関数の基礎的な静的列挙は[PROCESS_INVENTORY.json](PROCESS_INVENTORY.json)、履歴と重複候補は[PROCESS_AUDIT.md](PROCESS_AUDIT.md)、同一ラボ測定は[STATUS_EXPOSURE_INTEGRATION.md](STATUS_EXPOSURE_INTEGRATION.md)。後続の検査選択評価は[ACCESS_CONTROL_BLIND_LAB.md](ACCESS_CONTROL_BLIND_LAB.md)、HTTP 200認証拒否の再測定は[AUTH_RESPONSE_LAB.md](AUTH_RESPONSE_LAB.md)、Cookie用途の再測定は[COOKIE_PURPOSE_LAB.md](COOKIE_PURPOSE_LAB.md)に分離した。静的列挙は後続PRのスクリプトまで網羅せず、動的URLや実行時設定も解決できないため、P17〜P21をコードと照合して追記した。
+この文書はDraft PR #53〜#73と本ブランチを依存順に重ねた開発コードの経路を示す。公開βへ反映済みという意味ではない。APIと関数の基礎的な静的列挙は[PROCESS_INVENTORY.json](PROCESS_INVENTORY.json)、履歴と重複候補は[PROCESS_AUDIT.md](PROCESS_AUDIT.md)、同一ラボ測定は[STATUS_EXPOSURE_INTEGRATION.md](STATUS_EXPOSURE_INTEGRATION.md)。後続の検査選択評価は[ACCESS_CONTROL_BLIND_LAB.md](ACCESS_CONTROL_BLIND_LAB.md)、HTTP 200認証拒否の再測定は[AUTH_RESPONSE_LAB.md](AUTH_RESPONSE_LAB.md)、Cookie用途の再測定は[COOKIE_PURPOSE_LAB.md](COOKIE_PURPOSE_LAB.md)に分離した。静的列挙は後続PRのスクリプトまで網羅せず、動的URLや実行時設定も解決できないため、P17〜P22をコードと照合して追記した。
 
 この累積コードとmainは異なる。PR #63以降はDraft・未マージで、#68の実Abliteration AI評価は鍵がないため未実行。公開βの実DNS所有確認・実サイト診断も未実証。以下の動作証拠は、明記がなければ隔離した模擬対象による。
 
@@ -55,6 +55,7 @@ flowchart LR
 | P19 | IDOR・CORSの結果表示と競合制御 | `idorEvidence.ts`、`FindingLearningCard`、`FindingCard`、`useAssessment`、`polling.ts` | Webユニットテストと390px模擬ブラウザ。IDORの取得断定には対照証拠とbackend `proven` が必要。古い401/403で新しい画面を消さない |
 | P20 | HTTP 200の認証拒否JSON | `analyze_l1_service_response` → `_auth_error_only` | `test_auth_response_lab.py`。6条件でGateway/Worker各6回、対象GET6回。本文全体と限定した拒否文言が確認できた場合だけ`candidate`へ下げる |
 | P21 | Cookie用途と応答属性の照合 | 管理者承認済みサイトプロファイル `cookie_policy` → `_analyze` → `analyze_l1_service_response` | `test_cookie_purpose_lab.py`, `bench_cookie_purpose.py`。独立10条件の1分類。用途不明は`candidate`、既知の一般用途はセッション所見にしない。新しい対象通信なし |
+| P22 | 混在Cookieの個別表示とHTTPS実測 | `analyze_l1_service_response` → `cookie_checks` → `FindingCard`/詳細画面。ローカルHTTPSサーバー→Chromium | `test_cookie_purpose_lab.py`, `cookieChecks.test.mjs`, `check_cookie_ui_390.py`, `check_cookie_https.py`。認証用・一般用途・用途不明を別表示し、Cookie値は表示しない。HTTPS6条件でブラウザ属性と判定を照合。対象通信はループバックだけ |
 
 ## 時系列と異常系
 
@@ -194,3 +195,4 @@ flowchart LR
 5. P17の承認済み1回は固定要求のハッシュ、費用上限、鍵、二重送信防止を送信直前に照合する。鍵が利用できない間は実Abliteration AIのJSON採用率・TP/FP/FN/TN・実費用を未測定とし、固定規則の成績を実モデル性能に流用しない。
 6. P18の14条件では、ローカル模擬モデルで一律提案から観測選択へ移ると不要な検査が6→1件、対象GETが34→29回だった一方、実ARTEX経路の推定トークンは104,174→139,338へ増加した。実AIの選択能力・複数分類の精度には一般化しない。P20の6条件はHTTP 200認証拒否によるFPを3→0件に減らしたが、ARTEX選択や実サイトの診断範囲は増やしていない。
 7. P21のCookie用途10条件は固定L1のTP/FP/FN/TNが3/4/1/2、所有者仕様を用いた修正後は4/0/0/6だった。これも1分類の小さなラボであり、実HTTPSのWorker経路・ARTEX選択・実サイト精度は残る。
+8. P22では混在Cookieを個別に保持し、390pxのChromiumで画面部品の表示を確認した。ループバックHTTPS6条件でも属性保存・`document.cookie`と診断判定の一致を確認した。公開βの画面通し操作や実HTTPSのGateway/Worker経路は残る。
