@@ -4,7 +4,7 @@
 // than what we have; duplicates are dropped and a gap triggers a full refetch,
 // so the screen always converges on server state.
 import { useCallback, useEffect, useRef, useState, type SetStateAction } from "react";
-import { heartbeatDecision, needsPoll, POLL_EVERY_MS } from "./polling";
+import { heartbeatDecision, needsAuthoritativeRefresh, needsPoll, POLL_EVERY_MS, shouldApplySnapshot } from "./polling";
 import { getJSON } from "./api";
 import { applyEvent, withNewerPlanner } from "./assessmentEvents";
 import type { AegisEvent, AuditEntry, Snapshot } from "./types";
@@ -23,6 +23,7 @@ export function useAssessment(id: string) {
   const [chainValid, setChainValid] = useState<boolean | null>(null);
   const [notes, setNotes] = useState<AegisEvent[]>([]);
   const seqRef = useRef(0);
+  const lastSnapshotAtRef = useRef(0);
   const auditHashes = useRef(new Set<string>());
   const lastHashRef = useRef<string | null>(null);
   const verifyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -33,7 +34,14 @@ export function useAssessment(id: string) {
         getJSON<Snapshot>(`/api/assessments/${id}`),
         getJSON<{ entries: AuditEntry[]; chain_valid: boolean }>(`/api/assessments/${id}/logs`),
       ]);
+      if (!shouldApplySnapshot(s.last_seq, seqRef.current)) {
+        // An SSE event arrived while the request was in flight. Keep its
+        // newer state and try another authoritative read on the next tick.
+        lastSnapshotAtRef.current = 0;
+        return null;
+      }
       seqRef.current = Math.max(seqRef.current, s.last_seq);
+      lastSnapshotAtRef.current = Date.now();
       setSnap(s);
       auditHashes.current = new Set(logs.entries.map((e) => e.hash));
       lastHashRef.current = logs.entries.at(-1)?.hash ?? null;
@@ -67,9 +75,13 @@ export function useAssessment(id: string) {
     let es: EventSource | null = null;
     let cancelled = false;
     let lastEventAt = Date.now();
+    lastSnapshotAtRef.current = lastEventAt;
     // backup for paths that hold event streams back (e.g. Cloudflare Quick Tunnels)
     const poll = setInterval(() => {
-      if (needsPoll(lastEventAt, Date.now(), document.visibilityState === "visible")) {
+      const now = Date.now();
+      const visible = document.visibilityState === "visible";
+      if (needsPoll(lastEventAt, now, visible) ||
+          needsAuthoritativeRefresh(lastSnapshotAtRef.current, now, visible)) {
         lastEventAt = Date.now();
         void refetch();
       }

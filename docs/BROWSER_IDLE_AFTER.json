@@ -33,9 +33,10 @@
     "system/status",
     "system/status"
   ],
-  "elapsed_start_to_visible_finding_s": 0.951,
+  "elapsed_start_to_visible_finding_s": 0.924,
   "idle_seconds": 24.0,
   "idle_api_requests": 6,
+  "sse_blocked": false,
   "target_paths": [
     "/",
     "/server-status?auto"

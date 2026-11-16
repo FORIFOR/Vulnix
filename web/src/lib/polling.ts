@@ -4,9 +4,23 @@
 
 export const QUIET_MS = 6000;
 export const POLL_EVERY_MS = 4000;
+export const MAX_SNAPSHOT_AGE_MS = 30000;
 
 export function needsPoll(lastEventAt: number, now: number, visible: boolean, quietMs: number = QUIET_MS): boolean {
   return visible && now - lastEventAt >= quietMs;
+}
+
+// A live heartbeat proves that the SSE transport is moving, but it cannot
+// prove that every state mutation was published to the event bus. Bound how
+// long the visible screen can rely on events alone.
+export function needsAuthoritativeRefresh(
+  lastSnapshotAt: number, now: number, visible: boolean, maxAgeMs: number = MAX_SNAPSHOT_AGE_MS,
+): boolean {
+  return visible && now - lastSnapshotAt >= maxAgeMs;
+}
+
+export function shouldApplySnapshot(snapshotSeq: number, seenSeq: number): boolean {
+  return Number.isSafeInteger(snapshotSeq) && snapshotSeq >= seenSeq;
 }
 
 // A heartbeat is useful only if it covers every event the browser has seen.
