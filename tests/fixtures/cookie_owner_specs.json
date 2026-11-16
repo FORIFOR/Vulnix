@@ -1,0 +1,12 @@
+{
+  "language_plain": {"status": "confirmed", "session": ["auth"], "non_session": ["lang", "theme", "csrf"], "same_site": "Lax", "evidence": ["owner cookie contract v1"]},
+  "theme_plain": {"status": "confirmed", "session": ["auth"], "non_session": ["lang", "theme", "csrf"], "same_site": "Lax", "evidence": ["owner cookie contract v1"]},
+  "csrf_js_readable": {"status": "confirmed", "session": ["auth"], "non_session": ["lang", "theme", "csrf"], "same_site": "Lax", "evidence": ["owner cookie contract v1"]},
+  "session_no_httponly": {"status": "confirmed", "session": ["auth"], "non_session": ["lang", "theme", "csrf"], "same_site": "Lax", "evidence": ["owner cookie contract v1"]},
+  "session_no_secure": {"status": "confirmed", "session": ["auth"], "non_session": ["lang", "theme", "csrf"], "same_site": "Lax", "evidence": ["owner cookie contract v1"]},
+  "session_no_samesite": {"status": "confirmed", "session": ["auth"], "non_session": ["lang", "theme", "csrf"], "same_site": "Lax", "evidence": ["owner cookie contract v1"]},
+  "session_full": {"status": "confirmed", "session": ["auth"], "non_session": ["lang", "theme", "csrf"], "same_site": "Lax", "evidence": ["owner cookie contract v1"]},
+  "session_samesite_none_mismatch": {"status": "confirmed", "session": ["auth"], "non_session": ["lang", "theme", "csrf"], "same_site": "Lax", "evidence": ["owner cookie contract v1"]},
+  "session_samesite_none_policy": {"status": "confirmed", "session": ["auth"], "non_session": ["lang", "theme", "csrf"], "same_site": "None", "evidence": ["owner cookie contract v2"]},
+  "session_like_unknown": {"status": "placeholder", "session": [], "non_session": [], "same_site": "Lax", "evidence": []}
+}

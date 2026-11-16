@@ -1078,10 +1078,14 @@ class TestL1Diagnosis(RealServiceBase):
         self.assertEqual([p for p, _ in self.fake.seen], ["/"])
         self.assertIsNone(self.fake.seen[0][1])
         by_id = {f["id"]: f for f in snap["findings"]}
-        for fid in ("f_headers", "f_l1_cookies", "f_l1_cors", "f_powered"):
+        for fid in ("f_headers", "f_l1_cors", "f_powered"):
             self.assertIn(fid, by_id)
             self.assertIn(by_id[fid]["evidence_status"], ("proven", "detected"))
             self.assertTrue(by_id[fid]["evidence"][0]["audit_hash"])
+        # This site has not supplied an accepted session-cookie purpose spec.
+        # Missing flags alone are observable, but cannot establish session risk.
+        self.assertEqual(by_id["f_l1_cookies"]["evidence_status"], "candidate")
+        self.assertTrue(by_id["f_l1_cookies"]["evidence"][0]["audit_hash"])
         # A JSON 200 at the root has no independent protected-scope evidence.
         self.assertEqual(by_id["f_l1_unauth_api"]["evidence_status"], "candidate")
         self.assertEqual(by_id["f_l1_unauth_api"]["risk_score"], 0)
@@ -1619,9 +1623,11 @@ class TestRemotionExport(RealServiceBase):
         self.assertEqual(out["remotion_timeline"]["events"][0]["scene"], "ownership_verified")
         self.assertTrue(out["confirmed_findings"])
         self.assertTrue(all(f["audit_hash"] for f in out["confirmed_findings"]))
-        self.assertEqual(out["summary"]["unverified_candidate_count"], len(EXAMPLE["checks"]) + 1)
+        # The response includes a cookie with no accepted owner purpose spec.
+        self.assertEqual(out["summary"]["unverified_candidate_count"], len(EXAMPLE["checks"]) + 2)
         detailed = self.svc.remotion_export(anonymize=False)
         self.assertIn("f_l1_unauth_api", {f["id"] for f in detailed["unverified_candidates"]})
+        self.assertIn("f_l1_cookies", {f["id"] for f in detailed["unverified_candidates"]})
         self.assertNotIn("f_l1_unauth_api", {f["id"] for f in detailed["confirmed_findings"]})
         self.assertEqual(out["summary"]["proven_count"] + out["summary"]["detected_count"]
                          + out["summary"]["not_reproduced_count"], len(out["confirmed_findings"]))

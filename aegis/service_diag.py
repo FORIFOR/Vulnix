@@ -194,7 +194,7 @@ def analyze_l1_service_response(
     ev: dict,
     target_url: str,
     cve_monitor: Optional[cve.FeedMonitor] = None,
-    *, root_access: Optional[dict] = None,
+    *, root_access: Optional[dict] = None, cookie_policy: Optional[dict] = None,
 ) -> list[dict]:
     """Analyze a read-only L1 ``http_probe`` response for an external HTTPS service."""
     findings: list[dict] = []
@@ -361,42 +361,73 @@ def analyze_l1_service_response(
 
     # 3. Cookie Secure, HttpOnly, SameSite
     insecure_cookies: list[str] = []
+    candidate_cookies: list[str] = []
+    policy_confirmed = bool(cookie_policy and cookie_policy.get("status") == "confirmed"
+                            and cookie_policy.get("evidence"))
     for raw_cookie in set_cookies:
         cookie_name = raw_cookie.split("=", 1)[0].strip()[:64] or "cookie"
+        if policy_confirmed and cookie_name in cookie_policy["non_session"]:
+            continue
         # attributes are the ";"-separated parts AFTER name=value; a cookie name or
         # value that merely contains the word "secure" does not count
-        attrs = {part.strip().split("=", 1)[0].lower() for part in raw_cookie.split(";")[1:]}
+        attrs = {}
+        ambiguous = False
+        for part in raw_cookie.split(";")[1:]:
+            key, _, value = part.strip().partition("=")
+            key = key.lower()
+            if key in attrs and attrs[key] != value.strip():
+                ambiguous = True
+            attrs[key] = value.strip()
         missing_flags: list[str] = []
         if is_https and "secure" not in attrs:
             missing_flags.append("Secure")
         if "httponly" not in attrs:
             missing_flags.append("HttpOnly")
-        if "samesite" not in attrs:
+        expected_same_site = (cookie_policy["same_site"] if policy_confirmed
+                              and cookie_name in cookie_policy["session"] else None)
+        if expected_same_site:
+            acceptable = {"Lax", "Strict"} if expected_same_site == "Lax" else {expected_same_site}
+            if attrs.get("samesite", "").capitalize() not in acceptable:
+                missing_flags.append(f"SameSite={expected_same_site}")
+        elif "samesite" not in attrs:
             missing_flags.append("SameSite")
         if missing_flags:
-            insecure_cookies.append(f"{cookie_name} (未設定: {'/'.join(missing_flags)})")
+            detail = f"{cookie_name} (未設定・不一致: {'/'.join(missing_flags)})"
+            if policy_confirmed and cookie_name in cookie_policy["session"] and not ambiguous:
+                insecure_cookies.append(detail)
+            else:
+                candidate_cookies.append(detail)
 
-    if insecure_cookies:
+    if insecure_cookies or candidate_cookies:
+        detected = bool(insecure_cookies)
+        verdict = "detected" if detected else "candidate"
+        described = insecure_cookies + candidate_cookies
         r_score, r_rat = compute_finding_risk_score(
-            "medium", "detected", internet_facing=is_https
+            "medium", verdict, internet_facing=is_https
         )
         findings.append(
             {
                 "id": "f_l1_cookies",
-                "title": "Cookieのセキュリティ属性（Secure / HttpOnly / SameSite）不足",
+                "title": ("認証セッションCookieの保護属性不足・仕様不一致" if detected else
+                          "Cookie用途と保護属性の確認候補"),
                 "severity": "medium",
-                "verdict": "detected",
-                "verdict_basis": "l1_observation",
+                "verdict": verdict,
+                "verdict_basis": "owner_spec_and_l1_observation" if detected else "unverified_scope",
                 "category": "セッション・Cookie設定",
                 "cve": [],
                 "risk_level": "L1",
                 "help_term": "security_headers",
                 "risk_score": r_score,
                 "risk_rationale": r_rat,
-                "summary": f"Set-Cookie ヘッダーにおいてセキュリティ属性の不足を検出しました: {'; '.join(insecure_cookies)}",
-                "why_detected": "応答の Set-Cookie ヘッダー属性を解析した結果です。",
-                "what_was_established": f"実際の応答Cookieに保護属性不足（{'; '.join(insecure_cookies)}）を確認しました。",
-                "impact": "XSSによるセッショントークン窃取（HttpOnly欠落）、平文通信への漏えい（Secure欠落）、CSRF攻撃（SameSite欠落）のリスクが高まります。",
+                "summary": f"Set-Cookie の属性を観測しました: {'; '.join(described)}",
+                "why_detected": ("承認済み所有者仕様で認証セッション用途を確認し、応答属性との不一致を観測しました。"
+                                 if detected else "属性不足を観測しましたが、認証セッション用途は確認できていません。"),
+                "what_was_established": (f"認証セッションCookieの保護属性不足・仕様不一致（{'; '.join(insecure_cookies)}）を観測しました。"
+                                         if detected else None),
+                "caveat": ("セッション悪用やCSRFの成立は実証していません。" if detected else
+                           "Cookie名だけでは用途を判定しません。所有者仕様が揃うまで脆弱性とは扱いません。"),
+                "impact": ("セッション保護が弱まる可能性があります。悪用は未実証です。" if detected else
+                           "認証セッションへの影響は未確認です。"),
                 "evidence": [
                     _enrich_ev(
                         ev,
@@ -406,9 +437,11 @@ def analyze_l1_service_response(
                 ],
                 "remediation": {
                     "steps": [
-                        "セッション・認証に関わるすべてのCookieに Secure; HttpOnly; SameSite=Lax（または Strict）を付与する"
+                        (f"所有者仕様で認証用と確認されたCookieに Secure; HttpOnly; SameSite={cookie_policy['same_site']} を設定する"
+                         if detected else "Cookieの用途を確認し、認証用であれば所有者仕様に沿って保護属性を設定する")
                     ],
-                    "how_to_verify": "修正後に同じGET検査を実行し、Set-Cookie ヘッダーに Secure, HttpOnly, SameSite が含まれることを確認します。",
+                    "how_to_verify": ("修正後に同じGET検査を実行し、Set-Cookieの属性と承認済み所有者仕様の一致を確認します。"
+                                      if detected else "Cookie用途を所有者仕様で確定し、同じGET検査で属性を再確認します。"),
                 },
                 "executor": {**EXECUTOR_DEFAULT, "tool": "http_probe"},
                 "demo_fixture": False,
