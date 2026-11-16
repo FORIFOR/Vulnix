@@ -4,7 +4,7 @@
 
 | 処理ID | コード | 検証 |
 |---|---|---|
-| P09 | `aegis/artex_bridge.py` の固定カタログ、`AssessmentService._plan_with_artex` | `test_artex_bridge.py`、Linuxの実ARTEX overlayテスト |
+| P09 | `aegis/artex_bridge.py` の固定カタログ、`AssessmentService._plan_with_artex` | `test_artex_bridge.py`、Linuxの実ARTEX overlayテスト、`scripts/bench_browser_owned_flow.py --real-artex --chromium` |
 | P10 | `AssessmentService._launch_guard`、`Gateway`、`status_marker_tool`、`workers/http_probe.py` | `test_status_marker_report.py`、`test_status_exposure_lab.py` |
 | P11 | `AssessmentService._record_status_result_locked`、`analyze_status_marker_report` | `test_real_service.py`、3モードの独立ラボ |
 | P12 | `_upsert_finding`、`snapshot` の結果表示データ | `TestStatusPlanToEvidence` |
@@ -84,3 +84,9 @@ SSEだけをブラウザ内で遮断した[確認JSON](BROWSER_IDLE_SSE_BLOCKED.
 レビューで、サーバーが状態変更をイベントとして発行し損ねた場合、通し番号が変わらない心拍だけでは画面の古さを検出できないことを確認した。画面表示中は心拍が正常でも30秒を超えた次の判定でsnapshotと監査ログを正式に再取得する。4秒間隔の判定なので、APIが応答する正常動作時の再取得開始は最大約34秒後となる。取得中により新しいSSEが届いた場合は古いsnapshotで上書きしない。36秒待機の[実測JSON](BROWSER_IDLE_BOUNDED_REFRESH.json)ではsnapshot1回、監査ログ2回、停止状態7回だった。所見表示・対象GET2回・ページエラー0は維持した。
 
 さらに、所見の題名だけを模擬バックエンドで保存し、イベントを発行せず、正常な心拍を継続させた[欠落注入試験](BROWSER_SILENT_CHANGE_RECOVERY.json)では、画面が31.91秒後に新しい題名へ収束した。期間中snapshot1回・監査ログ2回を取得した。これはイベント未発行時の画面回復を独立ラボで確認した単発の値で、実際の中継やAPI障害での最大遅延を保証しない。
+
+## 実ARTEXを含む390pxブラウザ通し試験
+
+Linux CIではピン留めした実ARTEX overlay、ローカル模擬LLM、既存Gateway、隔離Worker、Next.js本番ビルド、Chromiumを同じプロセス系列で実行した。DNS回答とループバック対象の許可はテストプロセス内だけで模擬し、所有確認前の対象アクセス0回を検査した。[実測JSON](BROWSER_REAL_ARTEX_FLOW.json)はCIの成果物を保存したもの。外部サイト・有料モデルへは通信していない。
+
+1回の実行で、390px画面の操作8回、ブラウザAPI要求12回、診断開始から所見表示1.252秒、実ARTEXからローカル模擬LLMへの呼び出し2回、許可された対象GET2回だった。`detected`所見を画面で確認し、実バイナリのハッシュ一致、モデル入力の対象ホスト名・URL非含有、画面のエンジン名・モデル名表示、ページエラー0も確認した。操作数はログインとDNS設定を含まない。単発・模擬環境の結果であり、公開βの速度や実サイト診断精度を示さない。
