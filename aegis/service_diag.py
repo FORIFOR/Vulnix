@@ -10,6 +10,7 @@ Implements:
 """
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
 from typing import Optional
@@ -22,6 +23,36 @@ EXECUTOR_DEFAULT = {
     "agent": "Vulnix 診断エンジン",
     "model": "内蔵の検査ルール（実行権限なし）",
 }
+
+
+def _auth_error_only(res: dict, headers_lower: dict[str, str]) -> bool:
+    """Recognize a complete 200 JSON denial, not a protected data response."""
+    body = res.get("body_prefix")
+    length = headers_lower.get("content-length", "")
+    if not isinstance(body, str):
+        return False
+    body_size = len(body.encode("utf-8"))
+    if length:
+        complete = len(length) <= 10 and length.isdecimal() and int(length) == body_size
+    else:
+        # http_probe.read(4096) returns a short body only at HTTP EOF.
+        complete = body_size < 4096
+    if not complete:
+        return False
+    try:
+        payload = json.loads(body)
+    except (ValueError, TypeError):
+        return False
+    if not isinstance(payload, dict) or set(payload) not in ({"error"}, {"message"}, {"error", "code"}):
+        return False
+    if "code" in payload and payload["code"] != "AUTH_REQUIRED":
+        return False
+    value = payload.get("error", payload.get("message"))
+    return isinstance(value, str) and value.strip().casefold() in {
+        "authentication required", "unauthorized", "login required", "sign in required",
+        "認証が必要です", "ログインが必要です",
+    }
+
 
 SEVERITY_BASE_SCORE = {"critical": 90, "high": 75, "medium": 50, "low": 25}
 
@@ -525,7 +556,8 @@ def analyze_l1_service_response(
         protected = bool(root_access and root_access.get("spec_status") == "confirmed"
                          and root_access.get("requirement") == "authentication_required"
                          and root_access.get("spec_evidence"))
-        verdict = "detected" if protected else "candidate"
+        denial_only = _auth_error_only(res, headers_lower)
+        verdict = "detected" if protected and not denial_only else "candidate"
         r_score, r_rat = compute_finding_risk_score(
             "medium", verdict, internet_facing=is_https
         )
@@ -533,10 +565,10 @@ def analyze_l1_service_response(
             {
                 "id": "f_l1_unauth_api",
                 "title": ("所有者仕様で認証必須のJSON応答が未認証で取得可能"
-                          if protected else "未認証JSON応答の公開範囲を確認する候補"),
+                          if verdict == "detected" else "未認証JSON応答の公開範囲を確認する候補"),
                 "severity": "medium",
                 "verdict": verdict,
-                "verdict_basis": "owner_spec_and_l1_observation" if protected else "unverified_scope",
+                "verdict_basis": "owner_spec_and_l1_observation" if verdict == "detected" else "unverified_scope",
                 "category": "APIアクセス制御",
                 "cve": [],
                 "risk_level": "L1",
@@ -544,13 +576,14 @@ def analyze_l1_service_response(
                 "risk_score": r_score,
                 "risk_rationale": r_rat,
                 "summary": f"認証ヘッダーなしのGETリクエスト（{target_url}）に対して HTTP 200 ({content_type}) が返却されました。公開エンドポイントとして意図されたものか確認が必要です。",
-                "why_detected": ("管理者承認済みの所有者仕様でルートが認証必須と定められ、"
+                "why_detected": ("HTTP 200のJSON本文は認証エラーだけでした。保護対象データの取得は確認できません。"
+                                 if denial_only else "管理者承認済みの所有者仕様でルートが認証必須と定められ、"
                                  "未認証の読み取り専用GETでJSON応答を観測しました。"
                                  if protected else "未認証の読み取り専用プローブでJSON応答を観測しました。保護対象かどうかは、この応答だけでは判定できません。"),
                 "what_was_established": ("認証ヘッダーなしのGETでHTTP 200のJSON応答を取得しました。"
-                                         if protected else None),
+                                         if verdict == "detected" else None),
                 "caveat": ("認証要件との不一致を観測しました。応答内容が機密情報か、他ユーザーの情報を読めたかは未実証です。"
-                           if protected else "公開APIでは正常な応答です。保護対象であることを示す独立した根拠が揃うまで脆弱性とは判定しません。"),
+                           if verdict == "detected" else "保護対象データの取得は確認できません。追加の根拠が揃うまで脆弱性とは判定しません。"),
                 "impact": "認証が必須であるべきAPIが未認証で応答している場合、内部ステータスやメタデータが外部へ露出する恐れがあります。",
                 "evidence": [
                     _enrich_ev(

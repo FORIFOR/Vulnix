@@ -1,0 +1,8 @@
+{
+  "protected_data_200": true,
+  "auth_error_200": false,
+  "auth_error_with_code_200": false,
+  "auth_error_no_length_200": false,
+  "error_with_data_200": true,
+  "error_string_with_data_200": true
+}
