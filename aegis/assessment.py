@@ -4272,22 +4272,41 @@ class AssessmentService:
             from .artex_bridge import safe_public_fingerprint
             fingerprint = safe_public_fingerprint(res, scheme=urllib.parse.urlsplit(url).scheme)
             self._checkpoint()
-            try:
-                planned = self._plan_with_artex("policy:initial", llm_mode="gateway-forward",
-                                                fingerprint=fingerprint)
-            except ValueError:
-                # A local model failure keeps the measured L1 result. Revocation,
-                # stop, or persistence failure must still stop the diagnosis.
-                self._checkpoint()
-                with self._lock:
-                    self._ensure_artex_authority_locked()
-                self.audit.record("artex.initial_fallback", reason="planner_failure")
+            with self._lock:
+                self._ensure_artex_authority_locked()
+                host = (self.a.asset.get("name") or "").lower()
+                ext = self._external_entry(host) or {}
+                usage = self.ledger.scan_usage.get(host) or {}
+                extra_check_possible = (
+                    fingerprint["server_family"] == "apache"
+                    and ext.get("allow_status_probe") is True
+                    and usage.get("status_probe_allowed") is True
+                    and usage.get("paths") == ["/"]
+                    and self._root_probe_observed_locked()
+                )
+            if not extra_check_possible:
+                # The initial real-site catalog has exactly one useful extra L1
+                # operation: Apache mod_status. Avoid a model call when Gateway
+                # would reject that operation, or the signed root observation
+                # cannot justify it. The fixed root finding remains authoritative.
+                self.audit.record("artex.initial_skipped", reason="no_allowed_extra_check")
             else:
-                for item in ((planned.get("artex_plan") or {}).get("plan") or {}).get("items", []):
-                    if (item.get("catalog_id") == "l1_apache_mod_status"
-                            and item.get("status") == "planned"):
-                        self._checkpoint()
-                        self.execute_artex_item(item["id"], "policy:initial")
+                try:
+                    planned = self._plan_with_artex("policy:initial", llm_mode="gateway-forward",
+                                                    fingerprint=fingerprint)
+                except ValueError:
+                    # A local model failure keeps the measured L1 result. Revocation,
+                    # stop, or persistence failure must still stop the diagnosis.
+                    self._checkpoint()
+                    with self._lock:
+                        self._ensure_artex_authority_locked()
+                    self.audit.record("artex.initial_fallback", reason="planner_failure")
+                else:
+                    for item in ((planned.get("artex_plan") or {}).get("plan") or {}).get("items", []):
+                        if (item.get("catalog_id") == "l1_apache_mod_status"
+                                and item.get("status") == "planned"):
+                            self._checkpoint()
+                            self.execute_artex_item(item["id"], "policy:initial")
         if "AI agent:" in res.get("body_prefix", ""):
             self.bus.publish(self.a.id, "agent.note",
                              message="ページ内にAI向けの指示文を検出しました。ProposalRouterにより無害化され実行権限には影響しません。")

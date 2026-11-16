@@ -68,6 +68,7 @@ class FakeService(http.server.ThreadingHTTPServer):
     def __init__(self):
         super().__init__(("127.0.0.1", 0), _FakeHandler)
         self.mode = "vulnerable"
+        self.banner = "nginx"
         self.seen: list[tuple[str, str | None]] = []
         self.hanging = threading.Event()
 
@@ -105,7 +106,7 @@ class _FakeHandler(http.server.BaseHTTPRequestHandler):
             return self._send(200, {"late": True})
         if self.path == "/":
             return self._send(200, {"ok": True}, [
-                ("Server", "nginx"), ("Set-Cookie", "sid=abc; Path=/"),
+                ("Server", srv.banner), ("Set-Cookie", "sid=abc; Path=/"),
                 ("Access-Control-Allow-Origin", self.headers.get("Origin", "")),
                 ("Access-Control-Allow-Credentials", "true")])
         if mode == "token_expired" or not token:
@@ -808,7 +809,8 @@ class TestL1Diagnosis(RealServiceBase):
         self.svc.real_site_read_only = True
         self.svc._real_site_local_artex = True
         self.svc._artex_real_cmd = ["mock-artex"]
-        self.onboard()
+        self.fake.banner = "Apache/2.4.62"
+        self.onboard(allow_status_probe=True)
         seen = []
 
         def plan(_actor, **kwargs):
@@ -825,13 +827,46 @@ class TestL1Diagnosis(RealServiceBase):
         self.assertEqual(len(seen), 1)
         self.assertEqual(seen[0][0], "running")
         self.assertEqual(seen[0][1]["fingerprint"]["status_class"], "2xx")
-        self.assertEqual(seen[0][1]["fingerprint"]["server_family"], "nginx")
+        self.assertEqual(seen[0][1]["fingerprint"]["server_family"], "apache")
+
+    def test_initial_artex_skips_non_apache_without_spending_model_calls(self):
+        self.svc.real_site_read_only = True
+        self.svc._real_site_local_artex = True
+        self.svc._artex_real_cmd = ["mock-artex"]
+        self.onboard(allow_status_probe=True)
+        with patch.dict("os.environ", {"VULNIX_REAL_SITE_INITIAL_ARTEX": "1",
+                                       "VULNIX_ARTEX_LLM_MODE": "gateway-forward",
+                                       "VULNIX_ARTEX_LLM_UPSTREAM_URL": "http://127.0.0.1:19991/v1/chat/completions"}), \
+                patch.object(self.svc, "_plan_with_artex", side_effect=AssertionError("unexpected model")) as plan:
+            snap = self.run_l1()
+        self.assertEqual(snap["state"], "completed")
+        self.assertEqual([path for path, _ in self.fake.seen], ["/"])
+        plan.assert_not_called()
+        self.assertTrue(any(e["event"] == "artex.initial_skipped" and
+                            e["fields"].get("reason") == "no_allowed_extra_check"
+                            for e in self.svc.audit.entries()))
+
+    def test_initial_artex_skips_without_signed_extra_probe_consent(self):
+        self.svc.real_site_read_only = True
+        self.svc._real_site_local_artex = True
+        self.svc._artex_real_cmd = ["mock-artex"]
+        self.fake.banner = "Apache/2.4.62"
+        self.onboard(allow_status_probe=False)
+        with patch.dict("os.environ", {"VULNIX_REAL_SITE_INITIAL_ARTEX": "1",
+                                       "VULNIX_ARTEX_LLM_MODE": "gateway-forward",
+                                       "VULNIX_ARTEX_LLM_UPSTREAM_URL": "http://127.0.0.1:19991/v1/chat/completions"}), \
+                patch.object(self.svc, "_plan_with_artex", side_effect=AssertionError("unexpected model")) as plan:
+            snap = self.run_l1()
+        self.assertEqual(snap["state"], "completed")
+        self.assertEqual([path for path, _ in self.fake.seen], ["/"])
+        plan.assert_not_called()
 
     def test_pause_before_initial_plan_blocks_model_until_resume(self):
         self.svc.real_site_read_only = True
         self.svc._real_site_local_artex = True
         self.svc._artex_real_cmd = ["mock-artex"]
-        self.onboard()
+        self.fake.banner = "Apache/2.4.62"
+        self.onboard(allow_status_probe=True)
         original = self.svc._analyze
         def pause_after_observation(*args):
             result = original(*args)
@@ -862,7 +897,8 @@ class TestL1Diagnosis(RealServiceBase):
         self.svc.real_site_read_only = True
         self.svc._real_site_local_artex = True
         self.svc._artex_real_cmd = ["mock-artex"]
-        self.onboard()
+        self.fake.banner = "Apache/2.4.62"
+        self.onboard(allow_status_probe=True)
         with patch.dict("os.environ", {"VULNIX_REAL_SITE_INITIAL_ARTEX": "1",
                                        "VULNIX_ARTEX_LLM_MODE": "gateway-forward",
                                        "VULNIX_ARTEX_LLM_UPSTREAM_URL": "http://127.0.0.1:19991/v1/chat/completions"}), \
@@ -876,7 +912,8 @@ class TestL1Diagnosis(RealServiceBase):
         self.svc.real_site_read_only = True
         self.svc._real_site_local_artex = True
         self.svc._artex_real_cmd = ["mock-artex"]
-        self.onboard()
+        self.fake.banner = "Apache/2.4.62"
+        self.onboard(allow_status_probe=True)
         with patch.dict("os.environ", {"VULNIX_REAL_SITE_INITIAL_ARTEX": "1",
                                        "VULNIX_ARTEX_LLM_MODE": "gateway-forward",
                                        "VULNIX_ARTEX_LLM_UPSTREAM_URL": "http://127.0.0.1:19991/v1/chat/completions"}), \

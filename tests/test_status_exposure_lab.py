@@ -108,11 +108,16 @@ class TestStatusPlanToEvidence(unittest.TestCase):
                                         time.sleep(0.02)
                                 snap = svc.snapshot()
                                 self.assertEqual(snap["state"], "completed", snap.get("failure"))
-                                plan = snap["artex_plan"]["plan"]
-                                item = next(i for i in plan["items"]
-                                            if i["catalog_id"] == "l1_apache_mod_status")
                                 selected = consent and mode != "non_apache"
-                                self.assertEqual(item["status"], "completed" if selected else "unsupported")
+                                if selected:
+                                    plan = snap["artex_plan"]["plan"]
+                                    item = next(i for i in plan["items"]
+                                                if i["catalog_id"] == "l1_apache_mod_status")
+                                    self.assertEqual(item["status"], "completed")
+                                else:
+                                    self.assertIsNone((snap.get("artex_plan") or {}).get("plan"))
+                                    self.assertTrue(any(e["event"] == "artex.initial_skipped"
+                                                        for e in svc.audit.entries()))
                                 self.assertEqual(site.seen, ["/", "/server-status?auto"] if selected else ["/"])
                                 found = [f for f in snap["findings"]
                                          if f["id"] == "f_l1_apache_mod_status"]

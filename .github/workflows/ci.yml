@@ -221,6 +221,15 @@ jobs:
             > "$RUNNER_TEMP/multiclass-comparison.json"
           test -s "$RUNNER_TEMP/multiclass-comparison.json"
 
+      - name: CORS and Cookie skip decision with real ARTEX on local HTTPS
+        env:
+          VULNIX_ARTEX_REAL_BIN: ${{ runner.temp }}/artex-vulnix-planner
+          VULNIX_ARTEX_PG_DSN: postgres://artex_planner:artex-planner-ci-only@127.0.0.1:5432/artex_planner?sslmode=disable
+          VULNIX_ARTEX_CONFINE: "1"
+        run: |
+          VULNIX_NO_ENV_LOCAL=1 python3 -m scripts.bench_initial_extra_selection --smoke > "$RUNNER_TEMP/initial-extra-selection.json"
+          test -s "$RUNNER_TEMP/initial-extra-selection.json"
+
       - name: Set up Node.js for the owned-site browser path
         uses: actions/setup-node@v4
         with:
@@ -258,5 +267,6 @@ jobs:
             ${{ runner.temp }}/multiclass-comparison.json
             ${{ runner.temp }}/status-exposure-comparison.json
             ${{ runner.temp }}/access-control-comparison.json
+            ${{ runner.temp }}/initial-extra-selection.json
             ${{ runner.temp }}/real-artex-browser-flow.json
           if-no-files-found: warn
