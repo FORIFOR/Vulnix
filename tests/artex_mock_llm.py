@@ -144,10 +144,10 @@ class MockLLM:
                 called = [tc.get("function", {}).get("name")
                           for m in msgs if isinstance(m, dict) and m.get("role") == "assistant"
                           for tc in m.get("tool_calls") or [] if isinstance(tc, dict)]
-                if mock.intent_selector is not None and "list_findings" not in called:
+                if mock.intent_selector is not None and "list_facts" not in called:
                     message = {"role": "assistant", "content": "",
-                               "tool_calls": [{"id": "call_list_findings", "type": "function",
-                                               "function": {"name": "list_findings", "arguments": "{}"}}]}
+                               "tool_calls": [{"id": "call_list_facts", "type": "function",
+                                               "function": {"name": "list_facts", "arguments": "{}"}}]}
                     finish = "tool_calls"
                 elif mock.intent_selector is not None and "add_intent" not in called:
                     chosen = mock.intent_selector(msgs)

@@ -169,7 +169,7 @@ class TestIndependentAccessControlLab(unittest.TestCase):
             lab.server_close()
             thread.join(timeout=2)
 
-    def test_adaptive_mock_reads_artex_findings_before_proposing_idor(self):
+    def test_adaptive_mock_reads_artex_facts_before_proposing_idor(self):
         intent = {"summary": "IDOR cross-account access-control verification",
                   "asset_ids": [1], "priority": 7}
         with MockLLM(intent_selector=lambda messages: [intent]
@@ -182,13 +182,13 @@ class TestIndependentAccessControlLab(unittest.TestCase):
                     return json.load(response)["choices"][0]["message"]
             initial = [{"role": "user", "content": "Plan from observed facts"}]
             lookup = ask(initial)
-            self.assertEqual(lookup["tool_calls"][0]["function"]["name"], "list_findings")
-            measured = initial + [lookup, {"role": "tool", "tool_call_id": "call_list_findings",
+            self.assertEqual(lookup["tool_calls"][0]["function"]["name"], "list_facts")
+            measured = initial + [lookup, {"role": "tool", "tool_call_id": "call_list_facts",
                                           "content": json.dumps({"title": "Measured account resource link",
                                                                  "detail": "present"})}]
             proposed = ask(measured)
             self.assertEqual(proposed["tool_calls"][0]["function"]["name"], "add_intent")
-            absent = initial + [lookup, {"role": "tool", "tool_call_id": "call_list_findings",
+            absent = initial + [lookup, {"role": "tool", "tool_call_id": "call_list_facts",
                                         "content": json.dumps({"title": "Measured account resource link",
                                                                "detail": "absent"})}]
             self.assertNotIn("tool_calls", ask(absent))
