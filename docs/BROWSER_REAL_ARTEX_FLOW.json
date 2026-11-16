@@ -1,0 +1,45 @@
+{
+  "viewport_width": 390,
+  "web_mode": "production",
+  "actions_from_site_open_to_result": 8,
+  "action_names": [
+    "open_wizard",
+    "enter_url",
+    "issue_challenge",
+    "verify_ownership",
+    "confirm_scope",
+    "consent_to_extra_get",
+    "start",
+    "open_findings"
+  ],
+  "browser_api_requests": 12,
+  "api_paths": [
+    "auth/me",
+    "auth/login",
+    "auth/me",
+    "system/status",
+    "assets",
+    "assets/challenge",
+    "assets/verify-ownership",
+    "assets/confirm-scope",
+    "assessments/scan_001/start",
+    "assessments/scan_001",
+    "assessments/scan_001/logs",
+    "assessments/scan_001/events"
+  ],
+  "elapsed_start_to_visible_finding_s": 1.771,
+  "idle_seconds": 0,
+  "idle_api_requests": 0,
+  "sse_blocked": false,
+  "silent_change_recovered_s": null,
+  "target_paths": [
+    "/",
+    "/server-status?auto"
+  ],
+  "local_model_calls": 2,
+  "engine_kind": "artex-binary",
+  "model_input_excludes_host": true,
+  "engine_and_model_visible": true,
+  "status_finding": "detected",
+  "page_errors": 0
+}

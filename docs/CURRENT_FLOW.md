@@ -40,7 +40,7 @@ flowchart LR
 | P06 | `/api/assets/confirm-scope` | `OwnershipWizard.confirmScope` → `confirm_asset_scope` | `test_authority_ledger.py`。所有、承認者、対象、期限、追加GET同意を署名付き記録へ |
 | P07 | `POST /api/assessments/{id}/{start,pause,resume,restart}` | `AssessmentService.start`, `_run`, `_run_inner` | `test_real_service.py`, `test_server.py`。世代・起動枠を確認 |
 | P08 | 初回の安全なGET | `_run_inner` → `_plan` → `_exec` → `Gateway.execute` → `WorkerPool.run` | `test_gateway.py`。所有・範囲・IP・期限・停止・回数を直前審査 |
-| P09 | 初回自動計画、または`POST /api/assessments/{id}/artex/plan` | `_plan_with_artex` → `anonymous_real_site_request` → `run_artex_planner` → `reconstruct` → `ProposalRouter` | `test_artex_bridge.py`、Linuxの実ARTEXジョブ。固定特徴だけ送信、失敗時は固定L1のみ。モデル名は実転送確認時だけ表示 |
+| P09 | 初回自動計画、または`POST /api/assessments/{id}/artex/plan` | `_plan_with_artex` → `anonymous_real_site_request` → `run_artex_planner` → `reconstruct` → `ProposalRouter` | `test_artex_bridge.py`、Linuxの実ARTEXジョブ、`scripts/bench_browser_owned_flow.py --real-artex --chromium`。固定特徴だけ送信、失敗時は固定L1のみ。モデル名は実転送確認時だけ表示 |
 | P10 | 同意済み追加GET、または`POST /api/assessments/{id}/artex/items/{item}/execute` | `execute_artex_item` → 固定カタログ → `_exec` → `Gateway` → `WorkerPool` | `test_status_exposure_lab.py`, `test_gateway.py`。固定L1のみ、実サイトL2拒否 |
 | P11 | `GET /api/assessments/{id}`, `GET .../logs`, `GET .../events`, `GET .../report` | `_analyze`, `_record_status_result_locked`, `analyze_status_marker_report`, `snapshot` | `test_real_service.py`, `test_status_exposure_lab.py`。証拠と監査ハッシュから`detected`。案のみは`candidate` |
 | P12 | `POST /api/assessments/{id}/chat` | `ask_chat` → `_safe_real_ai_explanation` または `_answer_question` | `test_ai_advisor.py`。固定項目だけ送信、応答検証、不採用なら内蔵解説 |
@@ -147,13 +147,13 @@ AIにはホスト名、URL、認証情報、個人情報、応答本文、秘密
 | TP / FP / FN / TN | 0 / 0 / 1 / 2 | 1 / 0 / 0 / 2 | 独立3モードの固定ラベル |
 | 期限切れ・所有取消の拒否 | 2/2 | 2/2 | この2条件のみ。全安全制御の成功率ではない |
 
-別の390px幅の本番ビルド通し測定ではブラウザAPI要求12回、ログイン後の操作8回だった。**Python製ARTEX代役**を使ったため、この値を実ARTEX経路のAPI回数や操作数とみなさない。詳細は[測定資料](STATUS_EXPOSURE_INTEGRATION.md)。
+390px幅の本番ビルド通し測定は代役プランナーに加え、Linux CIで**ピン留めした実ARTEXとローカル模擬モデル**でも実行した。実ARTEXの単発測定はブラウザAPI要求12回、ログイン後の操作8回、模擬モデル2回、対象GET2回、診断開始から所見表示まで1.771秒。[測定資料](STATUS_EXPOSURE_INTEGRATION.md)。
 
-ログイン画面の重複した`/api/auth/me`取得と監査ログの同一ファイル二度読みは削減済み。P15は正常なSSE心拍の間だけ静穏時の重複取得を抑え、24秒の同一模擬条件で待機時API要求12→6回だった。使途未確認の`FeedMonitor.sync_from_urls`は未変更。外部AI解説のドル建て予算予約は後続Draft PRのコードで実装したが、運用料金の妥当性と実請求額は未照合。390px幅の一連操作はPython製ARTEX代役で[模擬環境の通し測定](STATUS_EXPOSURE_INTEGRATION.md)を行った。公開βの所有確認→実サイト診断→結果表示、実Abliteration AIの採用可能な日本語解説、実ARTEXを含むブラウザ完走、実サイト全般の精度は未確認または未完成。公開βで開発ブランチの機能が動いていると扱わない。
+ログイン画面の重複した`/api/auth/me`取得と監査ログの同一ファイル二度読みは削減済み。P15は正常なSSE心拍の間だけ静穏時の重複取得を抑え、24秒の同一模擬条件で待機時API要求12→6回だった。使途未確認の`FeedMonitor.sync_from_urls`は未変更。外部AI解説のドル建て予算予約は後続Draft PRのコードで実装したが、運用料金の妥当性と実請求額は未照合。390px幅の一連操作は実ARTEXを含む[模擬環境の通し測定](STATUS_EXPOSURE_INTEGRATION.md)を行った。公開βの所有確認→実サイト診断→結果表示、実Abliteration AIの採用可能な日本語解説、実サイト全般の精度は未確認または未完成。公開βで開発ブランチの機能が動いていると扱わない。
 
 ## 次の変更順序
 
 1. P12の外部AI費用上限はDraft PRで送信前の最悪値予約・同時要求・再起動後の累計を実装した。独立レビュー、料金設定と実請求額の照合を経るまで公開βでは有効にしない。
 2. P15は正常なSSEで待機時API要求を削減し、APIが応答する限り30秒を超えた次の正式な状態再取得で未発行イベントによる無期限の古さを防ぐ。Cloudflare等の中継を挟んだ監査ログの鮮度と失効通知の遅れは別途測る。停止・取消が画面に届く保証は維持する。
-3. 同一の独立ラボでブラウザのURL登録から結果表示までを390px幅で通し、API回数と利用者操作数を代役Plannerで計測した。実ARTEXとローカル模擬モデルを同じブラウザ経路で実行し、機密値の外部送信を検査する段階は残る。
+3. 同一の独立ラボでブラウザのURL登録から結果表示までを390px幅で通し、実ARTEXとローカル模擬モデルでも所見・出所表示・ホスト名とURLの非送信を確認した。公開βの実DNS・組織設定・中継を含む動作確認は残る。
 4. P09/P12の採用率・実トークン・費用と公開βの実サイト経路は、必要な承認と所有確認を得た後に別途検証する。実サイトL2は引き続き禁止する。
