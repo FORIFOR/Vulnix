@@ -40,6 +40,8 @@ from tests.test_artex_bridge import FAKE  # noqa: E402
 ROOT = Path(__file__).resolve().parents[1]
 PARSER = argparse.ArgumentParser()
 PARSER.add_argument("--production", action="store_true", help="Use an already built Next.js production bundle")
+PARSER.add_argument("--idle-seconds", type=float, default=0,
+                    help="Count backup API requests after the completed result remains visible")
 
 
 def free_port() -> int:
@@ -186,11 +188,16 @@ def main() -> None:
                             assert len(model.requests) == 0, len(model.requests)
                             assert not page_errors, page_errors
                             assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+                            idle_at = len(api_calls)
+                            if args.idle_seconds > 0:
+                                page.wait_for_timeout(args.idle_seconds * 1000)
                             print(json.dumps({"viewport_width": 390,
                                               "web_mode": "production" if args.production else "development",
                                               "actions_from_site_open_to_result": len(actions),
                                               "action_names": actions, "browser_api_requests": len(api_calls),
                                               "api_paths": api_calls, "elapsed_start_to_visible_finding_s": elapsed,
+                                              "idle_seconds": args.idle_seconds,
+                                              "idle_api_requests": len(api_calls) - idle_at,
                                               "target_paths": list(site.seen), "local_model_calls": len(model.requests),
                                               "status_finding": "detected", "page_errors": len(page_errors)},
                                              ensure_ascii=False, indent=2))
