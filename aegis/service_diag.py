@@ -413,7 +413,12 @@ def analyze_l1_service_response(
                     f"(Allow-Credentials: {acac or '未設定'}) が返却されました。"
                 ),
                 "why_detected": f"Origin: {probe_origin} を付与した非破壊GETリクエストの応答ヘッダーで確認されました。",
-                "what_was_established": f"未承認の外部オリジンに対して Access-Control-Allow-Origin: {acao} が返却されることを確認しました。",
+                "what_was_established": (
+                    f"Origin: {probe_origin} を付けたGETへの応答で "
+                    f"Access-Control-Allow-Origin: {acao} と "
+                    "Access-Control-Allow-Credentials: true を確認しました。"
+                ),
+                "verdict_note": "確認したのはCORS応答設定です。認証付きの機密情報をブラウザから読み取れたことは実証していません。",
                 "impact": "悪意ある外部サイトからブラウザ経由でAPI応答を読み取られる（クロスオリジン情報漏えい）恐れがあります。",
                 "evidence": [
                     _enrich_ev(
