@@ -172,7 +172,7 @@ def main() -> None:
                             actions.append("issue_challenge")
                             challenge = issued.value.json()["challenge"]
                             page.get_by_text(challenge["dns_txt_name"], exact=True).wait_for()
-                            page.get_by_text(challenge["dns_txt_value"], exact=True).wait_for()
+                            page.get_by_text(challenge["dns_txt_value"], exact=True).first.wait_for()
                             challenge_value[0] = challenge["dns_txt_value"]
                             assert site.seen == [], "target received traffic before ownership verification"
                             page.get_by_role("button", name="確認する", exact=True).click()
