@@ -152,13 +152,21 @@ def run_approved(*, approval_sha256: str, api_key: str, audit: AuditLog,
                              "duplicate answer key": "duplicate_json_key",
                              "answer shape rejected": "invalid_shape",
                              "answer contains an invalid or repeated case": "invalid_case_id"}.get(str(exc), "invalid_answer")
-        usage = response.get("usage") or {}
-        usage = {k: usage[k] for k in ("prompt_tokens", "completion_tokens")
-                 if isinstance(usage.get(k), int) and usage[k] >= 0}
+        usage = response.get("usage") if isinstance(response.get("usage"), dict) else {}
+        details = usage.get("completion_tokens_details") or {}
+        reported_usage = {k: usage[k] for k in ("prompt_tokens", "completion_tokens")
+                          if isinstance(usage.get(k), int) and usage[k] >= 0}
+        if isinstance(details, dict) and isinstance(details.get("reasoning_tokens"), int) \
+                and details["reasoning_tokens"] >= 0:
+            reported_usage["reasoning_tokens"] = details["reasoning_tokens"]
+        finish_reason = response["choices"][0].get("finish_reason")
+        if finish_reason not in ("stop", "length", "tool_calls", "content_filter"):
+            finish_reason = "other" if finish_reason is not None else None
         return {"selection": score(selected, mapping) if accepted else None, "accepted": accepted,
                 "response_adoption_rate": 1.0 if accepted else 0.0, "reject_reason": reject_reason,
                 "selection_errors": selection_errors(selected, mapping) if accepted else [],
-                "selected_case_ids": sorted(selected), "usage": usage,
+                "selected_case_ids": sorted(selected), "usage": reported_usage,
+                "finish_reason": finish_reason,
                 "elapsed_s": elapsed, "gateway": gateway.report(),
                 "provider_billed_cost_usd": None,
                 "target_get": 0, "worker_launches": 0}

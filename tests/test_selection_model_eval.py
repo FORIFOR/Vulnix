@@ -92,7 +92,10 @@ class TestSelectionModelEval(unittest.TestCase):
 
         def bad_transport(*args):
             calls.append(args)
-            return json.dumps({"choices": [{"message": {"role": "assistant", "content": "maybe"}}]}).encode()
+            return json.dumps({"choices": [{"message": {"role": "assistant", "content": "maybe"},
+                                            "finish_reason": "length"}],
+                               "usage": {"prompt_tokens": 900, "completion_tokens": 384,
+                                         "completion_tokens_details": {"reasoning_tokens": 384}}}).encode()
 
         with tempfile.TemporaryDirectory() as tmp:
             result = evaluation.run_approved(
@@ -104,6 +107,8 @@ class TestSelectionModelEval(unittest.TestCase):
         self.assertEqual(result["selected_case_ids"], [])
         self.assertEqual(result["response_adoption_rate"], 0.0)
         self.assertEqual(result["reject_reason"], "invalid_json")
+        self.assertEqual(result["finish_reason"], "length")
+        self.assertEqual(result["usage"]["reasoning_tokens"], 384)
 
     def test_wrong_choices_name_false_positive_and_missed_cases(self):
         _, mapping = evaluation.build_request()
