@@ -4232,7 +4232,7 @@ class AssessmentService:
                 # public beta: nothing beyond this read-only run ever reaches a real site
                 self._think(
                     "実在するサイトの読み取り専用診断が完了しました",
-                    "公開されているページを1回読み取って調べた結果を確定しました。侵入できるかどうかの実証（L2）は、このサービスでは実在するサイトに対して行いません。",
+                    "許可された公開情報を読み取り専用で調べた結果を確定しました。侵入できるかどうかの実証（L2）は、このサービスでは実在するサイトに対して行いません。",
                     phase="verification",
                     tool="Gateway",
                     level="L1",

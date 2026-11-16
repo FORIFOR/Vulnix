@@ -6,11 +6,22 @@
 
 以下の監査表・「現状」図・「目標」図は監査を行った時点のスナップショット。後続の実装では、P08の初回GETの証拠をP09のARTEXへ渡し、P10の追加L1 GETを明示同意・署名枠・Apacheの実測・Gateway直前審査がすべて成立する場合だけ自動実行する。P11はWorkerの固定マーカーと監査ハッシュから判定し、結果採用前に所有・範囲の世代を再確認する。P06の任意同意は既存画面・既存APIに加えたもので、未設定時は画面に出さずAPIも拒否する。更新後の時系列図は[REQUEST_FLOW.md](REQUEST_FLOW.md)、独立ラボの前後測定は[STATUS_EXPOSURE_INTEGRATION.md](STATUS_EXPOSURE_INTEGRATION.md)にある。
 
-この後続経路は公開βでは既定無効で、公開環境への反映・実サイトでの追加通信・実Abliteration AIの採用可能な日本語解説は未確認。P15のSSEポーリング削減、P14の通常経路から使われない関数の削除、P12のドル建て費用上限も未実施。安全制御を削ってこれらを解決していない。
+この後続経路は公開βでは既定無効で、公開環境への反映・実サイトでの追加通信・実Abliteration AIの採用可能な日本語解説は未確認。P15のSSEポーリング削減、P14の通常経路から使われない関数の削除、P12のドル建て費用上限も未実施。安全制御を削ってこれらを解決していない。PR #56〜#57でP12の固定所見カタログと送信プロンプトを縮小したが、有料モデルの採用率・実トークン数・請求額は未確認。
 
 ## 調査の範囲と漏れ
 
 機械抽出ではバックエンド関数789、Web関数197、ARTEX overlayのGo関数27・通信関連箇所7、API分岐条件75、通信・プロセス起動箇所32、バックグラウンド起動箇所26、WebのAPI参照62を列挙した。`REQUEST_FLOW.md` に文字列として現れない固定APIパスは29件、動的な評価式は6件あった。未記載は主にアカウント/MFA/組織招待、資産削除・選択、CVE同期、全体の制御検証、監査ログ・イベント・レポート出力である。これらを「未使用」とみなして削除してはいけない。URLを構成する経路（例: `/api/assessments/{id}/...`）は機械抽出だけでは網羅判定できない。
+
+固定パス39件のうち、`REQUEST_FLOW.md`の通常操作表に文字列として現れない29件を処理IDへ割り当てた。これは**処理漏れの候補一覧**であり、APIが未実装・未使用という意味ではない。特にURLを動的に構成する経路は下表の件数に含まれない。
+
+| 処理ID | 通常操作表にない固定APIパス | 役割 |
+|---|---|---|
+| P01 | `/api/auth/logout`, `/api/auth/password`, `/api/auth/totp/enroll`, `/api/auth/totp/confirm`, `/api/auth/totp/disable`, `/api/operators`, `/api/operators/roles`, `/api/operators/reset-mfa`, `/api/operators/unlock` | セッション・MFA・操作者の管理 |
+| P02 | `/api/orgs`, `/api/orgs/invites`, `/api/orgs/invites/revoke`, `/api/orgs/members`, `/api/orgs/members/remove`, `/api/orgs/members/roles`, `/api/invites/accept` | 組織の加入・離脱・権限 |
+| P03/P13 | `/api/assets/select`, `/api/assets/delete` | 対象の選択・取消 |
+| P06/P07 | `/api/assets/secrets`, `/api/assets/secrets-status`, `/api/l2-profiles`, `/api/l2-profiles/accept` | 模擬ラボまたは個別承認対象の検証設定。公開βの実サイトL2は無効 |
+| P09/P14 | `/api/router/status`, `/api/router/verify`, `/api/cve/status`, `/api/cve/sync` | 計画制御の状態・自己検証とCVE資料 |
+| P13/P14/P15 | `/api/health`, `/api/system/status`, `/api/system/verify-controls` | 稼働・停止・安全制御の状態 |
 
 | ID | 利用者・内部操作 → API | 主なコード | 主要テスト・状態 |
 |---|---|---|---|

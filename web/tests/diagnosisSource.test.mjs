@@ -16,7 +16,7 @@ const base = {
   artex_plan: { configured: false, plan: null },
 };
 
-test("a real site never claims ARTEX planning or external AI explanation", () => {
+test("a real site credits a pinned ARTEX plan but never infers AI explanation from configuration", () => {
   const source = diagnosisSource({
     ...base,
     is_external_service: true,
@@ -24,8 +24,13 @@ test("a real site never claims ARTEX planning or external AI explanation", () =>
     planner: { external_model_configured: true, explanation_model_configured: true, model_name: "paid-model" },
     artex_plan: { configured: true, plan: { engine: { kind: "artex-binary", pinned: true } } },
   });
-  assert.equal(source.plan, "公開ページの設定を確認");
+  assert.equal(source.plan, "ARTEXで作成した計画");
   assert.equal(source.explanation, "解説は内蔵機能で作成");
+});
+
+test("a real site without a completed ARTEX plan reports the built-in check", () => {
+  assert.equal(diagnosisSource({ ...base, is_external_service: true,
+    artex_plan: { configured: true, plan: null } }).plan, "公開ページの設定を確認");
 });
 
 test("a real site names the model only after an accepted explanation", () => {
