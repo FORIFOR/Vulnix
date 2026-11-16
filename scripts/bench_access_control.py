@@ -112,11 +112,22 @@ def _measure(mode: str, strategy: str) -> dict:
                                 assert "VULNIX_LAB_IDOR_PROVEN" not in model_payload
                         counts.update(gateway_calls=gw.call_count, worker_launches=workers.call_count,
                                       state_saves=saves.call_count, ledger_commits=commits.call_count)
+                        model_signals = []
+                        for call in model.requests:
+                            messages = call["body"].get("messages") or []
+                            prompt = json.dumps(messages, ensure_ascii=False)
+                            model_signals.append({"roles": [m.get("role") for m in messages if isinstance(m, dict)],
+                                                  "has_surface_title": "Measured account resource link" in prompt,
+                                                  "has_present": "present" in prompt,
+                                                  "has_absent": "absent" in prompt,
+                                                  "selector_chose_idor": bool(_adaptive_intents(messages))})
                         return {"mode": mode, "truth": TRUTH[mode], "strategy": strategy,
                                 "elapsed_s": round(time.monotonic()-start, 3),
                                 "target_requests": list(lab.seen), "root_exposure_detected": root_detected,
                                 "idor_verdict": verdict, "idor_proven": verdict == "proven",
                                 "plan_adopted": adopted, "engine_kind": plan_engine,
+                                "observed_account_link": svc._lab_account_resource_observed,
+                                "model_signals": model_signals,
                                 "local_model_calls": len(model.requests),
                                 "ai_est_tokens": gateway_meta.get("est_tokens"),
                                 "hypothetical_model_cost_usd": gateway_meta.get("est_cost_usd"),
@@ -154,6 +165,7 @@ def main() -> None:
            "always_selection_quality": _quality(after, "idor_check_appropriate", "plan_adopted"),
            "adaptive_selection_quality": _quality(adaptive, "idor_check_appropriate", "plan_adopted"),
            "plan_adoption": sum(r["plan_adopted"] for r in after) / len(after)}
+    print(json.dumps(out, ensure_ascii=False, indent=2))
     assert out["fixed_root_exposure_quality"]["fp"] == 0
     assert out["artex_root_exposure_quality"]["fp"] == 0
     assert out["fixed_root_exposure_quality"]["fn"] == 0
@@ -168,7 +180,6 @@ def main() -> None:
     assert out["plan_adoption"] == 1.0
     if os.environ.get("VULNIX_ARTEX_REAL_BIN"):
         assert all(r["engine_kind"] == "artex-binary" for r in after + adaptive)
-    print(json.dumps(out, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":
