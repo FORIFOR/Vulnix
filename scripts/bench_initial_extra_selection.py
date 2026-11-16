@@ -111,7 +111,14 @@ def measure(kind: str, mode: str, strategy: str, certificate: Path) -> dict:
 
                         def capture_response(response, evidence):
                             observed_response.append(response)
-                            return original_analyze(response, evidence)
+                            result = original_analyze(response, evidence)
+                            if strategy == "always":
+                                # The historical always-plan path ran during the
+                                # initial diagnosis, before result completion.
+                                fingerprint = safe_public_fingerprint(response, scheme="https")
+                                svc._plan_with_artex("policy:benchmark", llm_mode="gateway-forward",
+                                                     fingerprint=fingerprint)
+                            return result
 
                         original_runner = assessment_module.run_artex_planner
                         planner_calls = [0]
@@ -134,10 +141,6 @@ def measure(kind: str, mode: str, strategy: str, certificate: Path) -> dict:
                             if snap["state"] != "completed":
                                 raise RuntimeError(snap.get("failure"))
                             assert len(observed_response) == 1
-                            if strategy == "always":
-                                fingerprint = safe_public_fingerprint(observed_response[0], scheme="https")
-                                snap = svc._plan_with_artex("policy:benchmark", llm_mode="gateway-forward",
-                                                            fingerprint=fingerprint)
                             elapsed = time.monotonic() - started
                             finding_id = "f_l1_cors" if kind == "cors" else "f_l1_cookies"
                             finding = next((f for f in snap["findings"] if f["id"] == finding_id), None)
