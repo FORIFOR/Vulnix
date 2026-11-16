@@ -561,11 +561,27 @@ def analyze_l1_service_response(
         r_score, r_rat = compute_finding_risk_score(
             "medium", verdict, internet_facing=is_https
         )
+        if denial_only:
+            title = "未認証要求への認証拒否を確認（HTTP 200）"
+            summary = f"認証ヘッダーなしのGET（{target_url}）には HTTP 200 が返りましたが、JSON本文は認証拒否だけでした。"
+            reason = "HTTP 200のJSON本文は認証エラーだけでした。保護対象データの取得は確認できません。"
+            impact = "この応答から保護対象データの露出は確認できません。"
+            fix = "必要に応じて、認証拒否時のHTTPステータスを401/403に揃える"
+        else:
+            title = ("所有者仕様で認証必須のJSON応答が未認証で取得可能"
+                     if protected else "未認証JSON応答の公開範囲を確認する候補")
+            summary = (f"認証ヘッダーなしのGETリクエスト（{target_url}）に対して HTTP 200 "
+                       f"({content_type}) が返却されました。公開エンドポイントとして意図されたものか確認が必要です。")
+            reason = ("管理者承認済みの所有者仕様でルートが認証必須と定められ、"
+                      "未認証の読み取り専用GETでJSON応答を観測しました。" if protected else
+                      "未認証の読み取り専用プローブでJSON応答を観測しました。"
+                      "保護対象かどうかは、この応答だけでは判定できません。")
+            impact = "認証が必須であるべきAPIが未認証で応答している場合、内部ステータスやメタデータが外部へ露出する恐れがあります。"
+            fix = "公開が不要なAPIエンドポイントでは認証ミドルウェアを必須化し、未認証時は HTTP 401 Unauthorized を返却する"
         findings.append(
             {
                 "id": "f_l1_unauth_api",
-                "title": ("所有者仕様で認証必須のJSON応答が未認証で取得可能"
-                          if verdict == "detected" else "未認証JSON応答の公開範囲を確認する候補"),
+                "title": title,
                 "severity": "medium",
                 "verdict": verdict,
                 "verdict_basis": "owner_spec_and_l1_observation" if verdict == "detected" else "unverified_scope",
@@ -575,16 +591,13 @@ def analyze_l1_service_response(
                 "help_term": "idor",
                 "risk_score": r_score,
                 "risk_rationale": r_rat,
-                "summary": f"認証ヘッダーなしのGETリクエスト（{target_url}）に対して HTTP 200 ({content_type}) が返却されました。公開エンドポイントとして意図されたものか確認が必要です。",
-                "why_detected": ("HTTP 200のJSON本文は認証エラーだけでした。保護対象データの取得は確認できません。"
-                                 if denial_only else "管理者承認済みの所有者仕様でルートが認証必須と定められ、"
-                                 "未認証の読み取り専用GETでJSON応答を観測しました。"
-                                 if protected else "未認証の読み取り専用プローブでJSON応答を観測しました。保護対象かどうかは、この応答だけでは判定できません。"),
+                "summary": summary,
+                "why_detected": reason,
                 "what_was_established": ("認証ヘッダーなしのGETでHTTP 200のJSON応答を取得しました。"
                                          if verdict == "detected" else None),
                 "caveat": ("認証要件との不一致を観測しました。応答内容が機密情報か、他ユーザーの情報を読めたかは未実証です。"
                            if verdict == "detected" else "保護対象データの取得は確認できません。追加の根拠が揃うまで脆弱性とは判定しません。"),
-                "impact": "認証が必須であるべきAPIが未認証で応答している場合、内部ステータスやメタデータが外部へ露出する恐れがあります。",
+                "impact": impact,
                 "evidence": [
                     _enrich_ev(
                         ev,
@@ -593,9 +606,7 @@ def analyze_l1_service_response(
                     )
                 ],
                 "remediation": {
-                    "steps": [
-                        "公開が不要なAPIエンドポイントでは認証ミドルウェアを必須化し、未認証時は HTTP 401 Unauthorized を返却する"
-                    ],
+                    "steps": [fix],
                     "how_to_verify": "未認証GETリクエストに対して HTTP 401/403 が返却されることを確認します。",
                 },
                 "executor": {**EXECUTOR_DEFAULT, "tool": "http_probe"},

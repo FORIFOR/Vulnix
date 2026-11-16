@@ -39,6 +39,12 @@ class TestAuthResponseLab(unittest.TestCase):
                                      "spec_evidence": ["owner API contract v1"]})
                     finding = next(f for f in findings if f["id"] == "f_l1_unauth_api")
                     self.assertEqual(finding["verdict"] == "detected", exposes_data)
+                    if mode.startswith("auth_error"):
+                        self.assertIn("認証拒否", finding["summary"])
+                        self.assertIn("保護対象データの取得は確認できません", finding["why_detected"])
+                        self.assertNotIn("認証必須のJSON応答が未認証で取得可能", finding["title"])
+                        self.assertIsNone(finding["what_was_established"])
+                        self.assertNotIn("情報が露出", finding["impact"])
                     self.assertEqual(lab.seen, ["/"])
                 finally:
                     lab.shutdown()
