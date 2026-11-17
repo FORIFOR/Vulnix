@@ -30,6 +30,7 @@ from tests import TEST_CONFINEMENT  # noqa: E402
 from tests.artex_mock_llm import MockLLM  # noqa: E402
 from tests.fixtures.cors_policy_lab import CorsPolicyLab  # noqa: E402
 from tests.fixtures.cookie_purpose_lab import CookiePurposeLab  # noqa: E402
+from tests.fixtures.status_exposure_lab import StatusExposureLab  # noqa: E402
 from tests.test_artex_bridge import FAKE  # noqa: E402
 
 
@@ -49,18 +50,20 @@ def _certificate(directory: Path) -> Path:
         "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
         "-keyout", str(private), "-out", str(certificate),
         "-subj", "/CN=owned-cors.example.test", "-days", "1",
-        "-addext", "subjectAltName=DNS:owned-cors.example.test,DNS:owned-cookie.example.test",
+        "-addext", "subjectAltName=DNS:owned-cors.example.test,DNS:owned-cookie.example.test,DNS:owned-status.example.test",
     ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return certificate
 
 
 def measure(kind: str, mode: str, strategy: str, certificate: Path, *,
             server_banner: str | None = None, allow_status_probe: bool = False) -> dict:
-    if kind not in ("cors", "cookie") or strategy not in ("fixed", "always", "observed"):
+    if kind not in ("cors", "cookie", "status") or strategy not in ("fixed", "always", "observed"):
         raise ValueError("unknown benchmark condition")
     host = f"owned-{kind}.example.test"
     site = (CorsPolicyLab(mode, server_banner=server_banner) if kind == "cors"
-            else CookiePurposeLab(mode, server_banner=server_banner))
+            else CookiePurposeLab(mode, server_banner=server_banner) if kind == "cookie"
+            else StatusExposureLab(mode))
+    effective_banner = site.banner if kind == "status" else server_banner
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(str(certificate), str(certificate.parent / "private.pem"))
     site.socket = context.wrap_socket(site.socket, server_side=True)
@@ -150,15 +153,19 @@ def measure(kind: str, mode: str, strategy: str, certificate: Path, *,
                                 raise RuntimeError(snap.get("failure"))
                             assert len(observed_response) == 1
                             elapsed = time.monotonic() - started
-                            finding_id = "f_l1_cors" if kind == "cors" else "f_l1_cookies"
+                            finding_id = ("f_l1_cors" if kind == "cors" else
+                                          "f_l1_cookies" if kind == "cookie" else
+                                          "f_l1_apache_mod_status")
                             finding = next((f for f in snap["findings"] if f["id"] == finding_id), None)
                             verdict = finding["verdict"] if finding else "none"
-                            expected = ("detected" if CORS_TRUTH[mode] else "none") if kind == "cors" else COOKIE_TRUTH[mode]
+                            expected = (("detected" if CORS_TRUTH[mode] else "none") if kind == "cors" else
+                                        COOKIE_TRUTH[mode] if kind == "cookie" else
+                                        "detected" if mode == "vulnerable" else "none")
                             payload = json.dumps(model.requests, ensure_ascii=False)
                             assert host not in payload and url not in payload and mode not in payload
                             plan = (snap.get("artex_plan") or {}).get("plan") or {}
                             planned = [i for i in plan.get("items", []) if i.get("catalog_id") == "l1_apache_mod_status"]
-                            expected_status_get = (server_banner or "").lower().startswith("apache/") \
+                            expected_status_get = (effective_banner or "").lower().startswith("apache/") \
                                 and allow_status_probe and strategy in ("always", "observed")
                             assert site.seen == (["/", "/server-status?auto"] if expected_status_get else ["/"]), site.seen
                             status_finding = next((f for f in snap["findings"]
@@ -172,7 +179,7 @@ def measure(kind: str, mode: str, strategy: str, certificate: Path, *,
                                 "status_plan_proposed": bool(planned),
                                 "status_plan_executable": any(i.get("status") in ("planned", "running", "completed")
                                                               for i in planned),
-                                "status_check_appropriate": (server_banner or "").lower().startswith("apache/")
+                                "status_check_appropriate": (effective_banner or "").lower().startswith("apache/")
                                     and allow_status_probe,
                                 "status_finding_verdict": (status_finding or {}).get("verdict", "none"),
                                 "elapsed_s": round(elapsed, 3),

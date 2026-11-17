@@ -1,0 +1,7 @@
+{
+  "status_exposed_apache": {"mode": "vulnerable", "status_consent": true, "status_exposed": true, "check_appropriate": true, "detection_evaluable": true},
+  "status_denied_apache": {"mode": "patched", "status_consent": true, "status_exposed": false, "check_appropriate": true, "detection_evaluable": true},
+  "status_generic_200_apache": {"mode": "generic_200", "status_consent": true, "status_exposed": false, "check_appropriate": true, "detection_evaluable": true},
+  "status_non_apache": {"mode": "non_apache", "status_consent": true, "status_exposed": false, "check_appropriate": false, "detection_evaluable": true},
+  "status_exposed_without_consent": {"mode": "vulnerable", "status_consent": false, "status_exposed": true, "check_appropriate": false, "detection_evaluable": false}
+}
