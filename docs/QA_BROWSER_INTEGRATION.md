@@ -13,4 +13,6 @@ PR #85 の `6475549` を基点に、専用QA作業ツリーで測定した。対
 
 再現は `VULNIX_NO_ENV_LOCAL=1 python3 -m scripts.bench_browser_owned_flow --production --chromium` に表のオプションを追加する。事前に `web/` で `npm ci` と `npm run build` が必要。新しい `--reconnect-events` と `--block-events` の併用は拒否する。
 
-修正後再確認のブラウザE2Eは**未評価**。この測定は実サイト読み取り専用モードであり、実サイトの再現検証を有効にしない。ラボ専用の再確認UIを別の隔離対象で確認する必要がある。公開βの実DNS所有確認・実サイトE2E、実モデルの品質も未評価。
+修正後再確認は別の隔離ラボで `VULNIX_NO_ENV_LOCAL=1 python3 -m scripts.bench_browser_lab_recheck` により検証した。事前に `web/` の `npm ci` と `npm run build` が必要。ループバックの脆弱ラボで既存の承認経路を通してIDORを `proven`（HTTP 200）とした後、390pxの実ブラウザで「防御パッチ適用・再検証」を押した。結果は `not_reproduced`（HTTP 403）で、詳細画面に修正前後の異なる証拠ID、展開した証拠本文のHTTP 200と403、最新の「今回のアクセスは拒否されました」が表示された。横スクロールとページエラーは0。最新の応答には `confidential_marker` が含まれなかった。これは同梱ラボの模擬パッチだけの検証で、実サイトの修正確認や一般的なIDOR診断精度を示さない。
+
+公開βの実DNS所有確認・実サイトE2E、実モデルの品質は未評価。
