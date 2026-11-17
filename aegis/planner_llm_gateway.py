@@ -33,8 +33,10 @@ request must match the approved fingerprint (a refused request does not unlock i
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import hmac
+import http.client
 import http.server
 import ipaddress
 import json
@@ -130,9 +132,10 @@ def estimate_tokens(text: str) -> int:
 class _BadResponse(Exception):
     """A 200 whose body is not a usable completion; `read` gives (part of) it."""
 
-    def __init__(self, body: bytes):
+    def __init__(self, body: bytes, code: int | None = None):
         super().__init__("bad upstream response")
         self._body = body
+        self.code = code
 
     def read(self, n=-1):
         return self._body[:n] if n and n > 0 else self._body
@@ -380,7 +383,7 @@ class PlannerLLMGateway:
     def __init__(self, *, mode: str, model: str, upstream_url: str = "", api_key: str = "",
                  budget: Budget | None = None, allowed_hosts=(), denied_hosts=(),
                  responder=None, transport=None, audit=None, approval: dict | None = None,
-                 may_forward=None, first_turn_tool: str | None = None):
+                 may_forward=None, first_turn_tool: str | None = None, send_scope=None):
         if mode not in ("preview", "forward"):
             raise ValueError("mode must be preview or forward")
         if first_turn_tool is not None and first_turn_tool not in FORCEABLE_FIRST_TOOLS:
@@ -417,6 +420,7 @@ class PlannerLLMGateway:
         self._transport = transport
         self._audit = audit
         self._may_forward = may_forward
+        self._send_scope = send_scope
         self.token = secrets.token_urlsafe(24)
         self.calls: list[CallRecord] = []
         self.preview_requests: list[dict] = []
@@ -659,12 +663,8 @@ class PlannerLLMGateway:
         headers = {"Content-Type": "application/json"}
         if self._key:
             headers["Authorization"] = f"Bearer {self._key}"
-        transport = self._transport
-        if transport is None:
-            from .router import _http_transport
-            transport = _http_transport
         try:
-            data = transport(self.upstream_url, headers, payload)
+            data = self._send_upstream(headers, payload)
             if len(data) > MAX_RESPONSE_BYTES:
                 raise ValueError("upstream response too large")
             resp = json.loads(data)
@@ -673,6 +673,9 @@ class PlannerLLMGateway:
                 raise _BadResponse(json.dumps(resp, ensure_ascii=False)[:4096].encode()
                                    if isinstance(resp, (dict, list)) else b"")
             self._settle(rec, clean, resp, prompt_tokens)
+        except GatewayRefused as e:
+            self._release(rec, e.code)
+            raise
         except Exception as e:  # noqa: BLE001 - sent (maybe): the reserve stays charged
             self._failed.set()                           # first: the run is over, no retry reaches upstream
             status, raw = _error_details(e)
@@ -697,6 +700,34 @@ class PlannerLLMGateway:
                 self._tools_sha = tools_sha
         self._record("planner_llm.call", rec, extra=_response_shape(resp, clean.get("tools") or []))
         return 200, resp
+
+    def _send_upstream(self, headers: dict, payload: bytes) -> bytes:
+        """Keep live authority across the request write, not the model response wait."""
+        scope = self._send_scope() if self._send_scope is not None else contextlib.nullcontext()
+        if self.real and self._transport is None and self._send_scope is not None:
+            parts = urllib.parse.urlsplit(self.upstream_url)
+            conn = http.client.HTTPSConnection(parts.hostname, parts.port or 443, timeout=30)
+            try:
+                conn.connect()
+                with scope:
+                    if self._closed.is_set() or self._failed.is_set():
+                        raise GatewayRefused("stopped", "the planner run was stopped")
+                    path = urllib.parse.urlunsplit(("", "", parts.path or "/", parts.query, ""))
+                    conn.request("POST", path, body=payload, headers=headers)
+                response = conn.getresponse()
+                if not 200 <= response.status < 300:
+                    raise _BadResponse(response.read(4096), response.status)
+                return response.read(MAX_RESPONSE_BYTES + 1)
+            finally:
+                conn.close()
+        transport = self._transport
+        if transport is None:
+            from .router import _http_transport
+            transport = _http_transport
+        with scope:
+            if self._closed.is_set() or self._failed.is_set():
+                raise GatewayRefused("stopped", "the planner run was stopped")
+            return transport(self.upstream_url, headers, payload)
 
     def _settle(self, rec: CallRecord, clean: dict, resp, prompt_tokens: int) -> None:
         usage = resp.get("usage") if isinstance(resp, dict) else None

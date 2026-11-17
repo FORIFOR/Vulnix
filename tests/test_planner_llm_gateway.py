@@ -3,7 +3,9 @@ fixed upstream, inspection, reserved budgets, preview without any external call)
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
+import http.client
 import json
 import os
 import sys
@@ -342,6 +344,104 @@ class TestForwarding(unittest.TestCase):
         self.assertEqual(code, 403)
         self.assertEqual(sent, [])
         self.assertEqual(gw.report()["records"][0]["reason"], "stopped")
+
+    def test_stop_while_waiting_for_send_authority_prevents_forward(self):
+        entered = threading.Event()
+        release = threading.Event()
+        sent = []
+
+        @contextlib.contextmanager
+        def send_scope():
+            entered.set()
+            self.assertTrue(release.wait(5))
+            yield
+
+        with forward(lambda *a: sent.append(a) or ok_transport(), audit=Audit(),
+                     send_scope=send_scope) as gw:
+            outcome = []
+            thread = threading.Thread(target=lambda: outcome.append(post(gw, chat())[0]))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            gw.close()
+            release.set()
+            thread.join(5)
+            self.assertFalse(thread.is_alive())
+        self.assertEqual((outcome, sent), ([403], []))
+
+    def test_real_transport_writes_only_inside_scope_and_waits_outside_it(self):
+        active = [False]
+        calls = []
+
+        @contextlib.contextmanager
+        def send_scope():
+            active[0] = True
+            try:
+                yield
+            finally:
+                active[0] = False
+
+        class Connection(http.client.HTTPSConnection):
+            def __init__(self, *args, **kwargs):
+                calls.append("created")
+
+            def connect(self):
+                self.assert_not_active()
+                calls.append("connected")
+
+            def assert_not_active(self):
+                if active[0]:
+                    raise AssertionError("network setup or response wait held authority")
+
+            def request(self, method, path, *, body, headers):
+                if not active[0]:
+                    raise AssertionError("request write lacked live authority")
+                calls.append("written")
+
+            def getresponse(self):
+                self.assert_not_active()
+                calls.append("response")
+                return type("Response", (), {"status": 200, "read": lambda _, limit: ok_transport()})()
+
+            def close(self):
+                calls.append("closed")
+
+        with patch("aegis.planner_llm_gateway.http.client.HTTPSConnection", Connection):
+            with forward(None, audit=Audit(), send_scope=send_scope) as gw:
+                code, _ = post(gw, chat())
+        self.assertEqual(code, 200)
+        self.assertEqual(calls, ["created", "connected", "written", "response", "closed"])
+
+    def test_stop_during_real_tls_connect_sends_no_request(self):
+        connecting = threading.Event()
+        release = threading.Event()
+        writes = []
+
+        class Connection(http.client.HTTPSConnection):
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def connect(self):
+                connecting.set()
+                if not release.wait(5):
+                    raise AssertionError("connection test timed out")
+
+            def request(self, *args, **kwargs):
+                writes.append(True)
+
+            def close(self):
+                pass
+
+        with patch("aegis.planner_llm_gateway.http.client.HTTPSConnection", Connection):
+            with forward(None, audit=Audit(), send_scope=contextlib.nullcontext) as gw:
+                outcome = []
+                thread = threading.Thread(target=lambda: outcome.append(post(gw, chat())[0]))
+                thread.start()
+                self.assertTrue(connecting.wait(5))
+                gw.close()
+                release.set()
+                thread.join(5)
+                self.assertFalse(thread.is_alive())
+        self.assertEqual((outcome, writes), ([403], []))
 
     def test_a_loopback_mock_upstream_needs_no_approval(self):
         with MockLLM() as mock, PlannerLLMGateway(mode="forward", model="m", upstream_url=mock.url + "/chat/completions",

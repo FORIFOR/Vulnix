@@ -2135,8 +2135,18 @@ class AssessmentService:
         model = os.environ.get("VULNIX_ARTEX_LLM_MODEL") or os.environ.get("VULNIX_ABLITERATION_MODEL") or "mock"
         may_forward = (lambda: self._artex_may_start(gen) and
                        (request_authorized is None or request_authorized()))
+        @contextlib.contextmanager
+        def send_scope():
+            # The HTTP request lease takes account then tenant locks. Never call
+            # request_authorized() inside it: those locks are not reentrant.
+            lease = getattr(request_authorized, "lease", None)
+            with (lease() if callable(lease) else contextlib.nullcontext()):
+                with self._lock:
+                    if not self._artex_may_start_locked(gen):
+                        raise GatewayRefused("stopped", "the planner run was stopped")
+                    yield
         common = dict(model=model, budget=budget, allowed_hosts=allowed, denied_hosts=denied, audit=self.audit,
-                      may_forward=may_forward, first_turn_tool=first_tool)
+                      may_forward=may_forward, first_turn_tool=first_tool, send_scope=send_scope)
         if mode == "gateway-preview":
             return PlannerLLMGateway(mode="preview", responder=_preview_responder,
                                      api_key=os.environ.get("VULNIX_ABLITERATION_KEY", ""), **common)
