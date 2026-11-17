@@ -80,7 +80,8 @@ def measure(kind: str, mode: str, strategy: str, certificate: Path, *,
                 "VULNIX_REAL_SITE_INITIAL_ARTEX": "1" if strategy == "observed" else "0",
                 "VULNIX_REAL_SITE_LOCAL_ARTEX": "1",
                 "VULNIX_ARTEX_REAL_CMD": shlex.join(command),
-                "VULNIX_ARTEX_EXPECTED_SHA256": os.environ.get("VULNIX_ARTEX_CI_BINARY_SHA256", ""),
+                "VULNIX_ARTEX_EXPECTED_SHA256": (os.environ.get("VULNIX_ARTEX_CI_BINARY_SHA256", "")
+                                                  if real_bin else ""),
                 "VULNIX_ARTEX_LLM_MODE": "gateway-forward",
                 "VULNIX_ARTEX_LLM_UPSTREAM_URL": model.url + "/chat/completions",
             }

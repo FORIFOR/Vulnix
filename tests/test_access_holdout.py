@@ -1,6 +1,8 @@
 """Blind access holdouts are scored against an independent target and labels."""
 
+import os
 import unittest
+from unittest.mock import patch
 
 from scripts.bench_access_holdout import measure_holdout, TRUTH, OWNER_SPECS
 from scripts.bench_five_class_holdout import _require_complete_rows
@@ -41,6 +43,12 @@ class AccessHoldoutTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 _require_complete_rows(invalid, {"a", "b"},
                                        ("fixed", "always", "observed"), "case_id")
+
+    def test_local_stand_in_does_not_claim_the_ci_real_binary_hash(self):
+        with patch.dict(os.environ, {"VULNIX_ARTEX_REAL_BIN": "",
+                                     "VULNIX_ARTEX_CI_BINARY_SHA256": "0" * 64}):
+            row = measure_holdout("cross_account_allowed", "adaptive")
+        self.assertTrue(row["idor_proven"])
 
 
 if __name__ == "__main__":

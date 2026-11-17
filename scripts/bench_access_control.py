@@ -56,7 +56,8 @@ def _measure(mode: str, strategy: str) -> dict:
                 intents=[INTENT], intent_selector=_adaptive_intents if strategy == "adaptive" else None) as model:
             env = {"AEGIS_ENV": "production" if real_bin else "development",
                    "VULNIX_ARTEX_REAL_CMD": shlex.join(command),
-                   "VULNIX_ARTEX_EXPECTED_SHA256": os.environ.get("VULNIX_ARTEX_CI_BINARY_SHA256", ""),
+                   "VULNIX_ARTEX_EXPECTED_SHA256": (os.environ.get("VULNIX_ARTEX_CI_BINARY_SHA256", "")
+                                                     if real_bin else ""),
                    "VULNIX_ARTEX_LLM_URL": model.url,
                    "VULNIX_ARTEX_LLM_MODE": "gateway-forward",
                    "VULNIX_ARTEX_LLM_UPSTREAM_URL": model.url + "/chat/completions"}
