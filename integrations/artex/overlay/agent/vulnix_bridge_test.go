@@ -12,6 +12,13 @@ import (
 	actool "github.com/Autumn-27/norma/tool"
 )
 
+func TestVulnixBridgeFirstPromptFactGuidance(t *testing.T) {
+	if !strings.Contains(vulnixInputTail, "list_facts") ||
+		!strings.Contains(vulnixInputTail, "観測事実") {
+		t.Fatal("initial graph facts must be usable without a redundant fact lookup")
+	}
+}
+
 // (a) the tool set handed to the agent is exactly the allowlist, taken from the
 // real PlannerTools(), and contains none of the shell/file/web/scope/worker tools.
 func TestVulnixBridgeAllowlistedToolsAreExact(t *testing.T) {
