@@ -223,3 +223,5 @@ flowchart LR
 8. P22では混在Cookieを個別に保持し、390pxのChromiumで画面部品の表示を確認した。ループバックHTTPS6条件でも属性保存・`document.cookie`と診断判定の一致を確認した。公開βの画面通し操作や実HTTPSのGateway/Worker経路は残る。
 9. P23では5分類を同じTP/FP/FN/TN定義で採点し、分類ごとの条件数とMacro平均の分母を示す。CORS・CookieのARTEX欄は未評価のまま保ち、実ARTEX+模擬モデルと実Abliteration AIを混同しない。
 10. P24は修正後再確認で初回診断より弱いCORS・Cookie基準を使っていた回帰を修正した。P25はCORS・CookieのローカルHTTPS15条件で一律ARTEXの不要な提案15件・計画起動15回を省いた。対象GETとWorker起動は15回のまま、判定一致も15/15を維持した。実ARTEXとローカル模擬モデルの代表条件はLinux CIで別途測る。
+
+`4f1ac7b`では診断結果とシステム状態も同じ初回・送信前の権限照合に移し、隔離事前確認の`sudo`待ちを5秒で拒否する。個別の失効競合と時間切れテストは成功。最新全件・Linux CIは進行中。
