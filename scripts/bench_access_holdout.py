@@ -23,7 +23,7 @@ OWNER_SPECS = json.loads((ROOT / "tests/fixtures/access_holdout_owner_specs.json
 
 
 def measure_holdout(mode: str, strategy: str) -> dict:
-    if mode not in TRUTH or strategy not in ("fixed_l1", "always", "adaptive"):
+    if mode not in TRUTH or strategy not in ("fixed_l1", "always", "adaptive", "adaptive_one_pass"):
         raise ValueError("unknown holdout condition")
     with patch.object(baseline, "AccessControlLab", AccessHoldoutLab), \
             patch.object(baseline, "TRUTH", TRUTH), \

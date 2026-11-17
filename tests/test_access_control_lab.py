@@ -190,3 +190,19 @@ class TestIndependentAccessControlLab(unittest.TestCase):
                                         "content": json.dumps({"title": "Measured account resource link: absent",
                                                                "detail": "absent"})}]
             self.assertNotIn("tool_calls", ask(absent))
+
+    def test_adaptive_mock_can_use_measured_first_prompt_without_fact_lookup(self):
+        with MockLLM(intent_selector=_adaptive_intents, prefer_initial_facts=True) as model:
+            def ask(content):
+                req = Request(model.url + "/chat/completions",
+                              data=json.dumps({"model": "mock", "messages": [
+                                  {"role": "user", "content": content}]}).encode(),
+                              headers={"Content-Type": "application/json"})
+                with urlopen(req, timeout=3) as response:
+                    return json.load(response)["choices"][0]["message"]
+            present = ask("Observed graph: Measured account resource link: present")
+            self.assertEqual(present["tool_calls"][0]["function"]["name"], "add_intent")
+            absent = ask("Observed graph: Measured account resource link: absent")
+            self.assertNotIn("tool_calls", absent)
+            missing = ask("Observed graph has no measured account resource link")
+            self.assertEqual(missing["tool_calls"][0]["function"]["name"], "list_facts")

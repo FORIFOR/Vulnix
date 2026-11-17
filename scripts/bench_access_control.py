@@ -53,7 +53,9 @@ def _measure(mode: str, strategy: str) -> dict:
                    "spec_evidence": [] if requirement == "unspecified" else ["owner API contract v1"]}
     try:
         with tempfile.TemporaryDirectory() as tmp, MockLLM(
-                intents=[INTENT], intent_selector=_adaptive_intents if strategy == "adaptive" else None) as model:
+                intents=[INTENT],
+                intent_selector=_adaptive_intents if strategy in ("adaptive", "adaptive_one_pass") else None,
+                prefer_initial_facts=strategy == "adaptive_one_pass") as model:
             env = {"AEGIS_ENV": "production" if real_bin else "development",
                    "VULNIX_ARTEX_REAL_CMD": shlex.join(command),
                    "VULNIX_ARTEX_EXPECTED_SHA256": (os.environ.get("VULNIX_ARTEX_CI_BINARY_SHA256", "")

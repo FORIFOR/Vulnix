@@ -51,6 +51,14 @@ def _seeded_asset_id(messages: list) -> int:
     return 1
 
 
+def _initial_account_fact_available(messages: list[dict]) -> bool:
+    """Whether the initial ARTEX graph summary already carries the measured link."""
+    return any(isinstance(m, dict) and m.get("role") == "user"
+               and isinstance(m.get("content"), str)
+               and re.search(r"Measured account resource link: (?:present|absent)\b", m["content"])
+               for m in messages)
+
+
 # An asset that EXISTS in ARTEX's store but is not the seeded target (ARTEX creates
 # host/domain assets next to a seeded HTTP service): such an intent is stored by
 # ARTEX but must never become executable in Vulnix.
@@ -109,11 +117,13 @@ class MockLLM:
 
     def __init__(self, port: int = 0, *, strict: bool = False, fail_at: int | None = None,
                  fail_status: int = 402, intents: list[dict] | None = None,
-                 intent_selector: Callable[[list[dict]], list[dict]] | None = None):
+                 intent_selector: Callable[[list[dict]], list[dict]] | None = None,
+                 prefer_initial_facts: bool = False):
         self.requests: list[dict] = []
         self.strict, self.fail_at, self.fail_status = strict, fail_at, fail_status
         self.intents = intents
         self.intent_selector = intent_selector
+        self.prefer_initial_facts = prefer_initial_facts
         mock = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -144,7 +154,8 @@ class MockLLM:
                 called = [tc.get("function", {}).get("name")
                           for m in msgs if isinstance(m, dict) and m.get("role") == "assistant"
                           for tc in m.get("tool_calls") or [] if isinstance(tc, dict)]
-                if mock.intent_selector is not None and "list_facts" not in called:
+                if (mock.intent_selector is not None and "list_facts" not in called
+                        and not (mock.prefer_initial_facts and _initial_account_fact_available(msgs))):
                     message = {"role": "assistant", "content": "",
                                "tool_calls": [{"id": "call_list_facts", "type": "function",
                                                "function": {"name": "list_facts", "arguments": "{}"}}]}
