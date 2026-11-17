@@ -40,7 +40,7 @@ def _adaptive_intents(messages: list[dict]) -> list[dict]:
     return [INTENT] if re.search(r"Measured account resource link: present", prompt) else []
 
 
-def _measure(mode: str, strategy: str) -> dict:
+def _measure(mode: str, strategy: str, *, omit_account_fact: bool = False) -> dict:
     lab = AccessControlLab(mode)
     thread = threading.Thread(target=lab.serve_forever, daemon=True)
     thread.start()
@@ -86,6 +86,10 @@ def _measure(mode: str, strategy: str) -> dict:
                                                          root_access=root_access)
                         root_detected = any(f["id"] == "f_l1_unauth_api" and f["verdict"] == "detected"
                                             for f in l1)
+                        if omit_account_fact:
+                            # Test an incomplete initial graph without changing
+                            # the independent HTTP response or owner contract.
+                            svc._lab_account_resource_observed = None
                         adopted = False
                         verdict = "candidate"
                         plan_engine = None
@@ -125,6 +129,11 @@ def _measure(mode: str, strategy: str) -> dict:
                             messages = call["body"].get("messages") or []
                             prompt = json.dumps(messages, ensure_ascii=False)
                             model_signals.append({"roles": [m.get("role") for m in messages if isinstance(m, dict)],
+                                                  "prior_tool_names": [
+                                                      tc.get("function", {}).get("name")
+                                                      for m in messages if isinstance(m, dict)
+                                                      and m.get("role") == "assistant"
+                                                      for tc in m.get("tool_calls") or [] if isinstance(tc, dict)],
                                                   "has_surface_title": "Measured account resource link" in prompt,
                                                   "has_present": "present" in prompt,
                                                   "has_absent": "absent" in prompt,

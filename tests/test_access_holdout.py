@@ -34,6 +34,15 @@ class AccessHoldoutTests(unittest.TestCase):
         row = measure_holdout("account_directory_public", "adaptive")
         self.assertFalse(row["idor_proven"])
 
+    def test_missing_initial_account_fact_does_not_invent_idor(self):
+        row = measure_holdout("private_root_200", "adaptive_one_pass",
+                              omit_account_fact=True)
+        self.assertTrue(row["root_exposure_detected"])
+        self.assertFalse(row["plan_adopted"])
+        self.assertFalse(row["idor_proven"])
+        self.assertIsNone(row["observed_account_link"])
+        self.assertEqual(len(row["target_requests"]), 1)
+
     def test_aggregate_refuses_missing_or_duplicate_conditions(self):
         rows = [{"case_id": case_id, "strategy": strategy}
                 for case_id in ("a", "b") for strategy in ("fixed", "always", "observed")]

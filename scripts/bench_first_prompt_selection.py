@@ -68,6 +68,17 @@ def main() -> None:
     rows = [measure_holdout(mode, strategy) for mode in modes
             for strategy in ("adaptive", "adaptive_one_pass")]
     report = compare(rows, {mode: TRUTH[mode] for mode in modes})
+    missing = measure_holdout("private_root_200", "adaptive_one_pass",
+                              omit_account_fact=True)
+    if (not missing["root_exposure_detected"] or missing["plan_adopted"]
+            or missing["idor_proven"] or missing["observed_account_link"] is not None):
+        raise AssertionError("missing observation must not create an IDOR verdict")
+    if os.environ.get("VULNIX_ARTEX_REAL_BIN"):
+        signals = missing["model_signals"]
+        if (len(signals) != 2 or signals[0]["has_surface_title"]
+                or "list_facts" not in signals[1]["prior_tool_names"]):
+            raise AssertionError("missing initial fact did not fall back to ARTEX list_facts")
+    report["missing_initial_fact_fallback"] = missing
     print(json.dumps(report, ensure_ascii=False, indent=2))
 
 
