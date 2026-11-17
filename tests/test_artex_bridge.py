@@ -1306,14 +1306,9 @@ class TestRealArtexPlanner(ServiceBase):
         self.assertNotIn(host, json.dumps(self.mock.requests, ensure_ascii=False))
 
     def test_the_real_planner_accepts_a_scoped_site_without_receiving_its_hostname(self):
-        self.svc._real_site_local_artex = True
-        self.svc.issue_ownership_challenge(url="https://site.test/")
-        self.svc.verify_asset_ownership(
-            url_or_host="site.test", method="google_search_console",
-            google_property="sc-domain:site.test", google_endpoint=("https", 443))
-        self.svc.confirm_asset_scope(url_or_host="site.test", confirmed_prohibited=True,
-                                     activate_workspace=True)
-        self.svc.a.state = "completed"  # prompt/privacy test; live L1 completion is tested above
+        from tests.test_real_service import HOST
+
+        site, url = self.signed_mock_root()
         self.svc.a.findings["f_headers"] = {
             "id": "f_headers", "category": "設定不備", "severity": "medium",
             "verdict": "detected", "verdict_basis": "l1_observation", "demo_fixture": False,
@@ -1325,8 +1320,10 @@ class TestRealArtexPlanner(ServiceBase):
         self.assertTrue(self.mock.requests)
         requests = json.dumps(self.mock.requests, ensure_ascii=False)
         self.assertIn("f_headers", requests)  # real ARTEX receives a measured, site-specific feature
-        self.assertNotIn("site.test", requests)
+        self.assertNotIn(HOST, requests)
+        self.assertNotIn(url, requests)
         self.assertNotIn("private response text", requests)
+        self.assertEqual(site.seen, [("/", None)])
         self.assertTrue(all(item["level"] == "L1" for item in plan["items"]))
         self.assertTrue(any(item["catalog_id"] == "l1_http_probe" for item in plan["items"]))
 
@@ -1787,14 +1784,9 @@ class TestRealArtexThroughThePlannerGateway(TestRealArtexPlanner):
                  "items": [(i["catalog_id"], i["status"]) for i in plan["items"]]}, ensure_ascii=False, indent=2))
 
     def test_owned_site_real_artex_uses_budgeted_local_gateway_without_host_leak(self):
-        self.svc._real_site_local_artex = True
-        self.svc.issue_ownership_challenge(url="https://site.test/")
-        self.svc.verify_asset_ownership(
-            url_or_host="site.test", method="google_search_console",
-            google_property="sc-domain:site.test", google_endpoint=("https", 443))
-        self.svc.confirm_asset_scope(url_or_host="site.test", confirmed_prohibited=True,
-                                     activate_workspace=True)
-        self.svc.a.state = "completed"  # no target request; this test isolates planning
+        from tests.test_real_service import HOST
+
+        site, url = self.signed_mock_root()
         self.svc.a.findings["f_headers"] = {
             "id": "f_headers", "category": "設定不備", "severity": "medium",
             "verdict": "detected", "verdict_basis": "l1_observation", "demo_fixture": False,
@@ -1812,8 +1804,10 @@ class TestRealArtexThroughThePlannerGateway(TestRealArtexPlanner):
         self.assertTrue(self.mock.requests)
         sent = json.dumps(self.mock.requests, ensure_ascii=False)
         self.assertIn("f_headers", sent)
-        self.assertNotIn("site.test", sent)
+        self.assertNotIn(HOST, sent)
+        self.assertNotIn(url, sent)
         self.assertNotIn("private response text", sent)
+        self.assertEqual(site.seen, [("/", None)])
         self.assertTrue(all(item["level"] == "L1" for item in plan["items"]))
 
     def test_preview_mode_sends_nothing_and_shows_what_would_be_sent(self):
