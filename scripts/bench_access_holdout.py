@@ -57,6 +57,7 @@ def summarize(rows: list[dict]) -> dict:
             "target_get": sum(len(r["target_requests"]) for r in selected),
             "worker_launches": sum(r["worker_launches"] for r in selected),
             "gateway_calls": sum(r["gateway_calls"] for r in selected),
+            "planner_calls": sum(r["planner_calls"] for r in selected),
             "model_calls": sum(r["local_model_calls"] for r in selected),
             "elapsed_s_sum": round(sum(r["elapsed_s"] for r in selected), 3),
             "budget_est_tokens_sum": sum(r.get("ai_est_tokens") or 0 for r in selected),
@@ -78,8 +79,19 @@ def main() -> None:
              ("private_root_200", "cross_account_allowed", "account_directory_public")]
     rows = [measure_holdout(mode, strategy) for mode in cases
             for strategy in ("fixed_l1", "always", "adaptive")]
+    for row in rows:
+        truth = TRUTH[row["mode"]]
+        assert row["truth"] == truth
+        assert row["root_exposure_detected"] == truth["unauth_exposure"]
+        assert row["idor_proven"] == (truth["cross_account_access"]
+                                      if row["strategy"] != "fixed_l1" else False)
+    adaptive = [row for row in rows if row["strategy"] == "adaptive"]
+    selection = _score(adaptive, "idor_check_appropriate", "plan_adopted")
+    assert selection["fn"] == 0 and selection["fp"] <= 1
+    assert all(row["planner_calls"] == (0 if row["strategy"] == "fixed_l1" else 1)
+               for row in rows)
     if os.environ.get("VULNIX_ARTEX_REAL_BIN"):
-        assert all(r["engine_kind"] == "artex-binary"
+        assert all(r["engine_kind"] == "artex-binary" and r["local_model_calls"] > 0
                    for r in rows if r["strategy"] != "fixed_l1")
     print(json.dumps(summarize(rows), ensure_ascii=False, indent=2))
 

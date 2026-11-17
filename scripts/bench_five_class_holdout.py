@@ -20,6 +20,14 @@ STRATEGIES = {"fixed": ("fixed", "fixed", "fixed_l1"),
               "observed": ("observed", "observed", "adaptive")}
 
 
+def _require_complete_rows(rows: list[dict], case_ids: set[str],
+                           strategies: tuple[str, ...], id_key: str) -> None:
+    expected = {(case_id, strategy) for case_id in case_ids for strategy in strategies}
+    observed = [(row.get(id_key), row.get("strategy")) for row in rows]
+    if len(observed) != len(expected) or set(observed) != expected:
+        raise ValueError(f"incomplete or duplicate holdout rows: {id_key}")
+
+
 def _read_or_run(path: Path | None, module: str) -> dict:
     if path is not None:
         return json.loads(path.read_text())
@@ -40,6 +48,15 @@ def _merge_counts(*scores: dict) -> dict:
 
 
 def summarize(mixed: dict, status: dict, access: dict) -> dict:
+    _require_complete_rows(
+        mixed["rows"], set(json.loads((ROOT / "tests/fixtures/initial_mixed_holdout_truth.json").read_text())),
+        ("fixed", "always", "observed"), "case_id")
+    _require_complete_rows(
+        status["rows"], set(json.loads((ROOT / "tests/fixtures/status_selection_holdout_truth.json").read_text())),
+        ("fixed", "always", "observed"), "case_id")
+    _require_complete_rows(
+        access["rows"], set(json.loads((ROOT / "tests/fixtures/access_holdout_truth.json").read_text())),
+        ("fixed_l1", "always", "adaptive"), "mode")
     strategies = {}
     for name, (mkey, skey, akey) in STRATEGIES.items():
         m, s, a = (mixed["strategies"][mkey], status["strategies"][skey],
@@ -73,8 +90,7 @@ def summarize(mixed: dict, status: dict, access: dict) -> dict:
                                          s["eligible_check_omissions"] + a["appropriate_check_omissions"]),
             "target_get": m["target_get"] + s["target_get"] + a["target_get"],
             "worker_launches": m["worker_launches"] + s["worker_launches"] + a["worker_launches"],
-            "planner_calls": m["planner_calls"] + s["planner_calls"] +
-                             (0 if name == "fixed" else len(access["rows"]) // 3),
+            "planner_calls": m["planner_calls"] + s["planner_calls"] + a["planner_calls"],
             "local_model_calls": m["local_model_calls"] + s["local_model_calls"] + a["model_calls"],
             "elapsed_s_sum": round(m["elapsed_s_sum"] + s["elapsed_s_sum"] + a["elapsed_s_sum"], 3),
             "budget_est_tokens_sum": (m["budget_est_tokens_sum"] + s["budget_est_tokens_sum"] +
@@ -103,7 +119,16 @@ def main() -> None:
     reports = (_read_or_run(args.mixed_file, "scripts.bench_initial_mixed_holdout"),
                _read_or_run(args.status_file, "scripts.bench_status_selection_holdout"),
                _read_or_run(args.access_file, "scripts.bench_access_holdout"))
-    print(json.dumps(summarize(*reports), ensure_ascii=False, indent=2))
+    report = summarize(*reports)
+    observed = report["strategies"]["observed"]
+    always = report["strategies"]["always"]
+    assert observed["selection_micro"]["fn"] == 0
+    assert observed["selection_micro"]["fp"] <= 1
+    assert all(score["fn"] == 0 and score["fp"] == 0
+               for score in observed["classes"].values())
+    assert observed["target_get"] <= always["target_get"]
+    assert observed["worker_launches"] <= always["worker_launches"]
+    print(json.dumps(report, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

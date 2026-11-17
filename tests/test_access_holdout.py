@@ -3,6 +3,7 @@
 import unittest
 
 from scripts.bench_access_holdout import measure_holdout, TRUTH, OWNER_SPECS
+from scripts.bench_five_class_holdout import _require_complete_rows
 from tests.fixtures.access_holdout_lab import MODES
 
 
@@ -16,16 +17,30 @@ class AccessHoldoutTests(unittest.TestCase):
         self.assertTrue(row["root_exposure_detected"])
         self.assertFalse(row["idor_proven"])
         self.assertEqual(len(row["target_requests"]), 1)
+        self.assertEqual(row["planner_calls"], 0)
 
     def test_cross_account_proof_requires_both_accounts(self):
         row = measure_holdout("cross_account_allowed", "adaptive")
         self.assertTrue(row["idor_proven"])
         self.assertTrue(row["plan_adopted"])
         self.assertGreaterEqual(len(row["target_requests"]), 3)
+        self.assertEqual(row["planner_calls"], 1)
+        self.assertEqual([account for _path, account in row["target_requests"][-2:]],
+                         ["acct_B", "acct_A"])
 
     def test_public_directory_is_not_proven_idor(self):
         row = measure_holdout("account_directory_public", "adaptive")
         self.assertFalse(row["idor_proven"])
+
+    def test_aggregate_refuses_missing_or_duplicate_conditions(self):
+        rows = [{"case_id": case_id, "strategy": strategy}
+                for case_id in ("a", "b") for strategy in ("fixed", "always", "observed")]
+        _require_complete_rows(rows, {"a", "b"}, ("fixed", "always", "observed"), "case_id")
+        for invalid in (rows[:-1], rows + [rows[0]],
+                        [{**rows[0], "strategy": "unexpected"}] + rows[1:]):
+            with self.assertRaises(ValueError):
+                _require_complete_rows(invalid, {"a", "b"},
+                                       ("fixed", "always", "observed"), "case_id")
 
 
 if __name__ == "__main__":
