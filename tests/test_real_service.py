@@ -1758,7 +1758,8 @@ class TestRealServiceApi(RealServiceBase):
             with urllib.request.urlopen(req) as r:
                 return r.status, json.load(r), (r.headers.get("Set-Cookie") or "").split(";")[0]
         except urllib.error.HTTPError as e:
-            return e.code, json.load(e), ""
+            with e:
+                return e.code, json.load(e), ""
 
     def login(self, name):
         return self.call("/auth/login", {"name": name, "password": f"{name}-pw"})[2]

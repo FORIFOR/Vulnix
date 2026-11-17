@@ -8,6 +8,8 @@ launches is a real confined process that the emergency stop can kill.
 from __future__ import annotations
 
 import copy
+import contextlib
+import atexit
 import hashlib
 import hmac
 import ipaddress
@@ -210,6 +212,18 @@ class ApproverRequired(PermissionError):
 
 
 _DATA_DIR_LOCKS: dict[str, object] = {}
+
+
+def _close_data_dir_locks_at_exit() -> None:
+    # The claims stay held for the entire process lifetime. Closing explicitly at
+    # interpreter shutdown avoids leaking file handles in long test processes.
+    for handle in _DATA_DIR_LOCKS.values():
+        if handle is not None:
+            handle.close()
+    _DATA_DIR_LOCKS.clear()
+
+
+atexit.register(_close_data_dir_locks_at_exit)
 
 # The service object that last used each data directory IN THIS PROCESS (tests open
 # several in a row; production opens one). Lets a new instance ask the previous one
@@ -2768,6 +2782,7 @@ class AssessmentService:
         approver: str = "operator",
         kind: str = "Webアプリケーション",
         environment: str = "ステージング環境",
+        grant_guard=None,
     ) -> dict:
         """Step 1 & 2 of the 5-step registration flow: parse target URL, generate
         DNS TXT / .well-known challenge, and create an unverified asset record.
@@ -2786,8 +2801,13 @@ class AssessmentService:
         if parsed["is_local_lab"] or host in ("lab.test", "api.lab.test", "localhost"):
             raise ValueError("模擬ラボの対象は、実サービスの所有確認フローでは登録できません")
 
-        with self._lock:
+        # This registration can inherit a signed Google domain proof. Hold the
+        # live HTTP authority through that nested grant as well as registration.
+        with (grant_guard() if grant_guard else contextlib.nullcontext()) as current_roles, self._lock:
             existing = self._asset_record(host)        # active asset or not: same handling
+            if (current_roles is not None and "approver" not in current_roles
+                    and (host in self._ownership_proofs or host in self._verified_external_hosts)):
+                raise ApproverRequired("所有確認済みの対象の再登録には承認責任者の権限が必要です")
             if existing is not None and not self._in_ownership_flow(host):
                 raise ValueError("この名前は模擬ラボの対象として登録されています。先に削除してから実サービスとして登録してください")
             if existing is self.a.asset and self.a.state in ("running", "paused"):
@@ -2872,6 +2892,7 @@ class AssessmentService:
                     prop, original_verified_at = covering
                     inherited = self.verify_asset_ownership(
                         url_or_host=host, method=GOOGLE_METHOD, actor=approver,
+                        roles=current_roles,
                         google_property=prop, google_endpoint=(parsed["scheme"], parsed["port"]),
                         google_verified_at=original_verified_at,
                     )
@@ -2908,6 +2929,7 @@ class AssessmentService:
         google_property: str | None = None,
         google_endpoint: tuple[str, int] | None = None,
         google_verified_at: float | None = None,
+        grant_guard=None,
     ) -> dict:
         """Step 2 of the 5-step registration flow: verify ownership via DNS TXT,
         /.well-known/vulnix-verify.txt, or (method ``google_search_console``) a Google
@@ -2955,14 +2977,18 @@ class AssessmentService:
         if method == GOOGLE_METHOD and not verified:
             # Google not confirming is "not proven this way", not a failed re-check: an
             # existing proof (DNS / file) or scope is left as it is
-            self.audit.record("asset.ownership_failed", actor=actor, host=host, method=method,
-                              verified=False, detail=res["detail"])
-            with self._lock:
-                asset = self._asset_record(host)
+            with (grant_guard() if grant_guard else contextlib.nullcontext()):
+                self.audit.record("asset.ownership_failed", actor=actor, host=host, method=method,
+                                  verified=False, detail=res["detail"])
+                with self._lock:
+                    asset = self._asset_record(host)
             return {"host": host, "verified": False, "verification": res, "l2_auto_approved": False,
                     "asset": dict(asset) if asset else None}
 
-        with self._lock:
+        # The lookup may have taken seconds. The HTTP caller holds its live session and
+        # organization membership through the signed ledger commit, so a mid-flight
+        # removal or logout cannot grant ownership from an old role snapshot.
+        with (grant_guard() if grant_guard else contextlib.nullcontext(roles)) as current_roles, self._lock:
             target_asset = next(
                 (x for x in self._extra_assets if x.get("name", "").lower() == host),
                 None,
@@ -2976,7 +3002,7 @@ class AssessmentService:
                 # the registration changed while Google was being asked: the property was
                 # checked against the old scheme / port, so nothing is recorded
                 raise ValueError("確認中にサイトの登録内容が変わりました。もう一度お試しください")
-            if (not verified and roles is not None and "approver" not in roles
+            if (current_roles is not None and "approver" not in current_roles
                     and (host in self._ownership_proofs or host in self._verified_external_hosts)):
                 # Decided now, under the lock, and BEFORE anything is changed: someone
                 # else may have verified or confirmed this host while our lookup was
@@ -3055,6 +3081,7 @@ class AssessmentService:
         activate_workspace: bool = False,
         allow_loopback_test: bool = False,
         allow_status_probe: bool = False,
+        grant_guard=None,
     ) -> dict:
         """Step 3 of the 5-step flow: confirm target scope & prohibited actions
         after ownership verification, enabling safe L1 diagnosis (while keeping
@@ -3065,7 +3092,7 @@ class AssessmentService:
         host = parsed["host"]
 
         self._require_working_store()
-        with self._lock:
+        with (grant_guard() if grant_guard else contextlib.nullcontext()), self._lock:
             target_asset = next(
                 (x for x in self._extra_assets if x.get("name", "").lower() == host),
                 None,

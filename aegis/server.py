@@ -12,6 +12,7 @@ Run:  python3 -m aegis.server  [--port 8787] [--lab-port 18081]
 from __future__ import annotations
 
 import argparse
+import contextlib
 import dataclasses
 import http.cookies
 import hashlib
@@ -181,6 +182,26 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             if e["event"] == "operator.roles_changed" and e["fields"].get("target") == name:
                 latest = e["fields"]
         return bool(latest and "approver" in (latest.get("after") or []))
+
+    @contextlib.contextmanager
+    def live_grant_roles(sess, org_id: str, *, approver: bool = False):
+        """Serialize a signed ownership/scope grant with logout and role removal.
+
+        External ownership lookups happen before this guard is acquired. The short
+        ledger commit holds the live session and membership locks in that order.
+        """
+        with ops.locked_session(sess.token) as current:
+            if current is None or current.operator != sess.operator:
+                raise AuthError("ログインの有効期限が切れました。もう一度ログインしてください")
+            membership = (tenancy.store.locked_roles_in(org_id, current.operator)
+                          if tenancy is not None else contextlib.nullcontext(current.roles))
+            with membership as org_roles:
+                roles = service_roles(org_roles) if tenancy is not None else tuple(org_roles)
+                if not ({"operator", "approver", "admin"} & set(roles)):
+                    raise ApproverRequired("この組織で所有確認を行う権限がありません")
+                if approver and "approver" not in roles:
+                    raise ApproverRequired("診断範囲の確定には承認責任者の権限が必要です")
+                yield roles
 
     class H(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -954,6 +975,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         approver=actor,
                         kind=str(body.get("kind", "Webアプリケーション")),
                         environment=str(body.get("environment", "ステージング環境")),
+                        grant_guard=lambda: live_grant_roles(sess, getattr(self, "_bound_org", DEFAULT_ORG)),
                     )
                     return self._json(200, {**res, "assets": svc.assets()})
                 elif p == "/api/assets/google/start":
@@ -1014,7 +1036,8 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     prop = google_ownership.covering_property(sites, g_host, st["scheme"], st["port"])
                     res = svc.verify_asset_ownership(url_or_host=g_host, method=google_ownership.METHOD,
                                                      actor=actor, roles=tuple(sess.roles), google_property=prop,
-                                                     google_endpoint=(st["scheme"], st["port"]))
+                                                     google_endpoint=(st["scheme"], st["port"]),
+                                                     grant_guard=lambda: live_grant_roles(sess, bound_org))
                     return self._json(200, {**res, "assets": svc.assets()})
                 elif p == "/api/assets/verify-ownership":
                     v_host = ""
@@ -1030,6 +1053,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         method=str(body.get("method", "dns_txt")),
                         actor=actor,
                         roles=tuple(sess.roles),     # re-checked inside, when the result is applied
+                        grant_guard=lambda: live_grant_roles(sess, getattr(self, "_bound_org", DEFAULT_ORG)),
                     )
                     return self._json(200, {**res, "assets": svc.assets()})
                 elif p == "/api/assets/confirm-scope":
@@ -1046,6 +1070,8 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         sow_id=str(body.get("sow_id", "")),
                         activate_workspace=bool(body.get("activate_workspace", False)),
                         allow_status_probe=extra_check,
+                        grant_guard=lambda: live_grant_roles(sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                                                             approver=True),
                     )
                     return self._json(200, {**res, "assets": svc.assets(), "snapshot": svc.snapshot()})
                 elif p == "/api/assets/secrets":
@@ -1172,6 +1198,8 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     svc.decide_approval(m.group(1), decision, actor)
                 else:
                     return self._json(404, {"error": "not found"})
+            except AuthError as e:
+                return self._json(401, {"error": str(e)})
             except ApproverRequired as e:
                 return self._json(403, {"error": str(e)})
             except StopNotConfirmed as e:

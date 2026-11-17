@@ -127,6 +127,12 @@ class OrgStore:
             org = self._data["orgs"].get(org_id)
             return tuple((org or {}).get("members", {}).get(account, ()))
 
+    @contextlib.contextmanager
+    def locked_roles_in(self, org_id: str, account: str):
+        """Hold membership changes until one short authority grant is saved."""
+        with self._lock:
+            yield self.roles_in(org_id, account)
+
     def orgs_of(self, account: str) -> list[dict]:
         with self._lock:
             return [{"id": oid, "name": o["name"], "roles": list(o["members"][account])}

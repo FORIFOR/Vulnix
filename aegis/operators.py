@@ -23,6 +23,7 @@ requires a current code in addition to the password.
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import hmac
 import json
@@ -625,22 +626,31 @@ class OperatorStore:
     def resolve(self, token: str | None) -> Session | None:
         if not token:
             return None
-        key = session_key(token)
         with self._lock:
-            sess = self._sessions.get(key)
-            if sess and self._clock() >= sess.expires:
-                del self._sessions[key]
-                return None
-            if sess is None:
-                return None
-            # Roles come from the account as it is NOW, so a revoked role stops
-            # working at once and a stored session cannot carry a stale one.
-            op = self._ops.get(sess.operator)
-            if op is None:
-                del self._sessions[key]
-                return None
-            # the caller gets the token it presented; the store keeps only its hash
-            return Session(token, sess.operator, op.roles, sess.created, sess.expires)
+            return self._resolve_locked(token)
+
+    def _resolve_locked(self, token: str) -> Session | None:
+        key = session_key(token)
+        sess = self._sessions.get(key)
+        if sess and self._clock() >= sess.expires:
+            del self._sessions[key]
+            return None
+        if sess is None:
+            return None
+        # Roles come from the account as it is NOW, so a revoked role stops
+        # working at once and a stored session cannot carry a stale one.
+        op = self._ops.get(sess.operator)
+        if op is None:
+            del self._sessions[key]
+            return None
+        # the caller gets the token it presented; the store keeps only its hash
+        return Session(token, sess.operator, op.roles, sess.created, sess.expires)
+
+    @contextlib.contextmanager
+    def locked_session(self, token: str):
+        """Hold session revocation and role changes until one short grant is saved."""
+        with self._lock:
+            yield None if self._unsaved else self._resolve_locked(token)
 
     def logout(self, token: str | None) -> None:
         if not token:

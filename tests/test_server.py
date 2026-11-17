@@ -77,7 +77,8 @@ class TestServer(unittest.TestCase):
                     self.cookie = sc.split(";")[0]
                 return r.status, json.load(r)
         except urllib.error.HTTPError as e:
-            return e.code, json.load(e)
+            with e:
+                return e.code, json.load(e)
 
     def post(self, path, body=None, headers=None):
         return self._req(self.base + path, body if body is not None else {}, headers)

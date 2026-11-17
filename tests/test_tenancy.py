@@ -152,7 +152,8 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
                     who["cookie"] = sc.split(";")[0]
                 return resp.status, json.load(resp)
         except urllib.error.HTTPError as e:
-            return e.code, json.load(e)
+            with e:
+                return e.code, json.load(e)
 
     def signup(self, name, **extra):
         who = {}
@@ -762,6 +763,96 @@ class TestPublicReadOnlyRealSites(TestTenantIsolationOverHttp):
         token = challenge_for_host(host, osvc._ownership_secret)["token"]
         with patch("aegis.ownership.default_dns_txt_lookup", return_value=[f'"{token}"']):
             return self.req(who, "/assets/verify-ownership", {"host": host, "method": "dns_txt"})
+
+    def test_logout_during_dns_lookup_cannot_grant_ownership(self):
+        a = self.signup("alice")
+        host = "next-standards.com"
+        self.req(a, "/assets/challenge", {"url": f"https://{host}"})
+        from aegis.ownership import challenge_for_host
+        osvc = self.reg.service(a["orgs"][0]["id"])
+        token = challenge_for_host(host, osvc._ownership_secret)["token"]
+        entered, release = threading.Event(), threading.Event()
+        result = []
+
+        def blocked_lookup(_name):
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError("test did not release DNS lookup")
+            return [f'"{token}"']
+
+        with patch("aegis.ownership.default_dns_txt_lookup", side_effect=blocked_lookup):
+            worker = threading.Thread(target=lambda: result.append(self.req(
+                a, "/assets/verify-ownership", {"host": host, "method": "dns_txt"})), daemon=True)
+            worker.start()
+            try:
+                self.assertTrue(entered.wait(5))
+                self.ops.logout(a["cookie"].split("=", 1)[1])
+            finally:
+                release.set()
+                worker.join(5)
+            self.assertFalse(worker.is_alive())
+        self.assertEqual(result[0][0], 401)
+        self.assertNotIn(host, osvc.ledger.ownership_proofs)
+
+    def test_logout_during_proof_file_fetch_cannot_grant_ownership(self):
+        a = self.signup("alice")
+        host = "next-standards.com"
+        self.req(a, "/assets/challenge", {"url": f"https://{host}"})
+        from aegis.ownership import challenge_for_host
+        osvc = self.reg.service(a["orgs"][0]["id"])
+        token = challenge_for_host(host, osvc._ownership_secret)["token"]
+        entered, release = threading.Event(), threading.Event()
+        result = []
+
+        def blocked_fetch(_url):
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError("test did not release proof file fetch")
+            return token
+
+        with patch("aegis.ownership.default_well_known_fetcher", side_effect=blocked_fetch):
+            worker = threading.Thread(target=lambda: result.append(self.req(
+                a, "/assets/verify-ownership", {"host": host, "method": "well_known"})), daemon=True)
+            worker.start()
+            try:
+                self.assertTrue(entered.wait(5))
+                self.ops.logout(a["cookie"].split("=", 1)[1])
+            finally:
+                release.set()
+                worker.join(5)
+            self.assertFalse(worker.is_alive())
+        self.assertEqual(result[0][0], 401)
+        self.assertNotIn(host, osvc.ledger.ownership_proofs)
+
+    def test_logout_before_scope_commit_cannot_grant_diagnosis(self):
+        a = self.signup("alice")
+        host = "next-standards.com"
+        self.req(a, "/assets/challenge", {"url": f"https://{host}"})
+        self.assertTrue(self._verify(a, host)[1]["verified"])
+        osvc = self.reg.service(a["orgs"][0]["id"])
+        entered, release = threading.Event(), threading.Event()
+        result = []
+        original = AssessmentService.confirm_asset_scope
+
+        def delayed_scope(service, **kwargs):
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError("test did not release scope confirmation")
+            return original(service, **kwargs)
+
+        with patch.object(AssessmentService, "confirm_asset_scope", delayed_scope):
+            worker = threading.Thread(target=lambda: result.append(self.req(
+                a, "/assets/confirm-scope", {"host": host, "confirmed_prohibited": True})), daemon=True)
+            worker.start()
+            try:
+                self.assertTrue(entered.wait(5))
+                self.ops.logout(a["cookie"].split("=", 1)[1])
+            finally:
+                release.set()
+                worker.join(5)
+            self.assertFalse(worker.is_alive())
+        self.assertEqual(result[0][0], 401)
+        self.assertNotIn(host, osvc.ledger.verified_external_hosts)
 
     def test_register_prove_and_start_on_a_proven_site(self):
         a = self.signup("alice")

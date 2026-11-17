@@ -68,7 +68,8 @@ class ApiBase(RealServiceBase):
             with urllib.request.urlopen(req) as r:
                 return r.status, json.load(r)
         except urllib.error.HTTPError as e:
-            return e.code, json.load(e)
+            with e:
+                return e.code, json.load(e)
 
     def session(self, name):
         if name not in self.cookies:
@@ -195,7 +196,8 @@ class TestOpenReadsAreDevelopmentOnly(ApiBase):
                 with urllib.request.urlopen(req) as r:
                     return r.status == 200
             except urllib.error.HTTPError as e:
-                return e.code != 401
+                with e:
+                    return e.code != 401
         finally:
             srv.shutdown()
             srv.server_close()
@@ -271,7 +273,8 @@ class TestAuthorityBearingActionsNeedAnApprover(ApiBase):
                 with urllib.request.urlopen(req) as r:
                     return r.status
             except urllib.error.HTTPError as e:
-                return e.code
+                with e:
+                    return e.code
         self.assertEqual(raw(b"[1, 2, 3]"), 400)
         self.assertEqual(raw(b'"text"'), 400)
         self.assertEqual(raw(b"{}", length=5_000_000), 413)
