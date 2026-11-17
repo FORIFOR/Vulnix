@@ -49,5 +49,6 @@
 - `6e0a4ab`のLinux CI #44139188110は3ジョブ成功。`d25def3`で権限失効後にAI解説の代替経路へ進む問題を先に失敗テストで再現し、外部モデルへの進行を拒否。AI関連63件成功。
 - `276ca67`で外部AI transportをTLS接続・HTTP要求送出・応答待ちに分け、正規HTTPの生存権限リースを要求書込み中だけ保持。接続中の停止で送出0、非再入ロックの二重取得なし、応答待ちではリース解除を模擬テストで確認。個別4件とAI関連66件成功。最新ローカル全バックエンド1,431件成功・27件スキップ・ResourceWarning 0件（994.822秒、`/tmp/vulnix-pr85-send-lease-full.log`）。独立読み取り再レビューで新たな明確なP1/P2なし。最新Linux CIは進行中で、正式GitHubレビュー・実API送信・公開βは未実施。
 - コード`276ca67`のLinux CI #44144425197はPython/Web/実ARTEXの3ジョブ成功。資料`8a27824`のCI #44148037964は`ubuntu-latest`がUbuntu 26.04に変わり、PlaywrightがChromiumをインストールできず実ARTEXジョブが失敗。Pythonジョブはテスト失敗ではなくワークフロー中止。直前成功したRunnerはUbuntu 24.04.5だったため、`.github/workflows/ci.yml`の3ジョブを24.04に固定して再実行する。
+- `840e70f`でRunnerを24.04へ固定した[Linux CI #44149943968](https://github.com/FORIFOR/Vulnix/actions/runs/44149943968)はPython/Web/実ARTEXの3ジョブ成功。これは最新コードの模擬統合テストを再現した証拠であり、実モデル・実DNS・公開β・正式GitHubレビューの代替ではない。
 
 実サイト診断、有料API、DNS変更、mainマージ、本番反映は行っていない。
