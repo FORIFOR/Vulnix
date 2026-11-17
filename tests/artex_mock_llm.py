@@ -51,11 +51,13 @@ def _seeded_asset_id(messages: list) -> int:
     return 1
 
 
-def _initial_account_fact_available(messages: list[dict]) -> bool:
-    """Whether the initial ARTEX graph summary already carries the measured link."""
+def _initial_selection_fact_available(messages: list[dict]) -> bool:
+    """Whether the first ARTEX summary carries a measured selection signal."""
     return any(isinstance(m, dict) and m.get("role") == "user"
                and isinstance(m.get("content"), str)
-               and re.search(r"Measured account resource link: (?:present|absent)\b", m["content"])
+               and (re.search(r"Measured account resource link: (?:present|absent)\b", m["content"])
+                    or re.search(r"Measured root fingerprint:.*?server_family.{0,12}"
+                                 r"(?:apache|nginx|other|unknown)\b", m["content"]))
                for m in messages)
 
 
@@ -155,7 +157,7 @@ class MockLLM:
                           for m in msgs if isinstance(m, dict) and m.get("role") == "assistant"
                           for tc in m.get("tool_calls") or [] if isinstance(tc, dict)]
                 if (mock.intent_selector is not None and "list_facts" not in called
-                        and not (mock.prefer_initial_facts and _initial_account_fact_available(msgs))):
+                        and not (mock.prefer_initial_facts and _initial_selection_fact_available(msgs))):
                     message = {"role": "assistant", "content": "",
                                "tool_calls": [{"id": "call_list_facts", "type": "function",
                                                "function": {"name": "list_facts", "arguments": "{}"}}]}
