@@ -35,8 +35,12 @@ class AuditLog:
             # append alone is insufficient if an older entry was altered.
             entries, valid = self.verified_entries()
             tail = entries[-1]["hash"] if entries else GENESIS
-            if not valid or tail != self._prev:
+            if not valid:
                 raise ValueError("audit chain invalid")
+            # A second service object in the same process can have appended a
+            # valid record since this object last wrote. Continue that verified
+            # chain, never the older in-memory tail.
+            self._prev = tail
         body = {"ts": time.time(), "event": event, "fields": fields, "prev": self._prev}
         digest = hashlib.sha256(_canon(body).encode()).hexdigest()
         entry = {**body, "hash": digest}

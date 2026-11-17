@@ -5,6 +5,19 @@ from pathlib import Path
 from unittest.mock import patch
 
 from aegis.assessment import AssessmentService
+from aegis.audit import AuditLog
+
+
+class TestConcurrentValidAuditAppend(unittest.TestCase):
+    def test_another_service_append_preserves_the_chain_before_a_send(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "audit.jsonl"
+            first = AuditLog(path)
+            first.record("test.first")
+            second = AuditLog(path)
+            second.record("test.second")
+            first.record("allow", tool="http_probe")
+            self.assertTrue(first.verify())
 
 
 class TestAuditSnapshot(unittest.TestCase):
