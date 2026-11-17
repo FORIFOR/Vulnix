@@ -1,6 +1,6 @@
 # Vulnix Goal 完了判定表
 
-更新基点：[Draft PR #85](https://github.com/FORIFOR/Vulnix/pull/85)のコード・資料 `e3afa5d`（`codex/goal-integration-readiness`）、`origin/main` `5ecfc51`。ローカル全バックエンド1,410件成功・27件スキップ・ResourceWarning 0件、Web118件成功・Lintエラー0/警告5・ビルド成功。[Linux CI #44129291316](https://github.com/FORIFOR/Vulnix/actions/runs/44129291316)はPython・Web・実ARTEX 3ジョブ成功。以前の資料`abd1fc2`のPythonジョブはrunner停止でキャンセルされたが、最終コードのCIは成功。PRはDraft・未マージ・GitHub正式レビュー0件。**CI成功だけでは公開βの実動作を意味しない。**
+更新基点：[Draft PR #85](https://github.com/FORIFOR/Vulnix/pull/85)のコード `6e0a4ab`（`codex/goal-integration-readiness`）、`origin/main` `5ecfc51`。最新ローカル全バックエンド1,427件成功・27件スキップ・ResourceWarning 0件、Web118件成功・Lintエラー0/警告5・ビルド成功。直前コード`e3afa5d`の[Linux CI #44129291316](https://github.com/FORIFOR/Vulnix/actions/runs/44129291316)と資料`1c59640`の[CI #44135000098](https://github.com/FORIFOR/Vulnix/actions/runs/44135000098)は各3ジョブ成功。最新コードのCIは進行中。PRはDraft・未マージ・GitHub正式レビュー0件。**CI成功だけでは公開βの実動作を意味しない。**
 
 以下の既存コード・模擬テストの共通基点は `6475549` と上記CIである。新しい所有確認競合テスト・ブラウザ回帰は `f4de821` のローカル結果として明示する。各行のPASSは書かれた条件のみに適用する。公開β・実モデル・正式レビューはそれぞれ独立したゲートとして扱う。
 
@@ -26,6 +26,7 @@
 | OAuthによる所有確認 | BLOCKED | コード経路は既存。固定ホスト・Google OAuth設定は未提供で、公開βE2E未実施 | 所有確認 | DNS/設定権限を得た後に既存連携を有効化して検証 |
 | 公開βの実DNS所有確認・実サイトL1 | BLOCKED | 対象、範囲、通信上限、期間と実行承認が整うまで通信禁止。未実施 | 公開β | 承認後に署名済み範囲で1回ずつE2E検証 |
 | 認証・組織分離・権限失効 | NOT_TESTED | `dd55f60`で結合後のログアウト401・除名403・診断開始0を確認。`18b38f2`で同一接続の組織owner→全体管理APIの権限昇格P1を修正。`f85b3b5`で長時間ARTEX計画のモデル要求・Worker起動前に現在の権限を照合。`50dcaae`で前景Workerの要求者認可をPopen登録まで短時間保持。`e448b1d`で診断期限と隔離状態を起動前に再確認。`afab368`で手動ARTEXを署名済みの現行初期観測に結び付けた。`e3afa5d`の隔離ラボ実Gateway/Worker＋HTTPログアウト競合2件では、起動前失効はPopen0・証拠不変、登録中失効は登録後に後続403・旧Cookie401。全1,410件・Linux CI 3/3成功。今回の開発差分ではHTTPチャットへ生存権限を渡し、監査予約中・AI要求構築中の停止・権限・範囲失効を送信前に拒否する5件の個別テストが成功。ただし最終確認後から送信開始までの短い競合窓が独立レビューで残り、公開βも未実証 | セキュリティ/UI | 残る送信競合を安全制御の応答性とともに解決・再検証 |
+| 外部AI解説の送信開始と権限失効 | FAIL | `6e0a4ab`で監査予約後・advisor要求構築後の再確認を追加し、模擬5件成功。しかし別担当が`before_send()`復帰直後からtransport開始前の競合をP2として特定。権限失効・停止後の新規送信を完全には防げない。現在の公開βでは外部AI解説は有効化しない | セキュリティ/AI | 応答性を保った送信開始の直列化を設計し、失効をtransport境界で同期したテストで確認 |
 | 費用上限・監査・障害復旧 | NOT_TESTED | `7fa695d`・`e0981f8`で無効な費用設定、停止競合、環境プロキシ、監査破損後の送信を拒否。`ec26a38`・`920c7dd`で正当な交互追記と稼働中の切り戻しを扱う。`dd55f60`で同時Worker許可時のチェーン破損と予算1,000に対する700×2の過剰予約を再現・修正。`f85b3b5`の全件・Linux CIは成功。実請求額と再起動前の切り戻しは未確認（単独JSONLでは検知不可） | 運用 | 後続差分のCIと再起動境界を確認。トークン上限は事前計数がないため絶対保証しない |
 | ResourceWarningの影響 | PASS | `920c7dd`のPython 3.15全件でテスト用HTTPソケット13件の警告を観測。`dd55f60`で模擬サーバーとHTTPテストの終了処理を修正。`e3afa5d`のローカル全1,410件成功・27件スキップ・警告0件（991.616秒） | 品質保証 | 環境差があるLinuxの警告も継続監視 |
 | 顧客向け公開β | FAIL | 実モデル性能、実DNS・許可済み実サイトE2E、正式レビュー、本番承認が未完了 | リリース | [RELEASE_READINESS.md](RELEASE_READINESS.md)にゲートと証拠を整理し、未達は公開しない |
