@@ -33,6 +33,7 @@ from aegis.assessment import AssessmentService  # noqa: E402
 from aegis.confinement import KernelConfinement  # noqa: E402
 from aegis.operators import OperatorStore, hash_password  # noqa: E402
 from aegis.server import make_handler  # noqa: E402
+from aegis.tenancy import OrgStore, TenantRegistry, default_members_from  # noqa: E402
 from scripts.bench_status_exposure_after import HOST, STATUS_INTENT  # noqa: E402
 from tests import TEST_CONFINEMENT  # noqa: E402
 from tests.artex_mock_llm import MockLLM  # noqa: E402
@@ -45,10 +46,16 @@ PARSER.add_argument("--production", action="store_true", help="Use an already bu
 PARSER.add_argument("--idle-seconds", type=float, default=0,
                     help="Count backup API requests after the completed result remains visible")
 PARSER.add_argument("--block-events", action="store_true", help="Drop the SSE stream to verify backup polling")
+PARSER.add_argument("--reconnect-events", action="store_true",
+                    help="Abort the first SSE connection and require a reconnect")
 PARSER.add_argument("--silent-change", action="store_true",
                     help="Change a lab finding without publishing an event while SSE heartbeats continue")
 PARSER.add_argument("--revoke-session", action="store_true",
                     help="Revoke the lab session and require the browser to hide the old result")
+PARSER.add_argument("--report-export", action="store_true",
+                    help="Download the evidence-backed Markdown report in the browser")
+PARSER.add_argument("--org-switch", action="store_true",
+                    help="Switch to a second lab organization and confirm isolation")
 PARSER.add_argument("--real-artex", action="store_true", help="Use the pinned ARTEX overlay binary supplied by CI")
 PARSER.add_argument("--chromium", action="store_true", help="Use Playwright Chromium instead of local Chrome")
 PARSER.add_argument("--cors-note", action="store_true", help="Check the observed CORS headers and unproven-data note")
@@ -80,6 +87,8 @@ def main() -> None:
     args = PARSER.parse_args()
     if not 320 <= args.viewport_width <= 1920:
         PARSER.error("--viewport-width must be between 320 and 1920")
+    if args.block_events and args.reconnect_events:
+        PARSER.error("--block-events and --reconnect-events cannot be combined")
     real_bin = os.environ.get("VULNIX_ARTEX_REAL_BIN") if args.real_artex else None
     if args.real_artex and (not real_bin or not Path(real_bin).is_file()):
         PARSER.error("--real-artex requires VULNIX_ARTEX_REAL_BIN pointing to the built overlay")
@@ -131,7 +140,17 @@ def main() -> None:
                 seed.write_text(json.dumps({"operators": [{"name": "qa", "display": "QA",
                     "roles": ["operator", "approver"], "password_hash": hash_password(password)}]}))
                 ops = OperatorStore(seed)
-                backend = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(svc, ops))
+                registry = None
+                second_org = None
+                if args.org_switch:
+                    store = OrgStore(data / "orgs.json", bootstrap_members=lambda: default_members_from(ops))
+                    second_org = store.create_org("別の組織", "qa")
+                    registry = TenantRegistry(
+                        store, svc,
+                        lambda path: AssessmentService(path, 18081, l2_confinement=TEST_CONFINEMENT,
+                                                       real_site_read_only=True), data)
+                backend = ThreadingHTTPServer(("127.0.0.1", 0),
+                                              make_handler(svc, ops, tenancy=registry))
                 backend.daemon_threads = True
                 backend_thread = threading.Thread(target=backend.serve_forever, daemon=True)
                 backend_thread.start()
@@ -160,8 +179,17 @@ def main() -> None:
                             page.on("request", lambda req: api_calls.append(req.url.split("/api/", 1)[1].split("?", 1)[0])
                                     if "/api/" in req.url else None)
                             page.on("pageerror", lambda error: page_errors.append(str(error)))
+                            event_connections = [0]
                             if args.block_events:
                                 page.route("**/api/assessments/*/events*", lambda route: route.abort())
+                            if args.reconnect_events:
+                                def first_event_disconnect(route):
+                                    event_connections[0] += 1
+                                    if event_connections[0] == 1:
+                                        route.abort()
+                                    else:
+                                        route.continue_()
+                                page.route("**/api/assessments/*/events*", first_event_disconnect)
                             page.goto(base + "/login")
                             page.get_by_label("ユーザー名", exact=True).fill("qa")
                             page.get_by_label("パスワード", exact=True).fill(password)
@@ -230,6 +258,43 @@ def main() -> None:
                                 page.get_by_text("AIモデル:", exact=False).first.wait_for(timeout=10000)
                             else:
                                 assert len(model.requests) == 0, len(model.requests)
+                            report_exported = False
+                            if args.report_export:
+                                page.get_by_role("tab", name="診断").click()
+                                with page.expect_download() as download_info:
+                                    page.get_by_role("button", name="診断レポート出力", exact=False).click()
+                                download = download_info.value
+                                report_text = Path(download.path()).read_text(encoding="utf-8")
+                                assert download.suggested_filename == "vulnix-report-scan_001.md"
+                                assert "Apache mod_status" in report_text
+                                finding = next(f for f in snap["findings"] if f["id"] == "f_l1_apache_mod_status")
+                                evidence_ids = [ev["evidence_id"] for ev in finding["evidence"]]
+                                assert evidence_ids and any(evidence_id in report_text for evidence_id in evidence_ids)
+                                page.get_by_text("レポートプレビューを表示").wait_for()
+                                report_exported = True
+                                page.get_by_role("tab", name="問題").click()
+                            if args.reconnect_events:
+                                page.wait_for_timeout(5000)
+                                assert event_connections[0] >= 2, "SSE did not reconnect after first disconnect"
+                            org_switch_isolated = False
+                            if args.org_switch:
+                                assert second_org is not None
+                                page.locator("#org-switch").select_option(second_org)
+                                page.wait_for_url("**/dashboard")
+                                with page.expect_response(lambda response: response.url.endswith(
+                                        "/api/assessments/scan_001")) as other_response:
+                                    page.goto(base + "/assessments/scan_001")
+                                other_snapshot = other_response.value.json()
+                                assert other_snapshot["target_url"] != snap["target_url"]
+                                assert other_snapshot["asset"] != snap["asset"]
+                                page.get_by_role("tab", name="問題").click()
+                                assert page.get_by_text("Apache mod_status の公開露出").count() == 0
+                                page.locator("#org-switch").select_option("default")
+                                page.wait_for_url("**/dashboard")
+                                page.goto(base + "/assessments/scan_001")
+                                page.get_by_role("tab", name="問題").click()
+                                page.locator("h3").filter(has_text="Apache mod_status の公開露出").wait_for()
+                                org_switch_isolated = True
                             assert not page_errors, page_errors
                             assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
                             idle_at = len(api_calls)
@@ -269,6 +334,9 @@ def main() -> None:
                                               "idle_seconds": args.idle_seconds,
                                               "idle_api_requests": len(api_calls) - idle_at,
                                               "sse_blocked": args.block_events,
+                                              "sse_connections": event_connections[0] if args.reconnect_events else None,
+                                              "report_exported": report_exported,
+                                              "org_switch_isolated": org_switch_isolated,
                                               "silent_change_recovered_s": silent_change_recovered_s,
                                               "revocation_hidden_s": revocation_hidden_s,
                                               "target_paths": list(site.seen), "local_model_calls": len(model.requests),
@@ -291,6 +359,8 @@ def main() -> None:
                     backend.shutdown()
                     backend.server_close()
                     backend_thread.join(timeout=2)
+                    if registry is not None:
+                        registry.close_all()
                     svc.close()
     finally:
         site.shutdown()
