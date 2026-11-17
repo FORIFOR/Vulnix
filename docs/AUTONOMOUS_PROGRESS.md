@@ -50,5 +50,7 @@
 - `276ca67`で外部AI transportをTLS接続・HTTP要求送出・応答待ちに分け、正規HTTPの生存権限リースを要求書込み中だけ保持。接続中の停止で送出0、非再入ロックの二重取得なし、応答待ちではリース解除を模擬テストで確認。個別4件とAI関連66件成功。最新ローカル全バックエンド1,431件成功・27件スキップ・ResourceWarning 0件（994.822秒、`/tmp/vulnix-pr85-send-lease-full.log`）。独立読み取り再レビューで新たな明確なP1/P2なし。最新Linux CIは進行中で、正式GitHubレビュー・実API送信・公開βは未実施。
 - コード`276ca67`のLinux CI #44144425197はPython/Web/実ARTEXの3ジョブ成功。資料`8a27824`のCI #44148037964は`ubuntu-latest`がUbuntu 26.04に変わり、PlaywrightがChromiumをインストールできず実ARTEXジョブが失敗。Pythonジョブはテスト失敗ではなくワークフロー中止。直前成功したRunnerはUbuntu 24.04.5だったため、`.github/workflows/ci.yml`の3ジョブを24.04に固定して再実行する。
 - `840e70f`でRunnerを24.04へ固定した[Linux CI #44149943968](https://github.com/FORIFOR/Vulnix/actions/runs/44149943968)はPython/Web/実ARTEXの3ジョブ成功。これは最新コードの模擬統合テストを再現した証拠であり、実モデル・実DNS・公開β・正式GitHubレビューの代替ではない。
+- `f3ec4e7`でラボ用有料Planner forwardの送出開始を、権限と診断状態のリース内へ移した。Linux CI #44157266351のPythonジョブはRuffの未定義名1件で失敗し、全テストへ進まなかった。別担当の読み取りレビューは送信中の緊急停止待ち時間と、リース失効時の未送信費用の誤分類を指摘した。
+- `f60f7fe`でRuffエラーを修正し、要求書込みのソケット操作を1秒で制限、権限失効時は未送信として予約費用を解放する。Planner関連の個別テスト、Ruff、Web118件、Lintエラー0/警告5、ビルド成功。別担当の再レビューでは新たな明確なP1/P2なし。ただし送信中の停止時間を実測しておらず、1秒はソケット操作ごとの上限。[Linux CI #44158032444](https://github.com/FORIFOR/Vulnix/actions/runs/44158032444)と最新全バックエンドは実行中。正式GitHubレビューではない。
 
 実サイト診断、有料API、DNS変更、mainマージ、本番反映は行っていない。

@@ -461,6 +461,51 @@ class TestForwarding(unittest.TestCase):
                 self.assertFalse(thread.is_alive())
         self.assertEqual((outcome, writes), ([403], []))
 
+    def test_stalled_real_write_releases_stop_lock_after_socket_timeout(self):
+        authority = threading.Lock()
+        writing = threading.Event()
+
+        @contextlib.contextmanager
+        def send_scope():
+            with authority:
+                yield
+
+        class Socket:
+            timeout = None
+
+            def settimeout(self, seconds):
+                self.timeout = seconds
+
+        class Connection(http.client.HTTPSConnection):
+            def __init__(self, *args, **kwargs):
+                self.sock = Socket()
+
+            def connect(self):
+                pass
+
+            def request(self, *args, **kwargs):
+                writing.set()
+                time.sleep(self.sock.timeout)
+                raise TimeoutError("simulated stalled socket write")
+
+            def close(self):
+                pass
+
+        with patch("aegis.planner_llm_gateway.http.client.HTTPSConnection", Connection):
+            with forward(None, audit=Audit(), send_scope=send_scope) as gw:
+                outcome = []
+                thread = threading.Thread(target=lambda: outcome.append(post(gw, chat())[0]))
+                thread.start()
+                self.assertTrue(writing.wait(5))
+                started = time.monotonic()
+                self.assertTrue(authority.acquire(timeout=3), "stop waited past the bounded write")
+                elapsed = time.monotonic() - started
+                authority.release()
+                thread.join(5)
+                self.assertFalse(thread.is_alive())
+        self.assertLess(elapsed, 2.5)
+        self.assertEqual(outcome, [409])
+
     def test_a_loopback_mock_upstream_needs_no_approval(self):
         with MockLLM() as mock, PlannerLLMGateway(mode="forward", model="m", upstream_url=mock.url + "/chat/completions",
                                                   allowed_hosts={"lab.test"}, audit=Audit()) as gw:
