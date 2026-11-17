@@ -203,6 +203,16 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     raise ApproverRequired("診断範囲の確定には承認責任者の権限が必要です")
                 yield roles
 
+    def live_request_allowed(sess, org_id: str, *, approver: bool = False) -> bool:
+        # Used between turns of a long planner or just before a foreground
+        # Worker launch. Never retain the account/organization locks while
+        # waiting for the model or Worker to finish.
+        try:
+            with live_grant_roles(sess, org_id, approver=approver):
+                return True
+        except Exception:  # noqa: BLE001 - cannot confirm live authority: refuse
+            return False
+
     class H(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -947,21 +957,22 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             # Binding can wait on target checks and rate limits. A logout or
             # membership change during that time must not use the old snapshot.
             live_error = None
-            with ops.locked_session(sess.token) as current:
-                if current is None or current.operator != sess.operator:
-                    live_error = (401, "ログインの有効期限が切れました。もう一度ログインしてください")
-                elif tenancy is not None and svc is not None:
-                    with tenancy.store.locked_roles_in(self._bound_org, current.operator) as org_roles:
-                        if not org_roles:
-                            live_error = (403, "この組織のメンバーではありません")
-                        else:
-                            roles = service_roles(org_roles)
-                            if (not ({"operator", "approver", "admin"} & set(roles))
-                                    and not p.endswith(("/emergency-stop", "/pause"))):
-                                live_error = (403, "閲覧者の権限では操作できません")
-                            sess = dataclasses.replace(current, roles=roles)
-                else:
-                    sess = current
+            if not p.endswith(("/emergency-stop", "/pause")):
+                # A failed auth-state save must never prevent reducing power.
+                with ops.locked_session(sess.token) as current:
+                    if current is None or current.operator != sess.operator:
+                        live_error = (401, "ログインの有効期限が切れました。もう一度ログインしてください")
+                    elif tenancy is not None and svc is not None:
+                        with tenancy.store.locked_roles_in(self._bound_org, current.operator) as org_roles:
+                            if not org_roles:
+                                live_error = (403, "この組織のメンバーではありません")
+                            else:
+                                roles = service_roles(org_roles)
+                                if not ({"operator", "approver", "admin"} & set(roles)):
+                                    live_error = (403, "閲覧者の権限では操作できません")
+                                sess = dataclasses.replace(current, roles=roles)
+                    else:
+                        sess = current
             if live_error:
                 return self._json(live_error[0], {"error": live_error[1]})
             svc = svc or default_svc
@@ -1177,16 +1188,27 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         return self._json(400, {"error": "finding_id is required"})
                     # the service decides whether this needs an approver, under its own
                     # lock (a check here could be invalidated by a concurrent switch)
-                    return self._json(200, svc.verify_finding(fid, actor, roles=tuple(sess.roles)))
+                    return self._json(200, svc.verify_finding(
+                        fid, actor, roles=tuple(sess.roles),
+                        request_authorized=lambda: live_request_allowed(
+                            sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                            approver="approver" in sess.roles)))
                 elif p == base + "/artex/plan":
                     # the REAL ARTEX planner (planner-only overlay) proposes; Vulnix rebuilds
                     approval = body.get("llm_approval") if isinstance(body.get("llm_approval"), dict) else None
                     llm_mode = body.get("llm_mode") if isinstance(body.get("llm_mode"), str) else None
                     return self._json(200, svc.plan_with_artex(actor, llm_approval=approval,
-                                                               roles=tuple(sess.roles), llm_mode=llm_mode))
+                                                               roles=tuple(sess.roles), llm_mode=llm_mode,
+                                                               request_authorized=lambda: live_request_allowed(
+                                                                   sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                                                                   approver=approval is not None)))
                 elif m := re.fullmatch(base + r"/artex/items/([A-Za-z0-9_]{1,80})/execute", p):
                     # L2 needs an approver: decided by the service, with the caller's roles
-                    return self._json(200, svc.execute_artex_item(m.group(1), actor, roles=tuple(sess.roles)))
+                    return self._json(200, svc.execute_artex_item(
+                        m.group(1), actor, roles=tuple(sess.roles),
+                        request_authorized=lambda: live_request_allowed(
+                            sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                            approver="approver" in sess.roles)))
                 elif p == base + "/request-l2":
                     fid = str(body.get("finding_id", "")).strip()
                     if not fid:

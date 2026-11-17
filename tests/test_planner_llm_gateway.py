@@ -516,6 +516,30 @@ class TestServiceApprovalFlow(unittest.TestCase):
         self.addCleanup(s.workers.kill_all)
         return s
 
+    def test_request_revocation_blocks_later_planner_model_calls(self):
+        svc = self.svc()
+        allowed = [True]
+        with patch.object(svc, "_artex_may_start", return_value=True):
+            gw = svc._planner_gateway("op", None, (), svc._run_generation,
+                                      "gateway-preview", request_authorized=lambda: allowed[0])
+            self.assertTrue(gw._may())
+            allowed[0] = False
+            self.assertFalse(gw._may())
+
+    def test_request_revocation_blocks_worker_launch_guard(self):
+        from aegis.policy import PolicyError
+        svc = self.svc()
+        svc._tls.request_authorized = lambda: False
+        with self.assertRaisesRegex(PolicyError, "権限"):
+            svc._launch_guard("http_probe", {"url": "http://lab.test/"}, None)
+
+    def test_nested_finding_verification_keeps_outer_request_authority(self):
+        svc = self.svc()
+        svc._tls.request_authorized = lambda: False
+        with patch.object(svc, "_verify_finding", return_value={}):
+            with self.assertRaisesRegex(PermissionError, "権限が失効"):
+                svc.verify_finding("f_banner", "op")
+
     def stored_preview(self, svc, run_by="op", sha="b" * 64, age=0):
         with svc._lock:
             pv = svc._load_previews_locked()

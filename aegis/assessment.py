@@ -1174,6 +1174,9 @@ class AssessmentService:
         checks and this point the request may have waited in name resolution or a
         proof re-check; whatever was revoked, deleted, stopped or switched in the
         meantime is seen here."""
+        request_authorized = getattr(self._tls, "request_authorized", None)
+        if request_authorized is not None and not request_authorized():
+            raise PolicyError("要求者の権限が失効したため、新しいWorkerは起動しません")
         host = (urllib.parse.urlsplit(str(args.get("url") or "")).hostname or "").rstrip(".").lower()
         with self._lock:
             if self._stale_runner():
@@ -1795,12 +1798,13 @@ class AssessmentService:
         )
 
     def plan_with_artex(self, actor: str, *, llm_approval: dict | None = None, roles=None,
-                        llm_mode: str | None = None) -> dict:
+                        llm_mode: str | None = None, request_authorized=None) -> dict:
         return self._plan_with_artex(actor, llm_approval=llm_approval, roles=roles,
-                                     llm_mode=llm_mode)
+                                     llm_mode=llm_mode, request_authorized=request_authorized)
 
     def _plan_with_artex(self, actor: str, *, llm_approval: dict | None = None, roles=None,
-                         llm_mode: str | None = None, fingerprint: dict | None = None) -> dict:
+                         llm_mode: str | None = None, fingerprint: dict | None = None,
+                         request_authorized=None) -> dict:
         """Ask the real ARTEX planner for a plan, then rebuild every item from Vulnix's
         own registered targets and allowed catalog. Nothing is executed here.
 
@@ -1878,8 +1882,11 @@ class AssessmentService:
             self.audit.record("artex.plan_refused", actor=actor, reason="no OS-level confinement")
             raise ValueError("ARTEX プランナーを OS レベルで隔離して起動できないため実行しません"
                              f"（{str(st.get('reason', ''))[:200]}）")
+        if request_authorized is not None and not request_authorized():
+            raise ValueError("要求者の権限が失効したため、ARTEX 計画を開始しません")
         self.audit.record("artex.plan_requested", actor=actor, targets=len(targets), confined=confinement is not None)
-        gateway = self._planner_gateway(actor, llm_approval, roles, gen, llm_mode, real_site=real_site)
+        gateway = self._planner_gateway(actor, llm_approval, roles, gen, llm_mode,
+                                        real_site=real_site, request_authorized=request_authorized)
         llm_url, llm_key = self._artex_llm_url, ""
         if gateway is not None:
             try:
@@ -1905,7 +1912,8 @@ class AssessmentService:
                                     on_leftover=self._note_leftover_session,
                                     on_started=lambda sess: self._artex_session_started(sess, gen),
                                     on_finished=self._artex_session_finished,
-                                    may_start=lambda: self._artex_may_start(gen),
+                                    may_start=lambda: self._artex_may_start(gen) and
+                                    (request_authorized is None or request_authorized()),
                                     data_dirs=(str(self.data_dir),))
         except ArtexBridgeError as e:
             self.audit.record("artex.plan_failed", actor=actor, reason=str(e)[:200])
@@ -1925,6 +1933,8 @@ class AssessmentService:
             self.audit.record("artex.plan_failed", actor=actor,
                               reason=f"upstream_http_{status}" if status else "upstream_failure")
             raise ValueError(f"Planner LLM の上流 API がエラーを返したため、計画を破棄しました（HTTP {status}）")
+        if request_authorized is not None and not request_authorized():
+            raise ValueError("要求者の権限が失効したため、ARTEX 計画を破棄しました")
         run_id = "ax" + secrets.token_hex(4)
         rec = reconstruct(run.intents, targets, run_id,
                           allowed_levels=frozenset({"L1"}) if real_site else frozenset({"L1", "L2"}))
@@ -2031,7 +2041,7 @@ class AssessmentService:
     PREVIEW_TTL_S = 30 * 60
 
     def _planner_gateway(self, actor: str, approval: dict | None, roles, gen: int, mode: str | None,
-                         *, real_site: bool = False):
+                         *, real_site: bool = False, request_authorized=None):
         """The Planner LLM Gateway for this run. Mode: the request's `llm_mode`, else
         VULNIX_ARTEX_LLM_MODE: direct (none) | gateway-preview | gateway-forward."""
         configured = os.environ.get("VULNIX_ARTEX_LLM_MODE", "direct").strip()
@@ -2072,7 +2082,8 @@ class AssessmentService:
         with self._lock:
             allowed = set(self._allowed_hosts) | {"lab.test"}
         model = os.environ.get("VULNIX_ARTEX_LLM_MODEL") or os.environ.get("VULNIX_ABLITERATION_MODEL") or "mock"
-        may_forward = (lambda: self._artex_may_start(gen))
+        may_forward = (lambda: self._artex_may_start(gen) and
+                       (request_authorized is None or request_authorized()))
         common = dict(model=model, budget=budget, allowed_hosts=allowed, denied_hosts=denied, audit=self.audit,
                       may_forward=may_forward, first_turn_tool=first_tool)
         if mode == "gateway-preview":
@@ -2286,14 +2297,21 @@ class AssessmentService:
             raise ValueError("診断を一時停止中です。再開または停止してから実行してください")
         return rec
 
-    def execute_artex_item(self, item_id: str, actor: str, *, roles=None) -> dict:
+    def execute_artex_item(self, item_id: str, actor: str, *, roles=None,
+                           request_authorized=None) -> dict:
         """Run ONE item of the ARTEX plan. The operation is rebuilt from Vulnix's catalog
         (never from what ARTEX or the stored proposal says); L1 goes through the Gateway
         under the L1 policy, L2 needs an approver and runs in the isolated worker."""
         self._begin_operation()          # from here the active asset cannot be switched
         prev = getattr(self._tls, "gen", None)
+        previous_authorized = getattr(self._tls, "request_authorized", None)
+        if request_authorized is None:
+            request_authorized = previous_authorized
+        self._tls.request_authorized = request_authorized
         claimed = False
         try:
+            if request_authorized is not None and not request_authorized():
+                raise ApproverRequired("要求者の権限が失効したため、検査を開始しません")
             with self._lock:
                 rec = self._claim_artex_item_locked(item_id)
                 item = rec["item"]
@@ -2370,6 +2388,7 @@ class AssessmentService:
             raise
         finally:
             self._tls.gen = prev
+            self._tls.request_authorized = previous_authorized
             self._end_operation()
 
     def _sync_artex_item(self, item_id: str) -> None:
@@ -3621,7 +3640,8 @@ class AssessmentService:
             return (self.l2.has_check(f.get("reproduce_check"))
                     or self._l2_check_for_finding(finding_id) is not None)
 
-    def verify_finding(self, finding_id: str, actor: str, *, roles=None) -> dict:
+    def verify_finding(self, finding_id: str, actor: str, *, roles=None,
+                       request_authorized=None) -> dict:
         """Execute a real Gateway + Worker probe for a specific finding on demand
         and attach the live HTTP response and SHA-256 audit hash.
 
@@ -3632,7 +3652,13 @@ class AssessmentService:
         caller that vouches for the actor itself.)"""
         self._begin_operation()        # the active asset cannot be switched while this runs
         prev = getattr(self._tls, "gen", None)
+        previous_authorized = getattr(self._tls, "request_authorized", None)
+        if request_authorized is None:
+            request_authorized = previous_authorized
+        self._tls.request_authorized = request_authorized
         try:
+            if request_authorized is not None and not request_authorized():
+                raise ApproverRequired("要求者の権限が失効したため、検査を開始しません")
             with self._lock:
                 self._refuse_read_only_real_locked()
             return self._verify_finding(finding_id, actor, roles)
@@ -3640,6 +3666,7 @@ class AssessmentService:
             raise ValueError("停止またはリセットされたため、検証を中止しました") from None
         finally:
             self._tls.gen = prev
+            self._tls.request_authorized = previous_authorized
             self._end_operation()
 
     def _verify_finding(self, finding_id: str, actor: str, roles=None) -> dict:

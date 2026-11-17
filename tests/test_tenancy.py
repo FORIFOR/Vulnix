@@ -249,6 +249,43 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
         self.assertEqual(response[0][0], 200)
         self.assertTrue(logged_out.is_set())
 
+    def test_long_plan_receives_live_request_authority(self):
+        who = self.signup("liveplanner")
+        org_id = who["orgs"][0]["id"]
+        svc = self.reg.service(org_id)
+        guards = []
+
+        def capture_plan(*args, **kwargs):
+            guards.append(kwargs["request_authorized"])
+            return svc.snapshot()
+
+        with patch.object(svc, "plan_with_artex", side_effect=capture_plan):
+            self.assertEqual(self.req(who, "/assessments/scan_001/artex/plan", {}, org=org_id)[0], 200)
+        self.assertTrue(guards[0]())
+        self.ops.logout(who["cookie"].split("=", 1)[1])
+        self.assertFalse(guards[0]())
+
+    def test_foreground_worker_routes_receive_live_request_authority(self):
+        who = self.signup("liveworker")
+        org_id = who["orgs"][0]["id"]
+        svc = self.reg.service(org_id)
+        guards = []
+
+        def capture(*args, **kwargs):
+            guards.append(kwargs["request_authorized"])
+            return svc.snapshot()
+
+        with patch.object(svc, "verify_finding", side_effect=capture), \
+                patch.object(svc, "execute_artex_item", side_effect=capture):
+            self.assertEqual(self.req(who, "/assessments/scan_001/verify-finding",
+                                      {"finding_id": "f_banner"}, org=org_id)[0], 200)
+            self.assertEqual(self.req(who, "/assessments/scan_001/artex/items/item123/execute",
+                                      {}, org=org_id)[0], 200)
+        self.assertEqual(len(guards), 2)
+        self.assertTrue(all(guard() for guard in guards))
+        self.ops.logout(who["cookie"].split("=", 1)[1])
+        self.assertTrue(all(not guard() for guard in guards))
+
     def req(self, who, path, body=None, org=None):
         h = {"Content-Type": "application/json"}
         if body is not None:
