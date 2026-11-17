@@ -655,9 +655,11 @@ class TestUnsavedLogoutOverHttp(unittest.TestCase):
         svc = AssessmentService(data, LAB_PORT, verify_seconds=0.1, l2_confinement=TEST_CONFINEMENT,
                                 revocation_marker_dirs=[Path(tempfile.mkdtemp())])
         self.addCleanup(svc.workers.kill_all)
+        self.addCleanup(svc.close)
         ops = OperatorStore(seed(data))
         srv = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(svc, ops))
         threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
         self.addCleanup(srv.shutdown)
         api = f"http://127.0.0.1:{srv.server_port}/api"
         hdr = {"Content-Type": "application/json", "X-Aegis-Request": "1"}
@@ -668,9 +670,9 @@ class TestUnsavedLogoutOverHttp(unittest.TestCase):
             with self.assertRaises(urllib.error.HTTPError) as cm:
                 urllib.request.urlopen(urllib.request.Request(api + "/auth/logout", b"{}", {**hdr, "Cookie": cookie}))
         self.assertEqual(cm.exception.code, 500)
-        cm.exception.close()
         self.assertIn("Max-Age=0", cm.exception.headers.get("Set-Cookie", ""))
-        self.assertFalse(json.loads(cm.exception.read())["logout_saved"])
+        with cm.exception:
+            self.assertFalse(json.loads(cm.exception.read())["logout_saved"])
 
 
 class TestProofFileWithBom(unittest.TestCase):

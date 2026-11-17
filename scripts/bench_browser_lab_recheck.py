@@ -178,6 +178,7 @@ def main() -> None:
             svc.workers.kill_all()
             backend.shutdown()
             backend.server_close()
+            svc.close()
             lab.shutdown()
             lab.server_close()
 
