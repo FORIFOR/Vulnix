@@ -368,6 +368,22 @@ class TestForwarding(unittest.TestCase):
             self.assertFalse(thread.is_alive())
         self.assertEqual((outcome, sent), ([403], []))
 
+    def test_denied_send_scope_refunds_an_unsent_reservation(self):
+        sent = []
+
+        @contextlib.contextmanager
+        def send_scope():
+            raise GatewayRefused("stopped", "authority expired")
+            yield
+
+        with forward(lambda *a: sent.append(a) or ok_transport(), audit=Audit(),
+                     send_scope=send_scope) as gw:
+            code, _ = post(gw, chat())
+        report = gw.report()
+        self.assertEqual((code, sent), (403, []))
+        self.assertEqual((report["calls"], report["est_tokens"], report["est_cost_usd"]), (0, 0, 0))
+        self.assertEqual(report["records"][0]["reason"], "stopped")
+
     def test_real_transport_writes_only_inside_scope_and_waits_outside_it(self):
         active = [False]
         calls = []
@@ -383,6 +399,7 @@ class TestForwarding(unittest.TestCase):
         class Connection(http.client.HTTPSConnection):
             def __init__(self, *args, **kwargs):
                 calls.append("created")
+                self.sock = type("Socket", (), {"settimeout": lambda _, seconds: calls.append(("timeout", seconds))})()
 
             def connect(self):
                 self.assert_not_active()
@@ -409,7 +426,8 @@ class TestForwarding(unittest.TestCase):
             with forward(None, audit=Audit(), send_scope=send_scope) as gw:
                 code, _ = post(gw, chat())
         self.assertEqual(code, 200)
-        self.assertEqual(calls, ["created", "connected", "written", "response", "closed"])
+        self.assertEqual(calls, ["created", "connected", ("timeout", 1.0), "written",
+                                 ("timeout", 30.0), "response", "closed"])
 
     def test_stop_during_real_tls_connect_sends_no_request(self):
         connecting = threading.Event()
@@ -418,7 +436,7 @@ class TestForwarding(unittest.TestCase):
 
         class Connection(http.client.HTTPSConnection):
             def __init__(self, *args, **kwargs):
-                pass
+                self.sock = None
 
             def connect(self):
                 connecting.set()

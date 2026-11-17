@@ -7,6 +7,7 @@ when VULNIX_ARTEX_REAL_BIN points at the overlay binary (built in Linux CI).
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shlex
@@ -294,6 +295,29 @@ class ServiceBase(unittest.TestCase):
 
 
 class TestThePlanThroughTheGateway(ServiceBase):
+    def test_planner_send_scope_turns_revoked_http_lease_into_unsent_refusal(self):
+        from aegis.planner_llm_gateway import GatewayRefused
+        from aegis.policy import PolicyError
+
+        def allowed():
+            return True
+
+        @contextlib.contextmanager
+        def revoked_lease():
+            raise PolicyError("revoked")
+            yield
+
+        allowed.lease = revoked_lease
+        with patch.dict(os.environ, {"VULNIX_ARTEX_LLM_MODE": "gateway-forward",
+                                  "VULNIX_ARTEX_LLM_UPSTREAM_URL": "http://127.0.0.1:9/v1/chat/completions"}):
+            gateway = self.svc._planner_gateway("op", None, (), self.svc._run_generation,
+                                                "gateway-forward", real_site=True,
+                                                request_authorized=allowed)
+        with self.assertRaises(GatewayRefused) as caught:
+            with gateway._send_scope():
+                self.fail("a revoked request entered the send scope")
+        self.assertEqual(caught.exception.code, "stopped")
+
     def test_failed_plan_audit_cannot_leave_an_executable_or_attributed_plan(self):
         original = self.svc.audit.record
 

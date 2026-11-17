@@ -2104,7 +2104,7 @@ class AssessmentService:
             raise ValueError("Planner LLM Gateway が設定されているため、direct には切り替えられません")
         if mode == "direct":
             return None
-        from .planner_llm_gateway import FORCEABLE_FIRST_TOOLS, Budget, PlannerLLMGateway
+        from .planner_llm_gateway import FORCEABLE_FIRST_TOOLS, Budget, GatewayRefused, PlannerLLMGateway
         first_tool = os.environ.get("VULNIX_PLANNER_FIRST_TOOL", "").strip() or None
         if first_tool is not None and first_tool not in FORCEABLE_FIRST_TOOLS:
             # checked before any approval is taken, so a bad setting never uses one up
@@ -2140,11 +2140,14 @@ class AssessmentService:
             # The HTTP request lease takes account then tenant locks. Never call
             # request_authorized() inside it: those locks are not reentrant.
             lease = getattr(request_authorized, "lease", None)
-            with (lease() if callable(lease) else contextlib.nullcontext()):
-                with self._lock:
-                    if not self._artex_may_start_locked(gen):
-                        raise GatewayRefused("stopped", "the planner run was stopped")
-                    yield
+            try:
+                with (lease() if callable(lease) else contextlib.nullcontext()):
+                    with self._lock:
+                        if not self._artex_may_start_locked(gen):
+                            raise GatewayRefused("stopped", "the planner run was stopped")
+                        yield
+            except PolicyError:
+                raise GatewayRefused("stopped", "the planner request authority expired") from None
         common = dict(model=model, budget=budget, allowed_hosts=allowed, denied_hosts=denied, audit=self.audit,
                       may_forward=may_forward, first_turn_tool=first_tool, send_scope=send_scope)
         if mode == "gateway-preview":

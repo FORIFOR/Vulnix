@@ -713,7 +713,13 @@ class PlannerLLMGateway:
                     if self._closed.is_set() or self._failed.is_set():
                         raise GatewayRefused("stopped", "the planner run was stopped")
                     path = urllib.parse.urlunsplit(("", "", parts.path or "/", parts.query, ""))
+                    # The service lock also serializes emergency stop and role
+                    # revocation. Bound each socket write before holding it.
+                    if conn.sock is not None:
+                        conn.sock.settimeout(1.0)
                     conn.request("POST", path, body=payload, headers=headers)
+                if conn.sock is not None:
+                    conn.sock.settimeout(30.0)
                 response = conn.getresponse()
                 if not 200 <= response.status < 300:
                     raise _BadResponse(response.read(4096), response.status)
