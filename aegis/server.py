@@ -185,7 +185,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
         return bool(latest and "approver" in (latest.get("after") or []))
 
     @contextlib.contextmanager
-    def live_grant_roles(sess, org_id: str, *, approver: bool = False):
+    def live_grant_roles(sess, org_id: str, *, approver: bool = False, reader: bool = False):
         """Serialize a signed ownership/scope grant with logout and role removal.
 
         External ownership lookups happen before this guard is acquired. The short
@@ -198,7 +198,8 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                           if tenancy is not None else contextlib.nullcontext(current.roles))
             with membership as org_roles:
                 roles = service_roles(org_roles) if tenancy is not None else tuple(org_roles)
-                if not ({"operator", "approver", "admin"} & set(roles)):
+                if (reader and not org_roles) or (not reader and not (
+                        {"operator", "approver", "admin"} & set(roles))):
                     raise ApproverRequired("この組織で所有確認を行う権限がありません")
                 if approver and "approver" not in roles:
                     raise ApproverRequired("診断範囲の確定には承認責任者の権限が必要です")
@@ -349,6 +350,23 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             osvc.real_site_read_only = not REAL_SERVICE_DIAGNOSIS
             return osvc, dataclasses.replace(sess, roles=service_roles(roles))
 
+        def _authorized_org_read(self, sess, org, action):
+            """Keep a protected response within the current account/member grant."""
+            try:
+                with live_grant_roles(sess, org, reader=True) as current_roles:
+                    roles = service_roles(current_roles) if tenancy is not None else tuple(current_roles)
+                    current_sess = dataclasses.replace(sess, roles=roles)
+                    previous_timeout = self.connection.gettimeout()
+                    self.connection.settimeout(2.0)
+                    try:
+                        return action(current_sess)
+                    finally:
+                        self.connection.settimeout(previous_timeout)
+            except AuthError:
+                return self._json(401, {"error": "ログインの有効期限が切れました。もう一度ログインしてください"})
+            except ApproverRequired:
+                return self._json(403, {"error": "この組織のメンバーではありません"})
+
         def _host_ok(self) -> bool:
             """The control plane answers only when addressed as loopback. A request
             whose Host is some other name (a DNS-rebinding page, a LAN client going
@@ -393,20 +411,35 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 if not sess or "admin" not in sess.roles:
                     return self._json(403, {"error": "アカウント一覧の参照には管理者の権限が必要です"})
                 locked = ops.locked_accounts()
-                return self._json(200, {"operators": [
+                accounts = {"operators": [
                     {"name": o.name, "display": o.display, "roles": list(o.roles),
                      "mfa_enabled": bool(o.totp_secret),
                      "locked_for": int(locked.get(o.name, 0)),
                      # approver without an admin's grant on record -> needs review
                      "needs_role_review": "approver" in o.roles and not approver_grant_recorded(o.name)}
-                    for o in ops.operators()]})
+                    for o in ops.operators()]}
+                with ops.locked_session(sess.token) as current:
+                    if current is None or current.operator != sess.operator:
+                        return self._json(401, {"error": "ログインの有効期限が切れました。もう一度ログインしてください"})
+                    if "admin" not in current.roles:
+                        return self._json(403, {"error": "管理者の権限が失効しました"})
+                    previous_timeout = self.connection.gettimeout()
+                    self.connection.settimeout(2.0)
+                    try:
+                        return self._json(200, accounts)
+                    finally:
+                        self.connection.settimeout(previous_timeout)
             if p == "/api/system/status":
                 if tenancy is not None:
                     # each tenant sees its own conditions (stuck workers, notices name hosts)
                     bound = self._bind(sess)
                     if bound is None:
                         return None
-                    return self._json(200, bound[0].system_status())
+                    return self._authorized_org_read(sess, self._bound_org,
+                                                     lambda _: self._json(200, bound[0].system_status()))
+                if enforce_read_auth:
+                    return self._authorized_org_read(sess, DEFAULT_ORG,
+                                                     lambda _: self._json(200, svc.system_status()))
                 return self._json(200, svc.system_status())
             if tenancy is not None and p.startswith("/api/orgs"):
                 return self._tenancy_get(p, u, sess)
@@ -414,13 +447,30 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 bound = self._bind(sess, (parse_qs(u.query).get("org") or [None])[0])
                 if bound is None:
                     return None
-                return self._get_org(p, u, *bound)
+                if tenancy is None and not enforce_read_auth:
+                    return self._get_org(p, u, *bound)
+                org = self._bound_org if tenancy is not None else DEFAULT_ORG
+                if p.endswith("/events"):
+                    return self._get_org(p, u, *bound)  # long stream: per-batch lease below
+                return self._authorized_org_read(
+                    sess, org, lambda current: self._get_org(p, u, bound[0], current))
             if p == "/api/router/status":
                 return self._json(200, svc.planner_status())
             if p == "/api/l2-profiles":
                 if not sess or not ({"admin", "approver"} & set(sess.roles)):
                     return self._json(403, {"error": "プロファイルの参照には管理者または承認責任者の権限が必要です"})
-                return self._json(200, svc.l2_profiles_status())
+                profiles = svc.l2_profiles_status()
+                with ops.locked_session(sess.token) as current:
+                    if current is None or current.operator != sess.operator:
+                        return self._json(401, {"error": "ログインの有効期限が切れました。もう一度ログインしてください"})
+                    if not ({"admin", "approver"} & set(current.roles)):
+                        return self._json(403, {"error": "参照権限が失効しました"})
+                    previous_timeout = self.connection.gettimeout()
+                    self.connection.settimeout(2.0)
+                    try:
+                        return self._json(200, profiles)
+                    finally:
+                        self.connection.settimeout(previous_timeout)
             if p in JOB_ROUTES:
                 # these START a verification job: POST only (CSRF-checked, role-checked, audited)
                 return self._json(405, {"error": "この操作は POST で実行してください"}, [("Allow", "POST")])
@@ -480,56 +530,72 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             org = getattr(self, "_bound_org", None)
             token = sess.token if sess else None
 
-            def still_allowed() -> bool:
-                """A stream ends when its session ends, or when the account leaves the organization."""
+            @contextlib.contextmanager
+            def event_permission():
+                """Serialize each event write with session and membership revocation."""
                 if token is None:
-                    return True
-                now = ops.resolve(token)
-                if now is None:
-                    return False
-                return tenancy is None or org is None or bool(tenancy.store.roles_in(org, now.operator))
+                    yield 0
+                    return
+                grant = live_grant_roles(sess, org or DEFAULT_ORG, reader=True)
+                try:
+                    grant.__enter__()
+                except AuthError:
+                    yield 401
+                    return
+                except ApproverRequired:
+                    yield 403
+                    return
+                try:
+                    yield 0
+                finally:
+                    grant.__exit__(None, None, None)
             try:
-                return self._sse_loop(after, svc, still_allowed)
+                return self._sse_loop(after, svc, event_permission)
             finally:
                 if key:
                     with limits_lock:
                         sse_open[key] -= 1
 
-        def _sse_loop(self, after: int, svc, still_allowed) -> None:
+        def _sse_loop(self, after: int, svc, event_permission) -> None:
             self.close_connection = True   # never reuse a socket after a stream ends
-            self.send_response(200)
-            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-            self.send_header("Cache-Control", "no-cache, no-transform")
-            self.send_header("X-Accel-Buffering", "no")
-            self.send_header("Connection", "keep-alive")
-            self.end_headers()
-            # send_header("Connection", "keep-alive") turns close_connection back off: set
-            # it again, so a stream that ends here closes its socket instead of waiting
-            # for another request on it
-            self.close_connection = True
+            self.connection.settimeout(2.0)  # a stalled reader must not hold revocation indefinitely
             seq = after
             last_ping = time.monotonic()
             try:
-                self.wfile.write(b"retry: 2000\n\n")
-                self.wfile.flush()
+                with event_permission() as denied:
+                    if denied:
+                        return self._json(denied, {"error": "更新の受信権限が失効しました"})
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                    self.send_header("Cache-Control", "no-cache, no-transform")
+                    self.send_header("X-Accel-Buffering", "no")
+                    self.send_header("Connection", "keep-alive")
+                    self.end_headers()
+                    # send_header("Connection", "keep-alive") turns close_connection back off
+                    self.close_connection = True
+                    self.wfile.write(b"retry: 2000\n\n")
+                    self.wfile.flush()
                 while True:
                     events = svc.bus.wait(seq, timeout=5)
-                    # checked after waiting and before writing: nothing that happened after
-                    # a removal, logout or expiry reaches the stream
-                    if not still_allowed():
-                        return
                     for ev in events:
-                        data = json.dumps(ev, ensure_ascii=False)
-                        self.wfile.write(f"id: {ev['event_id']}\ndata: {data}\n\n".encode())
-                        seq = ev["seq"]
-                    if time.monotonic() - last_ping > 4:
-                        # A named heartbeat reaches EventSource listeners. Its seq
-                        # lets the browser detect a missing event before it skips
-                        # the quiet-stream backup fetch.
-                        self.wfile.write(f"event: heartbeat\ndata: {{\"seq\":{seq}}}\n\n".encode())
-                        last_ping = time.monotonic()
-                    self.wfile.flush()
-            except (BrokenPipeError, ConnectionResetError):
+                        # One event per lease lets logout and member removal enter
+                        # between backlog entries, even if the client is slow.
+                        with event_permission() as denied:
+                            if denied:
+                                return
+                            data = json.dumps(ev, ensure_ascii=False)
+                            self.wfile.write(f"id: {ev['event_id']}\ndata: {data}\n\n".encode())
+                            seq = ev["seq"]
+                            self.wfile.flush()
+                    with event_permission() as denied:
+                        if denied:
+                            return
+                        if time.monotonic() - last_ping > 4:
+                            # Heartbeat seq lets the browser detect a missing event.
+                            self.wfile.write(f"event: heartbeat\ndata: {{\"seq\":{seq}}}\n\n".encode())
+                            last_ping = time.monotonic()
+                        self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, TimeoutError):
                 return
 
         # ---- POST -----------------------------------------------------------
@@ -607,7 +673,15 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 return self._admin_recovery(p, body, sess)
             if tenancy is not None:
                 if p.startswith("/api/orgs") or p == "/api/invites/accept":
-                    return self._tenancy_post(p, body, sess)
+                    with ops.locked_session(sess.token) as current:
+                        if current is None or current.operator != sess.operator:
+                            return self._json(401, {"error": "ログインの有効期限が切れました。もう一度ログインしてください"})
+                        previous_timeout = self.connection.gettimeout()
+                        self.connection.settimeout(2.0)
+                        try:
+                            return self._tenancy_post(p, body, current)
+                        finally:
+                            self.connection.settimeout(previous_timeout)
                 if p.endswith("/lab-mode"):
                     # the mock lab is shared even with the default organization;
                     # a platform admin could change another tenant's run mid-probe
@@ -715,15 +789,15 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             except LockedOut as e:
                 return self._locked(e, sess.operator)
             except AuthError as e:
-                return self._json(400, {"error": str(e)})
+                return self._self_failure(sess, e)
             paudit.record("auth.password_changed", actor=sess.operator)
             return self._json(200, {"ok": True})
 
         def _totp_enroll(self, sess):
             try:
-                secret, uri = ops.begin_totp_enroll(sess.operator)
+                secret, uri = ops.begin_totp_enroll(sess.operator, session_token=sess.token)
             except AuthError as e:
-                return self._json(400, {"error": str(e)})
+                return self._self_failure(sess, e)
             # The secret/URI are shown once to the operator to add to their
             # authenticator; they are not recorded in the audit log.
             paudit.record("auth.mfa_enroll_started", actor=sess.operator)
@@ -731,19 +805,20 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
 
         def _totp_confirm(self, body, sess):
             try:
-                ops.confirm_totp(sess.operator, str(body.get("code", "")))
+                ops.confirm_totp(sess.operator, str(body.get("code", "")), session_token=sess.token)
             except AuthError as e:
-                return self._json(400, {"error": str(e)})
+                return self._self_failure(sess, e)
             paudit.record("auth.mfa_enabled", actor=sess.operator)
             return self._json(200, {"ok": True, "mfa_enabled": True})
 
         def _totp_disable(self, body, sess):
             try:
-                ops.disable_totp(sess.operator, str(body.get("current", "")), str(body.get("code", "")) or None)
+                ops.disable_totp(sess.operator, str(body.get("current", "")), str(body.get("code", "")) or None,
+                                 session_token=sess.token)
             except LockedOut as e:
                 return self._locked(e, sess.operator)
             except AuthError as e:
-                return self._json(400, {"error": str(e)})
+                return self._self_failure(sess, e)
             paudit.record("auth.mfa_disabled", actor=sess.operator)
             return self._json(200, {"ok": True, "mfa_enabled": False})
 
@@ -791,9 +866,10 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             if caller and "admin" in caller.roles:
                 # an admin creates the account for someone else; the admin stays logged in
                 try:
-                    op = ops.create_account(name, password, display=display, actor=caller.operator)
+                    op = ops.create_account(name, password, display=display, actor=caller.operator,
+                                            session_token=caller.token)
                 except AuthError as e:
-                    return self._json(400, {"error": str(e)})
+                    return self._admin_failure(caller, e, 400)
                 paudit.record("operator.created", actor=caller.operator, target=op.name, roles=list(op.roles),
                                  requested_roles_ignored=[r for r in asked if r not in op.roles])
                 return self._json(200, {"created": {"name": op.name, "display": op.display, "roles": list(op.roles)}})
@@ -864,6 +940,19 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     out["warning"] = tenancy_warning
             return self._json(200, out, [("Set-Cookie", cookie)])
 
+        def _admin_failure(self, sess, error, ordinary_status: int):
+            current = ops.resolve(sess.token)
+            if current is None or current.operator != sess.operator:
+                return self._json(401, {"error": "ログインの有効期限が切れました。もう一度ログインしてください"})
+            if "admin" not in current.roles:
+                return self._json(403, {"error": "管理者の権限が失効しました"})
+            return self._json(ordinary_status, {"error": str(error)})
+
+        def _self_failure(self, sess, error):
+            if ops.resolve(sess.token) is None:
+                return self._json(401, {"error": "ログインの有効期限が切れました。もう一度ログインしてください"})
+            return self._json(400, {"error": str(error)})
+
         def _set_roles(self, body, sess):
             if "admin" not in sess.roles:
                 paudit.record("operator.roles_change_denied", actor=sess.operator,
@@ -873,11 +962,12 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             roles = [str(r) for r in raw] if isinstance(raw, list) else []
             target = str(body.get("name", "")).strip()
             try:
-                before, after = ops.set_roles(target, roles, actor=sess.operator)
+                before, after = ops.set_roles(target, roles, actor=sess.operator,
+                                              session_token=sess.token)
             except AuthError as e:
                 paudit.record("operator.roles_change_failed", actor=sess.operator, target=target[:64],
                                  requested=roles[:8], error=str(e)[:200])
-                return self._json(409, {"error": str(e)})
+                return self._admin_failure(sess, e, 409)
             paudit.record("operator.roles_changed", actor=sess.operator, target=target,
                              before=list(before), after=list(after),
                              attested_unchanged=set(before) == set(after))
@@ -891,13 +981,13 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 return self._json(403, {"error": "この操作には管理者の権限が必要です"})
             try:
                 if p == "/api/operators/unlock":
-                    changed = ops.unlock(target, actor=sess.operator)
+                    changed = ops.unlock(target, actor=sess.operator, session_token=sess.token)
                     paudit.record("operator.unlocked", actor=sess.operator, target=target[:64], was_locked=changed)
                 else:
-                    changed = ops.reset_totp(target, actor=sess.operator)
+                    changed = ops.reset_totp(target, actor=sess.operator, session_token=sess.token)
                     paudit.record("operator.mfa_reset", actor=sess.operator, target=target[:64], had_mfa=changed)
             except AuthError as e:
-                return self._json(409, {"error": str(e)})
+                return self._admin_failure(sess, e, 409)
             return self._json(200, {"name": target, "changed": changed})
 
         # ---- organizations (tenancy) --------------------------------------------
@@ -913,21 +1003,27 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
         def _tenancy_get(self, p, u, sess):
             if not sess:
                 return self._json(401, {"error": "ログインが必要です"})
-            if p == "/api/orgs":
-                return self._json(200, {"orgs": tenancy.store.orgs_of(sess.operator)})
-            try:
-                org_id = self._org_for_management(sess, {"org": (parse_qs(u.query).get("org") or [""])[0]})
-            except TenancyError as e:
-                return self._json(403, {"error": str(e)})
-            mine = set(tenancy.store.roles_in(org_id, sess.operator))
-            if p == "/api/orgs/members":
-                return self._json(200, {"org": {"id": org_id, "name": tenancy.store.org_name(org_id)},
-                                        "my_roles": sorted(mine), "members": tenancy.store.members(org_id)})
-            if p == "/api/orgs/invites":
-                if not mine & {"owner", "admin"}:
-                    return self._json(403, {"error": "招待の一覧はオーナーまたは管理者だけが見られます"})
-                return self._json(200, {"invites": tenancy.store.invites(org_id)})
-            return self._json(404, {"error": "not found"})
+            with ops.locked_session(sess.token) as current:
+                if current is None or current.operator != sess.operator:
+                    return self._json(401, {"error": "ログインの有効期限が切れました。もう一度ログインしてください"})
+                if p == "/api/orgs":
+                    return self._json(200, {"orgs": tenancy.store.orgs_of(current.operator)})
+                try:
+                    org_id = self._org_for_management(current, {"org": (parse_qs(u.query).get("org") or [""])[0]})
+                except TenancyError as e:
+                    return self._json(403, {"error": str(e)})
+                with tenancy.store.locked_roles_in(org_id, current.operator) as roles:
+                    mine = set(roles)
+                    if not mine:
+                        return self._json(403, {"error": "この組織のメンバーではありません"})
+                    if p == "/api/orgs/members":
+                        return self._json(200, {"org": {"id": org_id, "name": tenancy.store.org_name(org_id)},
+                                                "my_roles": sorted(mine), "members": tenancy.store.members(org_id)})
+                    if p == "/api/orgs/invites":
+                        if not mine & {"owner", "admin"}:
+                            return self._json(403, {"error": "招待の一覧はオーナーまたは管理者だけが見られます"})
+                        return self._json(200, {"invites": tenancy.store.invites(org_id)})
+                    return self._json(404, {"error": "not found"})
 
         def _tenancy_post(self, p, body, sess):
             st = tenancy.store

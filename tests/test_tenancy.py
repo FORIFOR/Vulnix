@@ -4,6 +4,7 @@ import tests  # noqa: F401  (hermetic revocation-marker directory)
 import json
 import http.client
 import os
+import socketserver
 import subprocess
 import tempfile
 import threading
@@ -17,7 +18,7 @@ from unittest.mock import patch
 
 from aegis.assessment import AssessmentService
 from aegis.lab import start_lab
-from aegis.operators import OperatorStore, hash_password
+from aegis.operators import OperatorStore, hash_password, totp_code
 from aegis.server import make_handler
 from aegis.tenancy import (DEFAULT_ORG, MAX_ORGS_PER_ACCOUNT, OrgStore, TenancyError, TenantRegistry,
                            default_members_from, service_roles)
@@ -167,6 +168,428 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
         self.assertFalse(thread.is_alive())
         self.assertEqual(response[0][0], 401)
         self.assertFalse(started.is_set())
+
+    def test_logout_after_org_binding_cannot_read_logs(self):
+        who = self.signup("latereadlogout")
+        org_id = who["orgs"][0]["id"]
+        entered, release = threading.Event(), threading.Event()
+        response = []
+        handler = self.srv.RequestHandlerClass
+        original_bind = handler._bind
+
+        def paused_bind(request, *args, **kwargs):
+            bound = original_bind(request, *args, **kwargs)
+            if bound and request.path == "/api/assessments/scan_001/logs":
+                entered.set()
+                if not release.wait(5):
+                    raise TimeoutError("GET binding test did not release the request")
+            return bound
+
+        with patch.object(handler, "_bind", paused_bind):
+            thread = threading.Thread(target=lambda: response.append(
+                self.req(who, "/assessments/scan_001/logs", org=org_id)))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            self.ops.logout(who["cookie"].split("=", 1)[1])
+            release.set()
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(response[0][0], 401)
+
+    def test_membership_removal_after_org_binding_cannot_read_report(self):
+        owner, member = self.signup("reportowner"), self.signup("reportmember")
+        org_id = owner["orgs"][0]["id"]
+        _, invite = self.reg.store.create_invite(org_id, "reportowner", ["runner"])
+        self.reg.store.accept_invite(invite, "reportmember")
+        entered, release = threading.Event(), threading.Event()
+        response = []
+        handler = self.srv.RequestHandlerClass
+        original_bind = handler._bind
+
+        def paused_bind(request, *args, **kwargs):
+            bound = original_bind(request, *args, **kwargs)
+            if bound and request.path == "/api/assessments/scan_001/report":
+                entered.set()
+                if not release.wait(5):
+                    raise TimeoutError("GET membership test did not release the request")
+            return bound
+
+        with patch.object(handler, "_bind", paused_bind):
+            thread = threading.Thread(target=lambda: response.append(
+                self.req(member, "/assessments/scan_001/report", org=org_id)))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            self.reg.store.remove_member(org_id, "reportowner", "reportmember")
+            release.set()
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(response[0][0], 403)
+
+    def test_approver_revocation_after_binding_cannot_read_planner_preview(self):
+        owner, member = self.signup("previewowner"), self.signup("previewmember")
+        org_id = owner["orgs"][0]["id"]
+        _, invite = self.reg.store.create_invite(org_id, "previewowner", ["approver"])
+        self.reg.store.accept_invite(invite, "previewmember")
+        entered, release = threading.Event(), threading.Event()
+        response = []
+        handler = self.srv.RequestHandlerClass
+        original_bind = handler._bind
+
+        def paused_bind(request, *args, **kwargs):
+            bound = original_bind(request, *args, **kwargs)
+            if bound and request.path == "/api/assessments/scan_001/artex/llm-preview":
+                entered.set()
+                if not release.wait(5):
+                    raise TimeoutError("preview role test did not release the request")
+            return bound
+
+        with patch.object(handler, "_bind", paused_bind):
+            thread = threading.Thread(target=lambda: response.append(
+                self.req(member, "/assessments/scan_001/artex/llm-preview", org=org_id)))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            self.reg.store.set_roles(org_id, "previewowner", "previewmember", ["viewer"])
+            release.set()
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(response[0][0], 403)
+
+    def test_membership_removal_after_binding_cannot_read_system_status(self):
+        owner, member = self.signup("statusowner"), self.signup("statusmember")
+        org_id = owner["orgs"][0]["id"]
+        _, invite = self.reg.store.create_invite(org_id, "statusowner", ["viewer"])
+        self.reg.store.accept_invite(invite, "statusmember")
+        entered, release = threading.Event(), threading.Event()
+        response = []
+        handler = self.srv.RequestHandlerClass
+        original_bind = handler._bind
+
+        def paused_bind(request, *args, **kwargs):
+            bound = original_bind(request, *args, **kwargs)
+            if bound and request.path == "/api/system/status":
+                entered.set()
+                if not release.wait(5):
+                    raise TimeoutError("system status test did not release the request")
+            return bound
+
+        with patch.object(handler, "_bind", paused_bind):
+            thread = threading.Thread(target=lambda: response.append(
+                self.req(member, "/system/status", org=org_id)))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            self.reg.store.remove_member(org_id, "statusowner", "statusmember")
+            release.set()
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(response[0][0], 403)
+
+    def test_logout_before_platform_role_change_cannot_grant_approver(self):
+        admin = self.login("padmin", "padmin-pw-1")
+        target = self.signup("lateplatformrole")
+        entered, release = threading.Event(), threading.Event()
+        response = []
+        handler = self.srv.RequestHandlerClass
+        original_change = handler._set_roles
+
+        def paused_change(request, *args, **kwargs):
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("role change test did not release the request")
+            return original_change(request, *args, **kwargs)
+
+        with patch.object(handler, "_set_roles", paused_change):
+            thread = threading.Thread(target=lambda: response.append(
+                self.req(admin, "/operators/roles",
+                         {"name": "lateplatformrole", "roles": ["operator", "approver"]})))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            self.ops.logout(admin["cookie"].split("=", 1)[1])
+            release.set()
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(response[0][0], 401)
+        self.assertNotIn("approver", self.ops.roles_of("lateplatformrole"))
+
+    def test_logout_before_platform_account_creation_creates_nothing(self):
+        admin = self.login("padmin", "padmin-pw-1")
+        entered, release = threading.Event(), threading.Event()
+        response = []
+        original_create = self.ops.create_account
+
+        def paused_create(*args, **kwargs):
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("account creation test did not release the request")
+            return original_create(*args, **kwargs)
+
+        with patch.object(self.ops, "create_account", side_effect=paused_create):
+            thread = threading.Thread(target=lambda: response.append(self.req(
+                admin, "/auth/register", {"name": "latecreated", "password": "latecreated-Passw0rd!"})))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            self.ops.logout(admin["cookie"].split("=", 1)[1])
+            release.set()
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(response[0][0], 401)
+        self.assertEqual(self.req({}, "/auth/login",
+                                  {"name": "latecreated", "password": "latecreated-Passw0rd!"})[0], 401)
+
+    def test_logout_before_platform_mfa_recovery_cannot_reset(self):
+        admin = self.login("padmin", "padmin-pw-1")
+        target = self.signup("laterecovery")
+        entered, release = threading.Event(), threading.Event()
+        response = []
+        handler = self.srv.RequestHandlerClass
+        original_recovery = handler._admin_recovery
+
+        def paused_recovery(request, *args, **kwargs):
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("MFA recovery test did not release the request")
+            return original_recovery(request, *args, **kwargs)
+
+        with patch.object(handler, "_admin_recovery", paused_recovery):
+            thread = threading.Thread(target=lambda: response.append(
+                self.req(admin, "/operators/reset-mfa", {"name": "laterecovery"})))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            self.ops.logout(admin["cookie"].split("=", 1)[1])
+            release.set()
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(response[0][0], 401)
+        self.assertEqual(self.req(target, "/auth/me")[0], 200)
+
+    def test_logout_before_org_creation_cannot_create_an_org(self):
+        who = self.signup("lateorgcreate")
+        before = len(self.reg.store.orgs_of("lateorgcreate"))
+        entered, release = threading.Event(), threading.Event()
+        response = []
+        handler = self.srv.RequestHandlerClass
+        original_session = handler._session
+
+        def paused_session(request):
+            sess = original_session(request)
+            if request.path == "/api/orgs":
+                entered.set()
+                if not release.wait(5):
+                    raise TimeoutError("org creation test did not release the request")
+            return sess
+
+        with patch.object(handler, "_session", paused_session):
+            thread = threading.Thread(target=lambda: response.append(
+                self.req(who, "/orgs", {"name": "late org"})))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            self.ops.logout(who["cookie"].split("=", 1)[1])
+            release.set()
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(response[0][0], 401)
+        self.assertEqual(len(self.reg.store.orgs_of("lateorgcreate")), before)
+
+    def test_logout_before_password_change_keeps_the_old_password(self):
+        who = self.signup("latepassword")
+        entered, release = threading.Event(), threading.Event()
+        response = []
+        handler = self.srv.RequestHandlerClass
+        original_change = handler._change_password
+
+        def paused_change(request, *args, **kwargs):
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("password test did not release the request")
+            return original_change(request, *args, **kwargs)
+
+        with patch.object(handler, "_change_password", paused_change):
+            thread = threading.Thread(target=lambda: response.append(self.req(
+                who, "/auth/password", {"current": "latepassword-Passw0rd!",
+                                        "new": "latepassword-NewPassw0rd!"})))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            self.ops.logout(who["cookie"].split("=", 1)[1])
+            release.set()
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(response[0][0], 401)
+        self.assertEqual(self.req({}, "/auth/login",
+                                  {"name": "latepassword", "password": "latepassword-Passw0rd!"})[0], 200)
+
+    def test_logout_before_totp_enrollment_cannot_receive_a_secret(self):
+        who = self.signup("latetotp")
+        entered, release = threading.Event(), threading.Event()
+        response = []
+        handler = self.srv.RequestHandlerClass
+        original_enroll = handler._totp_enroll
+
+        def paused_enroll(request, *args, **kwargs):
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("TOTP test did not release the request")
+            return original_enroll(request, *args, **kwargs)
+
+        with patch.object(handler, "_totp_enroll", paused_enroll):
+            thread = threading.Thread(target=lambda: response.append(
+                self.req(who, "/auth/totp/enroll", {})))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            self.ops.logout(who["cookie"].split("=", 1)[1])
+            release.set()
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(response[0][0], 401)
+        self.assertNotIn("secret", response[0][1])
+
+    def test_logout_before_totp_confirmation_does_not_enable_mfa(self):
+        who = self.signup("lateconfirm")
+        secret, _ = self.ops.begin_totp_enroll("lateconfirm")
+        entered, release = threading.Event(), threading.Event()
+        response = []
+        handler = self.srv.RequestHandlerClass
+        original_confirm = handler._totp_confirm
+
+        def paused_confirm(request, *args, **kwargs):
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("TOTP confirm test did not release")
+            return original_confirm(request, *args, **kwargs)
+
+        with patch.object(handler, "_totp_confirm", paused_confirm):
+            thread = threading.Thread(target=lambda: response.append(self.req(
+                who, "/auth/totp/confirm", {"code": totp_code(secret, time.time())})))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            self.ops.logout(who["cookie"].split("=", 1)[1])
+            release.set()
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(response[0][0], 401)
+        self.assertFalse(self.ops.totp_enabled("lateconfirm"))
+
+    def test_logout_before_totp_disable_does_not_remove_mfa(self):
+        who = self.signup("latedisable")
+        secret, _ = self.ops.begin_totp_enroll("latedisable")
+        self.ops.confirm_totp("latedisable", totp_code(secret, time.time()))
+        entered, release = threading.Event(), threading.Event()
+        response = []
+        handler = self.srv.RequestHandlerClass
+        original_disable = handler._totp_disable
+
+        def paused_disable(request, *args, **kwargs):
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("TOTP disable test did not release")
+            return original_disable(request, *args, **kwargs)
+
+        with patch.object(handler, "_totp_disable", paused_disable):
+            thread = threading.Thread(target=lambda: response.append(self.req(
+                who, "/auth/totp/disable", {"current": "latedisable-Passw0rd!",
+                                             "code": totp_code(secret, time.time())})))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            self.ops.logout(who["cookie"].split("=", 1)[1])
+            release.set()
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(response[0][0], 401)
+        self.assertTrue(self.ops.totp_enabled("latedisable"))
+
+    def test_logout_before_org_list_cannot_read_membership(self):
+        who = self.signup("lateorglist")
+        entered, release = threading.Event(), threading.Event()
+        response = []
+        handler = self.srv.RequestHandlerClass
+        original_session = handler._session
+
+        def paused_session(request):
+            sess = original_session(request)
+            if request.path == "/api/orgs":
+                entered.set()
+                if not release.wait(5):
+                    raise TimeoutError("org list test did not release")
+            return sess
+
+        with patch.object(handler, "_session", paused_session):
+            thread = threading.Thread(target=lambda: response.append(self.req(who, "/orgs")))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            self.ops.logout(who["cookie"].split("=", 1)[1])
+            release.set()
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(response[0][0], 401)
+
+    def test_logout_before_admin_account_list_cannot_read_accounts(self):
+        admin = self.login("padmin", "padmin-pw-1")
+        entered, release = threading.Event(), threading.Event()
+        response = []
+        handler = self.srv.RequestHandlerClass
+        original_session = handler._session
+
+        def paused_session(request):
+            sess = original_session(request)
+            if request.path == "/api/operators":
+                entered.set()
+                if not release.wait(5):
+                    raise TimeoutError("admin account list test did not release")
+            return sess
+
+        with patch.object(handler, "_session", paused_session):
+            thread = threading.Thread(target=lambda: response.append(self.req(admin, "/operators")))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            self.ops.logout(admin["cookie"].split("=", 1)[1])
+            release.set()
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(response[0][0], 401)
+
+    def test_member_removal_waits_for_an_inflight_event_write(self):
+        owner, member = self.signup("streamowner"), self.signup("streammember")
+        org_id = owner["orgs"][0]["id"]
+        _, invite = self.reg.store.create_invite(org_id, "streamowner", ["viewer"])
+        self.reg.store.accept_invite(invite, "streammember")
+        svc = self.reg.service(org_id)
+        entered, release, removed = threading.Event(), threading.Event(), threading.Event()
+        marker = b"PRIVATE_EVENT_DURING_REMOVAL"
+        original_write = socketserver._SocketWriter.write
+
+        def paused_write(writer, data):
+            if marker in data:
+                entered.set()
+                if not release.wait(5):
+                    raise TimeoutError("event write test did not release")
+            return original_write(writer, data)
+
+        conn = http.client.HTTPConnection("127.0.0.1", self.srv.server_port, timeout=10)
+        try:
+            with patch.object(socketserver._SocketWriter, "write", paused_write):
+                conn.request("GET", "/api/assessments/scan_001/events",
+                             headers={"Cookie": member["cookie"], "X-Vulnix-Org": org_id})
+                resp = conn.getresponse()
+                self.assertEqual(resp.status, 200)
+                self.assertEqual(resp.fp.readline(), b"retry: 2000\n")
+                resp.fp.readline()
+                svc.bus.publish(svc.a.id, "test.private", marker=marker.decode())
+                self.assertTrue(entered.wait(5))
+                remove_thread = threading.Thread(target=lambda: (
+                    self.reg.store.remove_member(org_id, "streamowner", "streammember"), removed.set()))
+                remove_thread.start()
+                self.assertFalse(removed.wait(0.1), "revocation completed before the event write")
+                release.set()
+                seen = b""
+                for _ in range(40):
+                    seen += resp.fp.readline()
+                    if marker in seen:
+                        break
+                self.assertIn(marker, seen)
+                remove_thread.join(5)
+                self.assertFalse(remove_thread.is_alive())
+                self.assertTrue(removed.is_set())
+        finally:
+            release.set()
+            conn.close()
 
     def test_membership_removal_after_org_binding_cannot_start_a_scan(self):
         owner, member = self.signup("lateowner"), self.signup("latemember")

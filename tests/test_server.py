@@ -114,6 +114,37 @@ class TestServer(unittest.TestCase):
         self.login("op", "op-pw")
         self.assertEqual(self.get()["state"], "idle")
 
+    def test_single_org_logout_after_binding_cannot_read_logs(self):
+        self.login("op", "op-pw")
+        token = self.cookie.split("=", 1)[1]
+        entered, release = threading.Event(), threading.Event()
+        response = []
+        handler = self.srv.RequestHandlerClass
+        original_bind = handler._bind
+
+        def paused_bind(request, *args, **kwargs):
+            bound = original_bind(request, *args, **kwargs)
+            if request.path == "/api/assessments/scan_001/logs":
+                entered.set()
+                if not release.wait(5):
+                    raise TimeoutError("single-org read test did not release")
+            return bound
+
+        with patch.object(handler, "_bind", paused_bind):
+            thread = threading.Thread(target=lambda: response.append(self._req(self.base + "/logs")))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            self.ops.logout(token)
+            release.set()
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(response[0][0], 401)
+
+    def test_single_org_approver_can_read_planner_preview(self):
+        self.login("appr", "appr-pw")
+        code, _ = self._req(self.base + "/artex/llm-preview")
+        self.assertEqual(code, 200)
+
     def test_open_reads_remain_available_as_an_explicit_opt_out(self):
         open_srv = ThreadingHTTPServer(("127.0.0.1", 0),
                                        make_handler(self.svc, self.ops, require_read_auth=False))

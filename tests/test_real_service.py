@@ -592,6 +592,13 @@ class TestOwnershipGate(RealServiceBase):
 
 
 class TestL1Diagnosis(RealServiceBase):
+    def test_public_beta_report_says_real_site_l2_is_disabled(self):
+        self.onboard()
+        self.svc.real_site_read_only = True
+        report = self.svc.report_markdown()
+        self.assertIn("L2はこの公開βで実行しません", report)
+        self.assertNotIn("個別承認分のみです", report)
+
     def test_status_marker_is_forbidden_in_non_read_only_real_site_mode(self):
         self.onboard(allow_status_probe=True)
         marker_url = self.url + "/server-status?auto"
