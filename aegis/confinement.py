@@ -177,8 +177,11 @@ class KernelConfinement:
             if not self._which("sudo"):
                 return no("root 権限がなく、sudo も見つかりません")
             try:
-                if self._run([self._which("sudo"), "-n", "true"], capture_output=True, text=True).returncode != 0:
+                if self._run([self._which("sudo"), "-n", "true"], capture_output=True,
+                             text=True, timeout=5).returncode != 0:
                     return no("root 権限またはパスワード不要の sudo が必要です")
+            except subprocess.TimeoutExpired:
+                return no("sudo の事前確認が時間切れになりました")
             except OSError as e:
                 return no(f"sudo を実行できません（{type(e).__name__}）")
         return {"ok": True, "reason": "", "mechanism": self.mechanism}

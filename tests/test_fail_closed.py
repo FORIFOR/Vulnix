@@ -660,6 +660,16 @@ class TestKernelConfinementLogic(unittest.TestCase):
         with self.assertRaises(ConfinementError):
             self.make(_FakeRun(sudo_ok=False)).session("203.0.113.7", 443)
 
+    def test_sudo_preflight_times_out_and_refuses_confinement(self):
+        def slow_sudo(argv, **kwargs):
+            self.assertEqual(argv, ["/bin/sudo", "-n", "true"])
+            self.assertEqual(kwargs.get("timeout"), 5)
+            raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+
+        status = self.make(slow_sudo).status()
+        self.assertFalse(status["ok"])
+        self.assertIn("sudo", status["reason"])
+
     def test_verified_session_and_teardown(self):
         run = _FakeRun()
         with self.make(run).session("203.0.113.7", 443) as s:

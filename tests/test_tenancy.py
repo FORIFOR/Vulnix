@@ -608,6 +608,69 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
         self.assertFalse(logout_thread.is_alive())
         self.assertEqual(response[0][0], 401)
 
+    def test_snapshot_generation_does_not_block_logout(self):
+        who = self.signup("slowsnapshot")
+        org_id = who["orgs"][0]["id"]
+        svc = self.reg.service(org_id)
+        entered, release, logged_out = threading.Event(), threading.Event(), threading.Event()
+        response = []
+        original_snapshot = svc.snapshot
+
+        def paused_snapshot():
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("snapshot test did not release")
+            return original_snapshot()
+
+        with patch.object(svc, "snapshot", side_effect=paused_snapshot):
+            thread = threading.Thread(target=lambda: response.append(
+                self.req(who, "/assessments/scan_001", org=org_id)))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            logout_thread = threading.Thread(target=lambda: (
+                self.ops.logout(who["cookie"].split("=", 1)[1]), logged_out.set()))
+            logout_thread.start()
+            try:
+                self.assertTrue(logged_out.wait(0.5), "snapshot held the global account lock")
+            finally:
+                release.set()
+                thread.join(5)
+                logout_thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertFalse(logout_thread.is_alive())
+        self.assertEqual(response[0][0], 401)
+
+    def test_system_status_generation_does_not_block_logout(self):
+        who = self.signup("slowstatus")
+        org_id = who["orgs"][0]["id"]
+        svc = self.reg.service(org_id)
+        entered, release, logged_out = threading.Event(), threading.Event(), threading.Event()
+        response = []
+        original_status = svc.system_status
+
+        def paused_status():
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("status test did not release")
+            return original_status()
+
+        with patch.object(svc, "system_status", side_effect=paused_status):
+            thread = threading.Thread(target=lambda: response.append(self.req(who, "/system/status", org=org_id)))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            logout_thread = threading.Thread(target=lambda: (
+                self.ops.logout(who["cookie"].split("=", 1)[1]), logged_out.set()))
+            logout_thread.start()
+            try:
+                self.assertTrue(logged_out.wait(0.5), "status held the global account lock")
+            finally:
+                release.set()
+                thread.join(5)
+                logout_thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertFalse(logout_thread.is_alive())
+        self.assertEqual(response[0][0], 401)
+
     def test_remotion_generation_does_not_block_logout(self):
         who = self.signup("slowexport")
         org_id = who["orgs"][0]["id"]

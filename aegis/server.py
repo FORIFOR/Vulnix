@@ -449,12 +449,20 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     bound = self._bind(sess)
                     if bound is None:
                         return None
-                    return self._authorized_org_read(sess, self._bound_org,
-                                                     lambda _: self._json(200, bound[0].system_status()))
-                if enforce_read_auth:
-                    return self._authorized_org_read(sess, DEFAULT_ORG,
-                                                     lambda _: self._json(200, svc.system_status()))
-                return self._json(200, svc.system_status())
+                    org, status_svc = self._bound_org, bound[0]
+                elif enforce_read_auth:
+                    org, status_svc = DEFAULT_ORG, svc
+                else:
+                    return self._json(200, svc.system_status())
+                try:
+                    with live_grant_roles(sess, org, reader=True):
+                        pass
+                except AuthError:
+                    return self._json(401, {"error": "ログインの有効期限が切れました。もう一度ログインしてください"})
+                except ApproverRequired:
+                    return self._json(403, {"error": "この組織のメンバーではありません"})
+                status_payload = status_svc.system_status()
+                return self._authorized_org_read(sess, org, lambda _: self._json(200, status_payload))
             if tenancy is not None and p.startswith("/api/orgs"):
                 previous_timeout = self.connection.gettimeout()
                 self.connection.settimeout(2.0)
@@ -471,7 +479,8 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 org = self._bound_org if tenancy is not None else DEFAULT_ORG
                 if p.endswith("/events"):
                     return self._get_org(p, u, *bound)  # long stream: per-batch lease below
-                if p in {f"/api/assessments/{bound[0].a.id}/logs",
+                if p in {f"/api/assessments/{bound[0].a.id}",
+                         f"/api/assessments/{bound[0].a.id}/logs",
                          f"/api/assessments/{bound[0].a.id}/report",
                          f"/api/assessments/{bound[0].a.id}/remotion"}:
                     # Large audit reads and report formatting must not hold the
@@ -487,7 +496,9 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         return self._json(403, {"error": "この組織のメンバーではありません"})
                     if not allowed_identified:
                         return self._json(403, {"error": "匿名化なしの出力には承認責任者または管理者の権限が必要です"})
-                    if p.endswith("/logs"):
+                    if p == f"/api/assessments/{bound[0].a.id}":
+                        payload = bound[0].snapshot()
+                    elif p.endswith("/logs"):
                         payload = bound[0].logs()
                     elif p.endswith("/report"):
                         payload = {"markdown": bound[0].report_markdown(),
