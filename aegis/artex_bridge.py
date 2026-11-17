@@ -119,6 +119,23 @@ CATALOG: tuple[CatalogEntry, ...] = (
 )
 CATALOG_BY_ID = {c.id: c for c in CATALOG}
 
+# Each extra L1 entry needs an explicit real-site eligibility and execution
+# review. A new catalog item must not silently inherit the Apache-only skip
+# decision or become executable merely because it is labelled L1.
+INITIAL_REAL_SITE_EXTRA_RULES = frozenset({"l1_apache_mod_status"})
+
+
+def initial_real_site_extra_checks(fingerprint: dict, *, status_consent: bool,
+                                   root_observed: bool) -> set[str]:
+    extra_ids = {entry.id for entry in CATALOG
+                 if entry.level == "L1" and entry.id != "l1_http_probe"}
+    if extra_ids != INITIAL_REAL_SITE_EXTRA_RULES:
+        raise ValueError("unreviewed extra L1 catalog")
+    if (root_observed and status_consent
+            and fingerprint.get("server_family") == "apache"):
+        return {"l1_apache_mod_status"}
+    return set()
+
 
 _FINGERPRINT_KEYS = frozenset({"scheme", "status_class", "server_family", "tls_present",
                                "hsts_present", "csp_present"})

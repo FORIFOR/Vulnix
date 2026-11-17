@@ -16,7 +16,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from aegis import evidence, l2_rules
+from aegis import artex_bridge, evidence, l2_rules
 from tests import TEST_CONFINEMENT
 from aegis.assessment import AssessmentService
 from aegis.evidence import reproduction_verdict
@@ -860,6 +860,29 @@ class TestL1Diagnosis(RealServiceBase):
         self.assertEqual(snap["state"], "completed")
         self.assertEqual([path for path, _ in self.fake.seen], ["/"])
         plan.assert_not_called()
+
+    def test_initial_artex_falls_back_if_extra_catalog_changes_without_review(self):
+        self.svc.real_site_read_only = True
+        self.svc._real_site_local_artex = True
+        self.svc._artex_real_cmd = ["mock-artex"]
+        self.fake.banner = "Apache/2.4.62"
+        self.onboard(allow_status_probe=True)
+        extra = artex_bridge.CatalogEntry(
+            "l1_future_read_only", "http_probe", "read_only_probe", "L1",
+            "future test check", ("future",))
+        with patch.dict("os.environ", {"VULNIX_REAL_SITE_INITIAL_ARTEX": "1",
+                                       "VULNIX_ARTEX_LLM_MODE": "gateway-forward",
+                                       "VULNIX_ARTEX_LLM_UPSTREAM_URL": "http://127.0.0.1:19991/v1/chat/completions"}), \
+                patch.object(artex_bridge, "CATALOG", artex_bridge.CATALOG + (extra,)), \
+                patch.object(self.svc, "_plan_with_artex",
+                             side_effect=AssertionError("unexpected model")) as plan:
+            snap = self.run_l1()
+        self.assertEqual(snap["state"], "completed")
+        self.assertEqual([path for path, _ in self.fake.seen], ["/"])
+        plan.assert_not_called()
+        self.assertTrue(any(e["event"] == "artex.initial_fallback" and
+                            e["fields"].get("reason") == "unreviewed_extra_catalog"
+                            for e in self.svc.audit.entries()))
 
     def test_pause_before_initial_plan_blocks_model_until_resume(self):
         self.svc.real_site_read_only = True

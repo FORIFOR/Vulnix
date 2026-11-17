@@ -75,7 +75,17 @@ class TestCookiePurposeLab(unittest.TestCase):
                         finding = next(f for f in rerun["findings"] if f["id"] == "f_l1_cookies")
                         self.assertIsNone(finding["what_was_established"])
                         self.assertEqual(finding["cookie_checks"][0]["purpose"], "unknown")
-                        self.assertEqual(lab.seen, ["/", "/", "/"])
+                        # A later recheck must use the current owner approval,
+                        # even when the same unsafe session attribute returns.
+                        lab.mode = "session_no_httponly"
+                        profile["cookie_policy"] = {**profile["cookie_policy"],
+                                                    "status": "unaccepted"}
+                        rerun = svc.verify_fix("approver")
+                        finding = next(f for f in rerun["findings"] if f["id"] == "f_l1_cookies")
+                        self.assertEqual(finding["verdict"], "candidate")
+                        self.assertIsNone(finding["what_was_established"])
+                        self.assertEqual(finding["risk_score"], 0)
+                        self.assertEqual(lab.seen, ["/", "/", "/", "/"])
                 finally:
                     svc.close()
         finally:

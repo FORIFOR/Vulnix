@@ -4269,7 +4269,7 @@ class AssessmentService:
                 and local_planner_host):
             # The first observation is already signed. The planner sees only
             # allowlisted enums; it cannot launch a Worker or add a target GET.
-            from .artex_bridge import safe_public_fingerprint
+            from .artex_bridge import initial_real_site_extra_checks, safe_public_fingerprint
             fingerprint = safe_public_fingerprint(res, scheme=urllib.parse.urlsplit(url).scheme)
             self._checkpoint()
             with self._lock:
@@ -4277,14 +4277,18 @@ class AssessmentService:
                 host = (self.a.asset.get("name") or "").lower()
                 ext = self._external_entry(host) or {}
                 usage = self.ledger.scan_usage.get(host) or {}
-                extra_check_possible = (
-                    fingerprint["server_family"] == "apache"
-                    and ext.get("allow_status_probe") is True
-                    and usage.get("status_probe_allowed") is True
-                    and usage.get("paths") == ["/"]
-                    and self._root_probe_observed_locked()
-                )
-            if not extra_check_possible:
+                status_consent = (ext.get("allow_status_probe") is True
+                                  and usage.get("status_probe_allowed") is True
+                                  and usage.get("paths") == ["/"])
+                root_observed = self._root_probe_observed_locked()
+            try:
+                eligible_extra = initial_real_site_extra_checks(
+                    fingerprint, status_consent=status_consent,
+                    root_observed=root_observed)
+            except ValueError:
+                eligible_extra = set()
+                self.audit.record("artex.initial_fallback", reason="unreviewed_extra_catalog")
+            if not eligible_extra:
                 # The initial real-site catalog has exactly one useful extra L1
                 # operation: Apache mod_status. Avoid a model call when Gateway
                 # would reject that operation, or the signed root observation
@@ -4303,7 +4307,7 @@ class AssessmentService:
                     self.audit.record("artex.initial_fallback", reason="planner_failure")
                 else:
                     for item in ((planned.get("artex_plan") or {}).get("plan") or {}).get("items", []):
-                        if (item.get("catalog_id") == "l1_apache_mod_status"
+                        if (item.get("catalog_id") in eligible_extra
                                 and item.get("status") == "planned"):
                             self._checkpoint()
                             self.execute_artex_item(item["id"], "policy:initial")

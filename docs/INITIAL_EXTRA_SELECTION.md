@@ -4,7 +4,7 @@
 
 この測定は、所有確認を模擬したローカル HTTPS の CORS 5 条件と Cookie 10 条件を対象とする。Cookie の正解ラベルと所有者仕様は、診断器から独立した `tests/fixtures/cookie_purpose_truth.json` と `tests/fixtures/cookie_owner_specs.json` に置く。CORS の条件は独立した模擬サーバーが返す応答に基づく。各条件について固定診断、一律 ARTEX 計画、初期観測による計画省略を同じ応答で比較した。実サイトや有料モデルには通信していない。
 
-現行の実サイト初期計画で、最初の GET 以外に実行できるカタログ項目は Apache `mod_status` の固定マーカー確認のみである。サーバーが Apache でない、または追加 GET の署名済み同意がない場合、Gateway で実行できる追加検査がない。省略判定はこの安全なカタログと診断権限に基づく。**AI 自身が CORS や Cookie の意味を理解して「省略」を選んだ証拠ではない。** Apache の場合は従来どおり ARTEX が計画し、Gateway と隔離 Worker が追加検査を制御する。
+現行の実サイト初期計画で、最初の GET 以外に実行できるカタログ項目は Apache `mod_status` の固定マーカー確認のみである。サーバーが Apache でない、または追加 GET の署名済み同意がない場合、Gateway で実行できる追加検査がない。省略判定はこの安全なカタログと診断権限に基づく。追加の L1 カタログ項目が未審査のまま増えた場合は、初期計画を安全側で省略し、監査に `unreviewed_extra_catalog` を記録する。カタログ全件の明示的分類を要求する回帰テストも失敗するため、新項目の適用条件・Gateway 権限・実行経路を同時にレビューする必要がある。**AI 自身が CORS や Cookie の意味を理解して「省略」を選んだ証拠ではない。** Apache の場合は従来どおり ARTEX が計画し、Gateway と隔離 Worker が追加検査を制御する。
 
 ```mermaid
 flowchart LR
