@@ -252,9 +252,20 @@ def probe(a: argparse.Namespace, clock=time.monotonic) -> dict:
             return {"check_id": "apache_mod_status", "elapsed_ms": timings["total_ms"],
                     "status": r.status, "markers": markers,
                     "detected": r.status == 200 and all(markers.values())}
+        headers = {}
+        link_values = []
+        for name, value in r.getheaders():
+            if name.lower() == "link":
+                link_values.append(value)
+            else:
+                headers[name] = value
+        if link_values:
+            # Repeated Link fields have the same list meaning as one comma-separated
+            # field. Keep all values for the bounded local-lab observation parser.
+            headers["Link"] = ", ".join(link_values)
         return {
             "status": r.status,
-            "headers": dict(r.getheaders()),
+            "headers": headers,
             "set_cookies": r.msg.get_all("Set-Cookie") or [],
             "tls": tls_info,
             "cors_probe_origin": a.origin,

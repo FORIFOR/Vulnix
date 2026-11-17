@@ -1,0 +1,9 @@
+{
+  "spaced_parameters_allowed": {"protected_root": false, "unauth_exposure": false, "cross_account_access": true, "idor_check_appropriate": true},
+  "multiple_values_denied": {"protected_root": false, "unauth_exposure": false, "cross_account_access": false, "idor_check_appropriate": true},
+  "near_relation_public": {"protected_root": false, "unauth_exposure": false, "cross_account_access": false, "idor_check_appropriate": false},
+  "foreign_target_public": {"protected_root": false, "unauth_exposure": false, "cross_account_access": false, "idor_check_appropriate": false},
+  "quoted_comma_decoy": {"protected_root": false, "unauth_exposure": false, "cross_account_access": false, "idor_check_appropriate": false},
+  "repeated_headers_allowed": {"protected_root": false, "unauth_exposure": false, "cross_account_access": true, "idor_check_appropriate": true},
+  "repeated_headers_decoy": {"protected_root": false, "unauth_exposure": false, "cross_account_access": false, "idor_check_appropriate": false}
+}
