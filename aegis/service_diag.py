@@ -43,9 +43,15 @@ def _auth_error_only(res: dict, headers_lower: dict[str, str]) -> bool:
         payload = json.loads(body)
     except (ValueError, TypeError):
         return False
-    if not isinstance(payload, dict) or set(payload) not in ({"error"}, {"message"}, {"error", "code"}):
+    if not isinstance(payload, dict):
+        return False
+    keys = set(payload)
+    if not keys <= {"error", "message", "code", "request_id"} or len(keys & {"error", "message"}) != 1:
         return False
     if "code" in payload and payload["code"] != "AUTH_REQUIRED":
+        return False
+    if "request_id" in payload and (not isinstance(payload["request_id"], str)
+                                    or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", payload["request_id"])):
         return False
     value = payload.get("error", payload.get("message"))
     return isinstance(value, str) and value.strip().casefold() in {

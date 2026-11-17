@@ -1,0 +1,6 @@
+{
+  "protected_root_denial_200": {"protected_root": true, "unauth_exposure": false, "cross_account_access": false, "idor_check_appropriate": false},
+  "public_root_personal_shape": {"protected_root": false, "unauth_exposure": false, "cross_account_access": false, "idor_check_appropriate": false},
+  "account_link_denied_404": {"protected_root": false, "unauth_exposure": false, "cross_account_access": false, "idor_check_appropriate": true},
+  "account_link_allowed_200": {"protected_root": false, "unauth_exposure": false, "cross_account_access": true, "idor_check_appropriate": true}
+}
