@@ -29,8 +29,10 @@ What the model is given, and what comes back, are both narrow on purpose:
 from __future__ import annotations
 
 import json
+import http.client
 import math
 import re
+import time
 import unicodedata
 import urllib.parse
 import urllib.request
@@ -505,7 +507,7 @@ class AbliterationAdvisor:
         }
         return json.dumps(payload, ensure_ascii=False).encode("utf-8"), ref_map
 
-    def advise(self, findings: list[dict], *, before_send=None) -> AdviceResult:
+    def advise(self, findings: list[dict], *, before_send=None, send_scope=None) -> AdviceResult:
         body, ref_map = self.build_request(findings)
         if not ref_map:
             return AdviceResult((), (), (), (), self.name, self.endpoint_kind)
@@ -513,7 +515,11 @@ class AbliterationAdvisor:
         try:
             if before_send is not None:
                 before_send()
-            raw = self._send(self.url, self._headers(), body)
+            if send_scope is not None and self.endpoint_kind == "external":
+                raw = _external_transport(self.url, self._headers(), body,
+                                          timeout_s=self.timeout_s, send_scope=send_scope)
+            else:
+                raw = self._send(self.url, self._headers(), body)
             data = json.loads(raw)
             content = data["choices"][0]["message"]["content"]
         except Exception as e:  # noqa: BLE001 - any transport / format failure is one error
@@ -531,8 +537,39 @@ class AbliterationAdvisor:
         )
 
 
-def _external_transport(url: str, headers: dict, body: bytes, *, timeout_s: float) -> bytes:
+def _external_transport(url: str, headers: dict, body: bytes, *, timeout_s: float,
+                        send_scope=None) -> bytes:
     # No environment proxy or redirect may receive the credential or anonymized findings.
+    if send_scope is not None:
+        # Establish TLS before taking the short authorization lease. Keep the
+        # lease through the actual request write, then release it while waiting
+        # for the slow model response so emergency stop remains responsive.
+        parts = urllib.parse.urlsplit(url)
+        if (parts.scheme != "https" or parts.hostname != "api.abliteration.ai"
+                or parts.port not in (None, 443) or parts.path != "/v1/chat/completions"
+                or parts.username is not None or parts.password is not None
+                or parts.query or parts.fragment):
+            raise AdvisorError("external advisor endpoint refused")
+        deadline = time.monotonic() + timeout_s
+        conn = http.client.HTTPSConnection("api.abliteration.ai", port=443, timeout=timeout_s)
+        try:
+            conn.connect()
+            remaining = max(0.01, deadline - time.monotonic())
+            if remaining <= 0.01:
+                raise AdvisorError("advisor connect timeout")
+            conn.sock.settimeout(min(1.0, remaining))
+            with send_scope():
+                conn.request("POST", parts.path, body=body, headers=headers)
+            conn.sock.settimeout(max(0.01, deadline - time.monotonic()))
+            response = conn.getresponse()
+            if not 200 <= response.status < 300:
+                raise AdvisorError("advisor HTTP response refused")
+            data = response.read(MAX_MODEL_RESPONSE_BYTES + 1)
+        finally:
+            conn.close()
+        if len(data) > MAX_MODEL_RESPONSE_BYTES:
+            raise AdvisorError("reply too large")
+        return data
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
     req = urllib.request.Request(url, data=body, headers=headers, method="POST")
     with opener.open(req, timeout=timeout_s) as response:

@@ -281,7 +281,19 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
             self.assertEqual(self.req(who, "/assessments/scan_001/chat",
                                       {"question": "説明して"}, org=org_id)[0], 200)
         self.assertTrue(guards[0]())
-        self.ops.logout(who["cookie"].split("=", 1)[1])
+        logged_out = threading.Event()
+
+        def logout():
+            self.ops.logout(who["cookie"].split("=", 1)[1])
+            logged_out.set()
+
+        with guards[0].lease():
+            revocation = threading.Thread(target=logout)
+            revocation.start()
+            self.assertFalse(logged_out.wait(0.05))
+        revocation.join(5)
+        self.assertFalse(revocation.is_alive())
+        self.assertTrue(logged_out.is_set())
         self.assertFalse(guards[0]())
 
     def test_foreground_worker_routes_receive_live_request_authority(self):

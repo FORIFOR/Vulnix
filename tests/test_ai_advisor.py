@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ast
+import contextlib
 import dataclasses
 import hashlib
 import json
@@ -216,6 +217,55 @@ class TestPhaseOneIsMockOnly(unittest.TestCase):
         request = json.loads(seen[0][2])
         self.assertLessEqual(request["max_tokens"], 2048)
         self.assertEqual(request["response_format"], {"type": "json_object"})
+
+    def test_external_transport_holds_send_scope_only_while_request_is_written(self):
+        events = []
+
+        class Response:
+            status = 200
+
+            def read(self, limit):
+                events.append("read")
+                return b"{}"
+
+        class Connection:
+            def __init__(self, *args, **kwargs):
+                events.append("init")
+                self.sock = type("Socket", (), {"settimeout": lambda _self, n: events.append("timeout")})()
+
+            def connect(self):
+                events.append("connect")
+
+            def request(self, method, path, body, headers):
+                events.append("request")
+                self.method, self.path, self.body, self.headers = method, path, body, headers
+
+            def getresponse(self):
+                events.append("response")
+                return Response()
+
+            def close(self):
+                events.append("close")
+
+        @contextlib.contextmanager
+        def scope():
+            events.append("enter")
+            try:
+                yield
+            finally:
+                events.append("exit")
+
+        with patch.object(adv.http.client, "HTTPSConnection", Connection):
+            out = adv._external_transport(
+                "https://api.abliteration.ai/v1/chat/completions",
+                {"Authorization": "Bearer test-only-key", "Content-Type": "application/json"},
+                b"{}", timeout_s=3.0, send_scope=scope)
+        self.assertEqual(out, b"{}")
+        self.assertLess(events.index("connect"), events.index("enter"))
+        self.assertLess(events.index("enter"), events.index("request"))
+        self.assertLess(events.index("request"), events.index("exit"))
+        self.assertLess(events.index("exit"), events.index("response"))
+        self.assertEqual(events[-1], "close")
 
     def test_the_adapter_takes_no_api_key_and_sends_no_authorization(self):
         fields = {f.name for f in dataclasses.fields(adv.AbliterationAdvisor)}
@@ -540,6 +590,96 @@ class TestServiceIntegration(RealServiceBase):
                 self.svc.ask_chat("解説", "appr", finding_id="f_headers", safe_advice=True)
         self.assertFalse(sent, "external transport must not run after stop before send")
         self.assertEqual(self.svc.snapshot()["chat_messages"], [])
+
+    def test_external_advisor_does_not_write_after_stop_during_tls_connect(self):
+        self.onboard()
+        self.run_l1()
+        self.svc._chat_backend = AbliterationBackend(
+            "https://api.abliteration.ai/v1/chat/completions", model="mock", api_key="test-key")
+        self.svc._real_site_safe_ai = True
+        sent = []
+        service = self.svc
+
+        class Connection:
+            def __init__(self, *args, **kwargs):
+                self.sock = type("Socket", (), {"settimeout": lambda _self, n: None})()
+
+            def connect(self):
+                service.emergency_stop("appr")
+
+            def request(self, *args, **kwargs):
+                sent.append(1)
+
+            def close(self):
+                pass
+
+        env = {"VULNIX_ADVISOR_PRICE_MODEL": "mock",
+               "VULNIX_ADVISOR_MAX_COST_USD": "0.50",
+               "VULNIX_ADVISOR_USD_PER_1K_INPUT": "0.10",
+               "VULNIX_ADVISOR_USD_PER_1K_OUTPUT": "0.10"}
+        with patch.dict(os.environ, env), patch.object(adv.http.client, "HTTPSConnection", Connection):
+            with self.assertRaises(ValueError):
+                service.ask_chat("解説", "appr", finding_id="f_headers", safe_advice=True)
+        self.assertFalse(sent, "request bytes must not be written after stop during TLS connect")
+        self.assertEqual(service.snapshot()["chat_messages"], [])
+
+    def test_external_advisor_holds_non_reentrant_authority_only_for_request_write(self):
+        self.onboard()
+        self.run_l1()
+        self.svc._chat_backend = AbliterationBackend(
+            "https://api.abliteration.ai/v1/chat/completions", model="mock", api_key="test-key")
+        self.svc._real_site_safe_ai = True
+        held, wrote = [False], []
+
+        def authorized():
+            if held[0]:
+                raise AssertionError("authority store lock was reacquired inside its lease")
+            return True
+
+        @contextlib.contextmanager
+        def lease():
+            held[0] = True
+            try:
+                yield
+            finally:
+                held[0] = False
+
+        authorized.lease = lease
+
+        class Response:
+            status = 200
+
+            def read(self, limit):
+                return b'{"choices":[{"message":{"content":"{\\"advice\\":[]}"}}]}'
+
+        class Connection:
+            def __init__(self, *args, **kwargs):
+                self.sock = type("Socket", (), {"settimeout": lambda _self, n: None})()
+
+            def connect(self):
+                pass
+
+            def request(self, *args, **kwargs):
+                wrote.append(held[0])
+
+            def getresponse(self):
+                if held[0]:
+                    raise AssertionError("authorization lease held while waiting for model reply")
+                return Response()
+
+            def close(self):
+                pass
+
+        env = {"VULNIX_ADVISOR_PRICE_MODEL": "mock",
+               "VULNIX_ADVISOR_MAX_COST_USD": "0.50",
+               "VULNIX_ADVISOR_USD_PER_1K_INPUT": "0.10",
+               "VULNIX_ADVISOR_USD_PER_1K_OUTPUT": "0.10"}
+        with patch.dict(os.environ, env), patch.object(adv.http.client, "HTTPSConnection", Connection):
+            result = self.svc.ask_chat("解説", "appr", finding_id="f_headers", safe_advice=True,
+                                       request_authorized=authorized)
+        self.assertEqual(wrote, [True])
+        self.assertFalse(held[0])
+        self.assertEqual(result["message"]["source"], "builtin")
 
     def test_chat_does_not_try_fallback_model_after_request_revocation(self):
         active, fallback_calls = [True], []

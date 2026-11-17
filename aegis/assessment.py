@@ -5163,8 +5163,26 @@ class AssessmentService:
                             or self.a.asset.get("id") != asset_id
                             or self._external_entry(host_name) is None):
                         raise AdvisorError("advisor scope expired before send")
+            @contextlib.contextmanager
+            def send_scope():
+                # The HTTP route supplies an account -> tenant lease. Hold it
+                # only while the HTTPS request bytes are written, then release
+                # before waiting for the model's reply.
+                lease = getattr(request_authorized, "lease", None)
+                if not callable(lease) and request_authorized is not None and not request_authorized():
+                    raise AdvisorError("request authority expired before advisor write")
+                with (lease() if callable(lease) else contextlib.nullcontext()):
+                    with self._lock:
+                        if (generation != self._run_generation or self.gateway.state is State.STOPPED
+                                or self.a.state != "completed" or not self._real_site_safe_ai
+                                or self._chat_backend is not backend or not self._is_external_service_asset()
+                                or self.a.asset.get("id") != asset_id
+                                or self._external_entry(host_name) is None):
+                            raise AdvisorError("advisor scope expired before request write")
+                        yield
             outcome["model_attempted"] = True
-            result = advisor.advise([finding], before_send=before_send)
+            result = advisor.advise([finding], before_send=before_send,
+                                    send_scope=send_scope if external else None)
         except AdvisorError as exc:
             outcome["model_error"] = type(exc).__name__
             with self._lock:
