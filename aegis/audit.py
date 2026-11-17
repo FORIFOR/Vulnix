@@ -1,11 +1,13 @@
 """Append-only, hash-chained audit log (JSONL). Tampering breaks verify()."""
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 GENESIS = "0" * 64
@@ -24,11 +26,25 @@ class AuditLog:
                     self._prev = json.loads(line)["hash"]
 
     def record(self, event: str, **fields) -> dict:
-        with self._lock:
+        with self._lock, self._exclusive_file():
             entry = self._append_locked(event, fields)
         for listener in list(self.listeners):
             listener(entry)
         return entry
+
+    @contextmanager
+    def _exclusive_file(self):
+        # A data directory can have more than one service object in one process.
+        # Serialize the complete verify/reserve/append transaction across them.
+        fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
 
     def _append_locked(self, event: str, fields: dict) -> dict:
         current_size = self.path.stat().st_size if self.path.exists() else 0
@@ -70,7 +86,7 @@ class AuditLog:
                 or not isinstance(cap_micro_usd, int) or isinstance(cap_micro_usd, bool)
                 or reserve_micro_usd <= 0 or cap_micro_usd <= 0):
             raise ValueError("invalid advisor budget")
-        with self._lock:
+        with self._lock, self._exclusive_file():
             entries, valid = self.verified_entries()
             if not valid or not self._is_continuation(entries):
                 raise ValueError("audit chain invalid")

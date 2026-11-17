@@ -944,6 +944,26 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             return [("Set-Cookie", f"{COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0")]
 
         def _dispatch(self, p, body, sess, svc=None):
+            # Binding can wait on target checks and rate limits. A logout or
+            # membership change during that time must not use the old snapshot.
+            live_error = None
+            with ops.locked_session(sess.token) as current:
+                if current is None or current.operator != sess.operator:
+                    live_error = (401, "ログインの有効期限が切れました。もう一度ログインしてください")
+                elif tenancy is not None and getattr(self, "_bound_org", None):
+                    with tenancy.store.locked_roles_in(self._bound_org, current.operator) as org_roles:
+                        if not org_roles:
+                            live_error = (403, "この組織のメンバーではありません")
+                        else:
+                            roles = service_roles(org_roles)
+                            if (not ({"operator", "approver", "admin"} & set(roles))
+                                    and not p.endswith(("/emergency-stop", "/pause"))):
+                                live_error = (403, "閲覧者の権限では操作できません")
+                            sess = dataclasses.replace(current, roles=roles)
+                else:
+                    sess = current
+            if live_error:
+                return self._json(live_error[0], {"error": live_error[1]})
             svc = svc or default_svc
             base = f"/api/assessments/{svc.a.id}"
             actor = sess.operator

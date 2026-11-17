@@ -58,6 +58,7 @@ class _Server:
             threading.Thread(target=self._serve, args=(c,), daemon=True).start()
 
     def _serve(self, c):
+        s = None
         try:
             if not self.speak_tls:
                 time.sleep(5)          # accepts TCP, never answers the TLS ClientHello
@@ -74,9 +75,12 @@ class _Server:
             body = b'{"ok":true}'
             s.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nStrict-Transport-Security: max-age=31536000\r\n"
                       b"Server: Google Frontend\r\nContent-Length: " + str(len(body)).encode() + b"\r\nConnection: close\r\n\r\n" + body)
-            s.close()
         except (OSError, ssl.SSLError):
             pass
+        finally:
+            if s is not None:
+                s.close()
+            c.close()
 
     def close(self):
         self._stop = True
@@ -211,6 +215,7 @@ class _Drip:
         threading.Thread(target=self._serve, daemon=True).start()
 
     def _serve(self):
+        c = None
         try:
             c, _ = self.sock.accept()
             c.recv(4096)
@@ -224,6 +229,9 @@ class _Drip:
                 time.sleep(0.3)
         except OSError:
             pass
+        finally:
+            if c is not None:
+                c.close()
 
     def close(self):
         self.sock.close()
@@ -478,6 +486,7 @@ class _FiniteDrip:
         threading.Thread(target=self._serve, daemon=True).start()
 
     def _serve(self):
+        c = None
         try:
             c, _ = self.sock.accept()
             c.recv(4096)
@@ -486,9 +495,11 @@ class _FiniteDrip:
                 c.sendall(b"a")
                 time.sleep(self.gap)
             c.sendall(b"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-            c.close()
         except OSError:
             pass
+        finally:
+            if c is not None:
+                c.close()
 
     def close(self):
         self.sock.close()

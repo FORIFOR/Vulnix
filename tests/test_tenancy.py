@@ -136,6 +136,66 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
         self.svc.close()
         self.tmp.cleanup()
 
+    def test_logout_after_org_binding_cannot_start_a_scan(self):
+        who = self.signup("latebinding")
+        org_id = who["orgs"][0]["id"]
+        svc = self.reg.service(org_id)
+        entered, release, started = threading.Event(), threading.Event(), threading.Event()
+        response = []
+        handler = self.srv.RequestHandlerClass
+        original_bind = handler._bind
+
+        def paused_bind(request, *args, **kwargs):
+            bound = original_bind(request, *args, **kwargs)
+            if bound and request.path == "/api/assessments/scan_001/start":
+                entered.set()
+                if not release.wait(5):
+                    raise TimeoutError("binding test did not release the request")
+            return bound
+
+        with patch.object(handler, "_bind", paused_bind), patch.object(svc, "start", side_effect=started.set):
+            thread = threading.Thread(target=lambda: response.append(
+                self.req(who, "/assessments/scan_001/start", {}, org=org_id)))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            self.ops.logout(who["cookie"].split("=", 1)[1])
+            release.set()
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(response[0][0], 401)
+        self.assertFalse(started.is_set())
+
+    def test_membership_removal_after_org_binding_cannot_start_a_scan(self):
+        owner, member = self.signup("lateowner"), self.signup("latemember")
+        org_id = owner["orgs"][0]["id"]
+        _, invite = self.reg.store.create_invite(org_id, "lateowner", ["runner"])
+        self.reg.store.accept_invite(invite, "latemember")
+        svc = self.reg.service(org_id)
+        entered, release, started = threading.Event(), threading.Event(), threading.Event()
+        response = []
+        handler = self.srv.RequestHandlerClass
+        original_bind = handler._bind
+
+        def paused_bind(request, *args, **kwargs):
+            bound = original_bind(request, *args, **kwargs)
+            if bound and request.path == "/api/assessments/scan_001/start":
+                entered.set()
+                if not release.wait(5):
+                    raise TimeoutError("membership test did not release the request")
+            return bound
+
+        with patch.object(handler, "_bind", paused_bind), patch.object(svc, "start", side_effect=started.set):
+            thread = threading.Thread(target=lambda: response.append(
+                self.req(member, "/assessments/scan_001/start", {}, org=org_id)))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            self.reg.store.remove_member(org_id, "lateowner", "latemember")
+            release.set()
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(response[0][0], 403)
+        self.assertFalse(started.is_set())
+
     def req(self, who, path, body=None, org=None):
         h = {"Content-Type": "application/json"}
         if body is not None:

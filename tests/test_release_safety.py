@@ -775,10 +775,12 @@ class TestUntrustedAuthStateOverHttp(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.data, True)
         self.svc = AssessmentService(self.data, LAB_PORT, verify_seconds=0.1, l2_confinement=TEST_CONFINEMENT,
                                      revocation_marker_dirs=[Path(tempfile.mkdtemp())])
+        self.addCleanup(self.svc.close)
         self.addCleanup(self.svc.workers.kill_all)
         self.ops = OperatorStore(seed(self.data))
         srv = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(self.svc, self.ops))
         threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
         self.addCleanup(srv.shutdown)
         self.api = f"http://127.0.0.1:{srv.server_port}/api"
 
