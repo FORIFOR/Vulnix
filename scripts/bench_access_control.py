@@ -56,7 +56,8 @@ def _measure(mode: str, strategy: str) -> dict:
                 intents=[INTENT], intent_selector=_adaptive_intents if strategy == "adaptive" else None) as model:
             env = {"AEGIS_ENV": "production" if real_bin else "development",
                    "VULNIX_ARTEX_REAL_CMD": shlex.join(command),
-                   "VULNIX_ARTEX_EXPECTED_SHA256": os.environ.get("VULNIX_ARTEX_CI_BINARY_SHA256", ""),
+                   "VULNIX_ARTEX_EXPECTED_SHA256": (os.environ.get("VULNIX_ARTEX_CI_BINARY_SHA256", "")
+                                                     if real_bin else ""),
                    "VULNIX_ARTEX_LLM_URL": model.url,
                    "VULNIX_ARTEX_LLM_MODE": "gateway-forward",
                    "VULNIX_ARTEX_LLM_UPSTREAM_URL": model.url + "/chat/completions"}
@@ -65,7 +66,7 @@ def _measure(mode: str, strategy: str) -> dict:
                                         verify_seconds=0.1)
                 if real_bin and os.environ.get("VULNIX_ARTEX_CONFINE") == "1":
                     svc._l2_confinement = KernelConfinement()
-                counts = {"gateway_calls": 0, "worker_launches": 0, "state_saves": 0,
+                counts = {"gateway_calls": 0, "worker_launches": 0, "planner_calls": 0, "state_saves": 0,
                           "ledger_commits": 0}
                 try:
                     with patch.object(svc.gateway, "execute", wraps=svc.gateway.execute) as gw, \
@@ -89,13 +90,18 @@ def _measure(mode: str, strategy: str) -> dict:
                         gateway_meta = {}
                         if strategy != "fixed_l1":
                             original = assessment_module.run_artex_planner
-                            def inject(cmd, request, **kwargs):
+                            planner_calls = [0]
+                            def counted_planner(cmd, request, **kwargs):
+                                planner_calls[0] += 1
+                                if real_bin:
+                                    return original(cmd, request, **kwargs)
                                 chosen = ([INTENT] if strategy == "always"
                                           or svc._lab_account_resource_observed else [])
                                 return original(cmd, {**request, "fake_intents": chosen}, **kwargs)
                             with patch.object(assessment_module, "run_artex_planner",
-                                              original if real_bin else inject):
+                                              side_effect=counted_planner):
                                 snap = svc.plan_with_artex("planner")
+                            counts["planner_calls"] = planner_calls[0]
                             plan = snap["artex_plan"]["plan"]
                             plan_engine = plan["engine"]["kind"]
                             gateway_meta = plan.get("llm_gateway") or {}

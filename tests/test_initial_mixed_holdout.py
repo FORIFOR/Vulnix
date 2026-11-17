@@ -2,12 +2,22 @@
 
 import tempfile
 import unittest
+import os
 from pathlib import Path
+from unittest.mock import patch
 
 from scripts.bench_initial_extra_selection import _certificate, measure
 
 
 class InitialMixedHoldoutTests(unittest.TestCase):
+    def test_local_stand_in_ignores_the_ci_real_binary_hash(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            certificate = _certificate(Path(tmp))
+            with patch.dict(os.environ, {"VULNIX_ARTEX_REAL_BIN": "",
+                                         "VULNIX_ARTEX_CI_BINARY_SHA256": "0" * 64}):
+                row = measure("cors", "patched", "always", certificate)
+        self.assertEqual(row["planner_calls"], 1)
+
     def test_consent_with_apache_does_not_skip_status_check_for_other_findings(self):
         with tempfile.TemporaryDirectory() as tmp:
             certificate = _certificate(Path(tmp))

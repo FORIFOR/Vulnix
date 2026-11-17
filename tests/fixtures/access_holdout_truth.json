@@ -1,0 +1,9 @@
+{
+  "private_root_200": {"protected_root": true, "unauth_exposure": true, "cross_account_access": false, "idor_check_appropriate": false},
+  "public_root_200": {"protected_root": false, "unauth_exposure": false, "cross_account_access": false, "idor_check_appropriate": false},
+  "cross_account_allowed": {"protected_root": false, "unauth_exposure": false, "cross_account_access": true, "idor_check_appropriate": true},
+  "cross_account_denied_200": {"protected_root": false, "unauth_exposure": false, "cross_account_access": false, "idor_check_appropriate": true},
+  "account_directory_public": {"protected_root": false, "unauth_exposure": false, "cross_account_access": false, "idor_check_appropriate": false},
+  "owner_resource_missing": {"protected_root": false, "unauth_exposure": false, "cross_account_access": false, "idor_check_appropriate": true},
+  "auth_root_403": {"protected_root": true, "unauth_exposure": false, "cross_account_access": false, "idor_check_appropriate": false}
+}

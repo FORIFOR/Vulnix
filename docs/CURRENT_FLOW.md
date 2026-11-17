@@ -62,6 +62,7 @@ flowchart LR
 | P26 | 初期計画のカタログ変更検知 | P25 → `initial_real_site_extra_checks` → 未審査の追加L1があれば `artex.initial_fallback`、固定L1を継続 | `test_initial_extra_catalog.py`, `test_real_service.py`。カタログの全追加L1を明示分類するテストが、新項目追加時の安全性レビュー漏れを検出する |
 | P27 | 既存分類と追加検査の混合条件評価 | 保留用正解表 → ローカルHTTPS対象 → P25/P26 → P09/P10 → 分類別の検出・選択採点 | `bench_initial_mixed_holdout.py`, `test_initial_mixed_holdout.py`, `INITIAL_MIXED_HOLDOUT.md`。CORS・Cookieの5組合せで固定・一律・観測選択を比較。実AIの推論精度は未評価 |
 | P28 | Apache情報露出の選択と検出を分離 | 独立正解表 → 所有確認済みローカルHTTPS → P25/P26 → Gateway・Worker → 状態別採点 | `bench_status_selection_holdout.py`, `test_status_selection_holdout.py`, `STATUS_SELECTION_HOLDOUT.md`。同意なし条件は追加GETを行わず、脆弱性検出精度の分母から除外する |
+| P29 | 5分類の保留用条件を横断比較 | CORS/Cookie・Apache・認証/IDORの独立対象 → 分類別TP/FP/FN/TN → Macro・選択精度・通信費用 | `bench_access_holdout.py`, `bench_five_class_holdout.py`, `test_access_holdout.py`, `FIVE_CLASS_HOLDOUT.md`。認証とIDORが共有する対象GETは一度だけ数え、実AIの精度と混同しない |
 
 ## 時系列と異常系
 

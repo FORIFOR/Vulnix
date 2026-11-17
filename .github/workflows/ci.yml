@@ -248,6 +248,27 @@ jobs:
           VULNIX_NO_ENV_LOCAL=1 python3 -m scripts.bench_status_selection_holdout --smoke > "$RUNNER_TEMP/status-selection-holdout.json"
           test -s "$RUNNER_TEMP/status-selection-holdout.json"
 
+      - name: Withheld access conditions with real ARTEX and local model
+        env:
+          VULNIX_ARTEX_REAL_BIN: ${{ runner.temp }}/artex-vulnix-planner
+          VULNIX_ARTEX_PG_DSN: postgres://artex_planner:artex-planner-ci-only@127.0.0.1:5432/artex_planner?sslmode=disable
+          VULNIX_ARTEX_CONFINE: "1"
+        run: |
+          VULNIX_NO_ENV_LOCAL=1 python3 -m scripts.bench_access_holdout --smoke > "$RUNNER_TEMP/access-holdout-real-artex.json"
+          test -s "$RUNNER_TEMP/access-holdout-real-artex.json"
+
+      - name: Five-class withheld comparison with local stand-in
+        run: |
+          VULNIX_NO_ENV_LOCAL=1 python3 -m scripts.bench_initial_mixed_holdout > "$RUNNER_TEMP/mixed-holdout-full.json"
+          VULNIX_NO_ENV_LOCAL=1 python3 -m scripts.bench_status_selection_holdout > "$RUNNER_TEMP/status-holdout-full.json"
+          VULNIX_NO_ENV_LOCAL=1 python3 -m scripts.bench_access_holdout > "$RUNNER_TEMP/access-holdout-full.json"
+          VULNIX_NO_ENV_LOCAL=1 python3 -m scripts.bench_five_class_holdout \
+            --mixed-file "$RUNNER_TEMP/mixed-holdout-full.json" \
+            --status-file "$RUNNER_TEMP/status-holdout-full.json" \
+            --access-file "$RUNNER_TEMP/access-holdout-full.json" \
+            > "$RUNNER_TEMP/five-class-holdout.json"
+          test -s "$RUNNER_TEMP/five-class-holdout.json"
+
       - name: Set up Node.js for the owned-site browser path
         uses: actions/setup-node@v4
         with:
@@ -285,6 +306,8 @@ jobs:
             ${{ runner.temp }}/multiclass-comparison.json
             ${{ runner.temp }}/initial-mixed-holdout.json
             ${{ runner.temp }}/status-selection-holdout.json
+            ${{ runner.temp }}/access-holdout-real-artex.json
+            ${{ runner.temp }}/five-class-holdout.json
             ${{ runner.temp }}/status-exposure-comparison.json
             ${{ runner.temp }}/access-control-comparison.json
             ${{ runner.temp }}/initial-extra-selection.json
