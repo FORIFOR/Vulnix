@@ -3,5 +3,7 @@
   "multiple_values_denied": {"root_requirement": "public", "account_resource_requirement": "authentication_required"},
   "near_relation_public": {"root_requirement": "public", "account_resource_requirement": "public"},
   "foreign_target_public": {"root_requirement": "public", "account_resource_requirement": "public"},
-  "quoted_comma_decoy": {"root_requirement": "public", "account_resource_requirement": "public"}
+  "quoted_comma_decoy": {"root_requirement": "public", "account_resource_requirement": "public"},
+  "repeated_headers_allowed": {"root_requirement": "public", "account_resource_requirement": "authentication_required"},
+  "repeated_headers_decoy": {"root_requirement": "public", "account_resource_requirement": "public"}
 }

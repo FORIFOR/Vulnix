@@ -72,7 +72,8 @@ def main() -> None:
     parser.add_argument("--smoke", action="store_true")
     args = parser.parse_args()
     assert set(TRUTH) == set(OWNER_SPECS) == MODES
-    modes = (["spaced_parameters_allowed", "quoted_comma_decoy"] if args.smoke else list(TRUTH))
+    modes = (["spaced_parameters_allowed", "repeated_headers_allowed", "quoted_comma_decoy"]
+             if args.smoke else list(TRUTH))
     rows = [measure(mode, version) for mode in modes
             for version in ("legacy_exact", "link_fields")]
     print(json.dumps(summarize(rows, modes), ensure_ascii=False, indent=2))

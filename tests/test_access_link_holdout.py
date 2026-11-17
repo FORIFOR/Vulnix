@@ -28,7 +28,8 @@ class AccessLinkHoldoutTests(unittest.TestCase):
         self.assertEqual(MODES, set(OWNER_SPECS))
 
     def test_equivalent_link_syntax_preserves_selection_and_proof_standard(self):
-        for mode in ("spaced_parameters_allowed", "multiple_values_denied"):
+        for mode in ("spaced_parameters_allowed", "multiple_values_denied",
+                     "repeated_headers_allowed"):
             with self.subTest(mode=mode):
                 row = measure(mode, "adaptive_one_pass")
                 self.assertTrue(row["plan_adopted"])
@@ -36,7 +37,8 @@ class AccessLinkHoldoutTests(unittest.TestCase):
                 self.assertEqual(row["observed_account_link"], True)
 
     def test_near_relation_and_foreign_target_do_not_trigger_idor(self):
-        for mode in ("near_relation_public", "foreign_target_public", "quoted_comma_decoy"):
+        for mode in ("near_relation_public", "foreign_target_public", "quoted_comma_decoy",
+                     "repeated_headers_decoy"):
             with self.subTest(mode=mode):
                 row = measure(mode, "adaptive_one_pass")
                 self.assertFalse(row["plan_adopted"])
