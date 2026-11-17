@@ -19,6 +19,17 @@ class TestConcurrentValidAuditAppend(unittest.TestCase):
             first.record("allow", tool="http_probe")
             self.assertTrue(first.verify())
 
+    def test_paid_send_reservation_continues_another_valid_append(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "audit.jsonl"
+            first = AuditLog(path)
+            first.record("test.first")
+            second = AuditLog(path)
+            second.record("test.second")
+            first.record_with_budget("advisor.safe_send_requested", endpoint_kind="external",
+                                     reserve_micro_usd=100, cap_micro_usd=1000)
+            self.assertTrue(first.verify())
+
 
 class TestAuditSnapshot(unittest.TestCase):
     def test_log_response_verifies_the_entries_it_returns_with_one_read(self):

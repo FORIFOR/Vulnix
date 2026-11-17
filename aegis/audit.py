@@ -71,6 +71,7 @@ class AuditLog:
             entries, valid = self.verified_entries()
             if not valid:
                 raise ValueError("audit chain invalid")
+            self._prev = entries[-1]["hash"] if entries else GENESIS
             spent = 0
             for previous in entries:
                 if (previous.get("event") != "advisor.safe_send_requested"
