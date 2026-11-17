@@ -51,7 +51,9 @@ PARSER.add_argument("--revoke-session", action="store_true",
                     help="Revoke the lab session and require the browser to hide the old result")
 PARSER.add_argument("--real-artex", action="store_true", help="Use the pinned ARTEX overlay binary supplied by CI")
 PARSER.add_argument("--chromium", action="store_true", help="Use Playwright Chromium instead of local Chrome")
-PARSER.add_argument("--cors-note", action="store_true", help="Check the observed CORS headers and unproven-data note at 390px")
+PARSER.add_argument("--cors-note", action="store_true", help="Check the observed CORS headers and unproven-data note")
+PARSER.add_argument("--viewport-width", type=int, default=390,
+                    help="Browser width for the local owned-site flow (default: 390px)")
 
 
 def free_port() -> int:
@@ -76,6 +78,8 @@ def wait_for_web(url: str, proc: subprocess.Popen) -> None:
 
 def main() -> None:
     args = PARSER.parse_args()
+    if not 320 <= args.viewport_width <= 1920:
+        PARSER.error("--viewport-width must be between 320 and 1920")
     real_bin = os.environ.get("VULNIX_ARTEX_REAL_BIN") if args.real_artex else None
     if args.real_artex and (not real_bin or not Path(real_bin).is_file()):
         PARSER.error("--real-artex requires VULNIX_ARTEX_REAL_BIN pointing to the built overlay")
@@ -150,7 +154,7 @@ def main() -> None:
                         browser = playwright.chromium.launch(headless=True) if args.chromium else \
                             playwright.chromium.launch(channel="chrome", headless=True)
                         try:
-                            page = browser.new_page(viewport={"width": 390, "height": 844})
+                            page = browser.new_page(viewport={"width": args.viewport_width, "height": 844})
                             api_calls: list[str] = []
                             page_errors: list[str] = []
                             page.on("request", lambda req: api_calls.append(req.url.split("/api/", 1)[1].split("?", 1)[0])
@@ -257,7 +261,7 @@ def main() -> None:
                                 assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
                                 page.screenshot(path=str(ROOT / "docs/CORS_390_RESULT.png"), full_page=True)
                                 assert not page_errors, page_errors
-                            print(json.dumps({"viewport_width": 390,
+                            print(json.dumps({"viewport_width": args.viewport_width,
                                               "web_mode": "production" if args.production else "development",
                                               "actions_from_site_open_to_result": len(actions),
                                               "action_names": actions, "browser_api_requests": len(api_calls),
