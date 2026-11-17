@@ -432,6 +432,115 @@ class TestAdvisorAuditBudget(unittest.TestCase):
 
 
 class TestServiceIntegration(RealServiceBase):
+    def test_external_advisor_does_not_send_after_stop_at_budget_reservation(self):
+        self.onboard()
+        self.run_l1()
+        self.svc._chat_backend = AbliterationBackend(
+            "https://api.abliteration.ai/v1/chat/completions", model="mock", api_key="test-key")
+        self.svc._real_site_safe_ai = True
+        sent = []
+        reserves = []
+        original = self.svc.audit.record_with_budget
+
+        def reserve_then_stop(*args, **kwargs):
+            reserves.append(args[0])
+            result = original(*args, **kwargs)
+            self.svc.emergency_stop("appr")
+            return result
+
+        env = {"VULNIX_ADVISOR_PRICE_MODEL": "mock",
+               "VULNIX_ADVISOR_MAX_COST_USD": "0.50",
+               "VULNIX_ADVISOR_USD_PER_1K_INPUT": "0.10",
+               "VULNIX_ADVISOR_USD_PER_1K_OUTPUT": "0.10"}
+        with patch.dict(os.environ, env), \
+                patch.object(self.svc.audit, "record_with_budget", side_effect=reserve_then_stop), \
+                patch.object(adv, "_external_transport", side_effect=lambda *args, **kwargs: sent.append(args) or b"{}"):
+            with self.assertRaises(ValueError) as raised:
+                self.svc.ask_chat("解説", "appr", finding_id="f_headers", safe_advice=True)
+        self.assertFalse(sent, "external transport must not run after stop")
+        self.assertEqual(reserves, ["advisor.safe_send_requested"])
+        self.assertIn("診断対象または許可状態", str(raised.exception))
+
+    def test_external_advisor_does_not_send_after_request_authority_expires(self):
+        self.onboard()
+        self.run_l1()
+        self.svc._chat_backend = AbliterationBackend(
+            "https://api.abliteration.ai/v1/chat/completions", model="mock", api_key="test-key")
+        self.svc._real_site_safe_ai = True
+        active, sent = [True], []
+        original = self.svc.audit.record_with_budget
+
+        def reserve_then_revoke(*args, **kwargs):
+            result = original(*args, **kwargs)
+            active[0] = False
+            return result
+
+        env = {"VULNIX_ADVISOR_PRICE_MODEL": "mock",
+               "VULNIX_ADVISOR_MAX_COST_USD": "0.50",
+               "VULNIX_ADVISOR_USD_PER_1K_INPUT": "0.10",
+               "VULNIX_ADVISOR_USD_PER_1K_OUTPUT": "0.10"}
+        with patch.dict(os.environ, env), \
+                patch.object(self.svc.audit, "record_with_budget", side_effect=reserve_then_revoke), \
+                patch.object(adv, "_external_transport", side_effect=lambda *args, **kwargs: sent.append(1) or b"{}"):
+            with self.assertRaises(ValueError):
+                self.svc.ask_chat("解説", "appr", finding_id="f_headers", safe_advice=True,
+                                  request_authorized=lambda: active[0])
+        self.assertFalse(sent, "external transport must not run after request revocation")
+        self.assertEqual(self.svc.snapshot()["chat_messages"], [])
+
+    def test_external_advisor_does_not_send_after_scope_expires_at_reservation(self):
+        self.onboard()
+        self.run_l1()
+        self.svc._chat_backend = AbliterationBackend(
+            "https://api.abliteration.ai/v1/chat/completions", model="mock", api_key="test-key")
+        self.svc._real_site_safe_ai = True
+        sent = []
+        original = self.svc.audit.record_with_budget
+
+        def reserve_then_expire(*args, **kwargs):
+            result = original(*args, **kwargs)
+            with self.svc._lock:
+                self.svc._verified_external_hosts[HOST]["not_after"] = 0
+            return result
+
+        env = {"VULNIX_ADVISOR_PRICE_MODEL": "mock",
+               "VULNIX_ADVISOR_MAX_COST_USD": "0.50",
+               "VULNIX_ADVISOR_USD_PER_1K_INPUT": "0.10",
+               "VULNIX_ADVISOR_USD_PER_1K_OUTPUT": "0.10"}
+        with patch.dict(os.environ, env), \
+                patch.object(self.svc.audit, "record_with_budget", side_effect=reserve_then_expire), \
+                patch.object(adv, "_external_transport", side_effect=lambda *args, **kwargs: sent.append(1) or b"{}"):
+            with self.assertRaises(ValueError):
+                self.svc.ask_chat("解説", "appr", finding_id="f_headers", safe_advice=True)
+        self.assertFalse(sent, "external transport must not run after scope expiry")
+        self.assertEqual(self.svc.snapshot()["chat_messages"], [])
+
+    def test_external_advisor_rechecks_stop_at_transport_boundary(self):
+        self.onboard()
+        self.run_l1()
+        self.svc._chat_backend = AbliterationBackend(
+            "https://api.abliteration.ai/v1/chat/completions", model="mock", api_key="test-key")
+        self.svc._real_site_safe_ai = True
+        sent = []
+        original_advise = adv.ExternalAbliterationAdvisor.advise
+        service = self.svc
+
+        def stop_on_advise(advisor, findings, **kwargs):
+            service.emergency_stop("appr")
+            return original_advise(advisor, findings, **kwargs)
+
+        env = {"VULNIX_ADVISOR_PRICE_MODEL": "mock",
+               "VULNIX_ADVISOR_MAX_COST_USD": "0.50",
+               "VULNIX_ADVISOR_USD_PER_1K_INPUT": "0.10",
+               "VULNIX_ADVISOR_USD_PER_1K_OUTPUT": "0.10"}
+        with patch.dict(os.environ, env), \
+                patch.object(adv.ExternalAbliterationAdvisor, "advise", stop_on_advise), \
+                patch.object(adv, "_external_transport", side_effect=lambda *args, **kwargs: sent.append(1) or b"{}"):
+            with self.assertRaises(ValueError):
+                self.svc.ask_chat("解説", "appr", finding_id="f_headers", safe_advice=True)
+        self.assertFalse(sent, "external transport must not run after stop before send")
+        self.assertEqual(self.svc.snapshot()["chat_messages"], [])
+
     def test_external_advisor_requires_a_durable_budget_before_sending(self):
         self.onboard()
         self.run_l1()
@@ -577,8 +686,8 @@ class TestServiceIntegration(RealServiceBase):
             self.svc._real_site_safe_ai = True
             original = adv.AbliterationAdvisor.advise
 
-            def switch_during_reply(advisor, findings):
-                result = original(advisor, findings)
+            def switch_during_reply(advisor, findings, **kwargs):
+                result = original(advisor, findings, **kwargs)
                 self.svc.select_asset("lab")
                 return result
 
@@ -595,8 +704,8 @@ class TestServiceIntegration(RealServiceBase):
             self.svc._real_site_safe_ai = True
             original = adv.AbliterationAdvisor.advise
 
-            def replace_backend(advisor, findings):
-                result = original(advisor, findings)
+            def replace_backend(advisor, findings, **kwargs):
+                result = original(advisor, findings, **kwargs)
                 self.svc._chat_backend = AbliterationBackend(mock.url, model="later-model")
                 return result
 

@@ -505,12 +505,14 @@ class AbliterationAdvisor:
         }
         return json.dumps(payload, ensure_ascii=False).encode("utf-8"), ref_map
 
-    def advise(self, findings: list[dict]) -> AdviceResult:
+    def advise(self, findings: list[dict], *, before_send=None) -> AdviceResult:
         body, ref_map = self.build_request(findings)
         if not ref_map:
             return AdviceResult((), (), (), (), self.name, self.endpoint_kind)
         self._require_endpoint()
         try:
+            if before_send is not None:
+                before_send()
             raw = self._send(self.url, self._headers(), body)
             data = json.loads(raw)
             content = data["choices"][0]["message"]["content"]

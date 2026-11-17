@@ -267,6 +267,23 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
         self.ops.logout(who["cookie"].split("=", 1)[1])
         self.assertFalse(guards[0]())
 
+    def test_chat_receives_live_request_authority(self):
+        who = self.signup("livechat")
+        org_id = who["orgs"][0]["id"]
+        svc = self.reg.service(org_id)
+        guards = []
+
+        def capture_chat(*args, **kwargs):
+            guards.append(kwargs["request_authorized"])
+            return {"message": {}, "chat_messages": [], "planner": {}}
+
+        with patch.object(svc, "ask_chat", side_effect=capture_chat):
+            self.assertEqual(self.req(who, "/assessments/scan_001/chat",
+                                      {"question": "説明して"}, org=org_id)[0], 200)
+        self.assertTrue(guards[0]())
+        self.ops.logout(who["cookie"].split("=", 1)[1])
+        self.assertFalse(guards[0]())
+
     def test_foreground_worker_routes_receive_live_request_authority(self):
         who = self.signup("liveworker")
         org_id = who["orgs"][0]["id"]

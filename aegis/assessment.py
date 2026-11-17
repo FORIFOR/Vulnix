@@ -5060,15 +5060,20 @@ class AssessmentService:
                          entry={k: entry[k] for k in ("ts", "event", "fields", "prev", "hash")})
 
     # ---- P1: AI chat with assessment context (read-only, zero authority) ----
-    def _safe_real_ai_explanation(self, finding_id: str | None, actor: str, outcome: dict) -> str | None:
+    def _safe_real_ai_explanation(self, finding_id: str | None, actor: str, outcome: dict,
+                                  request_authorized=None) -> str | None:
         """Explain one real-site finding from fixed enums only. The user's question,
         title, evidence and target URL never enter the advisor request."""
         from .ai_advisor import AbliterationAdvisor, ExternalAbliterationAdvisor, AdvisorError
         from .chat_guard import verdict_note
 
+        if request_authorized is not None and not request_authorized():
+            return None
         with self._lock:
             if (not self._real_site_safe_ai or self._chat_backend is None or not finding_id
-                    or self.a.state != "completed" or not self._is_external_service_asset()):
+                    or self.a.state != "completed" or self.gateway.state is State.STOPPED
+                    or not self._is_external_service_asset()
+                    or self._external_entry(self.a.asset.get("name")) is None):
                 return None
             finding = self.a.findings.get(finding_id)
             if not isinstance(finding, dict) or evidence_status(finding) not in ("candidate", "detected", "proven"):
@@ -5076,6 +5081,8 @@ class AssessmentService:
             finding = copy.deepcopy(finding)
             backend = self._chat_backend
             generation = self._run_generation
+            asset_id = self.a.asset.get("id")
+            host_name = self.a.asset.get("name")
 
         url = backend._url
         host = (urllib.parse.urlsplit(url).hostname or "").lower()
@@ -5111,9 +5118,14 @@ class AssessmentService:
                                           + Decimal(output_limit) * output_price) * 1000)
                                         .to_integral_value(rounding=ROUND_CEILING))
                 cap_micro_usd = int((cap * 1_000_000).to_integral_value(rounding=ROUND_FLOOR))
+            if request_authorized is not None and not request_authorized():
+                return None
             with self._lock:
                 if (generation != self._run_generation or not self._is_external_service_asset()
-                        or self.a.state != "completed" or not self._real_site_safe_ai):
+                        or self.a.state != "completed" or not self._real_site_safe_ai
+                        or self.gateway.state is State.STOPPED or self._chat_backend is not backend
+                        or self.a.asset.get("id") != asset_id
+                        or self._external_entry(host_name) is None):
                     return None
                 audit_fields = {"actor": actor, "finding_id": finding_id, "model": backend._model,
                                 "payload_sha256": hashlib.sha256(body).hexdigest(),
@@ -5127,8 +5139,32 @@ class AssessmentService:
                         raise AdvisorError("advisor budget refused") from None
                 else:
                     self.audit.record("advisor.safe_send_requested", **audit_fields)
+            # The audit reservation can block. A revoked session, withdrawn scope,
+            # switched workspace or emergency stop must prevent the transport.
+            if request_authorized is not None and not request_authorized():
+                return None
+            with self._lock:
+                if (generation != self._run_generation or self.gateway.state is State.STOPPED
+                        or self.a.state != "completed" or not self._real_site_safe_ai
+                        or self._chat_backend is not backend or not self._is_external_service_asset()
+                        or self.a.asset.get("id") != asset_id
+                        or self._external_entry(host_name) is None):
+                    return None
+            def before_send() -> None:
+                # Building the advisor's request can also take time. Recheck at
+                # its transport boundary, outside the service lock to avoid an
+                # account/tenant -> service lock inversion.
+                if request_authorized is not None and not request_authorized():
+                    raise AdvisorError("request authority expired before advisor send")
+                with self._lock:
+                    if (generation != self._run_generation or self.gateway.state is State.STOPPED
+                            or self.a.state != "completed" or not self._real_site_safe_ai
+                            or self._chat_backend is not backend or not self._is_external_service_asset()
+                            or self.a.asset.get("id") != asset_id
+                            or self._external_entry(host_name) is None):
+                        raise AdvisorError("advisor scope expired before send")
             outcome["model_attempted"] = True
-            result = advisor.advise([finding])
+            result = advisor.advise([finding], before_send=before_send)
         except AdvisorError as exc:
             outcome["model_error"] = type(exc).__name__
             with self._lock:
@@ -5154,14 +5190,19 @@ class AssessmentService:
                 "実際の応答と監査記録は問題詳細で確認してください。これらはAIに送信していません。")
 
     def ask_chat(self, question: str, actor: str, term: str | None = None,
-                 finding_id: str | None = None, safe_advice: bool = False) -> dict:
+                 finding_id: str | None = None, safe_advice: bool = False,
+                 request_authorized=None) -> dict:
         q = question.strip()[:500]
         if not q:
             raise ValueError("question must not be empty")
+        if request_authorized is not None and not request_authorized():
+            raise ValueError("要求者の権限が失効したため、解説を開始しません")
         now = time.time()
         with self._lock:
             chat_generation = self._run_generation
             chat_asset_id = self.a.asset.get("id")
+            chat_external = safe_advice and self._is_external_service_asset()
+            chat_host = self.a.asset.get("name") if chat_external else None
             user_msg = {
                 "id": "msg_" + secrets.token_hex(4),
                 "role": "user",
@@ -5174,16 +5215,22 @@ class AssessmentService:
         # Inference can be slow. Never hold the control-plane lock while waiting:
         # snapshots, worker updates and emergency stop must remain responsive.
         outcome: dict = {"model_attempted": False, "model_error": None}
-        safe_answer = self._safe_real_ai_explanation(finding_id, actor, outcome) if safe_advice else None
+        safe_answer = (self._safe_real_ai_explanation(finding_id, actor, outcome,
+                                                     request_authorized=request_authorized)
+                       if safe_advice else None)
         source, answer_text = ("external_model", safe_answer) if safe_answer else self._answer_question(
             q, term=term, finding_id=finding_id, outcome=outcome)
         model_attempted = outcome["model_attempted"]
         # A model's answer is outside text too: make sure it can always be stored
         # (an unpaired surrogate would otherwise make every later save fail).
         answer_text = str(answer_text).encode("utf-8", "replace").decode("utf-8")[:20000]
+        if request_authorized is not None and not request_authorized():
+            raise ValueError("要求者の権限が失効したため、解説を保存しません")
         with self._lock:
             if (chat_generation != self._run_generation or chat_asset_id != self.a.asset.get("id")
-                    or (safe_answer and not self._is_external_service_asset())):
+                    or (chat_external and (not self._is_external_service_asset()
+                                           or self._external_entry(chat_host) is None
+                                           or self.gateway.state is State.STOPPED))):
                 raise ValueError("診断対象または許可状態が変更されたため、AI解説を破棄しました")
             ai_msg = {
                 "id": "msg_" + secrets.token_hex(4),

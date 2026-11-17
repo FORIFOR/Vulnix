@@ -1255,7 +1255,9 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     term = str(body.get("term") or "") or None
                     finding_id = str(body.get("finding_id") or "") or None
                     return self._json(200, svc.ask_chat(q, actor, term=term, finding_id=finding_id,
-                                                       safe_advice=body.get("safe_advice") is True))
+                                                       safe_advice=body.get("safe_advice") is True,
+                                                       request_authorized=live_request_authority(
+                                                           sess, getattr(self, "_bound_org", DEFAULT_ORG))))
                 elif m := re.fullmatch(base + r"/approvals/(req_[0-9a-f]+)", p):
                     decision = body.get("decision")
                     if decision not in ("approve", "reject"):
