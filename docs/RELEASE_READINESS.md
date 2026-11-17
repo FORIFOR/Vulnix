@@ -4,8 +4,8 @@
 
 | ゲート | 状態 | 必要な証拠 |
 | --- | --- | --- |
-| 累積コードの全テストとLinux実ARTEX | NOT_TESTED（最新差分） | #85 `6475549` の[Linux CI](https://github.com/FORIFOR/Vulnix/actions/runs/44074507092)は3ジョブ成功。追加修正 `f5ba0f6`〜`6c0e100` はローカル関連テストを通過したが、全件とLinux CIは進行中 |
-| Gateway・Worker・所有確認・組織分離・停止 | NOT_TESTED（最新差分） | #85 `6475549` の所有確認競合を再現し、`f5ba0f6` で修正。Google・DNS・ファイル・範囲確定の関連435件成功。`7fa695d`・`e0981f8`でモデル予算・停止・監査破損時の送信拒否も追加。最新全件・Linux CIが必要 |
+| 累積コードの全テストとLinux実ARTEX | NOT_TESTED（最新差分） | #85 `f85b3b5`のローカル全1,372件成功・27件スキップ・警告0、[Linux CI #44105345262](https://github.com/FORIFOR/Vulnix/actions/runs/44105345262)は3ジョブ成功。認可lease `50dcaae` の関連324件成功、全件・CI #44112452006進行中 |
+| Gateway・Worker・所有確認・組織分離・停止 | NOT_TESTED（残る統合境界） | `f5ba0f6`で所有確認中の失効、`dd55f60`で監査の同時予約・許可、`18b38f2`で同一接続の権限昇格を修正。`f85b3b5`で緊急停止回帰と長時間操作中の送信前再確認を追加し全件・CI成功。認可leaseの個別競合テストは成功したが、後続差分の全件・CIと実Worker同時失効が未確認 |
 | 複数分類の独立精度 | 限定PASS | 5分類17条件と別のLink7条件に加え、未知アクセス4条件でHTTP 200拒否のFPを1→0に修正。認証・IDORの2分類だけの追加測定で、実モデル性能ではない |
 | 実Abliteration AI | BLOCKED | 承認済み固定要求の1回、JSON採用、選択精度、usage・請求照合 |
 | 初心者の4段階操作 | 一部PASS | 390px・1280pxのローカル模擬対象では結果まで各8操作。390pxの別ラボで修正後 `not_reproduced` と新旧証拠も表示。実DNS、公開β、全画面は未確認 |

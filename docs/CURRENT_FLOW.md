@@ -1,6 +1,6 @@
 # 現行開発コードの処理系統
 
-この文書はDraft PR #53〜#74と本ブランチを依存順に重ねた開発コードの経路を示す。公開βへ反映済みという意味ではない。APIと関数の基礎的な静的列挙は[PROCESS_INVENTORY.json](PROCESS_INVENTORY.json)、履歴と重複候補は[PROCESS_AUDIT.md](PROCESS_AUDIT.md)、同一ラボ測定は[STATUS_EXPOSURE_INTEGRATION.md](STATUS_EXPOSURE_INTEGRATION.md)。後続の検査選択評価は[ACCESS_CONTROL_BLIND_LAB.md](ACCESS_CONTROL_BLIND_LAB.md)、HTTP 200認証拒否の再測定は[AUTH_RESPONSE_LAB.md](AUTH_RESPONSE_LAB.md)、Cookie用途の再測定は[COOKIE_PURPOSE_LAB.md](COOKIE_PURPOSE_LAB.md)に分離した。静的列挙は後続PRのスクリプトまで網羅せず、動的URLや実行時設定も解決できないため、P17〜P23をコードと照合して追記した。
+この文書はDraft PR #53〜#84をまとめたPR #85統合候補の経路を示す。公開βへ反映済みという意味ではない。APIと関数の基礎的な静的列挙は[PROCESS_INVENTORY.json](PROCESS_INVENTORY.json)、履歴と重複候補は[PROCESS_AUDIT.md](PROCESS_AUDIT.md)、同一ラボ測定は[STATUS_EXPOSURE_INTEGRATION.md](STATUS_EXPOSURE_INTEGRATION.md)。後続の検査選択評価は[ACCESS_CONTROL_BLIND_LAB.md](ACCESS_CONTROL_BLIND_LAB.md)、HTTP 200認証拒否の再測定は[AUTH_RESPONSE_LAB.md](AUTH_RESPONSE_LAB.md)、Cookie用途の再測定は[COOKIE_PURPOSE_LAB.md](COOKIE_PURPOSE_LAB.md)に分離した。静的列挙は後続PRのスクリプトまで網羅せず、動的URLや実行時設定も解決できないため、P17以降をコードと照合して追記した。
 
 この累積コードとmainは異なる。PR #63以降はDraft・未マージで、#68の実Abliteration AI評価は鍵がないため未実行。公開βの実DNS所有確認・実サイト診断も未実証。以下の動作証拠は、明記がなければ隔離した模擬対象による。
 
@@ -66,6 +66,15 @@ flowchart LR
 | P30 | 初期観測事実から単回で検査選択 | P09の初期グラフ要約 → 事実が十分なら直接意図提案、足りなければ `list_facts` → P10のGateway審査 | `vulnix_bridge.go`, `artex_mock_llm.py`, `bench_first_prompt_selection.py`, `FIRST_PROMPT_SELECTION.md`。既存の事実表示を再利用し、事実不足時の参照手段は維持する。実モデルが省略するかは未測定 |
 | P31 | 未知のLink表記を隔離ラボで比較 | 独立したLink応答・所有者仕様・正解表 → 初期観測 → P30/P09 → Gateway・隔離Worker → 選択と実証を別採点 | `access_link_holdout_lab.py`, `bench_access_link_holdout.py`, `test_access_link_holdout.py`, `ACCESS_LINK_HOLDOUT.md`。Lab専用の関係解析を拡張し、実サイトL2禁止は維持する |
 | P32 | Apache観測事実の再取得を比較 | 初期の匿名化指紋 → ARTEXの初回要約または `list_facts` → P10の審査・隔離Worker | `bench_status_first_prompt.py`, `test_status_selection_holdout.py`, `STATUS_FIRST_PROMPT.md`。同じ同意・露出条件で選択・証拠・通信・モデル要求を比較し、実AIの判断とは区別する |
+| P33 | 所有確認中にログアウト・権限失効 | P03〜P06の外部照会後 → `live_grant_roles` → `OperatorStore.locked_session`・`OrgStore.locked_roles_in` → 署名済み保存 | `test_google_ownership.py`, `test_tenancy.py`。現在のセッション・組織役割を保存まで保持し、失効後の証明付与を拒否。実DNS・Google APIは未検証 |
+| P34 | モデル費用・停止・送信先 | `PlannerLLMGateway.handle` → `Budget`有限値確認・費用予約 → `planner_llm.forwarding`監査 → 停止再確認 → `_http_transport` | `test_planner_llm_gateway.py`, `test_router.py`, `test_selection_model_eval.py`。NaN設定・監査直後の停止・環境プロキシを拒否。実usage超過後の追加送信は禁止、初回請求の絶対上限は保証しない |
+| P35 | 監査チェーン破損・切り戻し・同時追記 | `AuditLog.record("allow"/"planner_llm.forwarding")`・`record_with_budget` → ファイル単位の排他 → `verified_entries`・予算計算・既知の末尾照合 → 追記 → Gateway/モデル送信 | `test_gateway.py`, `test_planner_llm_gateway.py`, `test_audit_snapshot.py`。破損と稼働中の既知末尾の切り戻しは送信拒否、2サービスの同時許可・予算予約も直列化。再起動前の切り戻しは単独JSONLでは検知できない。1,002件の単発照合は旧実装で4.352ms、修正後は未測定 |
+| P36 | 390pxの結果更新と修正後再確認 | SSE再接続・定期状態取得・組織切替・レポート出力、隔離ラボの`verify-fix` → 詳細画面 | `bench_browser_owned_flow.py`, `bench_browser_lab_recheck.py`, `QA_BROWSER_INTEGRATION.md`。新旧証拠ID、HTTP 200→403、`proven`→`not_reproduced`を表示。実サイト再現は実行しない |
+| P37 | 新しい認証拒否・IDOR保留条件 | 独立4条件 → `_auth_error_only`・初期観測 → 固定/一律/観測選択 → Gateway/Worker | `bench_access_fresh_holdout.py`, `test_access_fresh_holdout.py`, `ACCESS_FRESH_HOLDOUT.md`。HTTP 200拒否＋要求IDの誤検知を1→0、IDOR TP1維持。規則型代役で実AIの性能ではない |
+| P38 | 組織結合後のセッション・権限失効 | `_bind` → 対象・費用制限 → `_dispatch`冒頭の`locked_session`・`locked_roles_in` → 診断開始・再開時の短い`live_grant_roles` → 操作 | `server.py`, `test_tenancy.py`。結合後のログアウト・除名を模擬再現し診断開始を拒否。長時間のARTEX・Worker実行中の失効と既に開始した処理の中断は別途検証が必要 |
+| P39 | 同じHTTP接続での組織権限と全体権限 | 組織要求は明示的に渡された`svc`と現在の`_bound_org`を照合 → 全体要求は現在のグローバル役割のみ使用 | `server.py`, `test_tenancy.py`。HTTP/1.1接続に残る組織ownerのadmin役割が全体L2プロファイル承認に使われるP1を再現し、全体要求で403・承認0へ修正 |
+| P40 | 長時間操作中の要求者失効 | HTTP要求に紐付く`live_request_allowed` → ARTEXの`may_start`・Planner Gatewayの各`may_forward`・採用前 → foreground `execute_artex_item`/`verify_finding`のTLS継承 → Gatewayの`_launch_guard` | `server.py`, `assessment.py`, `test_planner_llm_gateway.py`, `test_tenancy.py`。ログアウト後のモデル転送と新しいWorker起動を検査境界で拒否。直接ローカルモデルの途中要求、モデル送信直前の競合は未実証 |
+| P41 | 前景Workerの起動直前失効 | `live_request_authority.lease` → `AssessmentService._late_launch_guard` → `Gateway` → `WorkerPool.run` → アカウント・組織の短いロック → poolのepoch確認・Popen登録 | `server.py`, `assessment.py`, `gateway.py`, `runtime.py`, `test_gateway.py`, `test_tenancy.py`。隔離コマンド準備中とpool lock待ちの失効を単体競合で確認。実Gateway/Workerとログアウトの同時E2E、背景診断の範囲取消競合は未実証 |
 
 ## 時系列と異常系
 
