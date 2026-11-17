@@ -1,0 +1,7 @@
+{
+  "cors_credentialed_apache": {"kind": "cors", "mode": "reflected_credentials", "banner": "Apache/2.4.62", "status_consent": true, "baseline_detected": true, "status_check_appropriate": true, "status_exposed": false},
+  "cors_trusted_apache": {"kind": "cors", "mode": "patched", "banner": "Apache/2.4.62", "status_consent": true, "baseline_detected": false, "status_check_appropriate": true, "status_exposed": false},
+  "cors_public_no_consent": {"kind": "cors", "mode": "public_wildcard", "banner": "Apache/2.4.62", "status_consent": false, "baseline_detected": false, "status_check_appropriate": false, "status_exposed": false},
+  "cookie_safe_apache": {"kind": "cookie", "mode": "session_full", "banner": "Apache/2.4.62", "status_consent": true, "baseline_detected": false, "status_check_appropriate": true, "status_exposed": false},
+  "cookie_unsafe_no_consent": {"kind": "cookie", "mode": "session_no_secure", "banner": "Apache/2.4.62", "status_consent": false, "baseline_detected": true, "status_check_appropriate": false, "status_exposed": false}
+}

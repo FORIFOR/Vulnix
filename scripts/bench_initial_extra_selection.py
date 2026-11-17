@@ -54,11 +54,13 @@ def _certificate(directory: Path) -> Path:
     return certificate
 
 
-def measure(kind: str, mode: str, strategy: str, certificate: Path) -> dict:
+def measure(kind: str, mode: str, strategy: str, certificate: Path, *,
+            server_banner: str | None = None, allow_status_probe: bool = False) -> dict:
     if kind not in ("cors", "cookie") or strategy not in ("fixed", "always", "observed"):
         raise ValueError("unknown benchmark condition")
     host = f"owned-{kind}.example.test"
-    site = CorsPolicyLab(mode) if kind == "cors" else CookiePurposeLab(mode)
+    site = (CorsPolicyLab(mode, server_banner=server_banner) if kind == "cors"
+            else CookiePurposeLab(mode, server_banner=server_banner))
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(str(certificate), str(certificate.parent / "private.pem"))
     site.socket = context.wrap_socket(site.socket, server_side=True)
@@ -104,7 +106,8 @@ def measure(kind: str, mode: str, strategy: str, certificate: Path) -> dict:
                             dns_lookup=lambda name: [f'{name} text = "{challenge["dns_txt_value"]}"'],
                         )
                         svc.confirm_asset_scope(url_or_host=url, confirmed_prohibited=True,
-                                                activate_workspace=True, allow_loopback_test=True)
+                                                activate_workspace=True, allow_loopback_test=True,
+                                                allow_status_probe=allow_status_probe)
                         assert site.seen == []
                         observed_response = []
                         original_analyze = svc._analyze
@@ -116,8 +119,13 @@ def measure(kind: str, mode: str, strategy: str, certificate: Path) -> dict:
                                 # The historical always-plan path ran during the
                                 # initial diagnosis, before result completion.
                                 fingerprint = safe_public_fingerprint(response, scheme="https")
-                                svc._plan_with_artex("policy:benchmark", llm_mode="gateway-forward",
-                                                     fingerprint=fingerprint)
+                                planned_result = svc._plan_with_artex(
+                                    "policy:benchmark", llm_mode="gateway-forward",
+                                    fingerprint=fingerprint)
+                                for item in ((planned_result.get("artex_plan") or {}).get("plan") or {}).get("items", []):
+                                    if (item.get("catalog_id") == "l1_apache_mod_status"
+                                            and item.get("status") == "planned"):
+                                        svc.execute_artex_item(item["id"], "policy:benchmark")
                             return result
 
                         original_runner = assessment_module.run_artex_planner
@@ -150,7 +158,11 @@ def measure(kind: str, mode: str, strategy: str, certificate: Path) -> dict:
                             assert host not in payload and url not in payload and mode not in payload
                             plan = (snap.get("artex_plan") or {}).get("plan") or {}
                             planned = [i for i in plan.get("items", []) if i.get("catalog_id") == "l1_apache_mod_status"]
-                            assert site.seen == ["/"], site.seen
+                            expected_status_get = (server_banner or "").lower().startswith("apache/") \
+                                and allow_status_probe and strategy in ("always", "observed")
+                            assert site.seen == (["/", "/server-status?auto"] if expected_status_get else ["/"]), site.seen
+                            status_finding = next((f for f in snap["findings"]
+                                                   if f["id"] == "f_l1_apache_mod_status"), None)
                             return {
                                 "kind": kind, "mode": mode, "strategy": strategy,
                                 "expected": expected, "verdict": verdict,
@@ -158,7 +170,11 @@ def measure(kind: str, mode: str, strategy: str, certificate: Path) -> dict:
                                 "planner_calls": planner_calls[0],
                                 "local_model_calls": len(model.requests),
                                 "status_plan_proposed": bool(planned),
-                                "status_plan_executable": any(i.get("status") == "planned" for i in planned),
+                                "status_plan_executable": any(i.get("status") in ("planned", "running", "completed")
+                                                              for i in planned),
+                                "status_check_appropriate": (server_banner or "").lower().startswith("apache/")
+                                    and allow_status_probe,
+                                "status_finding_verdict": (status_finding or {}).get("verdict", "none"),
                                 "elapsed_s": round(elapsed, 3),
                                 "budget_est_tokens": (plan.get("llm_gateway") or {}).get("est_tokens") or 0,
                                 "hypothetical_model_cost_usd": (plan.get("llm_gateway") or {}).get("est_cost_usd") or 0,

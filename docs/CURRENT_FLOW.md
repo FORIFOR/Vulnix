@@ -59,6 +59,8 @@ flowchart LR
 | P23 | 5分類の独立ラボ採点 | 既存のCORS・Cookie・認証/IDOR・ApacheラボJSON → `bench_multiclass.py` → 分類別指標とMacro平均 | `test_multiclass_macro.py`, `MULTICLASS_BLIND_LAB.md`。比較不能な分類はARTEX欄を空欄とし、Precision未定義を除外して分母を記録。CIでは既存の実ARTEX測定JSONを再利用 |
 | P24 | 修正後のCORS・Cookie再確認 | `verify_fix` → `_verify_fix_body` → 初回と同じ `analyze_l1_service_response` → 証拠付き比較 | `test_cors_policy_lab.py`, `test_cookie_purpose_lab.py`。公開ワイルドカードや一般Cookieを再検出せず、用途不明は`candidate`。対象への再GETはGateway・Workerと既存権限の確認を通る。公開βの読み取り専用実サイトでは実行不可 |
 | P25 | 初期観測後の追加検査省略 | `_run_inner` → `safe_public_fingerprint` → 署名済み追加GET同意・根拠確認 → `artex.initial_skipped` またはP09/P10 | `test_real_service.py`, `test_status_exposure_lab.py`, `bench_initial_extra_selection.py`, `INITIAL_EXTRA_SELECTION.md`。現行実サイトカタログの追加L1はApache `mod_status`だけ。CORS・Cookieの15条件で無駄な計画を削減。AI自身の判断力の証明ではない |
+| P26 | 初期計画のカタログ変更検知 | P25 → `initial_real_site_extra_checks` → 未審査の追加L1があれば `artex.initial_fallback`、固定L1を継続 | `test_initial_extra_catalog.py`, `test_real_service.py`。カタログの全追加L1を明示分類するテストが、新項目追加時の安全性レビュー漏れを検出する |
+| P27 | 既存分類と追加検査の混合条件評価 | 保留用正解表 → ローカルHTTPS対象 → P25/P26 → P09/P10 → 分類別の検出・選択採点 | `bench_initial_mixed_holdout.py`, `test_initial_mixed_holdout.py`, `INITIAL_MIXED_HOLDOUT.md`。CORS・Cookieの5組合せで固定・一律・観測選択を比較。実AIの推論精度は未評価 |
 
 ## 時系列と異常系
 
@@ -108,7 +110,7 @@ P17は診断フローの外にある固定入力の評価であり、モデル�
 
 P21は初回GETに含まれる`Set-Cookie`だけを評価し、追加GETを発生させない。サイトプロファイルの内容が変わった場合は従来の管理者によるハッシュ承認が必要で、未承認の用途情報は検出判定に使わない。Cookie名・属性・所有者仕様をARTEXや外部AIへ追加送信しない。
 
-P24は再GETの観測を初回と同じ判定器へ渡す。P25はP09の起動前に追加検査の適用可能性と同意を確認するだけであり、実行直前のGatewayによる再審査を省かない。現行カタログで有益な追加L1がない場合はモデルを起動せず、初回所見と監査を残す。
+P24は再GETの観測を初回と同じ判定器へ渡す。P25はP09の起動前に追加検査の適用可能性と同意を確認するだけであり、実行直前のGatewayによる再審査を省かない。現行カタログで有益な追加L1がない場合はモデルを起動せず、初回所見と監査を残す。P26は新しい追加L1がP25の省略条件を黙って継承しないよう検知する。P27は複数の既存所見とApache追加検査を同時に持つ条件で、省略と必要検査の見逃しを別々に測る。
 
 | 外部通信先 | 発生条件・境界 |
 |---|---|
