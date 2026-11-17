@@ -67,6 +67,43 @@ EXECUTOR = {
 }
 
 
+def _has_lab_account_resource_link(value: object) -> bool:
+    """Accept only the fixed local-lab resource relation, despite Link formatting."""
+    if not isinstance(value, str) or len(value) > 4096:
+        return False
+    entries = []
+    start = 0
+    quoted = escaped = False
+    for index, char in enumerate(value):
+        if quoted:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                quoted = False
+        elif char == '"':
+            quoted = True
+        elif char == ",":
+            entries.append(value[start:index])
+            start = index + 1
+    if quoted:
+        return False
+    entries.append(value[start:])
+    token = r'(?:"(?:[^"\\]|\\.)*"|[A-Za-z0-9._-]+)'
+    parameter = rf';\s*([A-Za-z][A-Za-z0-9_-]*)\s*=\s*({token})\s*'
+    candidate = re.compile(rf'\s*</api/accounts/B/secret>\s*((?:{parameter})+)\s*')
+    for entry in entries:
+        match = candidate.fullmatch(entry)
+        if not match:
+            continue
+        relations = [m.group(2).strip('"') for m in re.finditer(parameter, match.group(1))
+                     if m.group(1).lower() == "rel"]
+        if relations == ["account-resource"]:
+            return True
+    return False
+
+
 def demo_verify_tool(seconds: float) -> Tool:
     worker = str(Path(__file__).parent / "workers" / "demo_verify.py")
     return Tool("demo_verify", "safe_reproduction",
@@ -4634,8 +4671,7 @@ class AssessmentService:
         h = {k.lower(): v for k, v in res["headers"].items()}
         # Only the presence of this fixed, observed link reaches the local ARTEX
         # planner. The response body, owner specification and truth labels do not.
-        self._lab_account_resource_observed = bool(re.fullmatch(
-            r'</api/accounts/B/secret>; rel="account-resource"', str(h.get("link", ""))))
+        self._lab_account_resource_observed = _has_lab_account_resource_link(h.get("link"))
         banner = h.get("server", "")
         bid = "f_banner"
         # CVE candidates come from the catalog engine (detection only, not proof).

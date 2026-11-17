@@ -64,6 +64,7 @@ flowchart LR
 | P28 | Apache情報露出の選択と検出を分離 | 独立正解表 → 所有確認済みローカルHTTPS → P25/P26 → Gateway・Worker → 状態別採点 | `bench_status_selection_holdout.py`, `test_status_selection_holdout.py`, `STATUS_SELECTION_HOLDOUT.md`。同意なし条件は追加GETを行わず、脆弱性検出精度の分母から除外する |
 | P29 | 5分類の保留用条件を横断比較 | CORS/Cookie・Apache・認証/IDORの独立対象 → 分類別TP/FP/FN/TN → Macro・選択精度・通信費用 | `bench_access_holdout.py`, `bench_five_class_holdout.py`, `test_access_holdout.py`, `FIVE_CLASS_HOLDOUT.md`。認証とIDORが共有する対象GETは一度だけ数え、実AIの精度と混同しない |
 | P30 | 初期観測事実から単回で検査選択 | P09の初期グラフ要約 → 事実が十分なら直接意図提案、足りなければ `list_facts` → P10のGateway審査 | `vulnix_bridge.go`, `artex_mock_llm.py`, `bench_first_prompt_selection.py`, `FIRST_PROMPT_SELECTION.md`。既存の事実表示を再利用し、事実不足時の参照手段は維持する。実モデルが省略するかは未測定 |
+| P31 | 未知のLink表記を隔離ラボで比較 | 独立したLink応答・所有者仕様・正解表 → 初期観測 → P30/P09 → Gateway・隔離Worker → 選択と実証を別採点 | `access_link_holdout_lab.py`, `bench_access_link_holdout.py`, `test_access_link_holdout.py`, `ACCESS_LINK_HOLDOUT.md`。Lab専用の関係解析を拡張し、実サイトL2禁止は維持する |
 
 ## 時系列と異常系
 
