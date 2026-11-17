@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shlex
 import ssl
 import subprocess
@@ -43,6 +44,14 @@ COOKIE_OWNER = json.loads((FIXTURES / "cookie_owner_specs.json").read_text())
 STATUS_INTENT = {"summary": "Check Apache mod_status exposure", "asset_ids": [1], "priority": 5}
 
 
+def _status_intents(messages: list[dict]) -> list[dict]:
+    # The local model reads only the measured, allowlisted fingerprint summary.
+    # No response body, host, case ID, owner contract or truth label is available.
+    content = " ".join(str(m.get("content") or "") for m in messages if isinstance(m, dict))
+    return ([STATUS_INTENT] if re.search(
+        r'Measured root fingerprint:.{0,250}?server_family.{0,16}apache\b', content) else [])
+
+
 def _certificate(directory: Path) -> Path:
     certificate = directory / "certificate.pem"
     private = directory / "private.pem"
@@ -57,7 +66,9 @@ def _certificate(directory: Path) -> Path:
 
 def measure(kind: str, mode: str, strategy: str, certificate: Path, *,
             server_banner: str | None = None, allow_status_probe: bool = False) -> dict:
-    if kind not in ("cors", "cookie", "status") or strategy not in ("fixed", "always", "observed"):
+    if (kind not in ("cors", "cookie", "status")
+            or strategy not in ("fixed", "always", "observed", "lookup_facts", "initial_facts")
+            or (strategy in ("lookup_facts", "initial_facts") and kind != "status")):
         raise ValueError("unknown benchmark condition")
     host = f"owned-{kind}.example.test"
     site = (CorsPolicyLab(mode, server_banner=server_banner) if kind == "cors"
@@ -72,12 +83,16 @@ def measure(kind: str, mode: str, strategy: str, certificate: Path, *,
     real_bin = os.environ.get("VULNIX_ARTEX_REAL_BIN")
     command = [real_bin] if real_bin else FAKE
     try:
-        with tempfile.TemporaryDirectory() as tmp, MockLLM(intents=[STATUS_INTENT]) as model:
+        with tempfile.TemporaryDirectory() as tmp, MockLLM(
+                intents=[STATUS_INTENT],
+                intent_selector=_status_intents if strategy in ("lookup_facts", "initial_facts") else None,
+                prefer_initial_facts=strategy == "initial_facts") as model:
             url = f"https://{host}:{site.server_port}/"
             env = {
                 "AEGIS_ENV": "production" if real_bin else "development",
                 "VULNIX_TEST_CA_FILE": str(certificate),
-                "VULNIX_REAL_SITE_INITIAL_ARTEX": "1" if strategy == "observed" else "0",
+                "VULNIX_REAL_SITE_INITIAL_ARTEX": (
+                    "1" if strategy in ("observed", "lookup_facts", "initial_facts") else "0"),
                 "VULNIX_REAL_SITE_LOCAL_ARTEX": "1",
                 "VULNIX_ARTEX_REAL_CMD": shlex.join(command),
                 "VULNIX_ARTEX_EXPECTED_SHA256": (os.environ.get("VULNIX_ARTEX_CI_BINARY_SHA256", "")
@@ -167,7 +182,8 @@ def measure(kind: str, mode: str, strategy: str, certificate: Path, *,
                             plan = (snap.get("artex_plan") or {}).get("plan") or {}
                             planned = [i for i in plan.get("items", []) if i.get("catalog_id") == "l1_apache_mod_status"]
                             expected_status_get = (effective_banner or "").lower().startswith("apache/") \
-                                and allow_status_probe and strategy in ("always", "observed")
+                                and allow_status_probe and strategy in (
+                                    "always", "observed", "lookup_facts", "initial_facts")
                             assert site.seen == (["/", "/server-status?auto"] if expected_status_get else ["/"]), site.seen
                             status_finding = next((f for f in snap["findings"]
                                                    if f["id"] == "f_l1_apache_mod_status"), None)
