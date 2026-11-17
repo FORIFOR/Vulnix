@@ -1,0 +1,9 @@
+{
+  "private_root_200": {"root_requirement": "authentication_required", "account_resource_requirement": "none"},
+  "public_root_200": {"root_requirement": "public", "account_resource_requirement": "none"},
+  "cross_account_allowed": {"root_requirement": "public", "account_resource_requirement": "authentication_required"},
+  "cross_account_denied_200": {"root_requirement": "public", "account_resource_requirement": "authentication_required"},
+  "account_directory_public": {"root_requirement": "public", "account_resource_requirement": "public"},
+  "owner_resource_missing": {"root_requirement": "public", "account_resource_requirement": "authentication_required"},
+  "auth_root_403": {"root_requirement": "authentication_required", "account_resource_requirement": "none"}
+}
