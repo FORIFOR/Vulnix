@@ -2,6 +2,7 @@
 invitations, and that one account can never read or act on another organization."""
 import tests  # noqa: F401  (hermetic revocation-marker directory)
 import json
+import http.client
 import os
 import tempfile
 import threading
@@ -195,6 +196,58 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
         self.assertFalse(thread.is_alive())
         self.assertEqual(response[0][0], 403)
         self.assertFalse(started.is_set())
+
+    def test_org_owner_role_does_not_become_platform_admin_on_one_connection(self):
+        who = self.signup("sameconnection")
+        org_id = who["orgs"][0]["id"]
+        accepted = threading.Event()
+        conn = http.client.HTTPConnection("127.0.0.1", self.srv.server_port, timeout=5)
+        try:
+            conn.request("GET", "/api/assets", headers={"Cookie": who["cookie"], "X-Vulnix-Org": org_id})
+            first = conn.getresponse()
+            first.read()
+            self.assertEqual(first.status, 200)
+            with patch.object(self.svc, "accept_l2_profile", side_effect=lambda *a: accepted.set()):
+                conn.request("POST", "/api/l2-profiles/accept", body=b'{}', headers={
+                    "Cookie": who["cookie"], "Content-Type": "application/json", "X-Aegis-Request": "1",
+                })
+                second = conn.getresponse()
+                second.read()
+            self.assertEqual(second.status, 403)
+            self.assertFalse(accepted.is_set())
+        finally:
+            conn.close()
+
+    def test_logout_cannot_pass_between_authorization_and_scan_start(self):
+        who = self.signup("atomicstart")
+        org_id = who["orgs"][0]["id"]
+        svc = self.reg.service(org_id)
+        entered, release, logged_out = threading.Event(), threading.Event(), threading.Event()
+        response = []
+
+        def paused_start():
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("start test did not release the request")
+
+        def logout():
+            self.ops.logout(who["cookie"].split("=", 1)[1])
+            logged_out.set()
+
+        with patch.object(svc, "start", side_effect=paused_start):
+            request = threading.Thread(target=lambda: response.append(
+                self.req(who, "/assessments/scan_001/start", {}, org=org_id)))
+            request.start()
+            self.assertTrue(entered.wait(5))
+            revocation = threading.Thread(target=logout)
+            revocation.start()
+            self.assertFalse(logged_out.wait(0.1))
+            release.set()
+            request.join(5)
+            revocation.join(5)
+        self.assertFalse(request.is_alive() or revocation.is_alive())
+        self.assertEqual(response[0][0], 200)
+        self.assertTrue(logged_out.is_set())
 
     def req(self, who, path, body=None, org=None):
         h = {"Content-Type": "application/json"}

@@ -1,7 +1,6 @@
 """Append-only, hash-chained audit log (JSONL). Tampering breaks verify()."""
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import json
 import os
@@ -10,11 +9,18 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
+try:
+    import fcntl
+except ImportError:  # Windows has no flock; refusing writes is safer than racing budgets.
+    fcntl = None
+
 GENESIS = "0" * 64
 
 
 class AuditLog:
     def __init__(self, path: str | Path):
+        if fcntl is None:
+            raise RuntimeError("audit file locking requires POSIX flock")
         self.path = Path(path)
         self._lock = threading.Lock()
         self._prev = GENESIS

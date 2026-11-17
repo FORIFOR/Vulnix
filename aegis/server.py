@@ -950,7 +950,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             with ops.locked_session(sess.token) as current:
                 if current is None or current.operator != sess.operator:
                     live_error = (401, "ログインの有効期限が切れました。もう一度ログインしてください")
-                elif tenancy is not None and getattr(self, "_bound_org", None):
+                elif tenancy is not None and svc is not None:
                     with tenancy.store.locked_roles_in(self._bound_org, current.operator) as org_roles:
                         if not org_roles:
                             live_error = (403, "この組織のメンバーではありません")
@@ -1157,14 +1157,18 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                                                     sort_keys=True, default=str).encode()).hexdigest())
                     return self._json(200, st)
                 elif p == base + "/start":
-                    svc.start()
+                    with live_grant_roles(sess, getattr(self, "_bound_org", DEFAULT_ORG)):
+                        svc.start()
                     svc.audit.record("assessment.start_requested", actor=actor)
                 elif p == base + "/restart":
-                    return self._json(200, svc.restart(actor))
+                    with live_grant_roles(sess, getattr(self, "_bound_org", DEFAULT_ORG)):
+                        result = svc.restart(actor)
+                    return self._json(200, result)
                 elif p == base + "/pause":
                     svc.pause(actor)
                 elif p == base + "/resume":
-                    svc.resume(actor)
+                    with live_grant_roles(sess, getattr(self, "_bound_org", DEFAULT_ORG)):
+                        svc.resume(actor)
                 elif p == base + "/emergency-stop":
                     return self._json(200, {"stop_report": svc.emergency_stop(actor)})
                 elif p == base + "/verify-finding":

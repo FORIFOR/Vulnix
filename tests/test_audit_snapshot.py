@@ -10,6 +10,11 @@ from aegis.audit import AuditLog
 
 
 class TestConcurrentValidAuditAppend(unittest.TestCase):
+    def test_missing_platform_file_lock_refuses_to_open_audit(self):
+        with tempfile.TemporaryDirectory() as tmp, patch("aegis.audit.fcntl", None):
+            with self.assertRaisesRegex(RuntimeError, "POSIX flock"):
+                AuditLog(Path(tmp) / "audit.jsonl")
+
     def test_simultaneous_worker_authorizations_keep_one_valid_chain(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "audit.jsonl"
