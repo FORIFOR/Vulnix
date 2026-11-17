@@ -1,8 +1,8 @@
 # 次の作業と再開手順
 
-進捗の唯一の判定表は [GOAL_COMPLETION_MATRIX.md](GOAL_COMPLETION_MATRIX.md)。作業ツリーは `/Users/shuhei/Projects/Vulnix-integration-readiness`、ブランチ `codex/goal-integration-readiness`、最新コードコミット `40059c4`、Draft PR [#85](https://github.com/FORIFOR/Vulnix/pull/85)。`origin/main` は `5ecfc51`。再開時は `git rev-parse HEAD`、`git status --short --branch`、`git diff --check` を確認し、未コミット変更を保持する。別ツリー `/Users/shuhei/Projects/Vulnix-access-control-blind-eval` の未コミット `docs/CORS_390_RESULT.png` も保持する。
+進捗の唯一の判定表は [GOAL_COMPLETION_MATRIX.md](GOAL_COMPLETION_MATRIX.md)。作業ツリーは `/Users/shuhei/Projects/Vulnix-integration-readiness`、ブランチ `codex/goal-integration-readiness`、最新コードコミット `7d918b9`、Draft PR [#85](https://github.com/FORIFOR/Vulnix/pull/85)。`origin/main` は `5ecfc51`。再開時は `git rev-parse HEAD`、`git status --short --branch`、`git diff --check` を確認し、未コミット変更を保持する。別ツリー `/Users/shuhei/Projects/Vulnix-access-control-blind-eval` の未コミット `docs/CORS_390_RESULT.png` も保持する。
 
-最後の成功したコード全件は `f60f7fe` のバックエンド1,436件成功・27件スキップ・ResourceWarning 0件（`/tmp/vulnix-pr85-planner-send-f60-full.log`）。直前資料ヘッド`a985b8d`のLinux CI #44164211471は3/3成功。**これらは新コード`40059c4`の証拠ではない。** 新コードのログアウト/除名競合の個別テスト、Ruff、Web118件、Lintエラー0/警告5、ビルドは成功。
+最後の成功したコード全件は `f60f7fe` のバックエンド1,436件成功・27件スキップ・ResourceWarning 0件（`/tmp/vulnix-pr85-planner-send-f60-full.log`）。直前資料ヘッド`a985b8d`のLinux CI #44164211471は3/3成功。**これらは新コード`7d918b9`の証拠ではない。** 新コードのログアウト/除名競合の個別テスト、Ruff、Web118件、Lintエラー0/警告5、ビルドは成功。
 
 ## 次に実行する作業
 
