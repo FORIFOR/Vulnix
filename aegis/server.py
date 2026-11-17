@@ -34,6 +34,7 @@ from .control_verification import run_live_control_verification
 from .lab import set_lab_mode, start_lab
 from .operators import AuthError, LockedOut, MFAChallenge, OperatorStore
 from .ownership import parse_service_target
+from .policy import PolicyError
 from .real_software_cve import run_real_software_cve_comparison
 from .tenancy import (DEFAULT_ORG, OrgStore, TenancyError, TenantRegistry, default_members_from,
                       service_roles, valid_org_id)
@@ -212,6 +213,26 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 return True
         except Exception:  # noqa: BLE001 - cannot confirm live authority: refuse
             return False
+
+    def live_request_authority(sess, org_id: str, *, approver: bool = False):
+        """A short check plus a launch lease for foreground Worker requests."""
+        def allowed() -> bool:
+            return live_request_allowed(sess, org_id, approver=approver)
+
+        @contextlib.contextmanager
+        def lease():
+            guard = live_grant_roles(sess, org_id, approver=approver)
+            try:
+                guard.__enter__()
+            except Exception:  # noqa: BLE001 - no live grant means no process start
+                raise PolicyError("要求者の権限が失効したため、新しいWorkerは起動しません") from None
+            try:
+                yield
+            finally:
+                guard.__exit__(None, None, None)
+
+        allowed.lease = lease
+        return allowed
 
     class H(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -1190,7 +1211,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     # lock (a check here could be invalidated by a concurrent switch)
                     return self._json(200, svc.verify_finding(
                         fid, actor, roles=tuple(sess.roles),
-                        request_authorized=lambda: live_request_allowed(
+                        request_authorized=live_request_authority(
                             sess, getattr(self, "_bound_org", DEFAULT_ORG),
                             approver="approver" in sess.roles)))
                 elif p == base + "/artex/plan":
@@ -1199,14 +1220,14 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     llm_mode = body.get("llm_mode") if isinstance(body.get("llm_mode"), str) else None
                     return self._json(200, svc.plan_with_artex(actor, llm_approval=approval,
                                                                roles=tuple(sess.roles), llm_mode=llm_mode,
-                                                               request_authorized=lambda: live_request_allowed(
+                                                               request_authorized=live_request_authority(
                                                                    sess, getattr(self, "_bound_org", DEFAULT_ORG),
                                                                    approver=approval is not None)))
                 elif m := re.fullmatch(base + r"/artex/items/([A-Za-z0-9_]{1,80})/execute", p):
                     # L2 needs an approver: decided by the service, with the caller's roles
                     return self._json(200, svc.execute_artex_item(
                         m.group(1), actor, roles=tuple(sess.roles),
-                        request_authorized=lambda: live_request_allowed(
+                        request_authorized=live_request_authority(
                             sess, getattr(self, "_bound_org", DEFAULT_ORG),
                             approver="approver" in sess.roles)))
                 elif p == base + "/request-l2":

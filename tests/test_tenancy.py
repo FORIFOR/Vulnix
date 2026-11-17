@@ -283,7 +283,19 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
                                       {}, org=org_id)[0], 200)
         self.assertEqual(len(guards), 2)
         self.assertTrue(all(guard() for guard in guards))
-        self.ops.logout(who["cookie"].split("=", 1)[1])
+        logged_out = threading.Event()
+
+        def logout():
+            self.ops.logout(who["cookie"].split("=", 1)[1])
+            logged_out.set()
+
+        with guards[0].lease():
+            revocation = threading.Thread(target=logout)
+            revocation.start()
+            self.assertFalse(logged_out.wait(0.05))
+        revocation.join(2)
+        self.assertFalse(revocation.is_alive())
+        self.assertTrue(logged_out.is_set())
         self.assertTrue(all(not guard() for guard in guards))
 
     def req(self, who, path, body=None, org=None):

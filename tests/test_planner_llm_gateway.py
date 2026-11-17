@@ -533,6 +533,13 @@ class TestServiceApprovalFlow(unittest.TestCase):
         with self.assertRaisesRegex(PolicyError, "権限"):
             svc._launch_guard("http_probe", {"url": "http://lab.test/"}, None)
 
+    def test_late_worker_guard_is_bound_and_rechecks_revocation(self):
+        from aegis.policy import PolicyError
+        svc = self.svc()
+        svc._tls.request_authorized = lambda: False
+        with self.assertRaisesRegex(PolicyError, "権限"):
+            svc.gateway.late_launch_guard()
+
     def test_nested_finding_verification_keeps_outer_request_authority(self):
         svc = self.svc()
         svc._tls.request_authorized = lambda: False

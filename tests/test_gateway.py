@@ -1,5 +1,8 @@
 """Section 6 required tests (P0 subset). Run: python3 -m unittest -v"""
+import contextlib
 import http.server
+import subprocess
+import sys
 import secrets
 import tempfile
 import threading
@@ -262,6 +265,70 @@ class TestBudgetAndAudit(Base):
         lines[0] = lines[0].replace("evil.example", "fine.example")
         self.audit.path.write_text("\n".join(lines) + "\n")
         self.assertFalse(self.audit.verify())
+
+
+class TestLateWorkerAuthority(unittest.TestCase):
+    def test_revocation_during_confinement_wrap_prevents_process_start(self):
+        from aegis.policy import PolicyError
+
+        allowed = [True]
+
+        class SlowWrap:
+            def wrap(self, argv, **_kwargs):
+                allowed[0] = False  # authority changes after the first Gateway check
+                return argv
+
+        def live_authority():
+            if not allowed[0]:
+                raise PolicyError("request authority was revoked")
+
+        pool = WorkerPool(max_concurrent=1)
+        with patch("aegis.runtime.subprocess.Popen") as popen:
+            with self.assertRaisesRegex(PolicyError, "revoked"):
+                pool.run(["/bin/true"], 1, session=SlowWrap(), prelaunch=live_authority)
+        popen.assert_not_called()
+
+    def test_revocation_cannot_complete_between_authority_check_and_process_start(self):
+        authority_lock = threading.Lock()
+        allowed = [True]
+        at_popen = threading.Event()
+        attempted = threading.Event()
+        revoked = threading.Event()
+
+        @contextlib.contextmanager
+        def live_lease():
+            with authority_lock:
+                if not allowed[0]:
+                    raise RuntimeError("revoked before launch")
+                yield
+
+        def revoke():
+            at_popen.wait(2)
+            attempted.set()
+            with authority_lock:
+                allowed[0] = False
+            revoked.set()
+
+        real_popen = subprocess.Popen
+
+        def observed_popen(*args, **kwargs):
+            at_popen.set()
+            self.assertTrue(attempted.wait(2))
+            self.assertFalse(revoked.wait(0.05), "revocation completed before Popen")
+            return real_popen(*args, **kwargs)
+
+        t = threading.Thread(target=revoke)
+        t.start()
+        try:
+            pool = WorkerPool(max_concurrent=1)
+            with patch("aegis.runtime.subprocess.Popen", side_effect=observed_popen):
+                result = pool.run([sys.executable, "-c", "pass"], 2, prelaunch=live_lease)
+            self.assertEqual(result.returncode, 0)
+        finally:
+            at_popen.set()
+            t.join(2)
+        self.assertFalse(t.is_alive())
+        self.assertTrue(revoked.is_set())
 
 
 if __name__ == "__main__":

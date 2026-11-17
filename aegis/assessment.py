@@ -397,6 +397,7 @@ class AssessmentService:
             secret_redactor=self.secrets.redact,
             confinement_provider=self._worker_confinement,
             launch_guard=self._launch_guard,
+            late_launch_guard=self._late_launch_guard,
             on_unstopped=self._note_deadline_survivor)
 
         # Wire ARTEX (in-process + optional external CLI subprocess) + Abliteration ProposalRouter
@@ -1169,14 +1170,19 @@ class AssessmentService:
         except ConfinementError as e:
             raise PolicyError(f"実サービスのL2検証はカーネル隔離を確認できる Linux ホストでのみ実行します: {e}") from None
 
+    def _late_launch_guard(self):
+        request_authorized = getattr(self._tls, "request_authorized", None)
+        if request_authorized is not None and not request_authorized():
+            raise PolicyError("要求者の権限が失効したため、新しいWorkerは起動しません")
+        lease = getattr(request_authorized, "lease", None)
+        return lease() if lease is not None else None
+
     def _launch_guard(self, tool_name: str, args: dict, dest) -> None:
         """Gateway hook, the last step before a worker starts. Between the first
         checks and this point the request may have waited in name resolution or a
         proof re-check; whatever was revoked, deleted, stopped or switched in the
         meantime is seen here."""
-        request_authorized = getattr(self._tls, "request_authorized", None)
-        if request_authorized is not None and not request_authorized():
-            raise PolicyError("要求者の権限が失効したため、新しいWorkerは起動しません")
+        self._late_launch_guard()
         host = (urllib.parse.urlsplit(str(args.get("url") or "")).hostname or "").rstrip(".").lower()
         with self._lock:
             if self._stale_runner():

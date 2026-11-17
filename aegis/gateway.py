@@ -182,7 +182,8 @@ class Gateway:
                  approvals: ApprovalStore, egress: EgressGuard, workers: WorkerPool,
                  audit: AuditLog, tools: dict[str, Tool], budget: Budget, clock=time.time,
                  ephemeral_env_provider=None, secret_redactor=None,
-                 confinement_provider=None, launch_guard=None, on_unstopped=None):
+                 confinement_provider=None, launch_guard=None, late_launch_guard=None,
+                 on_unstopped=None):
         self.engagement = engagement
         # Optional callable(pids, pool): a worker the runtime could not confirm stopped at
         # its deadline is handed to the control plane's record of unstopped workers.
@@ -212,6 +213,9 @@ class Gateway:
         # the start of this request (scope, addresses, workspace) no longer holds -
         # name resolution and proof re-checks in between can take a long time.
         self.launch_guard = launch_guard
+        # Authority-only recheck after a confinement command is wrapped. It must
+        # not reserve a second scan request or hold the worker pool lock.
+        self.late_launch_guard = late_launch_guard
         # Bumped by every emergency stop and workspace reset. A request that was
         # already past the first checks when that happened must not launch.
         self._launch_epoch = 0
@@ -286,7 +290,8 @@ class Gateway:
                 if self.launch_guard:
                     self.launch_guard(tool.name, args, dest)
                 result = workers.run(argv, tool.timeout_s, extra_env=extra_env or None,
-                                     permit=lambda: self._still_current(epoch), progress=True)
+                                     permit=lambda: self._still_current(epoch),
+                                     prelaunch=self.late_launch_guard, progress=True)
             else:
                 # Applied and confirmed by the kernel BEFORE any secret is read for
                 # the worker; a failure here means nothing is launched.
@@ -305,7 +310,7 @@ class Gateway:
                             self.launch_guard(tool.name, args, dest)
                         result = workers.run(argv, tool.timeout_s, extra_env=extra_env,
                                              session=session, permit=lambda: self._still_current(epoch),
-                                             progress=True)
+                                             prelaunch=self.late_launch_guard, progress=True)
                         intact = session.still_enforced()
                 except ConfinementError as e:
                     raise PolicyError(f"kernel confinement not confirmed: {e}") from None
