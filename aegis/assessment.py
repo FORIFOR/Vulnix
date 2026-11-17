@@ -48,7 +48,8 @@ from .router import (AbliterationBackend, ArtexEngine, ArtexplannerBackend,
                      ArtexSubprocessBackend, HttpModelBackend, ProposalRouter,
                      verify_planner_connections, redact_verification_report)
 from .artex_bridge import (CATALOG_BY_ID, ArtexBridgeError, anonymous_real_site_request,
-                           command_from_env, reconstruct, run_artex_planner)
+                           command_from_env, reconstruct, reviewed_real_site_l1,
+                           run_artex_planner)
 from .runtime import WorkerPool
 from .secrets_store import EncryptedSecretStore
 from .l2_rules import BUILTIN_PROFILE_DIR, L2RuleSet, site_profile_dirs
@@ -1921,6 +1922,8 @@ class AssessmentService:
                         item.status = "unsupported"
                 elif real_site and item.catalog_id == "l1_apache_mod_status":
                     item.status = "unsupported"
+                elif real_site and not reviewed_real_site_l1(item.catalog_id):
+                    item.status = "unsupported"
                 if tk is not None:
                     tk.id = item.id                  # unique across plans
                     tk.status = item.status
@@ -2249,6 +2252,8 @@ class AssessmentService:
                 if self._is_external_service_asset():
                     if not self._real_site_local_artex or entry.level != "L1":
                         raise ValueError("実サイトのARTEX計画からL2検証は実行できません")
+                    if not reviewed_real_site_l1(entry.id):
+                        raise ValueError("実サイトの未審査L1検査は実行できません")
                 else:
                     self._refuse_read_only_real_locked()
                 if entry.level == "L2":
