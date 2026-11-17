@@ -1,17 +1,14 @@
 # 次の作業と再開手順
 
-進捗の正本は [GOAL_COMPLETION_MATRIX.md](GOAL_COMPLETION_MATRIX.md)。作業ツリーは `/Users/shuhei/Projects/Vulnix-integration-readiness`、ブランチ `codex/goal-integration-readiness`、今回のコードヘッド `f60f7fe`・テスト資料ヘッド`c600da0`、Draft PR [#85](https://github.com/FORIFOR/Vulnix/pull/85)。再開時は `git rev-parse HEAD`、`git status --short --branch` と `git diff --check` で照合する。未コミット変更を破棄しない。別ツリー `/Users/shuhei/Projects/Vulnix-access-control-blind-eval` の未コミット `docs/CORS_390_RESULT.png` も保持する。
+進捗の唯一の判定表は [GOAL_COMPLETION_MATRIX.md](GOAL_COMPLETION_MATRIX.md)。作業ツリーは `/Users/shuhei/Projects/Vulnix-integration-readiness`、ブランチ `codex/goal-integration-readiness`、最新コードコミット `40059c4`、Draft PR [#85](https://github.com/FORIFOR/Vulnix/pull/85)。`origin/main` は `5ecfc51`。再開時は `git rev-parse HEAD`、`git status --short --branch`、`git diff --check` を確認し、未コミット変更を保持する。別ツリー `/Users/shuhei/Projects/Vulnix-access-control-blind-eval` の未コミット `docs/CORS_390_RESULT.png` も保持する。
 
-最新の承認不要作業：`f60f7fe`のローカル全バックエンド1,436件成功・27件スキップ・ResourceWarning 0件（`/tmp/vulnix-pr85-planner-send-f60-full.log`）。後続`c600da0`の追加停止模擬テストも個別成功し、[Linux CI #44159555107](https://github.com/FORIFOR/Vulnix/actions/runs/44159555107)はPython/Web/実ARTEXの3ジョブ成功。`aegis/assessment.py`と`aegis/planner_llm_gateway.py`は有料Plannerの送信権限リースと短い書込みタイムアウトを追加。別担当の再レビューでは新たな明確なP1/P2なし。正式GitHubレビューではない。次は累積差分の未読部分の監査、未知条件の検証、実モデル・公開βの外部ゲートを進める。
+最後の成功したコード全件は `f60f7fe` のバックエンド1,436件成功・27件スキップ・ResourceWarning 0件（`/tmp/vulnix-pr85-planner-send-f60-full.log`）。直前資料ヘッド`a985b8d`のLinux CI #44164211471は3/3成功。**これらは新コード`40059c4`の証拠ではない。** 新コードのログアウト/除名競合の個別テスト、Ruff、Web118件、Lintエラー0/警告5、ビルドは成功。
 
-最後に成功したローカル全件は `e3afa5d` のバックエンド1,410件成功・27件スキップ・ResourceWarning 0件（991.616秒）、ログは `/tmp/vulnix-pr85-head-e3afa-full.log`。Web118件成功、Lintエラー0・警告5、ビルド成功。[Linux CI #44129291316](https://github.com/FORIFOR/Vulnix/actions/runs/44129291316)はPython/Web/実ARTEXの3ジョブ成功。390pxの模擬ブラウザ再確認は8操作、API12回、対象GET2回、ページエラー0件。実行元表示は`unverified`であり実ARTEXのブラウザ証明ではない。
+## 次に実行する作業
 
-## 直近の順番
+1. `VULNIX_NO_ENV_LOCAL=1 PYTHONWARNINGS=always::ResourceWarning python3 -m unittest discover -s tests` で最新コードのバックエンド全件を実行。競合テストは `tests/test_tenancy.py`、単一組織の権限回帰は `tests/test_server.py`、L2文言は `tests/test_real_service.py`。関連モジュールの先行実行ログ `/tmp/vulnix-pr85-revocation-related.log` も確認する。
+2. `gh pr checks 85` で最新ヘッドのLinux Python/Web/実ARTEXの3ジョブを確認。失敗時は原因を直して再実行する。`40059c4` の差分では overlay を変更していない。
+3. `aegis/server.py` の保護GET、SSE、管理者・組織・自己アカウント変更のロック順と大きなレポート/イベント履歴での失効待ちを追加監査する。残る保護GETの失効境界もテストする。
+4. 正式独立GitHubレビュー、実モデル、実DNS、許可済み実サイトE2Eが揃うまで、公開βとGoalの完了判定を行わない。外部の必要条件は [BLOCKERS.md](BLOCKERS.md)。
 
-1. `gh pr checks 85` と`git status --short --branch`で再開時のヘッドを確認する。Runnerを24.04へ固定したCI #44149943968はPython/Web/実ARTEXの3/3成功。ローカル全件は`VULNIX_NO_ENV_LOCAL=1 PYTHONWARNINGS=always::ResourceWarning python3 -m unittest discover -s tests`で1,431件成功・27件スキップ・ResourceWarning 0件（994.822秒）、ログは`/tmp/vulnix-pr85-send-lease-full.log`。Webの`npm test && npm run lint && npm run build`は118件成功、Lintエラー0・警告5、ビルド成功。
-2. `276ca67`は`aegis/ai_advisor.py`のHTTPS要求送出を、`aegis/assessment.py`の生存権限リースと停止・範囲確認の内側に置く。`tests.test_ai_advisor`66件と個別4件成功。最新全件・Linux CIの結果と実HTTPの失効競合を確認し、既に送出された要求の扱いと停止応答性を判定表に明記する。
-3. `f60f7fe`のPlanner有料forwardの送出開始は生存権限リース内に変更し、未送信時の費用解放と詰まった模擬書込みの停止応答を確認。ローカル全件とLinux CIも成功。CORS・Cookie・情報露出の未知条件、未読累積差分の監査が次の承認不要項目。
-3. 390pxの模擬ブラウザは結果まで確認済み。SSE再接続・証拠ID付きレポート・組織切替・修正後再確認の過去の隔離確認と、公開βの実DNS・実モデル・実サイトE2Eを混同しない。
-4. `VULNIX_ABLITERATION_KEY` は現在の作業環境にない。安全に利用可能となった場合だけ、承認済み固定14条件のSHA-256、モデル、匿名入力、1回・US$0.01・2,000トークン、監査・消費記録を照合し、1回実行する。
-
-外部承認待ちは [BLOCKERS.md](BLOCKERS.md)。秘密ファイルを読まず、模擬テストには `VULNIX_NO_ENV_LOCAL=1` を付ける。実サイトL2は禁止する。mainマージ、本番反映、DNS変更、実サイト診断、新たな有料API呼び出しは事前承認まで行わない。
+新たな実サイト診断、有料API、DNS変更、mainマージ、本番反映は事前承認まで行わない。実サイトL2は禁止を維持する。秘密ファイルを読まず、模擬テストには `VULNIX_NO_ENV_LOCAL=1` を付ける。
