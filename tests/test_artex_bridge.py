@@ -306,6 +306,7 @@ class TestThePlanThroughTheGateway(ServiceBase):
         from tests.test_real_service import FakeService, HOST
 
         site = FakeService()
+        site.banner = "Apache/2.4.62"
         threading.Thread(target=site.serve_forever, daemon=True).start()
         self.addCleanup(site.server_close)
         self.addCleanup(site.shutdown)
@@ -318,7 +319,8 @@ class TestThePlanThroughTheGateway(ServiceBase):
             dns_lookup=lambda name: [f'{name} text = "{challenge["dns_txt_value"]}"'],
         )
         self.svc.confirm_asset_scope(url_or_host=url, confirmed_prohibited=True,
-                                     activate_workspace=True, allow_loopback_test=True)
+                                     activate_workspace=True, allow_loopback_test=True,
+                                     allow_status_probe=True)
         with MockLLM() as model, patch.dict(os.environ, {
                 "VULNIX_REAL_SITE_INITIAL_ARTEX": "1",
                 "VULNIX_ARTEX_LLM_MODE": "gateway-forward",
@@ -1711,6 +1713,7 @@ class TestRealArtexThroughThePlannerGateway(TestRealArtexPlanner):
         from tests.test_real_service import FakeService, HOST
 
         site = FakeService()
+        site.banner = "Apache/2.4.62"
         threading.Thread(target=site.serve_forever, daemon=True).start()
         self.addCleanup(site.server_close)
         self.addCleanup(site.shutdown)
@@ -1723,7 +1726,8 @@ class TestRealArtexThroughThePlannerGateway(TestRealArtexPlanner):
             dns_lookup=lambda name: [f'{name} text = "{challenge["dns_txt_value"]}"'],
         )
         self.svc.confirm_asset_scope(url_or_host=url, confirmed_prohibited=True,
-                                     activate_workspace=True, allow_loopback_test=True)
+                                     activate_workspace=True, allow_loopback_test=True,
+                                     allow_status_probe=True)
         with patch.dict(os.environ, {"VULNIX_REAL_SITE_INITIAL_ARTEX": "1",
                                      "VULNIX_ARTEX_LLM_MODE": "gateway-forward",
                                      "VULNIX_ARTEX_LLM_UPSTREAM_URL": self.mock.url + "/chat/completions"}):
