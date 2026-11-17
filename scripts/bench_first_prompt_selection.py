@@ -25,10 +25,16 @@ def compare(rows: list[dict], truth: dict | None = None) -> dict:
     for strategy in ("adaptive", "adaptive_one_pass"):
         group = [by_mode[mode, strategy] for mode in truth]
         selection = _score(group, "idor_check_appropriate", "plan_adopted")
+        root_detection = _score(group, "unauth_exposure", "root_exposure_detected")
+        idor_detection = _score(group, "cross_account_access", "idor_proven")
+        if (selection["fn"] or selection["fp"] > 1
+                or root_detection["fp"] or root_detection["fn"]
+                or idor_detection["fp"] or idor_detection["fn"]):
+            raise AssertionError(f"independent diagnostic quality gate failed for {strategy}")
         out[strategy] = {
             "selection": selection,
-            "root_detection": _score(group, "unauth_exposure", "root_exposure_detected"),
-            "idor_detection": _score(group, "cross_account_access", "idor_proven"),
+            "root_detection": root_detection,
+            "idor_detection": idor_detection,
             "target_get": sum(len(r["target_requests"]) for r in group),
             "worker_launches": sum(r["worker_launches"] for r in group),
             "planner_calls": sum(r["planner_calls"] for r in group),
@@ -47,7 +53,7 @@ def compare(rows: list[dict], truth: dict | None = None) -> dict:
                     "plan_adopted", "root_exposure_detected", "idor_proven",
                     "target_requests", "worker_launches", "planner_calls"))):
             raise AssertionError(f"selection or diagnosis changed for {mode}")
-        if old["plan_adopted"] and not old["idor_proven"] and truth[mode]["cross_account_access"]:
+        if not old["idor_proven"] and truth[mode]["cross_account_access"]:
             raise AssertionError(f"positive IDOR lost proof for {mode}")
         if old["engine_kind"] == "artex-binary":
             if (new["engine_kind"] != "artex-binary"
