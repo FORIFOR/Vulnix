@@ -48,7 +48,8 @@ from .router import (AbliterationBackend, ArtexEngine, ArtexplannerBackend,
                      ArtexSubprocessBackend, HttpModelBackend, ProposalRouter,
                      verify_planner_connections, redact_verification_report)
 from .artex_bridge import (CATALOG_BY_ID, ArtexBridgeError, anonymous_real_site_request,
-                           command_from_env, reconstruct, run_artex_planner)
+                           command_from_env, reconstruct, reviewed_real_site_l1,
+                           run_artex_planner)
 from .runtime import WorkerPool
 from .secrets_store import EncryptedSecretStore
 from .l2_rules import BUILTIN_PROFILE_DIR, L2RuleSet, site_profile_dirs
@@ -1921,6 +1922,8 @@ class AssessmentService:
                         item.status = "unsupported"
                 elif real_site and item.catalog_id == "l1_apache_mod_status":
                     item.status = "unsupported"
+                elif real_site and not reviewed_real_site_l1(item.catalog_id):
+                    item.status = "unsupported"
                 if tk is not None:
                     tk.id = item.id                  # unique across plans
                     tk.status = item.status
@@ -2249,6 +2252,8 @@ class AssessmentService:
                 if self._is_external_service_asset():
                     if not self._real_site_local_artex or entry.level != "L1":
                         raise ValueError("実サイトのARTEX計画からL2検証は実行できません")
+                    if not reviewed_real_site_l1(entry.id):
+                        raise ValueError("実サイトの未審査L1検査は実行できません")
                 else:
                     self._refuse_read_only_real_locked()
                 if entry.level == "L2":
@@ -4269,7 +4274,7 @@ class AssessmentService:
                 and local_planner_host):
             # The first observation is already signed. The planner sees only
             # allowlisted enums; it cannot launch a Worker or add a target GET.
-            from .artex_bridge import safe_public_fingerprint
+            from .artex_bridge import initial_real_site_extra_checks, safe_public_fingerprint
             fingerprint = safe_public_fingerprint(res, scheme=urllib.parse.urlsplit(url).scheme)
             self._checkpoint()
             with self._lock:
@@ -4277,14 +4282,18 @@ class AssessmentService:
                 host = (self.a.asset.get("name") or "").lower()
                 ext = self._external_entry(host) or {}
                 usage = self.ledger.scan_usage.get(host) or {}
-                extra_check_possible = (
-                    fingerprint["server_family"] == "apache"
-                    and ext.get("allow_status_probe") is True
-                    and usage.get("status_probe_allowed") is True
-                    and usage.get("paths") == ["/"]
-                    and self._root_probe_observed_locked()
-                )
-            if not extra_check_possible:
+                status_consent = (ext.get("allow_status_probe") is True
+                                  and usage.get("status_probe_allowed") is True
+                                  and usage.get("paths") == ["/"])
+                root_observed = self._root_probe_observed_locked()
+            try:
+                eligible_extra = initial_real_site_extra_checks(
+                    fingerprint, status_consent=status_consent,
+                    root_observed=root_observed)
+            except ValueError:
+                eligible_extra = set()
+                self.audit.record("artex.initial_fallback", reason="unreviewed_extra_catalog")
+            if not eligible_extra:
                 # The initial real-site catalog has exactly one useful extra L1
                 # operation: Apache mod_status. Avoid a model call when Gateway
                 # would reject that operation, or the signed root observation
@@ -4303,7 +4312,7 @@ class AssessmentService:
                     self.audit.record("artex.initial_fallback", reason="planner_failure")
                 else:
                     for item in ((planned.get("artex_plan") or {}).get("plan") or {}).get("items", []):
-                        if (item.get("catalog_id") == "l1_apache_mod_status"
+                        if (item.get("catalog_id") in eligible_extra
                                 and item.get("status") == "planned"):
                             self._checkpoint()
                             self.execute_artex_item(item["id"], "policy:initial")
