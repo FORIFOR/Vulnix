@@ -6,13 +6,14 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from aegis.audit import AuditLog
 from aegis.authz import ApprovalStore, AuthzError, Engagement, Target, TokenAuthority
 from aegis.gateway import Gateway, State, http_probe_tool
 from aegis.network import EgressGuard
 from aegis.policy import ArgSpec, Budget, Tool
-from aegis.runtime import WorkerPool
+from aegis.runtime import WorkerPool, WorkerResult
 
 
 class Clock:
@@ -239,6 +240,17 @@ class TestEmergencyStop(Base):
 
 
 class TestBudgetAndAudit(Base):
+    def test_a_broken_existing_audit_chain_prevents_worker_launch(self):
+        self.audit.record("test.marker", value="original")
+        self.audit.record("test.marker", value="second")
+        lines = self.audit.path.read_text().splitlines()
+        lines[0] = lines[0].replace("original", "modified")
+        self.audit.path.write_text("\n".join(lines) + "\n")
+        with patch.object(self.workers, "run", return_value=WorkerResult(0, "{}", "", False, 0)) as run:
+            with self.assertRaises(ValueError):
+                self.gw.execute(self.prop("http://lab.test/"), self.token())
+        run.assert_not_called()
+
     def test_budget_exhaustion_denies(self):
         self.gw.budget = Budget(0)
         self.assertFalse(self.gw.execute(self.prop("http://lab.test/"), self.token()).allowed)

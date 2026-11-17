@@ -99,6 +99,7 @@ class TestPersistenceCannotBeWedgedQuietly(Ready):
         with self.assertRaises(urllib.error.HTTPError) as cm:
             urllib.request.urlopen(req)
         self.assertEqual(cm.exception.code, 400)
+        cm.exception.close()
         with self.assertRaises(ValueError):
             self.svc.register_asset(name="wedge.example", kind="\ud800", environment="x")
         with self.assertRaises(ValueError):

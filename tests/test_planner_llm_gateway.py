@@ -303,6 +303,20 @@ class TestForwarding(unittest.TestCase):
             code, _ = post(gw, chat())
         self.assertEqual((code, sent), (403, []))
 
+    def test_a_broken_audit_chain_prevents_model_forward(self):
+        from aegis.audit import AuditLog
+        sent = []
+        with tempfile.TemporaryDirectory() as tmp:
+            audit = AuditLog(Path(tmp) / "audit.jsonl")
+            audit.record("test.marker", value="original")
+            audit.record("test.marker", value="second")
+            lines = audit.path.read_text().splitlines()
+            lines[0] = lines[0].replace("original", "modified")
+            audit.path.write_text("\n".join(lines) + "\n")
+            with forward(lambda *a: sent.append(a) or ok_transport(), audit=audit) as gw:
+                code, _ = post(gw, chat())
+        self.assertEqual((code, sent), (403, []))
+
     def test_a_stopped_or_closed_run_forwards_nothing(self):
         sent, running = [], [True]
         gw = forward(lambda *a: sent.append(a) or ok_transport(), audit=Audit(), may_forward=lambda: running[0])

@@ -30,6 +30,13 @@ class AuditLog:
         return entry
 
     def _append_locked(self, event: str, fields: dict) -> dict:
+        if event in ("allow", "planner_llm.forwarding"):
+            # These records authorize a Worker or paid model send. A durable
+            # append alone is insufficient if an older entry was altered.
+            entries, valid = self.verified_entries()
+            tail = entries[-1]["hash"] if entries else GENESIS
+            if not valid or tail != self._prev:
+                raise ValueError("audit chain invalid")
         body = {"ts": time.time(), "event": event, "fields": fields, "prev": self._prev}
         digest = hashlib.sha256(_canon(body).encode()).hexdigest()
         entry = {**body, "hash": digest}

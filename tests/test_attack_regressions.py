@@ -52,6 +52,7 @@ class TestStolenSessionFile(ApiBase):
                 with self.assertRaises(urllib.error.HTTPError) as cm:
                     urllib.request.urlopen(req)
                 self.assertEqual(cm.exception.code, 401)
+                cm.exception.close()
         self.assertEqual(self.call("/assets", who="appr")[0], 200)                # the real cookie still works
         self.assertNotIn(token, json.dumps([vars(s) for s in self.ops._sessions.values()]))
 

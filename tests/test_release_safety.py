@@ -668,6 +668,7 @@ class TestUnsavedLogoutOverHttp(unittest.TestCase):
             with self.assertRaises(urllib.error.HTTPError) as cm:
                 urllib.request.urlopen(urllib.request.Request(api + "/auth/logout", b"{}", {**hdr, "Cookie": cookie}))
         self.assertEqual(cm.exception.code, 500)
+        cm.exception.close()
         self.assertIn("Max-Age=0", cm.exception.headers.get("Set-Cookie", ""))
         self.assertFalse(json.loads(cm.exception.read())["logout_saved"])
 
