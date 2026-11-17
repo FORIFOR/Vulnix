@@ -16,6 +16,7 @@ class AuditLog:
         self.path = Path(path)
         self._lock = threading.Lock()
         self._prev = GENESIS
+        self._known_size = self.path.stat().st_size if self.path.exists() else 0
         self.listeners: list = []   # called after each durable write (e.g. SSE bus)
         if self.path.exists():
             for line in self.path.read_text().splitlines():
@@ -30,16 +31,17 @@ class AuditLog:
         return entry
 
     def _append_locked(self, event: str, fields: dict) -> dict:
-        if event in ("allow", "planner_llm.forwarding"):
+        current_size = self.path.stat().st_size if self.path.exists() else 0
+        if (event in ("allow", "planner_llm.forwarding")
+                or current_size != self._known_size):
             # These records authorize a Worker or paid model send. A durable
             # append alone is insufficient if an older entry was altered.
             entries, valid = self.verified_entries()
             tail = entries[-1]["hash"] if entries else GENESIS
             if not valid:
                 raise ValueError("audit chain invalid")
-            # A second service object in the same process can have appended a
-            # valid record since this object last wrote. Continue that verified
-            # chain, never the older in-memory tail.
+            # Another service object may have appended since our last write.
+            # Reanchor even ordinary records so they cannot corrupt that chain.
             self._prev = tail
         body = {"ts": time.time(), "event": event, "fields": fields, "prev": self._prev}
         digest = hashlib.sha256(_canon(body).encode()).hexdigest()
@@ -49,6 +51,7 @@ class AuditLog:
             f.write(json.dumps(entry, ensure_ascii=False, sort_keys=True) + "\n")
             f.flush()
             os.fsync(f.fileno())
+            self._known_size = f.tell()
         self._prev = digest
         return entry
 

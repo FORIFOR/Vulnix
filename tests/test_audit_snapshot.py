@@ -9,6 +9,17 @@ from aegis.audit import AuditLog
 
 
 class TestConcurrentValidAuditAppend(unittest.TestCase):
+    def test_two_service_objects_interleave_noncritical_records_without_breaking_chain(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "audit.jsonl"
+            first = AuditLog(path)
+            first.record("test.first")
+            second = AuditLog(path)
+            first.record("test.first_more")
+            second.record("test.second")
+            first.record("allow", tool="http_probe")
+            self.assertTrue(first.verify())
+
     def test_another_service_append_preserves_the_chain_before_a_send(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "audit.jsonl"
