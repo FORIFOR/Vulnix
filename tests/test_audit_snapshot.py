@@ -9,6 +9,23 @@ from aegis.audit import AuditLog
 
 
 class TestConcurrentValidAuditAppend(unittest.TestCase):
+    def test_valid_prefix_rollback_cannot_authorize_worker_or_paid_send(self):
+        for send_kind in ("allow", "paid"):
+            with self.subTest(send_kind=send_kind), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "audit.jsonl"
+                audit = AuditLog(path)
+                audit.record("test.first")
+                prefix = path.read_text()
+                audit.record("test.second")
+                path.write_text(prefix)
+                if send_kind == "allow":
+                    with self.assertRaisesRegex(ValueError, "audit chain invalid"):
+                        audit.record("allow", tool="http_probe")
+                else:
+                    with self.assertRaisesRegex(ValueError, "audit chain invalid"):
+                        audit.record_with_budget("advisor.safe_send_requested", endpoint_kind="external",
+                                                 reserve_micro_usd=100, cap_micro_usd=1000)
+
     def test_two_service_objects_interleave_noncritical_records_without_breaking_chain(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "audit.jsonl"

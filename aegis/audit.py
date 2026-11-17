@@ -38,7 +38,7 @@ class AuditLog:
             # append alone is insufficient if an older entry was altered.
             entries, valid = self.verified_entries()
             tail = entries[-1]["hash"] if entries else GENESIS
-            if not valid:
+            if not valid or not self._is_continuation(entries):
                 raise ValueError("audit chain invalid")
             # Another service object may have appended since our last write.
             # Reanchor even ordinary records so they cannot corrupt that chain.
@@ -72,7 +72,7 @@ class AuditLog:
             raise ValueError("invalid advisor budget")
         with self._lock:
             entries, valid = self.verified_entries()
-            if not valid:
+            if not valid or not self._is_continuation(entries):
                 raise ValueError("audit chain invalid")
             self._prev = entries[-1]["hash"] if entries else GENESIS
             spent = 0
@@ -96,6 +96,10 @@ class AuditLog:
         if not self.path.exists():
             return []
         return [json.loads(l) for l in self.path.read_text().splitlines() if l.strip()]
+
+    def _is_continuation(self, entries: list[dict]) -> bool:
+        """A valid prefix cannot silently erase this instance's durable tail."""
+        return self._prev == GENESIS or any(e["hash"] == self._prev for e in entries)
 
     def verified_entries(self) -> tuple[list[dict], bool]:
         """Read once so returned entries and their chain verdict match."""
