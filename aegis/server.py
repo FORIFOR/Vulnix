@@ -472,21 +472,38 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 if p.endswith("/events"):
                     return self._get_org(p, u, *bound)  # long stream: per-batch lease below
                 if p in {f"/api/assessments/{bound[0].a.id}/logs",
-                         f"/api/assessments/{bound[0].a.id}/report"}:
+                         f"/api/assessments/{bound[0].a.id}/report",
+                         f"/api/assessments/{bound[0].a.id}/remotion"}:
                     # Large audit reads and report formatting must not hold the
                     # global account lock. Check before work and again for delivery.
                     try:
-                        with live_grant_roles(sess, org, reader=True):
-                            pass
+                        with live_grant_roles(sess, org, reader=True) as roles:
+                            identified = p.endswith("/remotion") and \
+                                (parse_qs(u.query).get("anonymize") or ["1"])[0] == "0"
+                            allowed_identified = not identified or bool({"approver", "admin"} & set(roles))
                     except AuthError:
                         return self._json(401, {"error": "ログインの有効期限が切れました。もう一度ログインしてください"})
                     except ApproverRequired:
                         return self._json(403, {"error": "この組織のメンバーではありません"})
+                    if not allowed_identified:
+                        return self._json(403, {"error": "匿名化なしの出力には承認責任者または管理者の権限が必要です"})
                     if p.endswith("/logs"):
                         payload = bound[0].logs()
-                    else:
+                    elif p.endswith("/report"):
                         payload = {"markdown": bound[0].report_markdown(),
                                    "filename": f"vulnix-report-{bound[0].a.id}.md"}
+                    else:
+                        anon = (parse_qs(u.query).get("anonymize") or ["1"])[0] != "0"
+                        payload = bound[0].remotion_export(anonymize=anon)
+
+                        def deliver_remotion(current):
+                            if not anon:
+                                if not ({"approver", "admin"} & set(current.roles)):
+                                    return self._json(403, {"error": "匿名化なしの出力には承認責任者または管理者の権限が必要です"})
+                                bound[0].audit.record("export.remotion_identified", actor=current.operator)
+                            return self._json(200, payload)
+
+                        return self._authorized_org_read(sess, org, deliver_remotion)
                     return self._authorized_org_read(sess, org, lambda _: self._json(200, payload))
                 return self._authorized_org_read(
                     sess, org, lambda current: self._get_org(p, u, bound[0], current))

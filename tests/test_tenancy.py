@@ -608,6 +608,66 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
         self.assertFalse(logout_thread.is_alive())
         self.assertEqual(response[0][0], 401)
 
+    def test_remotion_generation_does_not_block_logout(self):
+        who = self.signup("slowexport")
+        org_id = who["orgs"][0]["id"]
+        svc = self.reg.service(org_id)
+        entered, release, logged_out = threading.Event(), threading.Event(), threading.Event()
+        response = []
+        original_export = svc.remotion_export
+
+        def paused_export(*args, **kwargs):
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("export test did not release")
+            return original_export(*args, **kwargs)
+
+        with patch.object(svc, "remotion_export", side_effect=paused_export):
+            thread = threading.Thread(target=lambda: response.append(
+                self.req(who, "/assessments/scan_001/remotion", org=org_id)))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            logout_thread = threading.Thread(target=lambda: (
+                self.ops.logout(who["cookie"].split("=", 1)[1]), logged_out.set()))
+            logout_thread.start()
+            try:
+                self.assertTrue(logged_out.wait(0.5), "export held the global account lock")
+            finally:
+                release.set()
+                thread.join(5)
+                logout_thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertFalse(logout_thread.is_alive())
+        self.assertEqual(response[0][0], 401)
+
+    def test_identified_export_rechecks_approver_and_does_not_audit_a_denial(self):
+        owner, approver = self.signup("exportowner"), self.signup("exportapprover")
+        org_id = owner["orgs"][0]["id"]
+        _, invite = self.reg.store.create_invite(org_id, "exportowner", ["approver"])
+        self.reg.store.accept_invite(invite, "exportapprover")
+        svc = self.reg.service(org_id)
+        entered, release = threading.Event(), threading.Event()
+        response = []
+        original_export = svc.remotion_export
+
+        def paused_export(*args, **kwargs):
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("identified export test did not release")
+            return original_export(*args, **kwargs)
+
+        with patch.object(svc, "remotion_export", side_effect=paused_export):
+            thread = threading.Thread(target=lambda: response.append(self.req(
+                approver, "/assessments/scan_001/remotion?anonymize=0", org=org_id)))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            self.reg.store.set_roles(org_id, "exportowner", "exportapprover", ["viewer"])
+            release.set()
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(response[0][0], 403)
+        self.assertFalse(any(e["event"] == "export.remotion_identified" for e in svc.audit.entries()))
+
     def test_member_removal_waits_for_an_inflight_event_write(self):
         owner, member = self.signup("streamowner"), self.signup("streammember")
         org_id = owner["orgs"][0]["id"]
