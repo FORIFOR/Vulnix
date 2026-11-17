@@ -92,7 +92,8 @@ class TestPasswordGuessing(ApiBase):
             with urllib.request.urlopen(req) as r:
                 return r.status, json.load(r), r.headers
         except urllib.error.HTTPError as e:
-            return e.code, json.load(e), e.headers
+            with e:
+                return e.code, json.load(e), e.headers
 
     def test_guessing_locks_the_name_and_the_right_password_does_not_get_through(self):
         with patch("aegis.server.time.sleep"):
@@ -301,7 +302,8 @@ class TestVerificationJobsCannotBeTriggeredByALink(ApiBase):
             with urllib.request.urlopen(req) as r:
                 return r.status
         except urllib.error.HTTPError as e:
-            return e.code
+            with e:
+                return e.code
 
     def test_get_never_starts_a_job_and_post_needs_csrf_header_origin_and_role(self):
         with patch("aegis.server.run_live_control_verification", return_value={"all_passed": True}) as job1, \

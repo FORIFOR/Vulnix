@@ -786,7 +786,8 @@ class TestUntrustedAuthStateOverHttp(unittest.TestCase):
             with self.urllib.urlopen(self.urllib.Request(self.api + path, json.dumps(body).encode(), hdr)) as r:
                 return r.status, json.loads(r.read() or b"{}"), r.headers
         except urllib.error.HTTPError as e:
-            return e.code, json.loads(e.read() or b"{}"), e.headers
+            with e:
+                return e.code, json.loads(e.read() or b"{}"), e.headers
 
     def test_new_operations_are_refused_but_stopping_is_not(self):
         code, _, h = self.post("/auth/login", {"name": "appr", "password": "appr-password"})

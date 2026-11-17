@@ -38,6 +38,7 @@ import hmac
 import http.server
 import ipaddress
 import json
+import math
 import re
 import secrets
 import socket
@@ -93,6 +94,15 @@ class Budget:
     usd_per_1k_input: float = 0.0
     usd_per_1k_output: float = 0.0
 
+    def __post_init__(self) -> None:
+        if (not isinstance(self.max_calls, int) or isinstance(self.max_calls, bool)
+                or self.max_calls <= 0 or not isinstance(self.max_total_tokens, int)
+                or isinstance(self.max_total_tokens, bool) or self.max_total_tokens <= 0):
+            raise ValueError("model call and token budgets must be positive integers")
+        for value in (self.max_cost_usd, self.usd_per_1k_input, self.usd_per_1k_output):
+            if not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+                raise ValueError("model cost budget and prices must be finite and nonnegative")
+
     def estimate(self, prompt_tokens: int, completion_tokens: int) -> float:
         return round(max(0, prompt_tokens) / 1000 * self.usd_per_1k_input
                      + max(0, completion_tokens) / 1000 * self.usd_per_1k_output, 6)
@@ -113,7 +123,7 @@ class CallRecord:
 
 
 def estimate_tokens(text: str) -> int:
-    """A conservative estimate (no tokenizer here): ~1 token per 3 characters."""
+    """A rough token estimate for the run cap; provider usage is checked after each call."""
     return max(1, len(text) // 3)
 
 
@@ -562,7 +572,10 @@ class PlannerLLMGateway:
             sha = hashlib.sha256(payload).hexdigest()
             prompt_tokens = estimate_tokens(payload.decode())
             worst_tokens = prompt_tokens + clean["max_tokens"]
-            worst_cost = self.budget.estimate(prompt_tokens, clean["max_tokens"])
+            # The coarse token estimate is not a safe monetary reserve for dense
+            # Unicode or punctuation. Charge at least one input token per UTF-8
+            # byte for the cost gate. The provider's usage can still differ.
+            worst_cost = self.budget.estimate(max(prompt_tokens, len(payload)), clean["max_tokens"])
             tools_sha = hashlib.sha256(json.dumps(clean.get("tools") or [], sort_keys=True,
                                                   ensure_ascii=False).encode()).hexdigest()
             # asked OUTSIDE the gateway lock (it takes the service lock; an emergency stop
@@ -635,6 +648,14 @@ class PlannerLLMGateway:
         except GatewayRefused:
             self._release(rec, "no_audit")
             raise
+        # The audit can block. An emergency stop or failed run during that write
+        # must still prevent the transport from starting.
+        if self._failed.is_set():
+            self._release(rec, "run_failed")
+            raise GatewayRefused("run_failed", "the run failed upstream: nothing more is sent")
+        if self._closed.is_set() or not self._may():
+            self._release(rec, "stopped")
+            raise GatewayRefused("stopped", "the planner run was stopped")
         headers = {"Content-Type": "application/json"}
         if self._key:
             headers["Authorization"] = f"Bearer {self._key}"
@@ -693,11 +714,16 @@ class PlannerLLMGateway:
                 pt = usage.get("prompt_tokens")
                 prompt_real = max(0, pt) if isinstance(pt, int) else 0
                 actual_tokens = max(prompt_real, prompt_tokens) + completion
-                actual_cost = self.budget.estimate(max(prompt_real, prompt_tokens), completion)
+                actual_cost = self.budget.estimate(max(prompt_real, prompt_tokens, rec.request_bytes), completion)
                 # settle against actual usage (never below zero)
                 self._tokens_used += actual_tokens - rec.charged_tokens
                 self._cost_used += actual_cost - rec.est_cost_usd
                 rec.completion_tokens, rec.charged_tokens, rec.est_cost_usd = completion, actual_tokens, actual_cost
+                if (self._tokens_used > self.budget.max_total_tokens
+                        or self._cost_used > self.budget.max_cost_usd):
+                    self._failed.set()
+                    rec.reason = "usage_exceeded_budget"
+                    self.failure = {"index": rec.index, "error_type": "UsageExceededBudget"}
             # no usage figures: the reserved worst case stays charged
 
     def _release(self, rec: CallRecord, code: str) -> None:

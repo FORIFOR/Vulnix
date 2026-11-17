@@ -15,7 +15,7 @@ import urllib.request
 from pathlib import Path
 from unittest.mock import patch
 
-from aegis.planner_llm_gateway import Budget, GatewayRefused, PlannerLLMGateway
+from aegis.planner_llm_gateway import Budget, GatewayRefused, PlannerLLMGateway, estimate_tokens
 from tests.artex_mock_llm import MockLLM
 
 KEY = "sk-test-gateway-key-NEVER-SENT-AS-CONTENT"
@@ -75,7 +75,8 @@ def post(gw, body, token=None, raw=None):
         with urllib.request.urlopen(req, timeout=10) as r:
             return r.status, json.loads(r.read())
     except urllib.error.HTTPError as e:
-        return e.code, json.loads(e.read())
+        with e:
+            return e.code, json.loads(e.read())
 
 
 class TestInspection(unittest.TestCase):
@@ -159,6 +160,52 @@ class TestPreviewSendsNothing(unittest.TestCase):
 
 
 class TestBudgets(unittest.TestCase):
+    def test_dense_unicode_cost_reserves_utf8_bytes_before_any_send(self):
+        body = chat("あ" * 1000 + " lab.test")
+        with preview() as sample:
+            clean = sample.inspect(body)
+        payload = json.dumps(clean, ensure_ascii=False, sort_keys=True).encode()
+        prices = Budget(**PRICED)
+        coarse = prices.estimate(estimate_tokens(payload.decode()), clean["max_tokens"])
+        byte_bound = prices.estimate(len(payload), clean["max_tokens"])
+        self.assertGreater(byte_bound, coarse)
+        cap = (coarse + byte_bound) / 2
+        with preview(budget=Budget(max_cost_usd=cap, **PRICED)) as gw:
+            code, _ = post(gw, body)
+        self.assertEqual(code, 403)
+        self.assertEqual(gw.report()["records"][0]["reason"], "cost_budget")
+
+    def test_non_finite_or_negative_budget_values_are_rejected_before_send(self):
+        for value in (float("nan"), float("inf"), -1.0):
+            with self.assertRaises(ValueError):
+                Budget(max_cost_usd=value)
+            with self.assertRaises(ValueError):
+                Budget(usd_per_1k_input=value)
+            with self.assertRaises(ValueError):
+                Budget(usd_per_1k_output=value)
+        for count in (0, -1):
+            with self.assertRaises(ValueError):
+                Budget(max_calls=count)
+            with self.assertRaises(ValueError):
+                Budget(max_total_tokens=count)
+
+    def test_provider_usage_above_reservation_ends_the_run(self):
+        sent = []
+
+        def high_usage(*_args):
+            sent.append(1)
+            return json.dumps({"choices": [{"message": {"content": "ok"}}],
+                               "usage": {"prompt_tokens": 10_000, "completion_tokens": 5}}).encode()
+
+        budget = Budget(max_calls=3, max_total_tokens=20_000, max_cost_usd=0.009,
+                        usd_per_1k_input=0.001, usd_per_1k_output=0.003)
+        with forward(high_usage, audit=Audit(), budget=budget) as gw:
+            self.assertEqual(post(gw, chat())[0], 200)
+            self.assertEqual(post(gw, chat())[0], 403)
+        self.assertEqual(len(sent), 1)
+        self.assertTrue(gw.failed)
+        self.assertGreater(gw.report()["est_cost_usd"], budget.max_cost_usd)
+
     def test_call_token_and_cost_budgets(self):
         with preview(budget=Budget(max_calls=2)) as gw:
             codes = [post(gw, chat())[0] for _ in range(3)]
@@ -266,6 +313,21 @@ class TestForwarding(unittest.TestCase):
             gw.close()
             self.assertEqual(post(gw, chat())[0], 403)
         self.assertEqual(sent, [])
+
+    def test_stop_during_forward_audit_prevents_upstream_send(self):
+        sent = []
+
+        class StopAfterAudit(Audit):
+            def record(self, event, **fields):
+                super().record(event, **fields)
+                if event == "planner_llm.forwarding":
+                    gw.close()
+
+        with forward(lambda *a: sent.append(a) or ok_transport(), audit=StopAfterAudit()) as gw:
+            code, _ = post(gw, chat())
+        self.assertEqual(code, 403)
+        self.assertEqual(sent, [])
+        self.assertEqual(gw.report()["records"][0]["reason"], "stopped")
 
     def test_a_loopback_mock_upstream_needs_no_approval(self):
         with MockLLM() as mock, PlannerLLMGateway(mode="forward", model="m", upstream_url=mock.url + "/chat/completions",

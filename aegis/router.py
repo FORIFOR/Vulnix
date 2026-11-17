@@ -20,6 +20,7 @@ import math
 import os
 import re
 import urllib.parse
+import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from functools import partial
@@ -140,8 +141,8 @@ def _require_safe_model_url(url: str) -> None:
 
 
 def _open_model_url(req, *, timeout):
-    """The API key never follows a redirect."""
-    return urllib.request.build_opener(_NoRedirect).open(req, timeout=timeout)
+    """The API key never follows a redirect or an ambient process proxy."""
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect).open(req, timeout=timeout)
 
 
 def _http_transport(url: str, headers: dict, body: bytes, *,
@@ -221,7 +222,9 @@ class HttpModelBackend:
         try:
             raw = self._transport(self._url, self._headers(), body)
             data = json.loads(raw)
-        except Exception:
+        except Exception as e:
+            if isinstance(e, urllib.error.HTTPError):
+                e.close()
             return []
         return extract_proposals_from_payload(data)
 
@@ -299,7 +302,10 @@ class AbliterationBackend(HttpModelBackend):
                 if isinstance(content, str) and content.strip():
                     return content.strip(), None
         except Exception as e:   # noqa: BLE001 - any failure falls back to the built-in answer
-            return None, _error_kind(e)
+            kind = _error_kind(e)
+            if isinstance(e, urllib.error.HTTPError):
+                e.close()
+            return None, kind
         return None, "empty_response"
 
 
