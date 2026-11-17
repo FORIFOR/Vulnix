@@ -400,8 +400,23 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 me["development"] = development_mode()
                 if tenancy is not None:
                     me["multi_tenant"] = True
-                    me["orgs"] = tenancy.store.orgs_of(sess.operator) if sess else []
-                return self._json(200, me)
+                    me["orgs"] = []
+                if sess is None:
+                    return self._json(200, me)
+                with ops.locked_session(sess.token) as current:
+                    if current is None or current.operator != sess.operator:
+                        me["session"] = None
+                    else:
+                        me["session"]["roles"] = list(current.roles)
+                        me["session"]["expires"] = current.expires
+                        if tenancy is not None:
+                            me["orgs"] = tenancy.store.orgs_of(current.operator)
+                    previous_timeout = self.connection.gettimeout()
+                    self.connection.settimeout(2.0)
+                    try:
+                        return self._json(200, me)
+                    finally:
+                        self.connection.settimeout(previous_timeout)
             if p == "/api/health":
                 return self._json(200, {"ok": True})
             if enforce_read_auth and not sess:
@@ -442,7 +457,12 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                                                      lambda _: self._json(200, svc.system_status()))
                 return self._json(200, svc.system_status())
             if tenancy is not None and p.startswith("/api/orgs"):
-                return self._tenancy_get(p, u, sess)
+                previous_timeout = self.connection.gettimeout()
+                self.connection.settimeout(2.0)
+                try:
+                    return self._tenancy_get(p, u, sess)
+                finally:
+                    self.connection.settimeout(previous_timeout)
             if p.startswith(("/api/assets", "/api/assessments/")):
                 bound = self._bind(sess, (parse_qs(u.query).get("org") or [None])[0])
                 if bound is None:

@@ -545,6 +545,32 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
         self.assertFalse(thread.is_alive())
         self.assertEqual(response[0][0], 401)
 
+    def test_logout_before_session_probe_does_not_return_an_old_session(self):
+        who = self.signup("lateprobe")
+        entered, release = threading.Event(), threading.Event()
+        response = []
+        handler = self.srv.RequestHandlerClass
+        original_session = handler._session
+
+        def paused_session(request):
+            sess = original_session(request)
+            if request.path == "/api/auth/me":
+                entered.set()
+                if not release.wait(5):
+                    raise TimeoutError("session probe test did not release")
+            return sess
+
+        with patch.object(handler, "_session", paused_session):
+            thread = threading.Thread(target=lambda: response.append(self.req(who, "/auth/me")))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            self.ops.logout(who["cookie"].split("=", 1)[1])
+            release.set()
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(response[0][0], 200)
+        self.assertIsNone(response[0][1]["session"])
+
     def test_member_removal_waits_for_an_inflight_event_write(self):
         owner, member = self.signup("streamowner"), self.signup("streammember")
         org_id = owner["orgs"][0]["id"]
