@@ -1260,7 +1260,7 @@ class AssessmentService:
             self._persist_error = self.ledger.error
             raise ValueError("通信枠を保存できないため、診断を開始できません")
 
-    def _record_root_result_locked(self, evidence: dict) -> bool:
+    def _record_root_result_locked(self, evidence: dict, response: dict, url: str) -> bool:
         """Bind a successful root response to its signed scan run, even if clean."""
         if not self.real_site_read_only:
             return True
@@ -1276,7 +1276,14 @@ class AssessmentService:
                 or evidence.get("tool") != "http_probe" or not evidence.get("audit_hash")):
             self._fail("診断の監査証拠を通信枠と照合できません")
             return False
+        from .artex_bridge import safe_public_fingerprint
+        try:
+            fingerprint = safe_public_fingerprint(response, scheme=urllib.parse.urlsplit(url).scheme)
+        except ValueError:
+            self._fail("診断の初期観測を安全な特徴に変換できません")
+            return False
         usage["result_audit_hash"] = evidence["audit_hash"]
+        usage["root_fingerprint"] = fingerprint
         if not self.ledger.commit():
             self._persist_error = self.ledger.error or "LedgerError"
             self._fail("診断の監査証拠を保存できません")
@@ -1805,11 +1812,42 @@ class AssessmentService:
 
     def plan_with_artex(self, actor: str, *, llm_approval: dict | None = None, roles=None,
                         llm_mode: str | None = None, request_authorized=None) -> dict:
+        fingerprint = None
+        root_observation = None
+        with self._lock:
+            if self.real_site_read_only and self._is_external_service_asset():
+                host = (self.a.asset.get("name") or "").lower()
+                usage = self.ledger.scan_usage.get(host)
+                if self._root_probe_observed_locked():
+                    fingerprint = usage.get("root_fingerprint")
+                    root_observation = (usage.get("run_nonce"), usage.get("result_audit_hash"))
+                    from .artex_bridge import anonymous_real_site_request, initial_real_site_extra_checks
+                    try:
+                        anonymous_real_site_request([], fingerprint=fingerprint)
+                        ext = self._external_entry(host) or {}
+                        eligible = initial_real_site_extra_checks(
+                            fingerprint,
+                            status_consent=(ext.get("allow_status_probe") is True
+                                            and usage.get("status_probe_allowed") is True
+                                            and usage.get("paths") == ["/"]),
+                            root_observed=True)
+                    except ValueError:
+                        raise ValueError("初期観測の記録が不正なため、追加確認を計画できません") from None
+                    if not eligible:
+                        raise ValueError("実行できる追加確認がないため、ARTEX計画を省略しました")
+                elif usage or self._in_ownership_flow(host):
+                    # A real registered site, including an older restored one,
+                    # cannot spend a model call without an audited root. The
+                    # synthetic lab branch still exercises legacy plan tests.
+                    raise ValueError("初回診断の監査済み初期観測がないため、追加確認を計画できません")
         return self._plan_with_artex(actor, llm_approval=llm_approval, roles=roles,
-                                     llm_mode=llm_mode, request_authorized=request_authorized)
+                                     llm_mode=llm_mode, fingerprint=fingerprint,
+                                     root_observation=root_observation,
+                                     request_authorized=request_authorized)
 
     def _plan_with_artex(self, actor: str, *, llm_approval: dict | None = None, roles=None,
                          llm_mode: str | None = None, fingerprint: dict | None = None,
+                         root_observation: tuple[str, str] | None = None,
                          request_authorized=None) -> dict:
         """Ask the real ARTEX planner for a plan, then rebuild every item from Vulnix's
         own registered targets and allowed catalog. Nothing is executed here.
@@ -1833,6 +1871,13 @@ class AssessmentService:
                 self._ensure_artex_authority_locked()
             else:
                 self._ensure_active_window_locked()
+            if real_site and self.real_site_read_only and root_observation is not None:
+                host = (self.a.asset.get("name") or "").lower()
+                usage = self.ledger.scan_usage.get(host) or {}
+                if (not self._root_probe_observed_locked()
+                        or root_observation != (usage.get("run_nonce"), usage.get("result_audit_hash"))
+                        or fingerprint != usage.get("root_fingerprint")):
+                    raise ValueError("初期観測が現在の診断に属さないため、ARTEX計画を中止しました")
             if real_site and self.a.state != "completed":
                 if (fingerprint is None or self.a.state != "running"
                         or not self._root_probe_observed_locked()):
@@ -4339,7 +4384,7 @@ class AssessmentService:
             return
         if is_ext:
             with self._lock:
-                if not self._record_root_result_locked(ev):
+                if not self._record_root_result_locked(ev, res, url):
                     return
         for tk in tasks_l1:
             if tk.status == "running":
@@ -4383,6 +4428,7 @@ class AssessmentService:
                                   and usage.get("status_probe_allowed") is True
                                   and usage.get("paths") == ["/"])
                 root_observed = self._root_probe_observed_locked()
+                root_observation = (usage.get("run_nonce"), usage.get("result_audit_hash"))
             try:
                 eligible_extra = initial_real_site_extra_checks(
                     fingerprint, status_consent=status_consent,
@@ -4399,7 +4445,8 @@ class AssessmentService:
             else:
                 try:
                     planned = self._plan_with_artex("policy:initial", llm_mode="gateway-forward",
-                                                    fingerprint=fingerprint)
+                                                    fingerprint=fingerprint,
+                                                    root_observation=root_observation)
                 except ValueError:
                     # A local model failure keeps the measured L1 result. Revocation,
                     # stop, or persistence failure must still stop the diagnosis.

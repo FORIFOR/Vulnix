@@ -830,6 +830,104 @@ class TestL1Diagnosis(RealServiceBase):
         self.assertEqual(seen[0][1]["fingerprint"]["status_class"], "2xx")
         self.assertEqual(seen[0][1]["fingerprint"]["server_family"], "apache")
 
+    def test_manual_artex_reuses_signed_root_fingerprint_without_another_get(self):
+        self.svc.real_site_read_only = True
+        self.svc._real_site_local_artex = True
+        self.svc._artex_real_cmd = ["mock-artex"]
+        self.fake.banner = "Apache/2.4.62"
+        self.onboard(allow_status_probe=True)
+        self.assertEqual(self.run_l1()["state"], "completed")
+        seen = []
+
+        def plan(_actor, **kwargs):
+            seen.append(kwargs.get("fingerprint"))
+            return self.svc.snapshot()
+
+        with patch.object(self.svc, "_plan_with_artex", side_effect=plan):
+            self.svc.plan_with_artex("op")
+        self.assertEqual(seen[0]["server_family"], "apache")
+        self.assertEqual(self.svc.ledger.scan_usage[HOST]["root_fingerprint"], seen[0])
+        self.assertEqual([path for path, _ in self.fake.seen], ["/"])
+
+    def test_manual_artex_reuses_signed_root_fingerprint_after_restart(self):
+        self.svc.real_site_read_only = True
+        self.svc._real_site_local_artex = True
+        self.svc._artex_real_cmd = ["mock-artex"]
+        self.fake.banner = "Apache/2.4.62"
+        self.onboard(allow_status_probe=True)
+        self.assertEqual(self.run_l1()["state"], "completed")
+        expected = dict(self.svc.ledger.scan_usage[HOST]["root_fingerprint"])
+        reopened = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT,
+                                     real_site_read_only=True)
+        try:
+            reopened._custom_resolver = self.svc._custom_resolver
+            reopened._real_site_local_artex = True
+            reopened._artex_real_cmd = ["mock-artex"]
+            with patch.object(reopened, "_plan_with_artex", return_value=reopened.snapshot()) as planner:
+                reopened.plan_with_artex("op")
+            self.assertEqual(planner.call_args.kwargs["fingerprint"], expected)
+            self.assertEqual([path for path, _ in self.fake.seen], ["/"])
+        finally:
+            reopened.close()
+
+    def test_manual_artex_rejects_unsigned_fingerprint_before_model(self):
+        self.svc.real_site_read_only = True
+        self.svc._real_site_local_artex = True
+        self.svc._artex_real_cmd = ["mock-artex"]
+        self.fake.banner = "Apache/2.4.62"
+        self.onboard(allow_status_probe=True)
+        self.assertEqual(self.run_l1()["state"], "completed")
+        with self.svc._lock:
+            self.svc.ledger.scan_usage[HOST]["root_fingerprint"] = {"server_family": "apache"}
+        with patch.object(self.svc, "_plan_with_artex") as plan:
+            with self.assertRaises(ValueError):
+                self.svc.plan_with_artex("op")
+        plan.assert_not_called()
+
+    def test_manual_artex_rejects_missing_signed_run_before_model(self):
+        self.svc.real_site_read_only = True
+        self.svc._real_site_local_artex = True
+        self.svc._artex_real_cmd = ["mock-artex"]
+        self.fake.banner = "Apache/2.4.62"
+        self.onboard(allow_status_probe=True)
+        self.assertEqual(self.run_l1()["state"], "completed")
+        with self.svc._lock:
+            self.svc.ledger.scan_usage.pop(HOST)
+            self.assertTrue(self.svc.ledger.commit())
+        with patch.object(self.svc, "_plan_with_artex") as plan:
+            with self.assertRaisesRegex(ValueError, "監査済み"):
+                self.svc.plan_with_artex("op")
+        plan.assert_not_called()
+
+    def test_manual_artex_skips_model_when_no_extra_check_is_eligible(self):
+        self.svc.real_site_read_only = True
+        self.svc._real_site_local_artex = True
+        self.svc._artex_real_cmd = ["mock-artex"]
+        self.onboard(allow_status_probe=True)
+        self.assertEqual(self.run_l1()["state"], "completed")  # default non-Apache banner
+        with patch.object(self.svc, "_plan_with_artex") as plan:
+            with self.assertRaisesRegex(ValueError, "追加確認"):
+                self.svc.plan_with_artex("op")
+        plan.assert_not_called()
+        self.assertEqual([path for path, _ in self.fake.seen], ["/"])
+
+    def test_manual_artex_rejects_fingerprint_from_previous_signed_run(self):
+        self.svc.real_site_read_only = True
+        self.svc._real_site_local_artex = True
+        self.svc._artex_real_cmd = ["mock-artex"]
+        self.fake.banner = "Apache/2.4.62"
+        self.onboard(allow_status_probe=True)
+        self.assertEqual(self.run_l1()["state"], "completed")
+        with self.svc._lock:
+            usage = self.svc.ledger.scan_usage[HOST]
+            old_context = (usage["run_nonce"], usage["result_audit_hash"])
+            fingerprint = dict(usage["root_fingerprint"])
+            usage["run_nonce"] = "different-signed-run"
+            self.assertTrue(self.svc.ledger.commit())
+        with self.assertRaisesRegex(ValueError, "初期観測"):
+            self.svc._plan_with_artex("op", fingerprint=fingerprint,
+                                      root_observation=old_context)
+
     def test_initial_artex_skips_non_apache_without_spending_model_calls(self):
         self.svc.real_site_read_only = True
         self.svc._real_site_local_artex = True

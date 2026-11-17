@@ -260,6 +260,32 @@ class ServiceBase(unittest.TestCase):
         snap = self.svc.plan_with_artex("op")
         return snap["artex_plan"]["plan"]
 
+    def signed_mock_root(self, *, banner="Apache/2.4.62", status_consent=True):
+        from tests.test_real_service import FakeService, HOST
+
+        site = FakeService()
+        site.banner = banner
+        threading.Thread(target=site.serve_forever, daemon=True).start()
+        self.addCleanup(site.server_close)
+        self.addCleanup(site.shutdown)
+        url = f"http://{HOST}:{site.server_port}"
+        self.svc._custom_resolver = lambda host: ["127.0.0.1"] if host == HOST else []
+        self.svc._real_site_local_artex = True
+        challenge = self.svc.issue_ownership_challenge(url=url)["challenge"]
+        self.svc.verify_asset_ownership(
+            url_or_host=url, method="dns_txt",
+            dns_lookup=lambda name: [f'{name} text = "{challenge["dns_txt_value"]}"'])
+        self.svc.confirm_asset_scope(url_or_host=url, confirmed_prohibited=True,
+                                     activate_workspace=True, allow_loopback_test=True,
+                                     allow_status_probe=status_consent)
+        self.svc.start()
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline and self.svc.snapshot()["state"] == "running":
+            time.sleep(0.02)
+        self.assertEqual(self.svc.snapshot()["state"], "completed", self.svc.snapshot().get("failure"))
+        self.assertEqual(site.seen, [("/", None)])
+        return site, url
+
     def item(self, plan, catalog_id):
         return next(i for i in plan["items"] if i["catalog_id"] == catalog_id)
 
@@ -362,6 +388,7 @@ class TestThePlanThroughTheGateway(ServiceBase):
         from tests.test_real_service import FakeService, HOST
 
         site = FakeService()
+        site.banner = "Apache/2.4.62"
         threading.Thread(target=site.serve_forever, daemon=True).start()
         self.addCleanup(site.server_close)
         self.addCleanup(site.shutdown)
@@ -376,7 +403,8 @@ class TestThePlanThroughTheGateway(ServiceBase):
             dns_lookup=lambda name: [f'{name} text = "{challenge["dns_txt_value"]}"'],
         )["verified"])
         self.svc.confirm_asset_scope(url_or_host=url, confirmed_prohibited=True,
-                                     activate_workspace=True, allow_loopback_test=True)
+                                     activate_workspace=True, allow_loopback_test=True,
+                                     allow_status_probe=True)
         self.assertEqual(site.seen, [])
 
         self.svc.start()
@@ -411,6 +439,7 @@ class TestThePlanThroughTheGateway(ServiceBase):
         from tests.test_real_service import FakeService, HOST
 
         site = FakeService()
+        site.banner = "Apache/2.4.62"
         threading.Thread(target=site.serve_forever, daemon=True).start()
         self.addCleanup(site.server_close)
         self.addCleanup(site.shutdown)
@@ -422,7 +451,8 @@ class TestThePlanThroughTheGateway(ServiceBase):
             url_or_host=url, method="dns_txt",
             dns_lookup=lambda name: [f'{name} text = "{challenge["dns_txt_value"]}"'])
         self.svc.confirm_asset_scope(url_or_host=url, confirmed_prohibited=True,
-                                     activate_workspace=True, allow_loopback_test=True)
+                                     activate_workspace=True, allow_loopback_test=True,
+                                     allow_status_probe=True)
         self.svc.a.findings = {}
         with patch.object(assessment_module, "analyze_l1_service_response", return_value=[]), \
                 patch.object(self.svc, "_l2_candidates", return_value=[]):
@@ -449,7 +479,7 @@ class TestThePlanThroughTheGateway(ServiceBase):
         self.svc._verified_external_hosts["site.test"]["not_after"] = 0
         self.assertFalse(self.svc.artex_plan_view()["configured"])
 
-    def test_completed_and_scoped_real_site_can_reach_the_anonymous_planner(self):
+    def test_completed_state_without_audited_baseline_cannot_plan(self):
         self.svc._real_site_local_artex = True
         self.svc.issue_ownership_challenge(url="https://site.test/")
         self.svc.verify_asset_ownership(
@@ -458,21 +488,15 @@ class TestThePlanThroughTheGateway(ServiceBase):
         self.svc.confirm_asset_scope(url_or_host="site.test", confirmed_prohibited=True,
                                      activate_workspace=True)
         self.svc.a.state = "completed"  # inconsistent old state: no audited baseline in this fixture
-        plan = self.plan()
-        self.assertEqual([item["catalog_id"] for item in plan["items"]], ["l1_http_probe"])
-        self.assertEqual(plan["items"][0]["status"], "unsupported")
+        with patch.object(self.svc, "_plan_with_artex") as planner:
+            with self.assertRaisesRegex(ValueError, "監査済み"):
+                self.plan()
+        planner.assert_not_called()
 
     def test_real_site_can_use_budgeted_gateway_only_with_literal_loopback_upstream(self):
         from aegis import assessment as assessment_module
 
-        self.svc._real_site_local_artex = True
-        self.svc.issue_ownership_challenge(url="https://site.test/")
-        self.svc.verify_asset_ownership(
-            url_or_host="site.test", method="google_search_console",
-            google_property="sc-domain:site.test", google_endpoint=("https", 443))
-        self.svc.confirm_asset_scope(url_or_host="site.test", confirmed_prohibited=True,
-                                     activate_workspace=True)
-        self.svc.a.state = "completed"
+        site, url = self.signed_mock_root()
         from aegis.policy import Budget
         remaining = Budget(2)
         remaining.spend()
@@ -487,7 +511,7 @@ class TestThePlanThroughTheGateway(ServiceBase):
                 {"role": "user", "content": "Synthetic target http://lab.test/"}]})
             with self.assertRaises(GatewayRefused):
                 gateway.inspect({"model": "mock", "messages": [
-                    {"role": "user", "content": "Real target https://site.test/"}]})
+                    {"role": "user", "content": f"Real target {url}"}]})
             self.assertTrue(self.svc._artex_may_start(self.svc._run_generation))
             self.assertIs(self.svc.gateway.budget, remaining)
             self.assertEqual(remaining._left, 1)
@@ -503,6 +527,7 @@ class TestThePlanThroughTheGateway(ServiceBase):
         self.assertEqual(remaining._left, 1)
         self.assertEqual(plan["llm_gateway"]["mode"], "forward")
         self.assertEqual(plan["llm_gateway"]["upstream"], "127.0.0.1")
+        self.assertEqual(site.seen, [("/", None)])
 
         for upstream in ("https://api.example.test/v1/chat/completions",
                          "http://localhost:9/v1/chat/completions",
@@ -582,29 +607,24 @@ class TestThePlanThroughTheGateway(ServiceBase):
 
     def test_real_site_plan_discarded_if_scope_expires_during_model_run(self):
         from aegis import assessment as assessment_module
+        from tests.test_real_service import HOST
 
-        self.svc._real_site_local_artex = True
-        self.svc.issue_ownership_challenge(url="https://site.test/")
-        self.svc.verify_asset_ownership(
-            url_or_host="site.test", method="google_search_console",
-            google_property="sc-domain:site.test", google_endpoint=("https", 443))
-        self.svc.confirm_asset_scope(url_or_host="site.test", confirmed_prohibited=True,
-                                     activate_workspace=True)
-        self.svc.a.state = "completed"
+        self.signed_mock_root()
+        original_expiry = self.svc._verified_external_hosts[HOST]["not_after"]
 
         with patch.dict(os.environ, {"VULNIX_ARTEX_LLM_MODE": "gateway-forward",
                                   "VULNIX_ARTEX_LLM_UPSTREAM_URL": "http://127.0.0.1:9/v1/chat/completions"}):
             gateway = self.svc._planner_gateway("op", None, (), self.svc._run_generation,
                                                 "gateway-forward", real_site=True)
             self.assertTrue(gateway._may())
-            self.svc._verified_external_hosts["site.test"]["not_after"] = time.time() - 1
+            self.svc._verified_external_hosts[HOST]["not_after"] = time.time() - 1
             self.assertFalse(gateway._may())
 
-        self.svc._verified_external_hosts["site.test"]["not_after"] = time.time() + 300
+        self.svc._verified_external_hosts[HOST]["not_after"] = original_expiry
         original = assessment_module.run_artex_planner
         def expire_after(*args, **kwargs):
             result = original(*args, **kwargs)
-            self.svc._verified_external_hosts["site.test"]["not_after"] = time.time() - 1
+            self.svc._verified_external_hosts[HOST]["not_after"] = time.time() - 1
             return result
         with patch.object(assessment_module, "run_artex_planner", side_effect=expire_after):
             with self.assertRaises(ValueError):
@@ -613,29 +633,23 @@ class TestThePlanThroughTheGateway(ServiceBase):
 
     def test_real_site_plan_discarded_if_ownership_is_revoked_during_model_run(self):
         from aegis import assessment as assessment_module
+        from tests.test_real_service import HOST
 
-        self.svc._real_site_local_artex = True
-        self.svc.issue_ownership_challenge(url="https://site.test/")
-        self.svc.verify_asset_ownership(
-            url_or_host="site.test", method="google_search_console",
-            google_property="sc-domain:site.test", google_endpoint=("https", 443))
-        self.svc.confirm_asset_scope(url_or_host="site.test", confirmed_prohibited=True,
-                                     activate_workspace=True)
-        self.svc.a.state = "completed"
-        record = self.svc._verified_external_hosts["site.test"]
+        self.signed_mock_root()
+        record = self.svc._verified_external_hosts[HOST]
 
         with patch.dict(os.environ, {"VULNIX_ARTEX_LLM_MODE": "gateway-forward",
                                   "VULNIX_ARTEX_LLM_UPSTREAM_URL": "http://127.0.0.1:9/v1/chat/completions"}):
             gateway = self.svc._planner_gateway("op", None, (), self.svc._run_generation,
                                                 "gateway-forward", real_site=True)
-            self.svc._verified_external_hosts.pop("site.test")
+            self.svc._verified_external_hosts.pop(HOST)
             self.assertFalse(gateway._may())
-            self.svc._verified_external_hosts["site.test"] = record
+            self.svc._verified_external_hosts[HOST] = record
 
         original = assessment_module.run_artex_planner
         def revoke_after(*args, **kwargs):
             result = original(*args, **kwargs)
-            self.svc._verified_external_hosts.pop("site.test")
+            self.svc._verified_external_hosts.pop(HOST)
             return result
         with patch.object(assessment_module, "run_artex_planner", side_effect=revoke_after):
             with self.assertRaises(ValueError):
@@ -657,14 +671,7 @@ class TestThePlanThroughTheGateway(ServiceBase):
     def test_real_site_planner_cannot_use_the_unconfined_dev_exception(self):
         from aegis.confinement import KernelConfinement
 
-        self.svc._real_site_local_artex = True
-        self.svc.issue_ownership_challenge(url="https://site.test/")
-        self.svc.verify_asset_ownership(
-            url_or_host="site.test", method="google_search_console",
-            google_property="sc-domain:site.test", google_endpoint=("https", 443))
-        self.svc.confirm_asset_scope(url_or_host="site.test", confirmed_prohibited=True,
-                                     activate_workspace=True)
-        self.svc.a.state = "completed"
+        self.signed_mock_root()
         self.svc._l2_confinement = KernelConfinement(platform="darwin")
         with patch.dict(os.environ, {"VULNIX_ARTEX_ALLOW_UNCONFINED": "1", "AEGIS_ENV": "development"}):
             with self.assertRaisesRegex(ValueError, "隔離"):
