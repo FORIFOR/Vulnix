@@ -541,6 +541,20 @@ class TestServiceIntegration(RealServiceBase):
         self.assertFalse(sent, "external transport must not run after stop before send")
         self.assertEqual(self.svc.snapshot()["chat_messages"], [])
 
+    def test_chat_does_not_try_fallback_model_after_request_revocation(self):
+        active, fallback_calls = [True], []
+
+        def revoke_during_safe_advice(*args, **kwargs):
+            active[0] = False
+            return None
+
+        with patch.object(self.svc, "_safe_real_ai_explanation", side_effect=revoke_during_safe_advice), \
+                patch.object(self.svc, "_answer_question", side_effect=lambda *a, **k: fallback_calls.append(1)):
+            with self.assertRaises(ValueError):
+                self.svc.ask_chat("解説", "appr", safe_advice=True,
+                                  request_authorized=lambda: active[0])
+        self.assertFalse(fallback_calls, "revoked request must not enter a fallback model")
+
     def test_external_advisor_requires_a_durable_budget_before_sending(self):
         self.onboard()
         self.run_l1()

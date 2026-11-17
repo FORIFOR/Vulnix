@@ -5218,6 +5218,8 @@ class AssessmentService:
         safe_answer = (self._safe_real_ai_explanation(finding_id, actor, outcome,
                                                      request_authorized=request_authorized)
                        if safe_advice else None)
+        if request_authorized is not None and not request_authorized():
+            raise ValueError("要求者の権限が失効したため、解説を続けません")
         source, answer_text = ("external_model", safe_answer) if safe_answer else self._answer_question(
             q, term=term, finding_id=finding_id, outcome=outcome)
         model_attempted = outcome["model_attempted"]
