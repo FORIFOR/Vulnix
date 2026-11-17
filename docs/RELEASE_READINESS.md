@@ -4,8 +4,8 @@
 
 | ゲート | 状態 | 必要な証拠 |
 | --- | --- | --- |
-| 累積コードの全テストとLinux実ARTEX | PASS（統合候補のテスト） | コード`ae40576`のローカル全1,384件成功・27件スキップ・ResourceWarning 0件、Web118件・Lintエラー0/警告5・ビルド成功。資料`eca36b3`の[Linux CI #44121761288](https://github.com/FORIFOR/Vulnix/actions/runs/44121761288)は3ジョブ成功 |
-| Gateway・Worker・所有確認・組織分離・停止 | NOT_TESTED（残る統合境界） | `f5ba0f6`で所有確認中の失効、`dd55f60`で監査の同時予約・許可、`18b38f2`で同一接続の権限昇格を修正。`50dcaae`で前景Workerの認可lease、`e448b1d`で期限・隔離状態の起動前再確認、`afab368`で手動ARTEX計画の署名済み観測への紐付けを追加。全件・CI成功。ただし実Gateway/Worker同時失効と公開βは未確認 |
+| 累積コードの全テストとLinux実ARTEX | NOT_TESTED（最新の競合テスト差分） | コード`ae40576`のローカル全1,384件成功・27件スキップ・ResourceWarning 0件、Web118件・Lintエラー0/警告5・ビルド成功。資料`eca36b3`の[Linux CI #44121761288](https://github.com/FORIFOR/Vulnix/actions/runs/44121761288)は3ジョブ成功。後続のHTTPログアウト競合2件は個別と関連275件で成功し、全件・CIは未確認。`abd1fc2`のPython CIはrunner停止でキャンセル |
+| Gateway・Worker・所有確認・組織分離・停止 | NOT_TESTED（残る統合境界） | `f5ba0f6`で所有確認中の失効、`dd55f60`で監査の同時予約・許可、`18b38f2`で同一接続の権限昇格を修正。`50dcaae`で前景Workerの認可lease、`e448b1d`で期限・隔離状態の起動前再確認、`afab368`で手動ARTEX計画の署名済み観測への紐付けを追加。隔離ラボの実Gateway/Worker＋HTTPログアウト2競合は成功。モデル送信直前の競合と公開βは未確認 |
 | 複数分類の独立精度 | 限定PASS | 5分類17条件と別のLink7条件に加え、未知アクセス4条件でHTTP 200拒否のFPを1→0に修正。認証・IDORの2分類だけの追加測定で、実モデル性能ではない |
 | 実Abliteration AI | BLOCKED | 承認済み固定要求の1回、JSON採用、選択精度、usage・請求照合 |
 | 初心者の4段階操作 | 一部PASS | 390px・1280pxのローカル模擬対象では結果まで各8操作。390pxの別ラボで修正後 `not_reproduced` と新旧証拠も表示。実DNS、公開β、全画面は未確認 |

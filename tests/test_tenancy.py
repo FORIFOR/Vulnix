@@ -4,6 +4,7 @@ import tests  # noqa: F401  (hermetic revocation-marker directory)
 import json
 import http.client
 import os
+import subprocess
 import tempfile
 import threading
 import time
@@ -15,6 +16,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from aegis.assessment import AssessmentService
+from aegis.lab import start_lab
 from aegis.operators import OperatorStore, hash_password
 from aegis.server import make_handler
 from aegis.tenancy import (DEFAULT_ORG, MAX_ORGS_PER_ACCOUNT, OrgStore, TenancyError, TenantRegistry,
@@ -297,6 +299,110 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
         self.assertFalse(revocation.is_alive())
         self.assertTrue(logged_out.is_set())
         self.assertTrue(all(not guard() for guard in guards))
+
+    def test_logout_before_gateway_worker_launch_starts_no_process(self):
+        lab = start_lab(LAB_PORT)
+        self.addCleanup(lab.server_close)
+        self.addCleanup(lab.shutdown)
+        who = self.signup("logoutbeforeworker")
+        org_id = who["orgs"][0]["id"]
+        svc = self.reg.service(org_id)
+        entered, release = threading.Event(), threading.Event()
+        response = []
+        original_guard = svc.gateway.late_launch_guard
+        before_evidence = sum(len(f.get("evidence") or []) for f in svc.snapshot()["findings"])
+
+        def pause_before_launch():
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("worker launch test did not release the request")
+            return original_guard()
+
+        with patch.object(svc.gateway, "late_launch_guard", side_effect=pause_before_launch), \
+                patch("aegis.runtime.subprocess.Popen") as popen:
+            request = threading.Thread(target=lambda: response.append(self.req(
+                who, "/assessments/scan_001/verify-finding", {"finding_id": "all"}, org=org_id)))
+            request.start()
+            try:
+                self.assertTrue(entered.wait(5))
+                self.assertEqual(self.req(who, "/auth/logout", {})[0], 200)
+            finally:
+                release.set()
+                request.join(5)
+            self.assertFalse(request.is_alive())
+            popen.assert_not_called()
+        self.assertEqual(response[0][0], 200)
+        self.assertFalse([e for e in svc.audit.entries() if e["event"] == "result"])
+        self.assertEqual(sum(len(f.get("evidence") or []) for f in svc.snapshot()["findings"]),
+                         before_evidence)
+        denials = [e for e in svc.audit.entries() if e["event"] == "deny"]
+        self.assertTrue(any("権限" in str(e.get("fields", {})) for e in denials), denials)
+
+    def test_logout_waits_for_gateway_worker_launch_registration(self):
+        lab = start_lab(LAB_PORT)
+        self.addCleanup(lab.server_close)
+        self.addCleanup(lab.shutdown)
+        who = self.signup("logoutduringworker")
+        old_cookie = who["cookie"]
+        org_id = who["orgs"][0]["id"]
+        svc = self.reg.service(org_id)
+        at_popen, release_popen = threading.Event(), threading.Event()
+        logout_entered, logout_called, logout_done = threading.Event(), threading.Event(), threading.Event()
+        response, logout_response = [], []
+        real_popen = subprocess.Popen
+        handler = self.srv.RequestHandlerClass
+        real_session = handler._session
+        real_logout = self.ops.logout
+
+        def paused_popen(*args, **kwargs):
+            at_popen.set()
+            if not release_popen.wait(5):
+                raise TimeoutError("worker launch test did not release Popen")
+            return real_popen(*args, **kwargs)
+
+        def observed_session(request, *args, **kwargs):
+            if request.path == "/api/auth/logout":
+                logout_entered.set()
+            return real_session(request, *args, **kwargs)
+
+        def observed_logout(token):
+            logout_called.set()
+            return real_logout(token)
+
+        def logout_request():
+            try:
+                logout_response.append(self.req(who, "/auth/logout", {}))
+            finally:
+                logout_done.set()
+
+        with patch("aegis.runtime.subprocess.Popen", side_effect=paused_popen) as popen, \
+                patch.object(handler, "_session", observed_session), \
+                patch.object(self.ops, "logout", side_effect=observed_logout):
+            request = threading.Thread(target=lambda: response.append(self.req(
+                who, "/assessments/scan_001/verify-finding", {"finding_id": "all"}, org=org_id)))
+            request.start()
+            revocation = None
+            try:
+                self.assertTrue(at_popen.wait(5))
+                revocation = threading.Thread(target=logout_request)
+                revocation.start()
+                self.assertTrue(logout_entered.wait(5))
+                self.assertFalse(logout_called.wait(0.1), "logout reached revocation before worker registration")
+                self.assertFalse(logout_done.is_set())
+            finally:
+                release_popen.set()
+                request.join(10)
+                if revocation is not None:
+                    revocation.join(10)
+            self.assertFalse(request.is_alive())
+            self.assertFalse(revocation and revocation.is_alive())
+            popen.assert_called_once()
+        self.assertEqual(logout_response[0][0], 200)
+        self.assertTrue(logout_called.is_set())
+        self.assertEqual(response[0][0], 403)
+        self.assertIn("権限", str(response[0][1]))
+        self.assertTrue(any(e["event"] == "result" for e in svc.audit.entries()))
+        self.assertEqual(self.req({"cookie": old_cookie}, "/assessments/scan_001", org=org_id)[0], 401)
 
     def req(self, who, path, body=None, org=None):
         h = {"Content-Type": "application/json"}
