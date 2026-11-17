@@ -9,9 +9,11 @@ on:
   workflow_dispatch:
 
 jobs:
+  # The real ARTEX browser job uses Playwright Chromium, verified on 24.04.
+  # Pin every job to that image so ubuntu-latest cannot change the test platform.
   backend-and-linux-isolation:
     name: Python Suite + Linux Kernel nftables & Emergency Stop Verification
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       VULNIX_NO_ENV_LOCAL: "1"   # tests never read a .env.local
     steps:
@@ -66,7 +68,7 @@ jobs:
 
   frontend:
     name: Next.js Web UI Tests & Production Build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: web
@@ -98,7 +100,7 @@ jobs:
     # built with Vulnix's planner-only overlay and driven by a LOCAL mock LLM. Its
     # intents are rebuilt by Vulnix and executed only through the Gateway.
     name: Real ARTEX planner (overlay build) -> Vulnix Gateway, local mock LLM
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     services:

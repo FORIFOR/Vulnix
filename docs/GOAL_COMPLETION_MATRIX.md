@@ -1,6 +1,6 @@
 # Vulnix Goal 完了判定表
 
-更新基点：[Draft PR #85](https://github.com/FORIFOR/Vulnix/pull/85)のコード `276ca67`（`codex/goal-integration-readiness`）、`origin/main` `5ecfc51`。最新ローカル全バックエンド1,431件成功・27件スキップ・ResourceWarning 0件（994.822秒）、Web118件成功・Lintエラー0/警告5・ビルド成功。直前コード`6e0a4ab`の[Linux CI #44139188110](https://github.com/FORIFOR/Vulnix/actions/runs/44139188110)は3ジョブ成功。最新コードのCIは進行中。PRはDraft・未マージ・GitHub正式レビュー0件。**CI成功だけでは公開βの実動作を意味しない。**
+更新基点：[Draft PR #85](https://github.com/FORIFOR/Vulnix/pull/85)のコード `276ca67`（`codex/goal-integration-readiness`）、`origin/main` `5ecfc51`。最新ローカル全バックエンド1,431件成功・27件スキップ・ResourceWarning 0件（994.822秒）、Web118件成功・Lintエラー0/警告5・ビルド成功。コード`276ca67`の[Linux CI #44144425197](https://github.com/FORIFOR/Vulnix/actions/runs/44144425197)は3ジョブ成功。資料のみの`8a27824`の[CI #44148037964](https://github.com/FORIFOR/Vulnix/actions/runs/44148037964)は`ubuntu-latest`が26.04へ変わりPlaywrightのChromium未対応で失敗、Pythonジョブは中止された。対応済みの24.04へCIを固定し再確認する。PRはDraft・未マージ・GitHub正式レビュー0件。**CI成功だけでは公開βの実動作を意味しない。**
 
 以下の既存コード・模擬テストの共通基点は `6475549` と上記CIである。新しい所有確認競合テスト・ブラウザ回帰は `f4de821` のローカル結果として明示する。各行のPASSは書かれた条件のみに適用する。公開β・実モデル・正式レビューはそれぞれ独立したゲートとして扱う。
 
@@ -8,7 +8,7 @@
 
 | 要件 | 判定 | 根拠と限界 | 担当工程 | 次のアクション |
 | --- | --- | --- | --- | --- |
-| 累積コードの統合候補 | PASS | PR #53〜#84を#85へ集約しGitHubはマージ可能。`e3afa5d`のローカル全1,410件成功・27件スキップ・警告0、Web118件・Lint・ビルド成功。Linux CI #44129291316は3/3成功。これは統合候補のテストゲートのみ | 統合 | 正式独立レビューと公開ゲートを別途完了する |
+| 累積コードの統合候補 | PASS | PR #53〜#84を#85へ集約しGitHubはマージ可能。`276ca67`のローカル全1,431件成功・27件スキップ・警告0、Web118件・Lint・ビルド成功。Linux CI #44144425197は3/3成功。後続資料のCIはRunner 26.04移行でChromium未対応となり再確認中。これは統合候補のテストゲートのみ | 統合 | Runner固定後のCI、正式独立レビューと公開ゲートを別途完了する |
 | 独立した正式GitHubレビュー | BLOCKED | #85の正式レビュー0件。別担当の読み取りレビューと表示文言の再確認は正式Approveではない | 統合 | 独立レビュアーによる正式レビューと指摘修正 |
 | mainへの統合 | BLOCKED | 所有者の事前承認が必要。実行していない | リリース | 正式レビュー・統合CI・公開判定資料を揃えて承認を受ける |
 | 実ARTEX→Gateway→隔離Worker→証拠 | PASS | ローカル模擬対象のブラウザE2EとLinux実ARTEXジョブが成功。実サイト全般は未実証 | 診断 | 同じ安全境界で未知条件を拡張 |

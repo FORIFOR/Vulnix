@@ -4,7 +4,7 @@
 
 | ゲート | 状態 | 必要な証拠 |
 | --- | --- | --- |
-| 累積コードの全テストとLinux実ARTEX | PASS（統合候補のテスト） | `e3afa5d`のローカル全1,410件成功・27件スキップ・ResourceWarning 0件、Web118件・Lintエラー0/警告5・ビルド成功。[Linux CI #44129291316](https://github.com/FORIFOR/Vulnix/actions/runs/44129291316)は3ジョブ成功 |
+| 累積コードの全テストとLinux実ARTEX | NOT_TESTED（Runner固定後の最終CI待ち） | `276ca67`のローカル全1,431件成功・27件スキップ・ResourceWarning 0件、Web118件・Lintエラー0/警告5・ビルド成功。[Linux CI #44144425197](https://github.com/FORIFOR/Vulnix/actions/runs/44144425197)は3ジョブ成功。後続資料のCI #44148037964はRunner 26.04のPlaywright未対応で失敗し、24.04固定後を再確認する |
 | Gateway・Worker・所有確認・組織分離・停止 | NOT_TESTED（残る統合境界） | `f5ba0f6`で所有確認中の失効、`dd55f60`で監査の同時予約・許可、`18b38f2`で同一接続の権限昇格を修正。`50dcaae`で前景Workerの認可lease、`e448b1d`で期限・隔離状態の起動前再確認、`afab368`で手動ARTEX計画の署名済み観測への紐付けを追加。隔離ラボの実Gateway/Worker＋HTTPログアウト2競合は成功。公開βは未確認 |
 | 外部AI解説の送信開始 | NOT_TESTED | `6e0a4ab`の最終確認とtransport開始の間に残った競合を、`276ca67`で正規HTTP経路の権限リースと実際の要求送出で直列化。模擬4件とAI関連66件、最新ローカル全1,431件は成功。独立読み取りレビューに新たな明確なP1/P2なし。最新CI・実モデル通信は未確認。既に送出した要求は停止後も応答し得る |
 | 有料Planner forwardの停止保証 | FAIL（公開βの実サイト経路とは別） | 実サイトの送信先はループバックに限定。ラボ用の承認済み有料forwardには最終権限確認から送信開始までP2競合が残る。実モデルPlannerを有効化する前に修正・模擬競合テストが必要 |
