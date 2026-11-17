@@ -535,7 +535,9 @@ class TestRealServiceL2NeedsKernelConfinement(PersistenceBase):
         self.assertEqual(self.tokens_seen(), [])
 
     def test_confinement_lost_during_the_run_discards_the_result(self):
-        conf = _Scripted([True, False])
+        # Gateway checks before setup, WorkerPool checks after wrapping, and
+        # Gateway checks again after the worker. Lose enforcement only there.
+        conf = _Scripted([True, True, False])
         self.prepare(conf)
         self.svc.verify_finding("f_ex_idor", actor="appr", roles={"approver"})
         self.assertEqual(conf.s.wrapped, 1)
@@ -544,13 +546,24 @@ class TestRealServiceL2NeedsKernelConfinement(PersistenceBase):
         self.assertNotEqual(f["verdict"], "proven")
         self.assertFalse([e for e in f.get("evidence", []) if e.get("tool") == "reproduction_probe"])
 
+    def test_confinement_lost_after_wrapping_starts_no_worker(self):
+        conf = _Scripted([True, False])
+        self.prepare(conf)
+        with patch("aegis.runtime.subprocess.Popen") as popen:
+            self.svc.verify_finding("f_ex_idor", actor="appr", roles={"approver"})
+        popen.assert_not_called()
+        self.assertEqual(conf.s.wrapped, 1)
+        self.assertEqual(self.tokens_seen(), [])
+        self.assertNotEqual(self.finding("f_ex_idor")["verdict"], "proven")
+
     def test_a_confirmed_confinement_runs_and_is_recorded(self):
-        conf = _Scripted([True, True])
+        conf = _Scripted([True, True, True])
         self.prepare(conf)
         self.svc.verify_finding("f_ex_idor", actor="appr", roles={"approver"})
         self.assertEqual(conf.s.wrapped, 1)
         self.assertTrue(self.events("confinement.applied"))
         self.assertEqual(sorted(set(self.tokens_seen())), sorted({f"Bearer {TOKEN_A}", f"Bearer {TOKEN_B}"}))
+        self.assertEqual(self.finding("f_ex_idor")["verdict"], "proven")
 
     def test_l1_and_lab_runs_do_not_ask_for_confinement(self):
         conf = _Refusing()
