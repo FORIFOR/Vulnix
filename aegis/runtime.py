@@ -120,6 +120,10 @@ class WorkerPool:
                 proc_env.update({str(k): str(v) for k, v in extra_env.items() if v is not None})
             if session is not None:
                 argv = session.wrap(argv, env_keys=tuple(proc_env), cpu_seconds=cpu)
+                # Wrapping can stage code and take time. A rule removed during
+                # that preparation must stop the process before any traffic.
+                if not session.still_enforced():
+                    raise RuntimeLimitError("kernel confinement lost before worker launch")
             # The request's session/organization may be revoked while wrapping a
             # confined command. Check it without holding the pool lock: the check
             # can acquire account locks, while an emergency stop acquires the pool.

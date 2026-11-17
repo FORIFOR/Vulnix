@@ -16,7 +16,7 @@ from aegis.authz import ApprovalStore, AuthzError, Engagement, Target, TokenAuth
 from aegis.gateway import Gateway, State, http_probe_tool
 from aegis.network import EgressGuard
 from aegis.policy import ArgSpec, Budget, Tool
-from aegis.runtime import WorkerPool, WorkerResult
+from aegis.runtime import RuntimeLimitError, WorkerPool, WorkerResult
 
 
 class Clock:
@@ -98,6 +98,12 @@ class TestOutOfScope(Base):
 
 
 class TestExpiry(Base):
+    def test_window_expiry_after_initial_check_refuses_launch_permit(self):
+        epoch = self.gw._launch_epoch
+        self.clock.t = self.eng.not_after + 1
+        with self.assertRaises(AuthzError):
+            self.gw._still_current(epoch)
+
     def test_expired_token_denied(self):
         tok = self.token(ttl=5)
         self.clock.t += 6
@@ -268,6 +274,20 @@ class TestBudgetAndAudit(Base):
 
 
 class TestLateWorkerAuthority(unittest.TestCase):
+    def test_lost_confinement_after_wrap_prevents_process_start(self):
+        class LostDuringWrap:
+            def wrap(self, argv, **_kwargs):
+                return argv
+
+            def still_enforced(self):
+                return False
+
+        pool = WorkerPool(max_concurrent=1)
+        with patch("aegis.runtime.subprocess.Popen") as popen:
+            with self.assertRaisesRegex(RuntimeLimitError, "confinement"):
+                pool.run([sys.executable, "-c", "pass"], 1, session=LostDuringWrap())
+        popen.assert_not_called()
+
     def test_revocation_during_confinement_wrap_prevents_process_start(self):
         from aegis.policy import PolicyError
 
@@ -277,6 +297,9 @@ class TestLateWorkerAuthority(unittest.TestCase):
             def wrap(self, argv, **_kwargs):
                 allowed[0] = False  # authority changes after the first Gateway check
                 return argv
+
+            def still_enforced(self):
+                return True
 
         def live_authority():
             if not allowed[0]:

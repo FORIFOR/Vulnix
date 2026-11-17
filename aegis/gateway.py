@@ -248,6 +248,7 @@ class Gateway:
             raise AuthzError(f"gateway {self._state.value}")
         if self._launch_epoch != epoch:
             raise AuthzError("gateway was stopped or reset while this request was waiting")
+        self.engagement.check_active(self.clock())
 
     def _execute(self, proposal: object, token: str) -> Decision:
         if self._state is not State.RUNNING:
