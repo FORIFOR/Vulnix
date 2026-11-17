@@ -17,6 +17,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from aegis import artex_bridge, evidence, l2_rules
+from aegis.artex_bridge import PlanItem
 from tests import TEST_CONFINEMENT
 from aegis.assessment import AssessmentService
 from aegis.evidence import reproduction_verdict
@@ -883,6 +884,28 @@ class TestL1Diagnosis(RealServiceBase):
         self.assertTrue(any(e["event"] == "artex.initial_fallback" and
                             e["fields"].get("reason") == "unreviewed_extra_catalog"
                             for e in self.svc.audit.entries()))
+
+    def test_manual_artex_plan_cannot_run_an_unreviewed_real_site_l1_entry(self):
+        self.svc.real_site_read_only = True
+        self.svc._real_site_local_artex = True
+        self.onboard(allow_status_probe=True)
+        self.assertEqual(self.run_l1()["state"], "completed")
+        entry = artex_bridge.CatalogEntry(
+            "l1_future_read_only", "http_probe", "read_only_probe", "L1",
+            "future test check", ("future",))
+        item = PlanItem("future-item", 1, "future", entry.id, "L1", entry.label,
+                        "lab", {}, status="planned")
+        with self.svc._lock:
+            self.svc._artex_plan = {"run_id": "future-run"}
+            self.svc._artex_items[item.id] = {
+                "item": item, "gen": self.svc._run_generation,
+                "run_id": "future-run", "requested_by": "operator", "task_id": None}
+        with patch.dict("aegis.assessment.CATALOG_BY_ID", {entry.id: entry}), \
+                patch.object(self.svc, "_exec", side_effect=AssertionError("unexpected GET")) as execute:
+            with self.assertRaisesRegex(ValueError, "未審査"):
+                self.svc.execute_artex_item(item.id, "operator")
+        execute.assert_not_called()
+        self.assertEqual([path for path, _ in self.fake.seen], ["/"])
 
     def test_pause_before_initial_plan_blocks_model_until_resume(self):
         self.svc.real_site_read_only = True

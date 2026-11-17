@@ -22,6 +22,12 @@ class InitialExtraCatalogTests(unittest.TestCase):
                     {"server_family": "other"}, status_consent=True,
                     root_observed=True)
 
+    def test_only_reviewed_l1_catalog_entries_may_run_on_real_sites(self):
+        self.assertTrue(artex_bridge.reviewed_real_site_l1("l1_http_probe"))
+        self.assertTrue(artex_bridge.reviewed_real_site_l1("l1_apache_mod_status"))
+        self.assertFalse(artex_bridge.reviewed_real_site_l1("l1_future_read_only"))
+        self.assertFalse(artex_bridge.reviewed_real_site_l1("l2_idor"))
+
     def test_apache_requires_both_consents_and_signed_root(self):
         for family, consent, root, expected in (
                 ("apache", True, True, {"l1_apache_mod_status"}),

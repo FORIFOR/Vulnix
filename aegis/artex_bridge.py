@@ -125,6 +125,12 @@ CATALOG_BY_ID = {c.id: c for c in CATALOG}
 INITIAL_REAL_SITE_EXTRA_RULES = frozenset({"l1_apache_mod_status"})
 
 
+def reviewed_real_site_l1(catalog_id: str) -> bool:
+    entry = CATALOG_BY_ID.get(catalog_id)
+    return bool(entry and entry.level == "L1" and
+                (catalog_id == "l1_http_probe" or catalog_id in INITIAL_REAL_SITE_EXTRA_RULES))
+
+
 def initial_real_site_extra_checks(fingerprint: dict, *, status_consent: bool,
                                    root_observed: bool) -> set[str]:
     extra_ids = {entry.id for entry in CATALOG
