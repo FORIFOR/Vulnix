@@ -571,6 +571,43 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
         self.assertEqual(response[0][0], 200)
         self.assertIsNone(response[0][1]["session"])
 
+    def test_org_owner_can_read_planner_preview(self):
+        owner = self.signup("previewowner")
+        org_id = owner["orgs"][0]["id"]
+        self.assertEqual(self.req(owner, "/assessments/scan_001/artex/llm-preview", org=org_id)[0], 200)
+
+    def test_report_generation_does_not_block_logout(self):
+        who = self.signup("slowreport")
+        org_id = who["orgs"][0]["id"]
+        svc = self.reg.service(org_id)
+        entered, release, logged_out = threading.Event(), threading.Event(), threading.Event()
+        response = []
+        original_report = svc.report_markdown
+
+        def paused_report():
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("report test did not release")
+            return original_report()
+
+        with patch.object(svc, "report_markdown", side_effect=paused_report):
+            thread = threading.Thread(target=lambda: response.append(
+                self.req(who, "/assessments/scan_001/report", org=org_id)))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            logout_thread = threading.Thread(target=lambda: (
+                self.ops.logout(who["cookie"].split("=", 1)[1]), logged_out.set()))
+            logout_thread.start()
+            try:
+                self.assertTrue(logged_out.wait(0.5), "report held the global account lock")
+            finally:
+                release.set()
+                thread.join(5)
+                logout_thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertFalse(logout_thread.is_alive())
+        self.assertEqual(response[0][0], 401)
+
     def test_member_removal_waits_for_an_inflight_event_write(self):
         owner, member = self.signup("streamowner"), self.signup("streammember")
         org_id = owner["orgs"][0]["id"]

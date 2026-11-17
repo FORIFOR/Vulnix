@@ -354,8 +354,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             """Keep a protected response within the current account/member grant."""
             try:
                 with live_grant_roles(sess, org, reader=True) as current_roles:
-                    roles = service_roles(current_roles) if tenancy is not None else tuple(current_roles)
-                    current_sess = dataclasses.replace(sess, roles=roles)
+                    current_sess = dataclasses.replace(sess, roles=tuple(current_roles))
                     previous_timeout = self.connection.gettimeout()
                     self.connection.settimeout(2.0)
                     try:
@@ -472,6 +471,23 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 org = self._bound_org if tenancy is not None else DEFAULT_ORG
                 if p.endswith("/events"):
                     return self._get_org(p, u, *bound)  # long stream: per-batch lease below
+                if p in {f"/api/assessments/{bound[0].a.id}/logs",
+                         f"/api/assessments/{bound[0].a.id}/report"}:
+                    # Large audit reads and report formatting must not hold the
+                    # global account lock. Check before work and again for delivery.
+                    try:
+                        with live_grant_roles(sess, org, reader=True):
+                            pass
+                    except AuthError:
+                        return self._json(401, {"error": "ログインの有効期限が切れました。もう一度ログインしてください"})
+                    except ApproverRequired:
+                        return self._json(403, {"error": "この組織のメンバーではありません"})
+                    if p.endswith("/logs"):
+                        payload = bound[0].logs()
+                    else:
+                        payload = {"markdown": bound[0].report_markdown(),
+                                   "filename": f"vulnix-report-{bound[0].a.id}.md"}
+                    return self._authorized_org_read(sess, org, lambda _: self._json(200, payload))
                 return self._authorized_org_read(
                     sess, org, lambda current: self._get_org(p, u, bound[0], current))
             if p == "/api/router/status":
