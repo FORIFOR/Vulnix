@@ -41,8 +41,8 @@ flowchart LR
 | P05 | `/api/assets/verify-ownership` | `OwnershipWizard.verify` → `verify_asset_ownership` | `test_real_service.py`。DNS照会または確認ファイルGET。不一致なら証明しない |
 | P06 | `/api/assets/confirm-scope` | `OwnershipWizard.confirmScope` → `confirm_asset_scope` | `test_authority_ledger.py`。所有、承認者、対象、期限、追加GET同意を署名付き記録へ |
 | P07 | `POST /api/assessments/{id}/{start,pause,resume,restart}` | `AssessmentService.start`, `_run`, `_run_inner` | `test_real_service.py`, `test_server.py`。世代・起動枠を確認 |
-| P08 | 初回の安全なGET | `_run_inner` → `_plan` → `_exec` → `Gateway.execute` → `WorkerPool.run` | `test_gateway.py`。所有・範囲・IP・期限・停止・回数を直前審査 |
-| P09 | 初回自動計画、または`POST /api/assessments/{id}/artex/plan` | `_plan_with_artex` → `anonymous_real_site_request` → `run_artex_planner` → `reconstruct` → `ProposalRouter` | `test_artex_bridge.py`、Linuxの実ARTEXジョブ、`scripts/bench_browser_owned_flow.py --real-artex --chromium`。固定特徴だけ送信、失敗時は固定L1のみ。モデル名は実転送確認時だけ表示 |
+| P08 | 初回の安全なGET | `_run_inner` → `_plan` → `_exec` → `Gateway.execute` → `WorkerPool.run` → `_record_root_result_locked` | `test_gateway.py`, `test_real_service.py`。所有・範囲・IP・期限・停止・回数を直前審査し、root応答の匿名特徴を現runの監査済み証拠に結び付けて保存 |
+| P09 | 初回自動計画、または`POST /api/assessments/{id}/artex/plan` | `plan_with_artex` → `_root_probe_observed_locked` → `_plan_with_artex` → `anonymous_real_site_request` → `run_artex_planner` → `reconstruct` → `ProposalRouter` | `test_artex_bridge.py`, `test_real_service.py`、Linuxの実ARTEXジョブ。実サイトの手動計画は現runの署名済み初期観測と追加検査の実行可能性をモデル前に要求。固定匿名特徴だけ送信、失敗時は固定L1のみ。モデル名は実転送確認時だけ表示 |
 | P10 | 同意済み追加GET、または`POST /api/assessments/{id}/artex/items/{item}/execute` | `execute_artex_item` → 固定カタログ → `_exec` → `Gateway` → `WorkerPool` | `test_status_exposure_lab.py`, `test_gateway.py`。固定L1のみ、実サイトL2拒否 |
 | P11 | `GET /api/assessments/{id}`, `GET .../logs`, `GET .../events`, `GET .../report` | `_analyze`, `_record_status_result_locked`, `analyze_status_marker_report`, `snapshot` | `test_real_service.py`, `test_status_exposure_lab.py`。証拠と監査ハッシュから`detected`。案のみは`candidate` |
 | P12 | `POST /api/assessments/{id}/chat` | `ask_chat` → `_safe_real_ai_explanation` または `_answer_question` | `test_ai_advisor.py`。固定項目だけ送信、応答検証、不採用なら内蔵解説 |
