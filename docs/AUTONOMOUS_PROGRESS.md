@@ -52,5 +52,6 @@
 - `840e70f`でRunnerを24.04へ固定した[Linux CI #44149943968](https://github.com/FORIFOR/Vulnix/actions/runs/44149943968)はPython/Web/実ARTEXの3ジョブ成功。これは最新コードの模擬統合テストを再現した証拠であり、実モデル・実DNS・公開β・正式GitHubレビューの代替ではない。
 - `f3ec4e7`でラボ用有料Planner forwardの送出開始を、権限と診断状態のリース内へ移した。Linux CI #44157266351のPythonジョブはRuffの未定義名1件で失敗し、全テストへ進まなかった。別担当の読み取りレビューは送信中の緊急停止待ち時間と、リース失効時の未送信費用の誤分類を指摘した。
 - `f60f7fe`でRuffエラーを修正し、要求書込みのソケット操作を1秒で制限、権限失効時は未送信として予約費用を解放する。Planner関連の個別テスト、Ruff、Web118件、Lintエラー0/警告5、ビルド成功。別担当の再レビューでは新たな明確なP1/P2なし。ただし送信中の停止時間を実測しておらず、1秒はソケット操作ごとの上限。[Linux CI #44158032444](https://github.com/FORIFOR/Vulnix/actions/runs/44158032444)と最新全バックエンドは実行中。正式GitHubレビューではない。
+- `f60f7fe`のローカル全バックエンド1,436件成功・27件スキップ・ResourceWarning 0件（1000.415秒、`/tmp/vulnix-pr85-planner-send-f60-full.log`）、Linux CI #44158032444は3/3成功。`c600da0`で詰まった模擬書込み中、停止側ロックが2.5秒未満に解放されるテストを追加。最新ヘッドの[Linux CI #44159555107](https://github.com/FORIFOR/Vulnix/actions/runs/44159555107)もPython/Web/実ARTEXの3/3成功。実APIの停止時間・請求は未測定。実モデル、実DNS、公開β、正式GitHubレビューは未完了。
 
 実サイト診断、有料API、DNS変更、mainマージ、本番反映は行っていない。
