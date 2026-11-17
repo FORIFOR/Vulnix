@@ -64,7 +64,7 @@ def summarize(rows: list[dict]) -> dict:
                 r["hypothetical_model_cost_usd"] for r in selected), 6),
             "paid_model_cost_usd_sum": 0,
         }
-    return {"scope": "five local HTTPS cross-product conditions across CORS and Cookie",
+    return {"scope": f"{len(rows) // 3} local HTTPS cross-product conditions across CORS and Cookie",
             "model": "local scripted model; not Abliteration AI",
             "strategies": by_strategy, "rows": rows}
 
