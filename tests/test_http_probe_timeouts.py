@@ -392,6 +392,36 @@ for i in range(int(sys.argv[2])):
 print("bad", bad)
 """
 
+_SOCKETIO_INIT_RACE = r"""
+import gc, signal, socket, sys, threading, time
+sys.path.insert(0, sys.argv[1])
+from aegis.workers import http_probe as hp
+class SlowSocketIO(hp._SafeSocketIO):
+    def __init__(self, sock, mode):
+        time.sleep(0.03)  # SIGALRM interrupts before _sock is assigned
+        super().__init__(sock, mode)
+hp._SafeSocketIO = SlowSocketIO
+sock = socket.socket()
+original_socketio = socket.SocketIO
+threading.Thread(target=lambda: time.sleep(0.1), daemon=True).start()
+previous = signal.signal(signal.SIGALRM, lambda signum, frame: (_ for _ in ()).throw(hp.DeadlineExceeded()))
+try:
+    signal.setitimer(signal.ITIMER_REAL, 0.005)
+    try:
+        hp._Response(sock)
+    except hp.DeadlineExceeded:
+        pass
+    else:
+        raise AssertionError("deadline did not interrupt SocketIO initialization")
+    signal.setitimer(signal.ITIMER_REAL, 0)
+    gc.collect()
+    print("quiet", signal.getitimer(signal.ITIMER_REAL), sock._io_refs, socket.SocketIO is original_socketio)
+finally:
+    signal.setitimer(signal.ITIMER_REAL, 0)
+    signal.signal(signal.SIGALRM, previous)
+    sock.close()
+"""
+
 
 _SWALLOWED = r"""
 import argparse, gc, socket, sys, threading, time
@@ -608,6 +638,12 @@ class TestAlarmRaces(unittest.TestCase):
             self.assertEqual(p.returncode, 0, (overall, p.returncode, p.stderr[-2000:]))
             self.assertEqual(p.stdout.strip().splitlines()[-1], "bad 0", (overall, p.stdout[-2000:]))
             self.assertEqual(p.stderr, "", overall)
+
+    def test_socketio_finalizer_is_quiet_if_deadline_interrupts_its_constructor(self):
+        p = self.py(_SOCKETIO_INIT_RACE)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(p.stdout.strip(), "quiet (0.0, 0.0) 0 True")
+        self.assertEqual(p.stderr, "")
 
     def test_a_previous_python_handler_is_restored(self):
         import signal

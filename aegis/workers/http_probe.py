@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import http.client
+import io
 import json
 import os
 import re
@@ -65,12 +66,33 @@ def _extract_tls_info(sock: socket.socket, scheme: str) -> dict | None:
     }
 
 
+class _SafeSocketIO(socket.SocketIO):
+    """A timer may interrupt SocketIO before its _sock attribute is assigned."""
+
+    def close(self):
+        if not hasattr(self, "_sock"):
+            return io.RawIOBase.close(self)  # no socket IO reference exists yet
+        super().close()
+
+
 class _Response(http.client.HTTPResponse):
     """HTTPResponse that a half-built instance can still close. The alarm can land inside
     __init__ before `fp` is set; that object is finalized later (possibly after the probe
     returned) and close() would report AttributeError on stderr. A class-level `fp = None`
     makes it close quietly; a fully built response sets its own `fp` as usual."""
     fp = None
+
+    def __init__(self, *args, **kwargs):
+        # HTTPResponse.__init__ calls socket.makefile(). SIGALRM can interrupt
+        # SocketIO.__init__ before _sock exists; its finalizer then reports an
+        # unraisable AttributeError. Use the safe wrapper only while makefile
+        # constructs this response. The Worker handles one probe per process.
+        original = socket.SocketIO
+        try:
+            socket.SocketIO = _SafeSocketIO
+            super().__init__(*args, **kwargs)
+        finally:
+            socket.SocketIO = original
 
 
 class DeadlineExceeded(Exception):

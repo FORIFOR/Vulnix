@@ -54,6 +54,18 @@ PARSER.add_argument("--revoke-session", action="store_true",
                     help="Revoke the lab session and require the browser to hide the old result")
 PARSER.add_argument("--logout-after-result", action="store_true",
                     help="Log out from results and verify fresh API and page access are denied")
+PARSER.add_argument("--stale-auth-after-logout", action="store_true",
+                    help="Hold an old auth/me 200 until after logout and confirm it cannot restore the UI")
+PARSER.add_argument("--cross-tab-logout", action="store_true",
+                    help="Log out in one local browser tab and time hiding of an old result in another")
+PARSER.add_argument("--cross-tab-logout-failure", action="store_true",
+                    help="Abort the logout request and verify the other tab warns and rechecks auth")
+PARSER.add_argument("--cross-tab-logout-delay-ms", type=int, default=0,
+                    help="Hold the logout request before sending to test a slow cross-tab sign-out")
+PARSER.add_argument("--cross-tab-start-only", action="store_true",
+                    help="Send only a logout-start notice and verify safe recovery guidance")
+PARSER.add_argument("--cross-tab-open-late", action="store_true",
+                    help="Open another tab after logout starts, then release the delayed request")
 PARSER.add_argument("--revoke-during-ownership", action="store_true",
                     help="Revoke the session while the local DNS lookup is in progress")
 PARSER.add_argument("--revoke-during-report", action="store_true",
@@ -99,6 +111,15 @@ def main() -> None:
         PARSER.error("--block-events and --reconnect-events cannot be combined")
     if args.remove_member_during_scan and not args.org_switch:
         PARSER.error("--remove-member-during-scan requires --org-switch")
+    if args.stale_auth_after_logout and not args.org_switch:
+        PARSER.error("--stale-auth-after-logout requires --org-switch")
+    if (args.cross_tab_logout or args.cross_tab_logout_failure or args.cross_tab_start_only or args.cross_tab_open_late) and \
+            (args.stale_auth_after_logout or args.logout_after_result):
+        PARSER.error("cross-tab logout cannot be combined with another logout scenario")
+    if args.cross_tab_logout_delay_ms and not args.cross_tab_logout:
+        PARSER.error("--cross-tab-logout-delay-ms requires --cross-tab-logout")
+    if not 0 <= args.cross_tab_logout_delay_ms <= 20000:
+        PARSER.error("--cross-tab-logout-delay-ms must be 0..20000")
     real_bin = os.environ.get("VULNIX_ARTEX_REAL_BIN") if args.real_artex else None
     if args.real_artex and (not real_bin or not Path(real_bin).is_file()):
         PARSER.error("--real-artex requires VULNIX_ARTEX_REAL_BIN pointing to the built overlay")
@@ -191,7 +212,8 @@ def main() -> None:
                         browser = playwright.chromium.launch(headless=True) if args.chromium else \
                             playwright.chromium.launch(channel="chrome", headless=True)
                         try:
-                            page = browser.new_page(viewport={"width": args.viewport_width, "height": 844})
+                            context = browser.new_context(viewport={"width": args.viewport_width, "height": 844})
+                            page = context.new_page()
                             api_calls: list[str] = []
                             page_errors: list[str] = []
                             page.on("request", lambda req: api_calls.append(req.url.split("/api/", 1)[1].split("?", 1)[0])
@@ -426,6 +448,11 @@ def main() -> None:
                             silent_change_recovered_s = None
                             revocation_hidden_s = None
                             logout_hidden_s = None
+                            stale_auth_ignored = False
+                            cross_tab_hidden_s = None
+                            cross_tab_new_get_status = None
+                            cross_tab_failure_warned = False
+                            cross_tab_start_only_recovered = False
                             if args.silent_change:
                                 seq_before = svc.bus.last_seq
                                 with svc._lock:
@@ -452,6 +479,126 @@ def main() -> None:
                                 page.wait_for_url("**/login", timeout=15000)
                                 assert page.get_by_text("Apache mod_status の公開露出").count() == 0
                                 logout_hidden_s = round(time.monotonic() - logged_out_at, 3)
+                            if args.stale_auth_after_logout:
+                                page.goto(base + "/settings")
+                                nav_logout = page.get_by_role("navigation", name="メイン").get_by_role(
+                                    "button", name="ログアウト", exact=True)
+                                nav_logout.wait_for()
+                                page.evaluate("""() => {
+                                  const original = window.fetch.bind(window);
+                                  window.__staleMe = { ready: false, release: null };
+                                  window.__delayedLogout = { ready: false, release: null };
+                                  window.fetch = async (...request) => {
+                                    if (request[0] === "/api/auth/logout") {
+                                      const response = await original(...request);
+                                      return new Promise(resolve => {
+                                        window.__delayedLogout.ready = true;
+                                        window.__delayedLogout.release = () => resolve(response);
+                                      });
+                                    }
+                                    if (request[0] !== "/api/auth/me") return original(...request);
+                                    const response = await original(...request);
+                                    if (response.status !== 200) return response;
+                                    return new Promise(resolve => {
+                                      window.__staleMe.ready = true;
+                                      window.__staleMe.release = () => resolve(response);
+                                    });
+                                  };
+                                  const refresh = [...document.querySelectorAll("button")]
+                                    .find(button => button.textContent?.trim() === "再読み込み");
+                                  if (!refresh) throw new Error("session refresh control missing");
+                                  refresh.click();
+                                }""")
+                                page.wait_for_function("window.__staleMe?.ready === true")
+                                nav_logout.click()
+                                page.wait_for_function("window.__delayedLogout?.ready === true")
+                                assert page.url.endswith("/settings"), "login opened before logout settled"
+                                assert nav_logout.count() == 0
+                                assert page.get_by_role("button", name="ログイン", exact=True).count() == 0
+                                page.evaluate("window.__delayedLogout.release()")
+                                page.wait_for_url("**/login", timeout=15000)
+                                page.evaluate("window.__staleMe.release()")
+                                page.wait_for_timeout(800)
+                                assert page.url.endswith("/login"), "old auth/me response restored the dashboard"
+                                assert nav_logout.count() == 0
+                                assert page.get_by_role("button", name="ログイン", exact=True).count() == 1
+                                assert page.get_by_text("Apache mod_status の公開露出").count() == 0
+                                assert not page_errors, page_errors
+                                stale_auth_ignored = True
+                            if args.cross_tab_logout or args.cross_tab_logout_failure or \
+                                    args.cross_tab_start_only or args.cross_tab_open_late:
+                                if args.cross_tab_open_late:
+                                    page.evaluate("""() => {
+                                      const original = window.fetch.bind(window);
+                                      window.fetch = (...request) => {
+                                        if (request[0] !== '/api/auth/logout') return original(...request);
+                                        return new Promise(resolve => {
+                                          window.__releaseLogout = () => resolve(original(...request));
+                                        });
+                                      };
+                                    }""")
+                                    page.get_by_role("navigation", name="メイン").get_by_role(
+                                        "button", name="ログアウト", exact=True).click()
+                                    page.wait_for_function("typeof window.__releaseLogout === 'function'")
+                                other_tab = context.new_page()
+                                other_tab.on("pageerror", lambda error: page_errors.append(str(error)))
+                                other_dialogs: list[str] = []
+                                other_tab.on("dialog", lambda dialog: (other_dialogs.append(dialog.message), dialog.accept()))
+                                other_tab.goto(base + "/assessments/scan_001")
+                                other_tab.get_by_role("tab", name="問題").click()
+                                other_finding = other_tab.locator("h3").filter(has_text="Apache mod_status の公開露出")
+                                other_finding.wait_for()
+                                page.evaluate("localStorage.setItem('vulnix:logout-notice', 'null')")
+                                other_tab.wait_for_timeout(50)
+                                assert not page_errors, page_errors
+                                if args.cross_tab_start_only:
+                                    page.evaluate("localStorage.setItem('vulnix:logout-notice', JSON.stringify({phase: 'start', id: 'abandoned-local-test'}))")
+                                if args.cross_tab_logout_failure:
+                                    page.on("dialog", lambda dialog: dialog.accept())
+                                    page.route("**/api/auth/logout", lambda route: route.abort())
+                                if args.cross_tab_logout_delay_ms:
+                                    page.evaluate("""() => {
+                                      const original = window.fetch.bind(window);
+                                      window.fetch = (...request) => {
+                                        if (request[0] !== '/api/auth/logout') return original(...request);
+                                        return new Promise(resolve => {
+                                          window.__releaseLogout = () => resolve(original(...request));
+                                        });
+                                      };
+                                    }""")
+                                logged_out_at = time.monotonic()
+                                if args.cross_tab_open_late:
+                                    page.evaluate("window.__releaseLogout()")
+                                elif not args.cross_tab_start_only:
+                                    page.get_by_role("navigation", name="メイン").get_by_role(
+                                        "button", name="ログアウト", exact=True).click()
+                                other_finding.wait_for(state="hidden", timeout=2000)
+                                cross_tab_hidden_s = round(time.monotonic() - logged_out_at, 3)
+                                if args.cross_tab_start_only:
+                                    other_tab.get_by_text("ログアウト状態を確認できません", exact=False).wait_for(timeout=35000)
+                                    assert other_finding.count() == 0
+                                    other_tab.get_by_role("button", name="ページを再読み込み").click()
+                                    other_finding.wait_for(state="visible", timeout=5000)
+                                    cross_tab_start_only_recovered = True
+                                if args.cross_tab_logout_delay_ms:
+                                    other_tab.wait_for_timeout(args.cross_tab_logout_delay_ms)
+                                    assert other_finding.count() == 0, "old finding reappeared during slow logout"
+                                    page.evaluate("window.__releaseLogout()")
+                                    other_tab.wait_for_url("**/login", timeout=5000)
+                                denied = other_tab.request.get(base + "/api/assessments/scan_001")
+                                cross_tab_new_get_status = denied.status
+                                if args.cross_tab_start_only:
+                                    assert denied.status == 200, denied.status
+                                elif args.cross_tab_logout_failure:
+                                    other_finding.wait_for(state="visible", timeout=5000)
+                                    assert denied.status == 200, denied.status
+                                    assert any("ログアウトを完了できませんでした" in message for message in other_dialogs)
+                                    cross_tab_failure_warned = True
+                                else:
+                                    other_tab.wait_for_url("**/login", timeout=2000)
+                                    assert denied.status == 401, denied.status
+                                assert not page_errors, page_errors
+                                other_tab.close()
                             if args.idle_seconds > 0:
                                 page.wait_for_timeout(args.idle_seconds * 1000)
                             print(json.dumps({"viewport_width": args.viewport_width,
@@ -468,6 +615,11 @@ def main() -> None:
                                               "silent_change_recovered_s": silent_change_recovered_s,
                                               "revocation_hidden_s": revocation_hidden_s,
                                               "logout_hidden_s": logout_hidden_s,
+                                              "stale_auth_ignored": stale_auth_ignored,
+                                              "cross_tab_hidden_s": cross_tab_hidden_s,
+                                              "cross_tab_new_get_status": cross_tab_new_get_status,
+                                              "cross_tab_failure_warned": cross_tab_failure_warned,
+                                              "cross_tab_start_only_recovered": cross_tab_start_only_recovered,
                                               "target_paths": list(site.seen), "local_model_calls": len(model.requests),
                                               "engine_kind": plan["engine"]["kind"],
                                               "source_label_visible": source_label_visible,
