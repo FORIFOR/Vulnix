@@ -366,6 +366,21 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             except ApproverRequired:
                 return self._json(403, {"error": "この組織のメンバーではありません"})
 
+        def _authorized_platform_read(self, sess, action, *, admin=False):
+            """Do not deliver a shared-platform job result after its grant expires."""
+            with ops.locked_session(sess.token) as current:
+                if current is None or current.operator != sess.operator:
+                    return self._json(401, {"error": "ログインの有効期限が切れました。もう一度ログインしてください"})
+                required = {"admin"} if admin else {"approver", "admin"}
+                if not required.intersection(current.roles):
+                    return self._json(403, {"error": "この操作を行う権限がありません"})
+                previous_timeout = self.connection.gettimeout()
+                self.connection.settimeout(2.0)
+                try:
+                    return action()
+                finally:
+                    self.connection.settimeout(previous_timeout)
+
         def _host_ok(self) -> bool:
             """The control plane answers only when addressed as loopback. A request
             whose Host is some other name (a DNS-rebinding page, a LAN client going
@@ -1368,15 +1383,15 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     if "admin" not in sess.roles:
                         paudit.record("l2.profile_accept_denied", actor=actor, profile=str(body.get("id", ""))[:64])
                         return self._json(403, {"error": "プロファイルの承認には管理者の権限が必要です"})
-                    return self._json(200, svc.accept_l2_profile(
-                        str(body.get("id", "")), str(body.get("sha256", "")), actor))
+                    result = svc.accept_l2_profile(str(body.get("id", "")), str(body.get("sha256", "")), actor)
+                    return self._authorized_platform_read(sess, lambda: self._json(200, result), admin=True)
                 elif p in ("/api/router/verify", "/api/cve/sync") and not ({"approver", "admin"} & set(sess.roles)):
                     # one spawns the planner CLI and an outbound model call, the other replaces feed data
                     paudit.record("system.job_denied", actor=actor, job=p)
                     return self._json(403, {"error": "この操作には承認責任者または管理者の権限が必要です"})
                 elif p == "/api/router/verify":
                     rep = svc.verify_planner_connections(actor)
-                    return self._json(200, rep)
+                    return self._authorized_platform_read(sess, lambda: self._json(200, rep))
                 elif p in JOB_ROUTES:
                     if not ({"approver", "admin"} & set(sess.roles)):
                         paudit.record("system.job_denied", actor=actor, job=p)
@@ -1388,7 +1403,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     else:
                         rep = run_real_software_cve_comparison()
                         paudit.record("cve.real_software_verified", actor=actor, all_passed=rep["all_passed"])
-                    return self._json(200, rep)
+                    return self._authorized_platform_read(sess, lambda: self._json(200, rep))
                 elif p == "/api/cve/sync":
                     st = svc.cve_monitor.ingest_payloads(
                         nvd_obj=body.get("nvd") if isinstance(body.get("nvd"), dict) else None,
@@ -1400,7 +1415,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                                      payload_sha256=hashlib.sha256(
                                          json.dumps({"nvd": body.get("nvd"), "kev": body.get("kev")},
                                                     sort_keys=True, default=str).encode()).hexdigest())
-                    return self._json(200, st)
+                    return self._authorized_platform_read(sess, lambda: self._json(200, st))
                 elif p == base + "/start":
                     with live_grant_roles(sess, getattr(self, "_bound_org", DEFAULT_ORG)):
                         svc.start()
@@ -1524,9 +1539,13 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 # the withdrawal stands, but it is not reported as completed
                 return self._json(500, {"error": str(e), "stop_confirmed": False})
             except Exception as e:
-                if tenancy is not None and not getattr(self, "_bound_org", None):
+                if tenancy is not None and p in PLATFORM_POST_ROUTES:
                     # Platform jobs have no tenant grant to bind. Their exception
                     # text can contain operational details, so return a fixed error.
+                    return self._authorized_platform_read(
+                        sess, lambda: self._json(409, {"error": "操作を完了できませんでした"}),
+                        admin=p == "/api/l2-profiles/accept")
+                if tenancy is not None and not getattr(self, "_bound_org", None):
                     return self._json(409, {"error": "操作を完了できませんでした"})
                 error = str(e)
                 return self._authorized_org_read(

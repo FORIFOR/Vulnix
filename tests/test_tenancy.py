@@ -324,6 +324,66 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
         self.assertEqual(response[0][0], 401)
         self.assertNotIn("PRIVATE_DIAGNOSTIC_ERROR_DETAIL", response[0][1])
 
+    def test_logout_during_platform_verification_hides_result(self):
+        cases = (
+            ("/router/verify", self.svc, "verify_planner_connections"),
+            ("/l2-profiles/accept", self.svc, "accept_l2_profile"),
+            ("/cve/sync", self.svc.cve_monitor, "ingest_payloads"),
+            ("/system/verify-controls", "aegis.server.run_live_control_verification", None),
+            ("/cve/real-software-verify", "aegis.server.run_real_software_cve_comparison", None),
+        )
+        for path, target, method in cases:
+            with self.subTest(path=path):
+                admin = self.login("padmin", "padmin-pw-1")
+                entered, release = threading.Event(), threading.Event()
+                response = []
+
+                def delayed_report(*args, **kwargs):
+                    entered.set()
+                    if not release.wait(5):
+                        raise TimeoutError("platform verification test did not release")
+                    return {"private_platform_report": "must-not-be-returned", "all_passed": True,
+                            "cve_count": 0, "kev_count": 0}
+
+                patcher = (patch.object(target, method, side_effect=delayed_report) if method else
+                           patch(target, side_effect=delayed_report))
+                with patcher:
+                    thread = threading.Thread(target=lambda: response.append(self.req(admin, path, {})))
+                    thread.start()
+                    try:
+                        self.assertTrue(entered.wait(5))
+                        self.ops.logout(admin["cookie"].split("=", 1)[1])
+                    finally:
+                        release.set()
+                        thread.join(5)
+                self.assertFalse(thread.is_alive())
+                self.assertEqual(response[0][0], 401)
+                self.assertNotIn("private_platform_report", response[0][1])
+
+    def test_logout_during_platform_verification_error_returns_401(self):
+        admin = self.login("padmin", "padmin-pw-1")
+        entered, release = threading.Event(), threading.Event()
+        response = []
+
+        def delayed_error(*args, **kwargs):
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("platform error test did not release")
+            raise RuntimeError("PRIVATE_PLATFORM_ERROR")
+
+        with patch.object(self.svc, "verify_planner_connections", side_effect=delayed_error):
+            thread = threading.Thread(target=lambda: response.append(self.req(admin, "/router/verify", {})))
+            thread.start()
+            try:
+                self.assertTrue(entered.wait(5))
+                self.ops.logout(admin["cookie"].split("=", 1)[1])
+            finally:
+                release.set()
+                thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(response[0][0], 401)
+        self.assertNotIn("PRIVATE_PLATFORM_ERROR", response[0][1])
+
     def test_logout_after_binding_invokes_stop_without_returning_protected_data(self):
         for suffix, method in (("pause", "pause"), ("emergency-stop", "emergency_stop")):
             with self.subTest(suffix=suffix):
