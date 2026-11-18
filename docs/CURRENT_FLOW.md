@@ -84,6 +84,7 @@ flowchart LR
 | P45 | 動的`/api/assessments/{id}/lab-mode`、`/request-l2`、`/verify-finding`、`/approvals/{req_id}` | `server.py` `do_POST`・`_dispatch` → `set_lab_mode`、`AssessmentService.request_l2_run` / `verify_finding` / `decide_approval` | `test_tenancy.py`, `test_server.py`, `test_real_service.py`。共有模擬ラボのモード変更は組織分離のある公開経路で403。L2は依頼者と承認者を分けて権限・証拠を確認。実サイトL2は引き続き禁止し、一般UIの基本フローに入れない |
 | P46 | 安全停止中の失効と応答秘匿 | `POST /api/assessments/{id}/pause`・`/emergency-stop` → `_bind` → 停止処理 → `_authorized_org_read`で応答前の生存読取権限を確認 | `test_tenancy.py`。結合後のログアウト・除名では停止ハンドラを呼び、401/403で保護情報を返さない。認証状態の保存に失敗した場合は停止の200を維持し、詳細を含まない`stopped/details_unavailable`だけを返すことを`test_release_safety.py`で確認。実Workerの停止効果は既存のGateway/隔離テストで別途確認 |
 | P47 | CVE状態生成中のログアウト | `GET /api/cve/status` → `cve_monitor.status` → 現行セッションを再確認して送信 | `test_tenancy.py`。修正前は生成中のログアウト後も200で全体状態を返した。修正後は401。送信中は既存の管理GETと同じ2秒ソケット上限を適用。公開βの中継は未検証 |
+| P48 | 所有確認の保存後から応答までの失効 | `POST /api/assets/challenge`・`/verify-ownership`・`/confirm-scope`・Google開始/完了 → 所有確認処理 → 送信直前の現行権限確認 | `test_tenancy.py`の登録トークン、証明結果、範囲スナップショットに対するログアウト3件と、登録トークンに対する組織役割降格1件。旧コードの登録応答200を再現し、修正後401/403。Google完了は外部照会の後、証明保存と応答を単一の権限リースで直列化し、既存の同時ログアウト200契約を維持。実Google・公開βは未実証 |
 
 ## 時系列と異常系
 

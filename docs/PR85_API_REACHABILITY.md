@@ -41,18 +41,18 @@
 
 ## 対象登録・所有確認
 
-この表のGETは選択組織へ結合し、送信時に読み取り権限を再検査する。POSTは共通CSRF、組織結合、少なくとも`operator/approver/admin`の操作権限を通す。所有確認や範囲確定の長い処理には個別の`grant_guard`があり、結果保存時の失効を拒否する。**保存後からHTTP応答開始までの競合は別途検証が必要**。
+この表のGETは選択組織へ結合し、送信時に読み取り権限を再検査する。POSTは共通CSRF、組織結合、少なくとも`operator/approver/admin`の操作権限を通す。所有確認や範囲確定の長い処理には個別の`grant_guard`があり、結果保存時の失効を拒否する。`5217969`で登録・証明・範囲確定とGoogle開始/完了の成功応答にも現行権限確認を加えた。通常の失効エラー応答など、すべてのPOST分岐の送信時競合は未証明。
 
 | API | 追加権限・要求値 | 失効時の確認範囲 | Web利用元 |
 | --- | --- | --- | --- |
 | `GET /api/assets` | なし | 読取再検査 | ダッシュボード、対象一覧 |
 | `GET /api/assets/secrets-status` | host query | 読取再検査 | 画面なし |
 | `POST /api/assets` | name/kind/environment/authorization_ref等 | 開始時。実サイト権限はサービスでも判定 | 対象登録 |
-| `POST /api/assets/challenge` | url/sow_id。既確認対象の再登録はapprover | 操作時の`grant_guard` | 所有確認 |
-| `POST /api/assets/google/start` | url/host、Google設定済み、短期state | 開始時。state発行後の応答競合は未実証 | 所有確認 |
-| `POST /api/assets/google/finish` | code/state、同一アカウント・組織・期限 | Google照会後、保存時の`grant_guard` | Google戻り画面 |
-| `POST /api/assets/verify-ownership` | url/host/method。既確認対象の再確認はapprover | DNS/ファイル照会後、保存時の`grant_guard` | 所有確認 |
-| `POST /api/assets/confirm-scope` | url/host、禁止事項への同意、approver | 保存時の`grant_guard` | 所有確認 |
+| `POST /api/assets/challenge` | url/sow_id。既確認対象の再登録はapprover | 保存時の`grant_guard`、送信時の操作権限。ログアウト401・役割降格403を模擬確認 | 所有確認 |
+| `POST /api/assets/google/start` | url/host、Google設定済み、短期state | state発行後の送信時に操作権限を再確認。実Google環境は未実証 | 所有確認 |
+| `POST /api/assets/google/finish` | code/state、同一アカウント・組織・期限 | 外部照会後、証明保存から応答まで生存権限リース。既承認の保存中ログアウトは応答後に完了 | Google戻り画面 |
+| `POST /api/assets/verify-ownership` | url/host/method。既確認対象の再確認はapprover | DNS/ファイル照会後の保存時`grant_guard`、送信時の操作権限。ログアウト401を模擬確認 | 所有確認 |
+| `POST /api/assets/confirm-scope` | url/host、禁止事項への同意、approver | 保存時`grant_guard`、送信時の承認者権限。ログアウト401を模擬確認 | 所有確認 |
 | `POST /api/assets/secrets` | host/tokens等、approver | 開始時とサービス側の範囲確認 | 診断設定 |
 | `POST /api/assets/delete` | id。実サイトはapprover | 開始時とサービス側の対象確認 | ダッシュボード、対象一覧 |
 | `POST /api/assets/select` | id | 開始時とサービス側の対象確認 | ダッシュボード、対象一覧 |
@@ -100,6 +100,6 @@
 ## 残る到達性検証
 
 1. `AEGIS_API`、モデル上流、Google、対象URLは実行時設定から決まる。静的文字列から実運用の送信先を確定しない。
-2. 所有確認の保存後から応答までと、通常POSTの処理中失効を追加テストする。`/api/cve/status`の生成中ログアウトは赤テストの200から401へ修正した。
+2. 所有確認の保存後から成功応答までのログアウト・登録時の役割降格は赤/緑テスト済み。Google開始/完了の送信時権限はコードと既存模擬テストで照合したが、実Googleは未確認。通常POSTの残る処理中失効は追加テストが必要。`/api/cve/status`の生成中ログアウトは赤テストの200から401へ修正した。
 3. 390px/1280pxの模擬ブラウザでは結果、報告書、組織切替、SSE再接続、失効後の非表示に加え、診断中の除名、所有確認中の失効、レポート生成中の失効も確認した。公開β、中継、長時間Workerの境界は未検証。
 4. 正式GitHubレビューと公開βの実DNS・実サイト経路は別ゲート。
