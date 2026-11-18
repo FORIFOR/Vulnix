@@ -1,5 +1,13 @@
 # Security Graph v2 作業の再開点
 
+## MCP合成検証のAPI・UI（2026-11-19）
+
+- 現行作業ツリー `/Users/shuhei/Projects/Vulnix-graph-mcp-ui`、ブランチ `codex/graph-mcp-ui`、コードコミット `db8fdc5`。基点は[Draft PR #91](https://github.com/FORIFOR/Vulnix/pull/91) の `834e098`。別の小さなDraft PRとして提出する。
+- 組織別 `GET /api/security-graph/mcp-validations` と `POST /api/security-graph/mcp-validate-synthetic` を追加し、既存のログイン・CSRF・組織権限・監査・実行直前の権限リースを通す。別組織の読取・操作は403/404で拒否。固定合成ソースだけ成功し、任意ソースは400で拒否する。
+- Graph詳細パネルに固定合成ケースの照合操作と実測を表示。顧客環境・当該MCP実装の権限は未検証と明記する。HTTPで固定合成ケースの成功と組織境界の拒否を確認（関連2件）。Web125件、lintエラー0（既存警告5）、build、Ruff成功。
+- 390px/1280px実ブラウザの固定合成ケースE2Eは `/tmp/vulnix_mcp_verified_browser.py` に準備済みで未実行。親PR #91のバックエンド全件 `/tmp/vulnix-mcp-verified-backend-full.log` とLinux CI #44346124610、さらにPR #90のCI #44332783026試行2も実行中。再開時に結果を確認し、本ブランチのバックエンド全件・Linux CI・ブラウザE2Eを実行する。
+- 未完了: 顧客コードの安全な隔離再現、実MCPサーバーの権限・承認評価、外部文書注入、AIモデル品質、GitHub App、実修正PR、継続監視、正式独立レビュー。
+
 ## MCP候補への合成検証紐付け（2026-11-19）
 
 - 現行作業ツリー `/Users/shuhei/Projects/Vulnix-graph-mcp-verified`、ブランチ `codex/graph-mcp-verified`、コードコミット `91a4707`。基点は[Draft PR #90](https://github.com/FORIFOR/Vulnix/pull/90) の `d42bea3`。この変更は別の小さなDraft PRとして提出する。
