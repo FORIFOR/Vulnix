@@ -1,19 +1,9 @@
 # 次の作業と再開手順
 
-進捗の唯一の判定表は [GOAL_COMPLETION_MATRIX.md](GOAL_COMPLETION_MATRIX.md)。作業ツリーは `/Users/shuhei/Projects/Vulnix-integration-readiness`、ブランチ `codex/goal-integration-readiness`、最新コードコミット `02fcac2`、Draft PR [#85](https://github.com/FORIFOR/Vulnix/pull/85)。`origin/main` は `5ecfc51`。再開時は `git rev-parse HEAD`、`git status --short --branch`、`git diff --check` を確認し、未コミット変更を保持する。別ツリー `/Users/shuhei/Projects/Vulnix-access-control-blind-eval` の未コミット `docs/CORS_390_RESULT.png` も保持する。
+## 最新の再開地点（2026-11-18、旧記録より優先）
 
-直前コード`d1b7289`のバックエンド全1,700件成功・27件スキップ・ResourceWarning 0件（`/tmp/vulnix-pr85-d1b-full.log`、1189.994秒）。Web118件、Lintエラー0/警告5、ビルド成功。[Linux CI #44172152275](https://github.com/FORIFOR/Vulnix/actions/runs/44172152275)はPython・Web・実ARTEXの3/3成功。新コード`4f1ac7b`のローカル全1,727件成功・27件スキップ・ResourceWarning 0件（1206.795秒、`/tmp/vulnix-pr85-snapshot-status-full.log`）。[Linux CI #44178305443](https://github.com/FORIFOR/Vulnix/actions/runs/44178305443)はPython・Web・実ARTEXの3/3成功。正式GitHubレビューは0件。
-
-最新コード`247b1fc`のローカル全バックエンド1,729件成功・27件スキップ・ResourceWarning 0件（1207.817秒、`/tmp/vulnix-pr85-model-output-cap-full.log`）。Web118件、Lintエラー0/警告5、ビルド成功。最新コードを含むLinux CIは確認中。承認済み実モデル2回はJSON採用0/2、両承認消費済み。
-
-新コード`02fcac2`のローカル全バックエンド1,733件成功・27件スキップ・ResourceWarning 0件（1203.148秒、`/tmp/vulnix-pr85-json-object-full.log`）。評価器・Gateway関連92件、Ruff、Web118件、Lintエラー0/警告5、ビルド成功。[Linux CI #44233247944](https://github.com/FORIFOR/Vulnix/actions/runs/44233247944)と資料更新後の最新CIはGitHubで確認する。`response_format`は固定のJSONオブジェクト指定だけを通し、`length`終了のJSONを採用しない。実モデルは未再評価。
-
-## 次に実行する作業
-
-1. `gh pr checks 85` と `git status --short --branch` で最新ヘッドのCIと作業ツリーを確認する。コード`02fcac2`の関連92件とローカル全1,733件は成功。Linux CI #44233247944と最新ヘッドの結果を確認し、失敗時は原因を修正する。残る保護GET・5,000件バックログの単発除名待ち0.0017秒の限界、正式レビュー資料を追加監査する。
-2. `aegis/server.py` のSSE大量履歴、残る保護GET、組織/管理者操作の失効境界を模擬環境で測る。変更した場合は関連テスト→全件→Linux CIを再実行する。今回の差分ではoverlayを変更していない。
-3. [実モデル2回の評価](ABLITERATION_SELECTION_REAL_RESULT.md)は出力上限384・1,024とも全量が推論でJSON採用0/2。両承認を消費済み。鍵は元ツリーの保護された設定から利用できた。追加有料送信は行わず、構造化出力・モデル適性を模擬環境で検討する。新しい固定要求には別の明示承認が必要。
-   [未送信の構造化出力候補](ABLITERATION_OUTPUT_CONTRACT.md)は別SHAでローカル検証中。公式OpenAPIはJSON Schema、`reasoning_effort`、推論トークン上限を定義するが、対象モデルでの効果は未確認。実モデルへの送信には新しい承認が必要。
-4. 正式独立GitHubレビュー、採用可能な実モデル回答、実DNS、許可済み実サイトE2Eが揃うまで、公開βとGoalの完了判定を行わない。外部の必要条件は [BLOCKERS.md](BLOCKERS.md)。
-
-新たな実サイト診断、有料API、DNS変更、mainマージ、本番反映は事前承認まで行わない。実サイトL2は禁止を維持する。秘密ファイルを読まず、模擬テストには `VULNIX_NO_ENV_LOCAL=1` を付ける。
+- 作業ツリー `/Users/shuhei/Projects/Vulnix-integration-readiness`、ブランチ `codex/goal-integration-readiness`、コードコミット `f68cbaf`、Draft PR #85。別ツリーの未コミット画像は保持する。再開時は`git status --short --branch`、`git diff --check`、`git log -3 --oneline`を確認する。
+- `f68cbaf`では公式OpenAPIの推論設定をローカル候補に限定し、実外部送信へは通さない。Gatewayの過大・片側・不正usage、評価器の未知終了理由を安全側で拒否。独立した読み取りレビューの2指摘を修正済み。関連98件、修正後の評価器19件、Ruff、Web118件、Lintエラー0/警告5、ビルド成功。実モデル送信、実サイト通信は0。
+- 最新コードのバックエンド全1,738件成功・27件スキップ・ResourceWarning 0件（`/tmp/vulnix-pr85-reasoning-full-final.log`）。390px模擬ブラウザも結果・レポート・組織切替・再接続・失効まで成功。[Linux CI #44259398358](https://github.com/FORIFOR/Vulnix/actions/runs/44259398358)はPython・Web・実ARTEXの3/3成功。
+- [GOAL_COMPLETION_MATRIX.md](GOAL_COMPLETION_MATRIX.md)と[AUTONOMOUS_PROGRESS.md](AUTONOMOUS_PROGRESS.md)へ証拠を反映し、PR #85本文・[正式レビュー資料](SECURITY_REVIEW.md)を更新済み。資料コミットをpushし、最終CIを確認する。実Abliteration AIは0/2採用のままで、未送信候補の要求SHAは[ABLITERATION_OUTPUT_CONTRACT.md](ABLITERATION_OUTPUT_CONTRACT.md)に記録。追加有料送信には新しい承認が必要。
+- 次の承認不要作業は、PR #85の累積差分の正式レビュー用資料と未確認ブラウザ経路の模擬検証。正式GitHubレビュー、実DNS・許可済み実サイトE2E、main統合・公開は別ゲート。いずれも未完了を維持する。
