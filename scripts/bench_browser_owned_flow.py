@@ -52,6 +52,14 @@ PARSER.add_argument("--silent-change", action="store_true",
                     help="Change a lab finding without publishing an event while SSE heartbeats continue")
 PARSER.add_argument("--revoke-session", action="store_true",
                     help="Revoke the lab session and require the browser to hide the old result")
+PARSER.add_argument("--logout-after-result", action="store_true",
+                    help="Log out from results and verify fresh API and page access are denied")
+PARSER.add_argument("--revoke-during-ownership", action="store_true",
+                    help="Revoke the session while the local DNS lookup is in progress")
+PARSER.add_argument("--revoke-during-report", action="store_true",
+                    help="Revoke the session while the local report is being rendered")
+PARSER.add_argument("--remove-member-during-scan", action="store_true",
+                    help="Remove the browser account from the lab organization while its scan is running")
 PARSER.add_argument("--report-export", action="store_true",
                     help="Download the evidence-backed Markdown report in the browser")
 PARSER.add_argument("--org-switch", action="store_true",
@@ -89,6 +97,8 @@ def main() -> None:
         PARSER.error("--viewport-width must be between 320 and 1920")
     if args.block_events and args.reconnect_events:
         PARSER.error("--block-events and --reconnect-events cannot be combined")
+    if args.remove_member_during_scan and not args.org_switch:
+        PARSER.error("--remove-member-during-scan requires --org-switch")
     real_bin = os.environ.get("VULNIX_ARTEX_REAL_BIN") if args.real_artex else None
     if args.real_artex and (not real_bin or not Path(real_bin).is_file()):
         PARSER.error("--real-artex requires VULNIX_ARTEX_REAL_BIN pointing to the built overlay")
@@ -113,12 +123,17 @@ def main() -> None:
                 svc._real_site_local_artex = True
                 svc._artex_real_cmd = command
                 challenge_value = [None]
+                ownership_entered, ownership_release = threading.Event(), threading.Event()
                 original_verify = assessment_module.verify_ownership_challenge
                 original_confirm = svc.confirm_asset_scope
                 original_runner = assessment_module.run_artex_planner
 
                 def mock_dns(name: str) -> list[str]:
                     value = challenge_value[0]
+                    if args.revoke_during_ownership and value:
+                        ownership_entered.set()
+                        if not ownership_release.wait(5):
+                            raise TimeoutError("ownership test did not release the lookup")
                     return [f'{name} text = "{value}"'] if value else []
 
                 def verify_with_lab_dns(*args, **kwargs):
@@ -137,8 +152,11 @@ def main() -> None:
                 svc.confirm_asset_scope = confirm_test_scope
                 password = secrets.token_urlsafe(18)
                 seed = data / "operators.json"
-                seed.write_text(json.dumps({"operators": [{"name": "qa", "display": "QA",
-                    "roles": ["operator", "approver"], "password_hash": hash_password(password)}]}))
+                seed.write_text(json.dumps({"operators": [
+                    {"name": "qa", "display": "QA", "roles": ["operator", "approver"],
+                     "password_hash": hash_password(password)},
+                    {"name": "lab_owner", "display": "Lab owner", "roles": ["admin"],
+                     "password_hash": hash_password(secrets.token_urlsafe(18))}]}))
                 ops = OperatorStore(seed)
                 registry = None
                 second_org = None
@@ -208,6 +226,25 @@ def main() -> None:
                             page.get_by_text(challenge["dns_txt_value"], exact=True).first.wait_for()
                             challenge_value[0] = challenge["dns_txt_value"]
                             assert site.seen == [], "target received traffic before ownership verification"
+                            if args.revoke_during_ownership:
+                                with page.expect_response(lambda res: res.url.endswith(
+                                        "/api/assets/verify-ownership")) as verification:
+                                    page.get_by_role("button", name="確認する", exact=True).click()
+                                    assert ownership_entered.wait(5), "DNS lookup was not reached"
+                                    ops.revoke_all_sessions("browser-ownership-test")
+                                    ownership_release.set()
+                                assert verification.value.status == 401, verification.value.status
+                                assert not svc.real_service_has_authority(HOST)
+                                assert site.seen == [], "target received traffic before ownership was proven"
+                                assert page.get_by_text("所有確認が完了しました").count() == 0
+                                fresh = page.request.get(base + "/api/assets")
+                                assert fresh.status == 401, fresh.status
+                                assert not page_errors, page_errors
+                                print(json.dumps({"viewport_width": args.viewport_width,
+                                                  "ownership_response": verification.value.status,
+                                                  "proof_saved": False, "target_paths": list(site.seen),
+                                                  "page_errors": len(page_errors)}, ensure_ascii=False))
+                                return
                             page.get_by_role("button", name="確認する", exact=True).click()
                             actions.append("verify_ownership")
                             page.get_by_text("所有確認が完了しました").wait_for(timeout=10000)
@@ -217,6 +254,37 @@ def main() -> None:
                             page.get_by_label("AIが提案した場合").check()
                             actions.append("consent_to_extra_get")
                             started = time.monotonic()
+                            run_entered, run_release = threading.Event(), threading.Event()
+                            original_run_inner = svc._run_inner
+
+                            def delayed_run_inner():
+                                run_entered.set()
+                                if not run_release.wait(5):
+                                    raise TimeoutError("scan test did not release the runner")
+                                return original_run_inner()
+
+                            if args.remove_member_during_scan:
+                                with patch.object(svc, "_run_inner", side_effect=delayed_run_inner):
+                                    page.get_by_role("button", name="診断を開始", exact=True).click()
+                                    assert run_entered.wait(5), "runner did not reach the held point"
+                                    removed_at = time.monotonic()
+                                    assert registry is not None
+                                    # The default workspace also has a separate lab owner.
+                                    registry.store.remove_member("default", "lab_owner", "qa")
+                                    run_release.set()
+                                    if svc._thread:
+                                        svc._thread.join(15)
+                                fresh = page.request.get(base + "/api/assessments/scan_001?org=default")
+                                assert fresh.status == 403, fresh.status
+                                page.wait_for_timeout(1000)
+                                assert page.get_by_text("Apache mod_status の公開露出").count() == 0
+                                assert not page_errors, page_errors
+                                print(json.dumps({"viewport_width": args.viewport_width,
+                                                  "fresh_result_status": fresh.status,
+                                                  "revocation_observed_s": round(time.monotonic() - removed_at, 3),
+                                                  "target_paths": list(site.seen),
+                                                  "page_errors": len(page_errors)}, ensure_ascii=False))
+                                return
                             page.get_by_role("button", name="診断を開始", exact=True).click()
                             actions.append("start")
                             page.wait_for_url("**/assessments/scan_001", timeout=120000 if real_bin else 15000)
@@ -238,6 +306,39 @@ def main() -> None:
                             snap = svc.snapshot()
                             assert snap["state"] == "completed", snap.get("failure")
                             assert site.seen == ["/", "/server-status?auto"], site.seen
+                            if args.revoke_during_report:
+                                report_entered, report_release = threading.Event(), threading.Event()
+                                original_report = svc.report_markdown
+
+                                def delayed_report():
+                                    report_entered.set()
+                                    if not report_release.wait(5):
+                                        raise TimeoutError("report test did not release rendering")
+                                    return original_report()
+
+                                with patch.object(svc, "report_markdown", side_effect=delayed_report):
+                                    page.evaluate("""() => {
+                                      window.__vulnixReportCode = null;
+                                      fetch('/api/assessments/scan_001/report')
+                                        .then(r => { window.__vulnixReportCode = r.status; });
+                                    }""")
+                                    assert report_entered.wait(5), "report rendering was not reached"
+                                    revoked_at = time.monotonic()
+                                    ops.revoke_all_sessions("browser-report-test")
+                                    report_release.set()
+                                    page.wait_for_function("window.__vulnixReportCode !== null", timeout=15000)
+                                report_status = page.evaluate("window.__vulnixReportCode")
+                                assert report_status == 401, report_status
+                                page.locator("h3").filter(has_text="Apache mod_status の公開露出").wait_for(
+                                    state="detached", timeout=40000)
+                                hidden_s = round(time.monotonic() - revoked_at, 3)
+                                assert not page_errors, page_errors
+                                print(json.dumps({"viewport_width": args.viewport_width,
+                                                  "report_response": report_status,
+                                                  "revocation_hidden_s": hidden_s,
+                                                  "target_paths": list(site.seen),
+                                                  "page_errors": len(page_errors)}, ensure_ascii=False))
+                                return
                             page.get_by_role("button", name="検証の記録").first.click()
                             page.get_by_text("2. 診断方法：", exact=False).first.wait_for()
                             assert page.get_by_text("EgressGuard", exact=False).count() == 0
@@ -306,6 +407,11 @@ def main() -> None:
                                 other_snapshot = other_response.value.json()
                                 assert other_snapshot["target_url"] != snap["target_url"]
                                 assert other_snapshot["asset"] != snap["asset"]
+                                other_report = page.request.get(base + "/api/assessments/scan_001/report")
+                                assert other_report.status == 200, other_report.status
+                                other_markdown = other_report.json()["markdown"]
+                                assert HOST not in other_markdown
+                                assert "Apache mod_status" not in other_markdown
                                 page.get_by_role("tab", name="問題").click()
                                 assert page.get_by_text("Apache mod_status の公開露出").count() == 0
                                 page.locator("#org-switch").select_option("default")
@@ -319,6 +425,7 @@ def main() -> None:
                             idle_at = len(api_calls)
                             silent_change_recovered_s = None
                             revocation_hidden_s = None
+                            logout_hidden_s = None
                             if args.silent_change:
                                 seq_before = svc.bus.last_seq
                                 with svc._lock:
@@ -334,6 +441,17 @@ def main() -> None:
                                 page.locator("h3").filter(has_text="Apache mod_status の公開露出").wait_for(
                                     state="detached", timeout=40000)
                                 revocation_hidden_s = round(time.monotonic() - revoked_at, 3)
+                            if args.logout_after_result:
+                                logged_out_at = time.monotonic()
+                                page.get_by_role("button", name="ログアウト", exact=True).click()
+                                page.wait_for_url("**/login", timeout=15000)
+                                assert page.get_by_text("Apache mod_status の公開露出").count() == 0
+                                fresh = page.request.get(base + "/api/assessments/scan_001")
+                                assert fresh.status == 401, fresh.status
+                                page.goto(base + "/assessments/scan_001")
+                                page.wait_for_url("**/login", timeout=15000)
+                                assert page.get_by_text("Apache mod_status の公開露出").count() == 0
+                                logout_hidden_s = round(time.monotonic() - logged_out_at, 3)
                             if args.idle_seconds > 0:
                                 page.wait_for_timeout(args.idle_seconds * 1000)
                             print(json.dumps({"viewport_width": args.viewport_width,
@@ -349,6 +467,7 @@ def main() -> None:
                                               "org_switch_isolated": org_switch_isolated,
                                               "silent_change_recovered_s": silent_change_recovered_s,
                                               "revocation_hidden_s": revocation_hidden_s,
+                                              "logout_hidden_s": logout_hidden_s,
                                               "target_paths": list(site.seen), "local_model_calls": len(model.requests),
                                               "engine_kind": plan["engine"]["kind"],
                                               "source_label_visible": source_label_visible,

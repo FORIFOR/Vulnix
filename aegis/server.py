@@ -1368,11 +1368,18 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     return self._json(200, result)
                 elif p == base + "/pause":
                     svc.pause(actor)
+                    paused_snapshot = svc.snapshot()
+                    return self._authorized_org_read(
+                        sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                        lambda _: self._json(200, paused_snapshot))
                 elif p == base + "/resume":
                     with live_grant_roles(sess, getattr(self, "_bound_org", DEFAULT_ORG)):
                         svc.resume(actor)
                 elif p == base + "/emergency-stop":
-                    return self._json(200, {"stop_report": svc.emergency_stop(actor)})
+                    stop_report = svc.emergency_stop(actor)
+                    return self._authorized_org_read(
+                        sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                        lambda _: self._json(200, {"stop_report": stop_report}))
                 elif p == base + "/verify-finding":
                     fid = str(body.get("finding_id", "")).strip()
                     if not fid:

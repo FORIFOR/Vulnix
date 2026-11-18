@@ -1,5 +1,7 @@
 # 公開β判定
 
+2026-11-19 JSTの追記: 資料コミット`5317e0f`の[Linux CI #44331685004](https://github.com/FORIFOR/Vulnix/actions/runs/44331685004)は3/3成功し、Pythonログartifactから1,742件成功・17件スキップを確認した。現在の開発ツリーでは[API到達性](PR85_API_REACHABILITY.md)、[195ファイルのレビュー台帳](PR85_FILE_REVIEW.md)、[両幅の失効ブラウザQA](PR85_REVOKE_BROWSER_QA.md)を追加し、停止後応答のP2を修正したが、後続CIと正式レビューはまだ未確認。公開不可は変わらない。
+
 最新`7effe09`（製品コード`d199021`）の単独ローカル全バックエンド1,742件・27件スキップ・ResourceWarning 0件、Web119件・Lint・ビルド・390px模擬ブラウザが成功した。[Linux CI #44325797831](https://github.com/FORIFOR/Vulnix/actions/runs/44325797831)もPython・Web・実ARTEXの3/3成功し、Pythonログartifactを取得した。ただし前CIの初回はPythonジョブが約51分後にログなしで失敗し、原因未特定。正常時のログ保存成功はその不安定性の解消を証明しない。実モデルの採用0/2、実DNS・実サイトE2E、正式GitHubレビューは変わらず未完了で、公開不可の判定を維持する。以下の詳細表の古いコミット値は過去の測定範囲を表す。
 
 2026-11-18時点の判定は **公開不可**。実Abliteration AIの判断・解説、実DNS所有確認から許可済み実サイト結果表示まで、独立した正式レビューが未実証である。最終Linux CI成功はこれらの代替にならない。

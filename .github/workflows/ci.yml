@@ -53,6 +53,35 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+      # Exercise the artifact path after a failed step without failing the suite.
+      # Runner loss remains outside this probe's coverage.
+      - name: Simulate a failed command for artifact recovery
+        id: artifact_failure_probe
+        continue-on-error: true
+        run: |
+          printf 'artifact recovery probe\n' > artifact-failure-probe.txt
+          exit 23
+
+      - name: Preserve simulated failure output
+        if: ${{ !cancelled() && steps.artifact_failure_probe.outcome == 'failure' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-upload-probe-attempt-${{ github.run_attempt }}
+          path: artifact-failure-probe.txt
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Read back simulated failure output
+        uses: actions/download-artifact@v4
+        with:
+          name: failure-upload-probe-attempt-${{ github.run_attempt }}
+          path: artifact-failure-probe
+
+      - name: Assert simulated failure was captured
+        run: |
+          test '${{ steps.artifact_failure_probe.outcome }}' = failure
+          cmp artifact-failure-probe.txt artifact-failure-probe/artifact-failure-probe.txt
+
       - name: Linux kernel confinement end to end (confined L2 worker; stop, revocation, deletion, expiry)
         run: |
           # The same tests also run in the suite above; here a skip is a failure, so

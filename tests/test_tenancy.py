@@ -169,6 +169,89 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
         self.assertEqual(response[0][0], 401)
         self.assertFalse(started.is_set())
 
+    def test_logout_after_binding_invokes_stop_without_returning_protected_data(self):
+        for suffix, method in (("pause", "pause"), ("emergency-stop", "emergency_stop")):
+            with self.subTest(suffix=suffix):
+                who = self.signup(f"late{method}")
+                org_id = who["orgs"][0]["id"]
+                svc = self.reg.service(org_id)
+                entered, release, stopped = threading.Event(), threading.Event(), threading.Event()
+                response = []
+                handler = self.srv.RequestHandlerClass
+                original_bind = handler._bind
+                path = f"/api/assessments/scan_001/{suffix}"
+
+                def paused_bind(request, *args, **kwargs):
+                    bound = original_bind(request, *args, **kwargs)
+                    if bound and request.path == path:
+                        entered.set()
+                        if not release.wait(5):
+                            raise TimeoutError("stop binding test did not release the request")
+                    return bound
+
+                def record_stop(*_):
+                    stopped.set()
+                    return {"target_url": "https://private.lab.test"} if method == "emergency_stop" else None
+
+                with patch.object(handler, "_bind", paused_bind), \
+                        patch.object(svc, method, side_effect=record_stop), \
+                        patch.object(svc, "snapshot", return_value={"target_url": "https://private.lab.test"}):
+                    thread = threading.Thread(target=lambda: response.append(
+                        self.req(who, f"/assessments/scan_001/{suffix}", {}, org=org_id)))
+                    thread.start()
+                    self.assertTrue(entered.wait(5))
+                    self.ops.logout(who["cookie"].split("=", 1)[1])
+                    release.set()
+                    thread.join(5)
+                self.assertFalse(thread.is_alive())
+                self.assertTrue(stopped.is_set(), "revocation must not prevent the stop handler")
+                self.assertEqual(response[0][0], 401)
+                self.assertNotIn("target_url", response[0][1])
+
+    def test_membership_removal_after_binding_invokes_stop_without_returning_protected_data(self):
+        owner, member = self.signup("stopowner"), self.signup("stopmember")
+        org_id = owner["orgs"][0]["id"]
+        _, invite = self.reg.store.create_invite(org_id, "stopowner", ["runner"])
+        self.reg.store.accept_invite(invite, "stopmember")
+        svc = self.reg.service(org_id)
+        for suffix, method in (("pause", "pause"), ("emergency-stop", "emergency_stop")):
+            with self.subTest(suffix=suffix):
+                entered, release, stopped = threading.Event(), threading.Event(), threading.Event()
+                response = []
+                handler = self.srv.RequestHandlerClass
+                original_bind = handler._bind
+                path = f"/api/assessments/scan_001/{suffix}"
+
+                def paused_bind(request, *args, **kwargs):
+                    bound = original_bind(request, *args, **kwargs)
+                    if bound and request.path == path:
+                        entered.set()
+                        if not release.wait(5):
+                            raise TimeoutError("stop binding test did not release the request")
+                    return bound
+
+                def record_stop(*_):
+                    stopped.set()
+                    return {"target_url": "https://private.lab.test"} if method == "emergency_stop" else None
+
+                with patch.object(handler, "_bind", paused_bind), \
+                        patch.object(svc, method, side_effect=record_stop), \
+                        patch.object(svc, "snapshot", return_value={"target_url": "https://private.lab.test"}):
+                    thread = threading.Thread(target=lambda: response.append(
+                        self.req(member, f"/assessments/scan_001/{suffix}", {}, org=org_id)))
+                    thread.start()
+                    self.assertTrue(entered.wait(5))
+                    self.reg.store.remove_member(org_id, "stopowner", "stopmember")
+                    release.set()
+                    thread.join(5)
+                self.assertFalse(thread.is_alive())
+                self.assertTrue(stopped.is_set(), "revocation must not prevent the stop handler")
+                self.assertEqual(response[0][0], 403)
+                self.assertNotIn("target_url", response[0][1])
+                if suffix == "pause":
+                    _, invite = self.reg.store.create_invite(org_id, "stopowner", ["runner"])
+                    self.reg.store.accept_invite(invite, "stopmember")
+
     def test_logout_after_org_binding_cannot_read_logs(self):
         who = self.signup("latereadlogout")
         org_id = who["orgs"][0]["id"]

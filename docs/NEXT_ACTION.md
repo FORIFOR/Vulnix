@@ -1,5 +1,15 @@
 # 次の作業と再開手順
 
+## 最新の作業地点（2026-11-19 JST、下記の旧記録より優先）
+
+- 作業ツリーは`/Users/shuhei/Projects/Vulnix-integration-readiness`、ブランチ`codex/goal-integration-readiness`。開始時HEADは`5317e0f`、Draft PR #85は195ファイル・正式レビュー0件。[Linux CI #44331685004](https://github.com/FORIFOR/Vulnix/actions/runs/44331685004)は3/3成功し、Pythonログartifactで1,742件成功・17件スキップを確認。現在の変更はコミット・Linux CI前なので、再開時に`git status --short --branch`と`git diff --check`を必ず確認し、未コミット変更を保持する。
+- 変更中のファイルは`.github/workflows/ci.yml`、`aegis/server.py`、`scripts/bench_browser_owned_flow.py`、`tests/test_tenancy.py`、`docs/GOAL_COMPLETION_MATRIX.md`と新規`docs/PR85_API_REACHABILITY.md`、`docs/PR85_FILE_REVIEW.md`、`docs/PR85_REVOKE_BROWSER_QA.md`。後で`docs/AUTONOMOUS_PROGRESS.md`とPR本文も更新する。別作業ツリーに触れない。
+- 発見・修正: `_bind`後のログアウト/除名でも`/pause`と`/emergency-stop`が保護情報を200で返した。修正前の赤テスト（2条件とも200）、修正後の401/403と停止ハンドラ呼出しを個別テストで確認。実停止の模擬効果とレスポンス秘匿を混同しない。
+- 模擬ブラウザ: 390px/1280pxでログアウト直後の新規GET401、所有確認中の失効401・証明保存なし、レポート生成中の失効401、診断中の組織除名後の元組織GET403、別組織レポート分離、SSE再接続・旧所見非表示を確認。[測定表](PR85_REVOKE_BROWSER_QA.md)に単発遅延を記録。除名後も開始済みの組織診断は模擬対象GET2回で続いた。公開βの停止保証や中継遅延に一般化しない。
+- CI artifact: 42分上限と元のログ保存を維持し、`continue-on-error`の安全な模擬失敗ステップ→artifact保存→再取得・比較を追加。これを含むLinux CIは未実行。ジョブ全体の失敗とランナー消失は、この模擬では証明できない。
+- 検証: `tests.test_tenancy`は最初の実行で別プロセスが固定ポート18097を使用し7件が無効。空きポートに切り替えた単独再実行では502件成功。修正後の停止競合2件、Web119件、Lintエラー0/警告5、Webビルド、Ruff、YAML解析、差分チェックが成功。全バックエンドは別作業ツリーの全件実行と固定ポートが競合したため、こちらのPIDだけを中断（exit 130、ログ`/tmp/vulnix-pr85-api-full.log`）。この実行を全件合格と扱わない。相手のプロセスは変更しない。単独の再実行、または競合のないLinux CIで全件を確認する。
+- 次に、全バックエンド結果→個別ブラウザ条件の最終再実行→`docs/GOAL_COMPLETION_MATRIX.md`と`docs/AUTONOMOUS_PROGRESS.md`更新→コミット・開発ブランチへpush→最終Linux CIの3ジョブと模擬失敗artifactを確認→PR #85本文へ証拠追加。正式GitHubレビュー、追加有料AI、実DNS・許可済み実サイト診断、mainマージ、本番公開は未完了の別ゲート。
+
 ## 最新の再開地点（2026-11-18、旧記録より優先）
 
 - 作業ツリー `/Users/shuhei/Projects/Vulnix-integration-readiness`、ブランチ `codex/goal-integration-readiness`、最新コード・CI設定の検証済みコミット`7effe09`（最新製品コードは`d199021`、後続はテスト・資料・ブラウザQA・CI記録）、Draft PR #85。別ツリーの変更には触れない。再開時は`git status --short --branch`、`git diff --check`、`git log -3 --oneline`を確認する。
