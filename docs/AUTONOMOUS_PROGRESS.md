@@ -2,6 +2,12 @@
 
 進捗の唯一の判定表は [GOAL_COMPLETION_MATRIX.md](GOAL_COMPLETION_MATRIX.md)。この記録は作業の履歴であり、PASS判定を上書きしない。
 
+## 2026-11-18：実モデルの承認済み固定評価
+
+- 元ツリーの保護された設定をアプリの既存ローダーで利用し、`VULNIX_ABLITERATION_KEY`の存在だけを確認。鍵の値は表示・記録していない。承認済み固定14条件、SHA-256、モデル、1回・US$0.01・2,000トークン、未使用の承認記録と監査保存を照合した。
+- 既存Gatewayから承認済み1回を送信。JSON採用0/1、`missing_content`、`length`終了。prompt 608、completion 384、reasoning 384トークン。選択精度は採点不可。対象GET・Worker起動0、応答2.481秒。usageと公開単価からUS$0.001760概算、確定請求額は未照合。承認消費済みで再送不可。[詳細](ABLITERATION_SELECTION_REAL_RESULT.md)。
+- 実モデル性能と日本語解説品質は未達。次の有料要求は匿名入力・出力上限・費用をローカルで再検証し、新しい承認後にのみ送信する。実サイト通信、mainマージ、本番反映は行っていない。
+
 ## 2026-11-17：統合候補の作成
 
 - PR #53〜#84の積み重ねをmain基準の[Draft PR #85](https://github.com/FORIFOR/Vulnix/pull/85)へ集約。`6475549` の[Linux CI](https://github.com/FORIFOR/Vulnix/actions/runs/44074507092)は3/3成功。ローカルはバックエンド1,250件成功・27件スキップ、Web118件成功、Lintエラー0・警告5、ビルド成功。

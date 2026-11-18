@@ -2,7 +2,7 @@
 
 この文書はDraft PR #53〜#84をまとめたPR #85統合候補の経路を示す。公開βへ反映済みという意味ではない。APIと関数の基礎的な静的列挙は[PROCESS_INVENTORY.json](PROCESS_INVENTORY.json)、履歴と重複候補は[PROCESS_AUDIT.md](PROCESS_AUDIT.md)、同一ラボ測定は[STATUS_EXPOSURE_INTEGRATION.md](STATUS_EXPOSURE_INTEGRATION.md)。後続の検査選択評価は[ACCESS_CONTROL_BLIND_LAB.md](ACCESS_CONTROL_BLIND_LAB.md)、HTTP 200認証拒否の再測定は[AUTH_RESPONSE_LAB.md](AUTH_RESPONSE_LAB.md)、Cookie用途の再測定は[COOKIE_PURPOSE_LAB.md](COOKIE_PURPOSE_LAB.md)に分離した。静的列挙は後続PRのスクリプトまで網羅せず、動的URLや実行時設定も解決できないため、P17以降をコードと照合して追記した。
 
-この累積コードとmainは異なる。PR #63以降はDraft・未マージで、#68の実Abliteration AI評価は鍵がないため未実行。公開βの実DNS所有確認・実サイト診断も未実証。以下の動作証拠は、明記がなければ隔離した模擬対象による。
+この累積コードとmainは異なる。PR #63以降はDraft・未マージ。#68の実Abliteration AI固定評価は承認済み1回を実行したが、JSON本文なしで不採用。公開βの実DNS所有確認・実サイト診断も未実証。以下の動作証拠は、明記がなければ隔離した模擬対象による。
 
 ## 構成
 
@@ -50,7 +50,7 @@ flowchart LR
 | P14 | `/api/system/verify-controls`, `/api/cve/*`, `/api/router/*` | `server.py` `JOB_ROUTES`, `control_verification.py`, `cve.py` | `test_cve.py`, `test_server.py`。通常診断から独立 |
 | P15 | SSE心拍と静穏時の代替取得 | `useAssessment`、`polling.ts`、`server.py` `_sse_loop` | `web/tests/polling.test.mjs`, `test_server.py`。通し番号付き心拍で正常時の重複取得を抑え、欠落・切断時はsnapshotと監査ログへ収束。正常な心拍でも30秒ごとに正式な状態を再取得 |
 | P16 | 画面内通知・承認待ち | `EventBus.publish`/`wait`, `_sse_loop`, `_decide` | `test_server.py`。メール・Webhook送信は見つからない |
-| P17 | 14条件の実モデル選択評価（診断APIとは独立） | `scripts/eval_selection_model.py` `run_preview`, `run_approved` → 既存LLM Gateway | `test_selection_model_eval.py`。固定SHA・1回・US$0.01予算・2,000トークン、出力検証。鍵がなく実モデル未実行。対象GET・Worker起動なし |
+| P17 | 14条件の実モデル選択評価（診断APIとは独立） | `scripts/eval_selection_model.py` `run_preview`, `run_approved` → 既存LLM Gateway | `test_selection_model_eval.py`と[初回実測](ABLITERATION_SELECTION_REAL_RESULT.md)。固定SHA・1回・US$0.01予算・2,000トークン。承認済み1回を送信しJSON不採用。対象GET・Worker起動なし |
 | P18 | 認証・アクセス制御の模擬検証 | 初回GET → `analyze_l1_service_response`、観測リンク → ARTEX計画 → `execute_artex_item` → Gateway・Worker | `test_access_control_lab.py`, `bench_access_control.py`。14条件の独立正解、実ARTEX＋ローカル模擬モデルで選択精度を比較。IDORの再現は模擬対象限定 |
 | P19 | IDOR・CORSの結果表示と競合制御 | `idorEvidence.ts`、`FindingLearningCard`、`FindingCard`、`useAssessment`、`polling.ts` | Webユニットテストと390px模擬ブラウザ。IDORの取得断定には対照証拠とbackend `proven` が必要。古い401/403で新しい画面を消さない |
 | P20 | HTTP 200の認証拒否JSON | `analyze_l1_service_response` → `_auth_error_only` | `test_auth_response_lab.py`。6条件でGateway/Worker各6回、対象GET6回。本文全体と限定した拒否文言が確認できた場合だけ`candidate`へ下げる |
@@ -187,7 +187,7 @@ flowchart LR
   P -->|未信頼の応答| V
 ```
 
-正解ラベルはモデル入力へ入れず、評価応答から診断・Worker起動へ向かう辺もない。モデル未実行のため、現時点の実モデル指標は空欄である。
+正解ラベルはモデル入力へ入れず、評価応答から診断・Worker起動へ向かう辺もない。初回はJSON本文なしで不採用のため、実モデルの検査選択指標は未算出である。
 
 ## 最適化の実測と残件
 
@@ -217,7 +217,7 @@ flowchart LR
 2. P15は正常なSSEで待機時API要求を削減し、APIが応答する限り30秒を超えた次の正式な状態再取得で未発行イベントによる無期限の古さを防ぐ。Cloudflare等の中継を挟んだ監査ログの鮮度と失効通知の遅れは別途測る。停止・取消が画面に届く保証は維持する。
 3. 同一の独立ラボでブラウザのURL登録から結果表示までを390px幅で通し、実ARTEXとローカル模擬モデルでも所見・出所表示・ホスト名とURLの非送信を確認した。公開βの実DNS・組織設定・中継を含む動作確認は残る。
 4. P09/P12の採用率・実トークン・費用と公開βの実サイト経路は、必要な承認と所有確認を得た後に別途検証する。実サイトL2は引き続き禁止する。
-5. P17の承認済み1回は固定要求のハッシュ、費用上限、鍵、二重送信防止を送信直前に照合する。鍵が利用できない間は実Abliteration AIのJSON採用率・TP/FP/FN/TN・実費用を未測定とし、固定規則の成績を実モデル性能に流用しない。
+5. P17の承認済み1回は固定要求のハッシュ、費用上限、鍵、二重送信防止を送信直前に照合して実行した。JSON採用0/1、選択TP/FP/FN/TNは未算出、確定請求額は未照合。固定規則の成績を実モデル性能に流用しない。再送には新しい承認が必要。
 6. P18の14条件では、ローカル模擬モデルで一律提案から観測選択へ移ると不要な検査が6→1件、対象GETが34→29回だった一方、実ARTEX経路の推定トークンは104,174→139,338へ増加した。実AIの選択能力・複数分類の精度には一般化しない。P20の6条件はHTTP 200認証拒否によるFPを3→0件に減らしたが、ARTEX選択や実サイトの診断範囲は増やしていない。
 7. P21のCookie用途10条件は固定L1のTP/FP/FN/TNが3/4/1/2、所有者仕様を用いた修正後は4/0/0/6だった。これも1分類の小さなラボであり、実HTTPSのWorker経路・ARTEX選択・実サイト精度は残る。
 8. P22では混在Cookieを個別に保持し、390pxのChromiumで画面部品の表示を確認した。ループバックHTTPS6条件でも属性保存・`document.cookie`と診断判定の一致を確認した。公開βの画面通し操作や実HTTPSのGateway/Worker経路は残る。
