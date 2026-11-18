@@ -47,7 +47,21 @@ jobs:
 
       - name: Run Python Unit & Integration Test Suite
         run: |
-          python3 -m unittest discover -s tests -p "test_*.py" -v
+          # Bound a stalled suite while the job may still upload its output.
+          # A prior 51-minute failure left no retrievable log; its cause is unknown.
+          set -o pipefail
+          timeout --signal=INT --kill-after=30s 42m \
+            python3 -u -X faulthandler -m unittest discover -s tests -p "test_*.py" -v \
+            2>&1 | tee python-suite.log
+
+      - name: Preserve Python suite output
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-suite-output-attempt-${{ github.run_attempt }}
+          path: python-suite.log
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Linux kernel confinement end to end (confined L2 worker; stop, revocation, deletion, expiry)
         run: |
