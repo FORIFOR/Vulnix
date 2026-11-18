@@ -2,7 +2,7 @@
 
 この文書はDraft PR #53〜#84をまとめたPR #85統合候補の経路を示す。公開βへ反映済みという意味ではない。APIと関数の基礎的な静的列挙は[PROCESS_INVENTORY.json](PROCESS_INVENTORY.json)、履歴と重複候補は[PROCESS_AUDIT.md](PROCESS_AUDIT.md)、同一ラボ測定は[STATUS_EXPOSURE_INTEGRATION.md](STATUS_EXPOSURE_INTEGRATION.md)。後続の検査選択評価は[ACCESS_CONTROL_BLIND_LAB.md](ACCESS_CONTROL_BLIND_LAB.md)、HTTP 200認証拒否の再測定は[AUTH_RESPONSE_LAB.md](AUTH_RESPONSE_LAB.md)、Cookie用途の再測定は[COOKIE_PURPOSE_LAB.md](COOKIE_PURPOSE_LAB.md)に分離した。静的列挙は後続PRのスクリプトまで網羅せず、動的URLや実行時設定も解決できないため、P17以降をコードと照合して追記した。
 
-この累積コードとmainは異なる。PR #63以降はDraft・未マージ。#68の実Abliteration AI固定評価は別々に承認された2回ともJSON本文なしで不採用。後続の`d199021`までのモデル応答・組織状態・画面出所境界をP42〜P44に追記した。公開βの実DNS所有確認・実サイト診断も未実証。以下の動作証拠は、明記がなければ隔離した模擬対象による。
+この累積コードとmainは異なる。PR #63以降はDraft・未マージ。#68の実Abliteration AI固定評価は別々に承認された2回ともJSON本文なしで不採用。後続の`d199021`までのモデル応答・組織状態・画面出所境界をP42〜P44、動的な模擬ラボ・承認APIをP45に追記した。公開βの実DNS所有確認・実サイト診断も未実証。以下の動作証拠は、明記がなければ隔離した模擬対象による。
 
 ## 構成
 
@@ -81,6 +81,7 @@ flowchart LR
 | P42 | モデル推論設定・出力終了・費用の拒否 | `PlannerLLMGateway.inspect` → `_send` → `_settle` → `AssessmentService._plan_with_artex`または`eval_selection_model.run_approved` | `test_planner_llm_gateway.py`, `test_selection_model_eval.py`, `test_real_service.py`。未確認の`reasoning_effort`/`reasoning.max_tokens`はローカル模擬だけ。外部送信前に拒否し、要求SHAと予約費用を別計算。`length`/`content_filter`/未知終了・本文なし・矛盾したtool_calls・不正/過大usageは計画・評価へ採用しない。固定L1所見と監査ハッシュは保持。実モデルの採用0/2は変わらない |
 | P43 | `GET /api/router/status`の組織別状態 | `server.py` `_bind` → `_authorized_org_read` → 組織の`AssessmentService.planner_status` | `test_tenancy.py`。別組織403、ログアウト後401、組織別の状態を模擬確認。外部AIへ送信しない。公開βでの失効競合は未検証 |
 | P44 | 結果画面の診断元・AI未実施表示 | `diagnosisSource` → `WorkspaceHeader`。実ARTEX、検証用プランナー、実行元不明、固定設定検査のみを分ける | `diagnosisSource.test.mjs`, `bench_browser_owned_flow.py`。固定のみならAI追加検査未実施、模擬プランナーが追加GETした場合はその出所を表示。390px Chromiumでは実表示を待って記録。実モデル品質と公開βの証拠ではない |
+| P45 | 動的`/api/assessments/{id}/lab-mode`、`/request-l2`、`/verify-finding`、`/approvals/{req_id}` | `server.py` `do_POST`・`_dispatch` → `set_lab_mode`、`AssessmentService.request_l2_run` / `verify_finding` / `decide_approval` | `test_tenancy.py`, `test_server.py`, `test_real_service.py`。共有模擬ラボのモード変更は組織分離のある公開経路で403。L2は依頼者と承認者を分けて権限・証拠を確認。実サイトL2は引き続き禁止し、一般UIの基本フローに入れない |
 
 ## 時系列と異常系
 
@@ -128,6 +129,10 @@ sequenceDiagram
   opt 解説を要求
     UI->>S: P12 所見IDを指定
     S-->>UI: 検証済みAI解説または内蔵解説
+  end
+  opt P45 隔離ラボの模擬操作・承認だけ
+    UI->>S: 動的lab-modeまたはapprovals API
+    S-->>UI: 組織分離・役割を確認して許可/拒否
   end
 ```
 
@@ -208,6 +213,8 @@ flowchart LR
 正解ラベルはモデル入力へ入れず、評価応答から診断・Worker起動へ向かう辺もない。初回はJSON本文なしで不採用のため、実モデルの検査選択指標は未算出である。
 
 P42は`json_object`だけでは推論トークンを制御できると仮定しない。対象モデルの推論設定はローカル模擬要求に限り、実外部送信を拒否する。`length`等の途中終了と過大使用量はGatewayで失敗にし、P09の計画採用前にも確認する。P17の評価器もGatewayの失敗状態とJSONの既知ID・重複・余分な項目を別々に検証する。失敗時はP08で得た固定L1所見と監査証拠を維持し、AI追加検査を実施済みと扱わない。P43は組織別モデル状態のGETを既存の所属確認と送信時の失効確認に通す。P44は実際の計画元で表示を分けるため、検証用プランナーが追加GETした結果を「固定検査のみ」と誤表示しない。[安全性と未送信要求](ABLITERATION_OUTPUT_CONTRACT.md)および[完了判定](GOAL_COMPLETION_MATRIX.md)に測定範囲を記録する。
+
+P45は通常の実サイト診断とは別の模擬・L2依頼/承認経路である。動的な`base + ...`式は静的な固定URL一覧に載らないため、機械抽出後に手動で`server.py`の分岐と`test_tenancy.py`・`test_server.py`・`test_real_service.py`を照合した。実サイトL2を許可する経路としては扱わない。
 
 ## 最適化の実測と残件
 

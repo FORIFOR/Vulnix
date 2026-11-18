@@ -1,14 +1,14 @@
 # 処理系統監査と段階的な最適化
 
-最新の開発コードとP01〜P44の対応表は[CURRENT_FLOW.md](CURRENT_FLOW.md)を参照。以下は監査時点の履歴を含む。後続DraftではP15のSSEへ通し番号付き心拍を追加し、正常な接続での静穏時再取得を削減した。390px幅・独立ラボ・Next.js本番ビルドの24秒待機でAPI要求12→6回、SSE遮断時にはsnapshotと監査ログの代替取得が続いた。[測定値](STATUS_EXPOSURE_INTEGRATION.md)は各1回であり、Cloudflare経由の遅延や失効通知の遅れは未測定。
+最新の開発コードとP01〜P45の対応表は[CURRENT_FLOW.md](CURRENT_FLOW.md)を参照。以下は監査時点の履歴を含む。後続DraftではP15のSSEへ通し番号付き心拍を追加し、正常な接続での静穏時再取得を削減した。390px幅・独立ラボ・Next.js本番ビルドの24秒待機でAPI要求12→6回、SSE遮断時にはsnapshotと監査ログの代替取得が続いた。[測定値](STATUS_EXPOSURE_INTEGRATION.md)は各1回であり、Cloudflare経由の遅延や失効通知の遅れは未測定。
 
 対象: `codex/flow-audit-gates`（基礎監査は`codex/process-chain-optimization`）。起点は [REQUEST_FLOW.md](REQUEST_FLOW.md)。実コードの機械抽出結果は [PROCESS_INVENTORY.json](PROCESS_INVENTORY.json)、再生成は `python3 scripts/flow_inventory.py > docs/PROCESS_INVENTORY.json`。この抽出は**ソースの条件式・定義・呼び出し箇所の一覧**であり、動的に構成するパスと環境変数の実行先をすべて解決した呼び出しグラフではない。以下の手動追跡と組み合わせて読む。
 
 ## PR #85統合候補での機械抽出更新（2026-11-18）
 
-`scripts/flow_inventory.py`を最新コード`d199021`で再実行した。前回の追跡済みJSONと比較すると、バックエンド関数791→815、API分岐条件75→81、通信・プロセス呼出し32→38、Web API参照62→63、Web関数198→203、ARTEX overlay関数27→28。バックグラウンド起動26とGo通信箇所7は同数だった。新規分岐6件は診断結果・ログ・イベント・レポートの送信前権限確認と、緊急停止・一時停止を除く操作条件。通信箇所の新規7件は外部AI/PlannerのHTTPS送出と、モデルURLのプロキシ無効化経路に関係する。P42〜P44にはモデル応答拒否、`router/status`の組織分離、画面出所を追加した。
+`scripts/flow_inventory.py`を最新コード`d199021`で再実行した。前回の追跡済みJSONと比較すると、バックエンド関数791→815、API分岐条件75→81、通信・プロセス呼出し32→38、Web API参照62→63、Web関数198→203、ARTEX overlay関数27→28。バックグラウンド起動26とGo通信箇所7は同数だった。新規分岐6件は診断結果・ログ・イベント・レポートの送信前権限確認と、緊急停止・一時停止を除く操作条件。通信箇所の新規7件は外部AI/PlannerのHTTPS送出と、モデルURLのプロキシ無効化経路に関係する。P42〜P45にはモデル応答拒否、`router/status`の組織分離、画面出所、動的な模擬・承認APIを追加した。
 
-固定APIパス39件を`REQUEST_FLOW.md`と再照合すると、文字列として未掲載の29件は以前と同じだった。下表の処理IDで役割を追えるが、動的URLの実到達、組織別権限の全組合せ、外部送信先の実値を静的抽出で証明できない。このため[完了判定表](GOAL_COMPLETION_MATRIX.md)では処理系統の網羅性を別に評価する。
+固定APIパス39件を`REQUEST_FLOW.md`と再照合すると、文字列として未掲載の29件は以前と同じだった。下表の処理IDで役割を追える。固定文字列に現れない`base + '/lab-mode'`、`/request-l2`、`/verify-finding`、`/approvals/{req_id}`はP45で手動追跡した。動的URLの実到達、組織別権限の全組合せ、外部送信先の実値を静的抽出で証明できないため、[完了判定表](GOAL_COMPLETION_MATRIX.md)では処理系統の網羅性を別に評価する。
 
 ## 後続Draft PR #53〜#55の現在地
 
