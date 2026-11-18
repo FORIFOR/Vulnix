@@ -699,6 +699,23 @@ class PlannerLLMGateway:
                 raise _BadResponse(json.dumps(resp, ensure_ascii=False)[:4096].encode()
                                    if isinstance(resp, (dict, list)) else b"")
             self._settle(rec, clean, resp, prompt_tokens)
+            if not self._failed.is_set():
+                incomplete = any(
+                    ch.get("finish_reason") not in ("stop", "tool_calls")
+                    or (ch.get("finish_reason") == "tool_calls"
+                        and not ch["message"].get("tool_calls"))
+                    or (ch.get("finish_reason") == "stop"
+                        and bool(ch["message"].get("tool_calls")))
+                    or not ((isinstance(ch["message"].get("content"), str)
+                             and ch["message"]["content"].strip())
+                            or ch["message"].get("tool_calls"))
+                    for ch in resp["choices"])
+                if incomplete:
+                    # Return the response so a caller can classify its exact
+                    # failure; the run is terminal and ARTEX discards its plan.
+                    self._failed.set()
+                    rec.reason = "incomplete_completion"
+                    self.failure = {"index": rec.index, "error_type": "IncompleteCompletion"}
         except GatewayRefused as e:
             self._release(rec, e.code)
             raise
@@ -725,7 +742,8 @@ class PlannerLLMGateway:
             if self._tools_sha is None and clean.get("tools"):
                 self._tools_sha = tools_sha
         self._record("planner_llm.call", rec, extra=_response_shape(resp, clean.get("tools") or []))
-        if self._failed.is_set():
+        if (self._failed.is_set() and (self.failure or {}).get("error_type")
+                in ("UsageExceededBudget", "InvalidUsage")):
             # Provider usage exceeded the reserved budget. Do not expose a
             # syntactically valid answer as an adoptable planner result.
             return 409, {"error": {"message": "upstream usage exceeded the run budget"}}

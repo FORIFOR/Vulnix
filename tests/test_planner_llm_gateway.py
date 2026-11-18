@@ -31,7 +31,7 @@ def chat(text="lab.test を計画して", tools=("add_intent",), **extra):
 
 
 def canned(_body):
-    return {"choices": [{"message": {"role": "assistant", "content": "ok"}}],
+    return {"choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
             "usage": {"prompt_tokens": 10, "completion_tokens": 5}}
 
 
@@ -195,6 +195,33 @@ class TestPreviewSendsNothing(unittest.TestCase):
 
 
 class TestBudgets(unittest.TestCase):
+    def test_real_upstream_marks_unfinished_or_unknown_completion_terminal(self):
+        for finish in ("length", "content_filter", "unexpected", None):
+            with self.subTest(finish=finish):
+                response = {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
+                if finish is not None:
+                    response["choices"][0]["finish_reason"] = finish
+                with forward(lambda *_: json.dumps(response).encode(), audit=Audit()) as gw:
+                    code, _ = post(gw, chat())
+                    self.assertEqual(post(gw, chat())[0], 403)
+                self.assertEqual(code, 200)
+                self.assertTrue(gw.failed)
+                self.assertEqual(gw.report()["failed_upstream"]["error_type"], "IncompleteCompletion")
+
+    def test_finish_reason_must_match_tool_call_shape(self):
+        tool_call = {"id": "c1", "type": "function",
+                     "function": {"name": "add_intent", "arguments": "{}"}}
+        for finish, calls in (("tool_calls", None), ("stop", [tool_call])):
+            with self.subTest(finish=finish):
+                message = {"role": "assistant", "content": "ok"}
+                if calls is not None:
+                    message["tool_calls"] = calls
+                response = {"choices": [{"message": message, "finish_reason": finish}]}
+                with forward(lambda *_: json.dumps(response).encode(), audit=Audit()) as gw:
+                    self.assertEqual(post(gw, chat())[0], 200)
+                self.assertTrue(gw.failed)
+                self.assertEqual(gw.report()["failed_upstream"]["error_type"], "IncompleteCompletion")
+
     def test_dense_unicode_cost_reserves_utf8_bytes_before_any_send(self):
         body = chat("あ" * 1000 + " lab.test")
         with preview() as sample:
@@ -229,7 +256,7 @@ class TestBudgets(unittest.TestCase):
 
         def high_usage(*_args):
             sent.append(1)
-            return json.dumps({"choices": [{"message": {"content": "ok"}}],
+            return json.dumps({"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
                                "usage": {"prompt_tokens": 10_000, "completion_tokens": 5}}).encode()
 
         budget = Budget(max_calls=3, max_total_tokens=20_000, max_cost_usd=0.009,
@@ -596,14 +623,14 @@ class TestResponseShapeIsAudited(unittest.TestCase):
         self.assertEqual(f["content_chars"], 0)
         self.assertNotIn("SECRET-NOT-OFFERED", json.dumps(f))
 
-    def test_odd_tool_call_entries_still_answer_once_and_keep_the_run_open(self):
+    def test_odd_tool_call_entries_are_audited_but_end_the_run(self):
         for bad in ({"function": "x"}, {"function": ["a"]}, {}, {"function": {"name": 7}}):
             audit = Audit()
             resp = {"choices": [{"message": {"role": "assistant", "content": [{"type": "text"}],
                                              "tool_calls": [bad]}, "finish_reason": {"x": "EVIL"}}]}
             with forward(lambda *a: json.dumps(resp).encode(), audit=audit) as gw:
                 self.assertEqual(post(gw, chat())[0], 200, bad)
-                self.assertFalse(gw._failed.is_set())
+                self.assertTrue(gw._failed.is_set())
             calls = [e["fields"] for e in audit.entries if e["event"] == "planner_llm.call"]
             self.assertEqual(len(calls), 1, bad)
             self.assertEqual(calls[0]["tool_call_names"], ["(other)"])
@@ -896,7 +923,7 @@ class TestReplayedModelTurns(unittest.TestCase):
 
         def transport(_u, _h, body):
             sent.append(json.loads(body))
-            return json.dumps({"choices": [{"message": turn}], "usage": {"prompt_tokens": 1,
+            return json.dumps({"choices": [{"message": turn, "finish_reason": "tool_calls"}], "usage": {"prompt_tokens": 1,
                                                                             "completion_tokens": 1}}).encode()
         smuggle = "internal db at 10.0.0.5, password: hunter2hunter2"
         variants = [
@@ -1115,7 +1142,7 @@ class TestReviewRoundFive(unittest.TestCase):
         replies = iter(turns)
 
         def t(*_a):
-            return json.dumps({"choices": [{"message": next(replies)}],
+            return json.dumps({"choices": [{"message": next(replies), "finish_reason": "tool_calls"}],
                                "usage": {"prompt_tokens": 1, "completion_tokens": 1}}).encode()
         with self.gw(t) as gw:
             self.assertEqual(post(gw, chat())[0], 200)

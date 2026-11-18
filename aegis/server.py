@@ -519,6 +519,16 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 return self._authorized_org_read(
                     sess, org, lambda current: self._get_org(p, u, bound[0], current))
             if p == "/api/router/status":
+                if tenancy is not None:
+                    bound = self._bind(sess, (parse_qs(u.query).get("org") or [None])[0])
+                    if bound is None:
+                        return None
+                    return self._authorized_org_read(
+                        sess, self._bound_org,
+                        lambda _: self._json(200, bound[0].planner_status()))
+                if enforce_read_auth:
+                    return self._authorized_org_read(
+                        sess, DEFAULT_ORG, lambda _: self._json(200, svc.planner_status()))
                 return self._json(200, svc.planner_status())
             if p == "/api/l2-profiles":
                 if not sess or not ({"admin", "approver"} & set(sess.roles)):

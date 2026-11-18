@@ -1284,6 +1284,20 @@ class TestReviewFixesOverHttp(TestTenantIsolationOverHttp):
         self.assertNotIn("legacy-secret-host", st)
         self.assertEqual(self.req(p, "/system/status")[0], 200)
 
+    def test_planner_status_is_the_callers_own_org(self):
+        a, b = self.signup("planstatusa"), self.signup("planstatusb")
+        a_org, b_org = a["orgs"][0]["id"], b["orgs"][0]["id"]
+        a_svc, b_svc = self.reg.service(a_org), self.reg.service(b_org)
+        with patch.object(self.svc, "planner_status", return_value={"model_name": "default-only"}), \
+                patch.object(a_svc, "planner_status", return_value={"model_name": "a-only"}), \
+                patch.object(b_svc, "planner_status", return_value={"model_name": "b-only"}):
+            self.assertEqual(self.req(a, "/router/status"), (200, {"model_name": "a-only"}))
+            self.assertEqual(self.req(b, "/router/status"), (200, {"model_name": "b-only"}))
+            self.assertEqual(self.req(a, "/router/status", org=b_org)[0], 403)
+            self.assertEqual(self.req(b, "/router/status", org="default")[0], 403)
+            self.ops.logout(a["cookie"].split("=", 1)[1])
+            self.assertEqual(self.req(a, "/router/status")[0], 401)
+
     def test_account_events_go_to_the_platform_audit_not_the_default_org(self):
         self.signup("alice")
         default_events = {e["event"] for e in self.svc.audit.entries()}
