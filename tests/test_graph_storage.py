@@ -38,7 +38,7 @@ class GraphStoreTest(unittest.TestCase):
         loaded = self.store.load_graph(snapshot)
         self.assertEqual(loaded, self.graph)
         self.assertEqual(len(loaded.evidence), len(self.graph.evidence))
-        self.assertEqual(self.store.schema_version(), 3)
+        self.assertEqual(self.store.schema_version(), 4)
 
     def test_same_key_different_content_is_rejected(self):
         self.store.save_snapshot("repo-lab", self.graph, "python-ast-v1")
@@ -81,6 +81,36 @@ class GraphStoreTest(unittest.TestCase):
         bad = SecurityGraph(self.graph.commit_sha, self.graph.nodes, (bad_edge,), self.graph.evidence)
         with self.assertRaises(ValueError):
             self.store.save_snapshot("repo-lab", bad, "python-ast-v1")
+
+    def test_mcp_validation_is_immutable_and_bound_to_snapshot_node(self):
+        snapshot = self.store.save_snapshot("repo-lab", self.graph, "python-ast-v1")
+        node_id = self.graph.nodes[0].id
+        payload = {"validation_id": "mcp-v1", "candidate_id": "candidate-v1",
+                   "tool_id": node_id, "synthetic_only": True}
+        self.store.append_mcp_validation(snapshot, "mcp-v1", "candidate-v1", node_id, payload)
+        self.store.append_mcp_validation(snapshot, "mcp-v1", "candidate-v1", node_id, payload)
+        self.assertEqual(self.store.mcp_validations(snapshot), [payload])
+        with self.assertRaises(ValueError):
+            self.store.append_mcp_validation(snapshot, "mcp-v1", "candidate-v1", node_id,
+                                             {**payload, "synthetic_only": False})
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.store.append_mcp_validation(snapshot, "mcp-v2", "candidate-v1", "missing",
+                                             {**payload, "validation_id": "mcp-v2", "tool_id": "missing"})
+        with self.assertRaises(sqlite3.DatabaseError):
+            self.store.connection.execute("UPDATE graph_mcp_validations SET candidate_id='other'"
+                                          " WHERE snapshot_id=?", (snapshot,))
+
+    def test_v3_schema_migrates_without_rewriting_snapshot(self):
+        snapshot = self.store.save_snapshot("repo-lab", self.graph, "python-ast-v1")
+        path = self.root / "tenant-a" / "security-graph.sqlite"
+        self.store.close()
+        with sqlite3.connect(path) as connection:
+            connection.execute("DROP TABLE graph_mcp_validations")
+            connection.execute("PRAGMA user_version = 3")
+        with GraphStore(path) as upgraded:
+            self.assertEqual(upgraded.schema_version(), 4)
+            self.assertEqual(upgraded.load_graph(snapshot), self.graph)
+            self.assertEqual(upgraded.mcp_validations(snapshot), [])
 
 
 if __name__ == "__main__":

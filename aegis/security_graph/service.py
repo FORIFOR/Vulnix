@@ -14,6 +14,7 @@ from aegis.remediation.patch_validator import validate_patch
 from aegis.research.hypotheses import Hypothesis
 from aegis.research.planner import RuleBasedResearchModel, research
 from aegis.validation.broker import ValidationBroker
+from aegis.validation.mcp_broker import McpValidationBroker
 from .builder import build_graph
 from .paths import candidate_paths
 from .sqlite_store import GraphStore, PARSER_VERSION
@@ -86,6 +87,36 @@ class GraphService:
         with GraphStore(self.database) as store:
             graph = store.load_graph(snapshot_id)
         return [asdict(item) for item in review_mcp_tool_scope(graph)]
+
+    def mcp_validations(self, snapshot_id: str) -> list[dict]:
+        with GraphStore(self.database) as store:
+            return store.mcp_validations(snapshot_id)
+
+    def validate_mcp_synthetic(self, snapshot_id: str, candidate_id: str,
+                               *, commit_guard=None) -> dict:
+        """Bind a fixed control result to a registered synthetic source only."""
+        if commit_guard is None or self.worker_pool_provider is None:
+            raise ValueError("authorization lease and shared worker pool required")
+        with GraphStore(self.database) as store:
+            graph = store.load_graph(snapshot_id)
+            row = next((item for item in store.list_snapshots() if item["id"] == snapshot_id), None)
+        candidate = next((item for item in review_mcp_tool_scope(graph) if item.id == candidate_id), None)
+        if row is None or candidate is None:
+            raise KeyError(candidate_id)
+        with self._lock:
+            sources = [item for item in self._sources.values()
+                       if item.repository_id == row["repository_id"] and item.commit_sha == graph.commit_sha]
+        if len(sources) != 1:
+            raise ValueError("registered synthetic source required")
+        root = open_pinned_local_checkout(sources[0].checkout, sources[0].commit_sha)
+        if read_pinned_file(root, sources[0].commit_sha, ".vulnix-synthetic-lab") != "synthetic-only\n":
+            raise ValueError("only registered synthetic source is allowed")
+        result = McpValidationBroker(graph, root, pool=self.worker_pool_provider(),
+                                     prelaunch=commit_guard).validate(candidate)
+        with commit_guard(), GraphStore(self.database) as store:
+            store.append_mcp_validation(snapshot_id, result["validation_id"], candidate.id,
+                                        candidate.tool_id, result)
+        return result
 
     def evidence(self, snapshot_id: str, *, limit: int = 500) -> list[dict]:
         if not 1 <= limit <= 500:

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .models import Evidence, GraphEdge, GraphNode, SecurityGraph
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 PARSER_VERSION = "source-ast-v5"
 
 
@@ -54,10 +54,10 @@ class GraphStore:
         self.connection.row_factory = sqlite3.Row
         self.connection.execute("PRAGMA foreign_keys = ON")
         current = self.schema_version()
-        if current not in (0, 1, 2, SCHEMA_VERSION):
+        if current not in (0, 1, 2, 3, SCHEMA_VERSION):
             self.connection.close()
             raise ValueError("unsupported graph schema version")
-        if current in (0, 1, 2):
+        if current in (0, 1, 2, 3):
             self.connection.executescript((Path(__file__).parent / "schema.sql").read_text())
             self.connection.commit()
 
@@ -175,3 +175,36 @@ class GraphStore:
         self.load_graph(snapshot_id)  # refuse nonexistent or incomplete snapshot
         return [json.loads(row[0]) for row in self.connection.execute(
             f"SELECT payload_json FROM {table} WHERE snapshot_id=? ORDER BY rowid", (snapshot_id,))]
+
+    def append_mcp_validation(self, snapshot_id: str, validation_id: str,
+                              candidate_id: str, tool_id: str, payload: dict) -> None:
+        """Keep synthetic MCP observations separate from AI hypothesis verdicts."""
+        if (not validation_id or len(validation_id) > 100 or not candidate_id or
+                len(candidate_id) > 100 or not tool_id or
+                payload.get("validation_id") != validation_id or
+                payload.get("candidate_id") != candidate_id or
+                payload.get("tool_id") != tool_id):
+            raise ValueError("invalid MCP validation record")
+        data = _canonical(payload)
+        if len(data) > 64_000:
+            raise ValueError("MCP validation record too large")
+        self.load_graph(snapshot_id)  # complete snapshot in this tenant only
+        with self.connection:
+            self.connection.execute("BEGIN IMMEDIATE")
+            found = self.connection.execute(
+                "SELECT payload_json FROM graph_mcp_validations WHERE snapshot_id=? AND validation_id=?",
+                (snapshot_id, validation_id)).fetchone()
+            if found:
+                if found[0] != data:
+                    raise ValueError("immutable MCP validation differs")
+                return
+            self.connection.execute(
+                "INSERT INTO graph_mcp_validations VALUES (?,?,?,?,?,?)",
+                (snapshot_id, validation_id, candidate_id, tool_id, data,
+                 datetime.now(timezone.utc).isoformat()))
+
+    def mcp_validations(self, snapshot_id: str) -> list[dict]:
+        self.load_graph(snapshot_id)
+        return [json.loads(row[0]) for row in self.connection.execute(
+            "SELECT payload_json FROM graph_mcp_validations WHERE snapshot_id=? ORDER BY rowid",
+            (snapshot_id,))]
