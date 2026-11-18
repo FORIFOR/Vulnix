@@ -6,10 +6,10 @@
 
 - `aegis/security_graph/`: 組織別 SQLite、コミット固定の不変スナップショット、Python/TypeScript AST による FastAPI/Next.js の基本関係、根拠参照、8ホップ/5,000状態/100経路の有界探索、修正効果の予測、コミット間の構造比較。
 - `aegis/research/`: 交換可能な研究モデル、オフライン基準モデル、ARTEXの検証済み構造化出力からのアダプタ、根拠照合と反証処理。実ARTEX/実LLMの採用率は未検証。Abliteration AI の実回答0/2の未合格状態は変わらない。
-- `aegis/validation/`, `aegis/remediation/`: 登録済み合成2組織の固定fixtureだけをMacのsandbox-exec、Linuxでは既存KernelConfinementのcgroup/nftables/名前空間で検証する経路を実装し、ローカルDraft差分を生成。Linux実機での新経路はCI待ち。AssessmentServiceの共有WorkerPoolを使うため、緊急停止の対象に入る。GraphServiceが仮説・検証・修正を組織別DBに保存。顧客コードの任意実行・実PR作成は行わない。
+- `aegis/validation/`, `aegis/remediation/`: 登録済み合成2組織の固定fixtureだけをMacのsandbox-exec、Linuxでは既存KernelConfinementのcgroup/nftables/名前空間で検証する経路を実装し、ローカルDraft差分を生成。Linux実機での新経路はCI待ち。AssessmentServiceの共有WorkerPoolを使うため、緊急停止の対象に入る。Worker起動直前の組織権限リースと結果保存前の再確認を通す。GraphServiceが仮説・検証・修正を組織別DBに保存。顧客コードの任意実行・実PR作成は行わない。
 - `aegis/server.py`: 組織境界、既存セッション/CSRF/監査/ロール再確認を通すGraph API。HTTPから任意パスやURLを入力できない。
 - `web/src/app/security-graph/`, `attack-paths/`, `remediations/`: 日本語の経路・根拠・予測・合成修正表示。390pxと1280pxのChromium実ブラウザでグラフ選択、証拠、修正効果、横幅はみ出し無しを確認（合成APIモック、`/tmp/vulnix_graph_browser_test.py`）。さらに実バックエンド＋Next.jsの通しE2Eで、合成Next.js＋FastAPIのGitソース登録→解析→仮説→Mac隔離検証→Draft差分表示を両幅で確認（`/tmp/vulnix_graph_live_browser.py`）。
-- 新規関連テスト41件、Web123件成功。`ruff check aegis tests`成功。Web lintはエラー0・既存警告5、build成功。日本語の検証状態表示を追加後、実バックエンドの390px/1280pxブラウザE2Eも再成功。バックエンド全テストは実行中で、結果を確認して更新する。
+- 新規関連テスト42件、Web123件成功。`ruff check aegis tests`成功。Web lintはエラー0・既存警告5、build成功。日本語の検証状態表示を追加後、実バックエンドの390px/1280pxブラウザE2Eも再成功。バックエンド全テストは実行中で、結果を確認して更新する。
 
 ## 未完了のゲート
 

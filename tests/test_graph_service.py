@@ -2,6 +2,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 
 from aegis.security_graph.service import GraphService, SourceRegistration
@@ -69,6 +70,25 @@ class GraphServiceTest(unittest.TestCase):
         self.assertEqual(len(self.service.remediations(snapshot)), 1)
         self.assertEqual(self.service.validate_synthetic(snapshot, hypothesis["hypothesis_id"]), result)
         self.assertEqual(shared_pool.active_pids(), [])
+
+    @unittest.skipUnless(sys.platform == "darwin", "checks macOS worker launch lease")
+    def test_revoked_lease_prevents_synthetic_worker_launch(self):
+        shared_pool = WorkerPool(max_concurrent=1, cpu_seconds=2)
+        self.service.worker_pool_provider = lambda: shared_pool
+        snapshot = self.service.import_source("lab")
+        hypothesis = next(item for item in self.service.research(snapshot)
+                          if any(node["name"] == "get_order" and node["id"] in item["affected_nodes"]
+                                 for node in self.service.nodes(snapshot)))
+
+        @contextmanager
+        def revoked():
+            raise PermissionError("revoked before launch")
+            yield
+
+        with self.assertRaises(PermissionError):
+            self.service.validate_synthetic(snapshot, hypothesis["hypothesis_id"], commit_guard=revoked)
+        self.assertEqual(shared_pool.active_pids(), [])
+        self.assertEqual(self.service.validations(snapshot), [])
 
     def test_unregistered_source_and_cross_tenant_snapshot_rejected(self):
         with self.assertRaises(KeyError):

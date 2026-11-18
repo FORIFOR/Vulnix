@@ -133,7 +133,8 @@ class GraphService:
         hypothesis = Hypothesis(**{key: tuple(value) if isinstance(value, list) else value
                                     for key, value in proposed.items()})
         broker = ValidationBroker(graph, root,
-                                  pool=self.worker_pool_provider() if self.worker_pool_provider else None)
+                                  pool=self.worker_pool_provider() if self.worker_pool_provider else None,
+                                  prelaunch=commit_guard)
         before = broker.validate(hypothesis)
         if before.status != "confirmed_in_synthetic_lab":
             result = {"hypothesis_id": hypothesis_id, "validation_id": f"{hypothesis_id}-before",

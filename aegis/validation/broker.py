@@ -11,10 +11,11 @@ from .verdicts import Verdict
 
 
 class ValidationBroker:
-    def __init__(self, graph: SecurityGraph, checkout: Path, *, pool=None):
+    def __init__(self, graph: SecurityGraph, checkout: Path, *, pool=None, prelaunch=None):
         self.graph = graph
         self.checkout = checkout
         self.pool = pool
+        self.prelaunch = prelaunch
 
     def validate(self, hypothesis: Hypothesis, *, replacement_source: str | None = None) -> Verdict:
         if (hypothesis.verdict != "unverified" or
@@ -31,7 +32,7 @@ class ValidationBroker:
         source = replacement_source if replacement_source is not None else pinned_source
         if "class App:" not in source or "class Store:" not in source:
             raise ValueError("only the synthetic fixture is supported")
-        observed = run_synthetic_case(source, pool=self.pool)
+        observed = run_synthetic_case(source, pool=self.pool, prelaunch=self.prelaunch)
         own = observed["own"]["returned_org"] == "org-a" and not observed["own"]["denied"]
         cross = observed["other"]["returned_org"] == "org-b" and not observed["other"]["denied"]
         denied = observed["other"]["denied"] and observed["other"]["returned_org"] is None
