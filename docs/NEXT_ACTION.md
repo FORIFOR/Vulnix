@@ -1,5 +1,12 @@
 # Security Graph v2 作業の再開点
 
+## MCP経路の誤検知修正（2026-11-19）
+
+- 現行作業ツリーは `/Users/shuhei/Projects/Vulnix-graph-mcp-validation`、ブランチ `codex/graph-mcp-validation`、コードコミット `05bb593`、[Draft PR #89](https://github.com/FORIFOR/Vulnix/pull/89)。PR #88 の最新ヘッド `1cc2d9e` の上に積んだ。
+- 未実行の入れ子関数・lambda・クラス本体にある読み取りを、MCPツールの直接アクセス経路へ誤って帰属しないようPython AST走査を修正。その場で呼ぶlambdaの読み取りは維持。解析器版を `source-ast-v5` に上げ、旧スナップショットを混ぜない。
+- 失敗を先に確認したテストを含む関連30件、Ruff、Web124件、lintエラー0（既存警告5）、build成功。ローカルPython全件およびPR #88最新ヘッドのLinux CI #44326880415は確認中。実行時のMCP権限、外部文書注入、顧客コードの隔離実行は未検証。
+- 再開時は `git status --short --branch`、`git diff --check`、ローカル全件ログ `/tmp/vulnix-mcp-validation-backend.log`、Linux CI #44326880415 と #44326241981 を確認する。PR #89 の最新コミットについてLinux CIを実行し、成功後にPR本文へ証拠を追記する。次の実装は合成MCPツールの実行時権限・承認を固定ハーネスで検証し、構造上の候補と実証結果を分けて保存する。
+
 ## AI/MCP拡張の現在地
 
 - 現行作業ツリーは `/Users/shuhei/Projects/Vulnix-graph-mcp-scope`、ブランチ `codex/graph-mcp-scope`、コードコミット `6aae9ff`。基点はMCPツール構造抽出の[Draft PR #87](https://github.com/FORIFOR/Vulnix/pull/87)（`267f7d2`）、本変更は[Draft PR #88](https://github.com/FORIFOR/Vulnix/pull/88)。元の[Graph PR #86](https://github.com/FORIFOR/Vulnix/pull/86)は `1fff083` でLinux CI #44311300150 の3ジョブ成功。
