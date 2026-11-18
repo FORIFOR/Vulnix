@@ -714,6 +714,7 @@ class PlannerLLMGateway:
                     # Return the response so a caller can classify its exact
                     # failure; the run is terminal and ARTEX discards its plan.
                     self._failed.set()
+                    rec.decision = "failed"
                     rec.reason = "incomplete_completion"
                     self.failure = {"index": rec.index, "error_type": "IncompleteCompletion"}
         except GatewayRefused as e:
@@ -798,6 +799,7 @@ class PlannerLLMGateway:
                     any(k in usage and (type(usage[k]) is not int or usage[k] < 0)
                         for k in ("prompt_tokens", "completion_tokens"))):
                 self._failed.set()
+                rec.decision = "failed"
                 rec.reason = "invalid_usage"
                 self.failure = {"index": rec.index, "error_type": "InvalidUsage"}
             elif isinstance(usage, dict) and usage:
@@ -815,6 +817,7 @@ class PlannerLLMGateway:
                 if (self._tokens_used > self.budget.max_total_tokens
                         or self._cost_used > self.budget.max_cost_usd):
                     self._failed.set()
+                    rec.decision = "failed"
                     rec.reason = "usage_exceeded_budget"
                     self.failure = {"index": rec.index, "error_type": "UsageExceededBudget"}
             # no usage figures: the reserved worst case stays charged

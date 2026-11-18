@@ -207,6 +207,7 @@ class TestBudgets(unittest.TestCase):
                 self.assertEqual(code, 200)
                 self.assertTrue(gw.failed)
                 self.assertEqual(gw.report()["failed_upstream"]["error_type"], "IncompleteCompletion")
+                self.assertEqual(gw.report()["failed"], 1)
 
     def test_finish_reason_must_match_tool_call_shape(self):
         tool_call = {"id": "c1", "type": "function",
@@ -221,6 +222,7 @@ class TestBudgets(unittest.TestCase):
                     self.assertEqual(post(gw, chat())[0], 200)
                 self.assertTrue(gw.failed)
                 self.assertEqual(gw.report()["failed_upstream"]["error_type"], "IncompleteCompletion")
+                self.assertEqual(gw.report()["failed"], 1)
 
     def test_dense_unicode_cost_reserves_utf8_bytes_before_any_send(self):
         body = chat("あ" * 1000 + " lab.test")

@@ -318,6 +318,7 @@ class TestSelectionModelEval(unittest.TestCase):
         self.assertIsNone(result["selection"])
         self.assertEqual(result["selected_case_ids"], [])
         self.assertEqual(result["reject_reason"], "gateway_terminal_response")
+        self.assertEqual(result["gateway"]["failed"], 1)
         self.assertEqual(result["gateway"]["failed_upstream"]["error_type"], "IncompleteCompletion")
 
     def test_missing_content_is_reported_after_the_only_model_call(self):
