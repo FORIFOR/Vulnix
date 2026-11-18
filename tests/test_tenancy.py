@@ -1789,6 +1789,126 @@ class TestPublicReadOnlyRealSites(TestTenantIsolationOverHttp):
         with patch("aegis.ownership.default_dns_txt_lookup", return_value=[f'"{token}"']):
             return self.req(who, "/assets/verify-ownership", {"host": host, "method": "dns_txt"})
 
+    def test_logout_after_challenge_commit_cannot_receive_ownership_token(self):
+        who = self.signup("latechallenge")
+        org_id = who["orgs"][0]["id"]
+        svc = self.reg.service(org_id)
+        entered, release = threading.Event(), threading.Event()
+        response = []
+        original_assets = svc.assets
+
+        def delayed_assets():
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError("challenge response did not release")
+            return original_assets()
+
+        with patch.object(svc, "assets", side_effect=delayed_assets):
+            worker = threading.Thread(target=lambda: response.append(self.req(
+                who, "/assets/challenge", {"url": "https://owned.example/"})), daemon=True)
+            worker.start()
+            try:
+                self.assertTrue(entered.wait(5))
+                self.ops.logout(who["cookie"].split("=", 1)[1])
+            finally:
+                release.set()
+                worker.join(5)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(response[0][0], 401)
+        self.assertNotIn("dns_txt", response[0][1])
+
+    def test_role_downgrade_after_challenge_commit_hides_ownership_token(self):
+        owner, member = self.signup("lateowner"), self.signup("latemember")
+        org_id = owner["orgs"][0]["id"]
+        _, invite = self.reg.store.create_invite(org_id, "lateowner", ["runner"])
+        self.reg.store.accept_invite(invite, "latemember")
+        svc = self.reg.service(org_id)
+        entered, release = threading.Event(), threading.Event()
+        response = []
+        original_assets = svc.assets
+
+        def delayed_assets():
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError("role downgrade response did not release")
+            return original_assets()
+
+        with patch.object(svc, "assets", side_effect=delayed_assets):
+            worker = threading.Thread(target=lambda: response.append(self.req(
+                member, "/assets/challenge", {"url": "https://owned.example/"}, org=org_id)), daemon=True)
+            worker.start()
+            try:
+                self.assertTrue(entered.wait(5))
+                self.reg.store.set_roles(org_id, "lateowner", "latemember", ["viewer"])
+            finally:
+                release.set()
+                worker.join(5)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(response[0][0], 403)
+        self.assertNotIn("dns_txt", response[0][1])
+
+    def test_logout_after_proof_commit_cannot_receive_ownership_result(self):
+        who = self.signup("lateproof")
+        host = "owned.example"
+        self.assertEqual(self.req(who, "/assets/challenge", {"url": f"https://{host}/"})[0], 200)
+        svc = self.reg.service(who["orgs"][0]["id"])
+        from aegis.ownership import challenge_for_host
+        token = challenge_for_host(host, svc._ownership_secret)["token"]
+        entered, release = threading.Event(), threading.Event()
+        response = []
+        original_assets = svc.assets
+
+        def delayed_assets():
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError("proof response did not release")
+            return original_assets()
+
+        with patch("aegis.ownership.default_dns_txt_lookup", return_value=[f'"{token}"']), \
+                patch.object(svc, "assets", side_effect=delayed_assets):
+            worker = threading.Thread(target=lambda: response.append(self.req(
+                who, "/assets/verify-ownership", {"host": host, "method": "dns_txt"})), daemon=True)
+            worker.start()
+            try:
+                self.assertTrue(entered.wait(5))
+                self.ops.logout(who["cookie"].split("=", 1)[1])
+            finally:
+                release.set()
+                worker.join(5)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(response[0][0], 401)
+        self.assertNotIn("verified", response[0][1])
+
+    def test_logout_after_scope_commit_cannot_receive_snapshot(self):
+        who = self.signup("latescope")
+        host = "owned.example"
+        self.assertEqual(self.req(who, "/assets/challenge", {"url": f"https://{host}/"})[0], 200)
+        self.assertTrue(self._verify(who, host)[1]["verified"])
+        svc = self.reg.service(who["orgs"][0]["id"])
+        entered, release = threading.Event(), threading.Event()
+        response = []
+        original_snapshot = svc.snapshot
+
+        def delayed_snapshot():
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError("scope response did not release")
+            return original_snapshot()
+
+        with patch.object(svc, "snapshot", side_effect=delayed_snapshot):
+            worker = threading.Thread(target=lambda: response.append(self.req(
+                who, "/assets/confirm-scope", {"host": host, "confirmed_prohibited": True})), daemon=True)
+            worker.start()
+            try:
+                self.assertTrue(entered.wait(5))
+                self.ops.logout(who["cookie"].split("=", 1)[1])
+            finally:
+                release.set()
+                worker.join(5)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(response[0][0], 401)
+        self.assertNotIn("snapshot", response[0][1])
+
     def test_logout_during_dns_lookup_cannot_grant_ownership(self):
         a = self.signup("alice")
         host = "next-standards.com"

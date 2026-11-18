@@ -350,10 +350,10 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             osvc.real_site_read_only = not REAL_SERVICE_DIAGNOSIS
             return osvc, dataclasses.replace(sess, roles=service_roles(roles))
 
-        def _authorized_org_read(self, sess, org, action):
+        def _authorized_org_read(self, sess, org, action, *, reader=True, approver=False):
             """Keep a protected response within the current account/member grant."""
             try:
-                with live_grant_roles(sess, org, reader=True) as current_roles:
+                with live_grant_roles(sess, org, reader=reader, approver=approver) as current_roles:
                     current_sess = dataclasses.replace(sess, roles=tuple(current_roles))
                     previous_timeout = self.connection.gettimeout()
                     self.connection.settimeout(2.0)
@@ -1210,7 +1210,10 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         environment=str(body.get("environment", "ステージング環境")),
                         grant_guard=lambda: live_grant_roles(sess, getattr(self, "_bound_org", DEFAULT_ORG)),
                     )
-                    return self._json(200, {**res, "assets": svc.assets()})
+                    payload = {**res, "assets": svc.assets()}
+                    return self._authorized_org_read(
+                        sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                        lambda _: self._json(200, payload), reader=False)
                 elif p == "/api/assets/google/start":
                     # Step 2 through Google: a one-time, short-lived state bound to this
                     # account, organization and host; the browser goes to Google with it
@@ -1242,7 +1245,10 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                                                 "host": g_host, "verifier": verifier,
                                                 "scheme": str(g_asset.get("scheme") or "https"),
                                                 "port": int(g_asset.get("port") or 443)}
-                    return self._json(200, {"url": google_ownership.authorization_url(cfg, state, challenge)})
+                    auth_url = google_ownership.authorization_url(cfg, state, challenge)
+                    return self._authorized_org_read(
+                        sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                        lambda _: self._json(200, {"url": auth_url}), reader=False)
                 elif p == "/api/assets/google/finish":
                     cfg = google_ownership.config()
                     if cfg is None:
@@ -1267,11 +1273,18 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     # checked against the scheme / port registered when the check started;
                     # the service refuses (under its lock) if the registration changed since
                     prop = google_ownership.covering_property(sites, g_host, st["scheme"], st["port"])
-                    res = svc.verify_asset_ownership(url_or_host=g_host, method=google_ownership.METHOD,
-                                                     actor=actor, roles=tuple(sess.roles), google_property=prop,
-                                                     google_endpoint=(st["scheme"], st["port"]),
-                                                     grant_guard=lambda: live_grant_roles(sess, bound_org))
-                    return self._json(200, {**res, "assets": svc.assets()})
+                    # Google's HTTP lookup is over. Keep the short grant commit
+                    # and its response in one live lease so logout cannot split them.
+                    # The outer lease supplies current roles; do not nest its
+                    # non-reentrant account lock through grant_guard.
+                    def finish_google(current):
+                        res = svc.verify_asset_ownership(url_or_host=g_host, method=google_ownership.METHOD,
+                                                         actor=actor, roles=tuple(current.roles), google_property=prop,
+                                                         google_endpoint=(st["scheme"], st["port"]))
+                        return self._json(200, {**res, "assets": svc.assets()})
+
+                    return self._authorized_org_read(
+                        sess, getattr(self, "_bound_org", DEFAULT_ORG), finish_google, reader=False)
                 elif p == "/api/assets/verify-ownership":
                     v_host = ""
                     try:
@@ -1288,7 +1301,10 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         roles=tuple(sess.roles),     # re-checked inside, when the result is applied
                         grant_guard=lambda: live_grant_roles(sess, getattr(self, "_bound_org", DEFAULT_ORG)),
                     )
-                    return self._json(200, {**res, "assets": svc.assets()})
+                    payload = {**res, "assets": svc.assets()}
+                    return self._authorized_org_read(
+                        sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                        lambda _: self._json(200, payload), reader=False)
                 elif p == "/api/assets/confirm-scope":
                     if "approver" not in sess.roles:
                         return self._json(403, {"error": "診断範囲の確定には承認責任者の権限が必要です"})
@@ -1306,7 +1322,10 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         grant_guard=lambda: live_grant_roles(sess, getattr(self, "_bound_org", DEFAULT_ORG),
                                                              approver=True),
                     )
-                    return self._json(200, {**res, "assets": svc.assets(), "snapshot": svc.snapshot()})
+                    payload = {**res, "assets": svc.assets(), "snapshot": svc.snapshot()}
+                    return self._authorized_org_read(
+                        sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                        lambda _: self._json(200, payload), reader=False, approver=True)
                 elif p == "/api/assets/secrets":
                     if "approver" not in sess.roles:
                         return self._json(403, {"error": "検証用アカウントの設定には承認責任者の権限が必要です"})
