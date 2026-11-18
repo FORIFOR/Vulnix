@@ -1,6 +1,6 @@
 # Vulnix Goal 完了判定表
 
-更新基点：[Draft PR #85](https://github.com/FORIFOR/Vulnix/pull/85)のコード `4f1ac7b`（`codex/goal-integration-readiness`）、`origin/main` `5ecfc51`。ローカル全バックエンド1,727件成功・27件スキップ・ResourceWarning 0件（1206.795秒）。Web118件・Lintエラー0/警告5・ビルド成功。[Linux CI #44178305443](https://github.com/FORIFOR/Vulnix/actions/runs/44178305443)はPython・Web・実ARTEXの3/3成功。PRはDraft・未マージ・正式GitHubレビュー0件。CI成功だけで公開βの実動作を証明したとは扱わない。
+更新基点：[Draft PR #85](https://github.com/FORIFOR/Vulnix/pull/85)の最新コード `247b1fc`（`codex/goal-integration-readiness`）、`origin/main` `5ecfc51`。ローカル全バックエンド1,729件成功・27件スキップ・ResourceWarning 0件（1207.817秒）。Web118件・Lintエラー0/警告5・ビルド成功。直前コードの[Linux CI #44178305443](https://github.com/FORIFOR/Vulnix/actions/runs/44178305443)はPython・Web・実ARTEXの3/3成功。新コードの最終CIは完了まで確認する。PRはDraft・未マージ・正式GitHubレビュー0件。CI成功だけで公開βの実動作を証明したとは扱わない。
 
 以下の既存コード・模擬テストの共通基点は `6475549` と上記CIである。新しい所有確認競合テスト・ブラウザ回帰は `f4de821` のローカル結果として明示する。各行のPASSは書かれた条件のみに適用する。公開β・実モデル・正式レビューはそれぞれ独立したゲートとして扱う。
 
@@ -8,7 +8,7 @@
 
 | 要件 | 判定 | 根拠と限界 | 担当工程 | 次のアクション |
 | --- | --- | --- | --- | --- |
-| 累積コードの統合候補 | PASS | PR #53〜#84を#85へ集約。`4f1ac7b`のローカル全1,727件成功・27件スキップ・警告0件。Web118件・Lint・ビルド成功。Linux CI #44178305443は3/3成功。統合候補のテストに限定 | 統合 | 正式独立レビューを完了する |
+| 累積コードの統合候補 | PASS | PR #53〜#84を#85へ集約。`247b1fc`のローカル全1,729件成功・27件スキップ・警告0件。Web118件・Lint・ビルド成功。直前コード`4f1ac7b`のLinux CI #44178305443は3/3成功。新コードのCIは確認中。統合候補のテストに限定 | 統合 | 新コードの最終CIと正式独立レビューを完了する |
 | 独立した正式GitHubレビュー | BLOCKED | #85の正式レビュー0件。別担当の読み取りレビューと表示文言の再確認は正式Approveではない | 統合 | 独立レビュアーによる正式レビューと指摘修正 |
 | mainへの統合 | BLOCKED | 所有者の事前承認が必要。実行していない | リリース | 正式レビュー・統合CI・公開判定資料を揃えて承認を受ける |
 | 実ARTEX→Gateway→隔離Worker→証拠 | PASS | ローカル模擬対象のブラウザE2EとLinux実ARTEXジョブが成功。実サイト全般は未実証 | 診断 | 同じ安全境界で未知条件を拡張 |
