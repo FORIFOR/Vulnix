@@ -841,6 +841,12 @@ class ConfinementSession:
                     relay.wait(timeout=5)       # killed with the cgroup; reaped here
                 except (subprocess.TimeoutExpired, OSError):
                     pass
+                finally:
+                    if relay.stdout is not None:
+                        try:
+                            relay.stdout.close()
+                        except OSError:
+                            pass
             if removed and getattr(self, "_netns", False):
                 ip = self._o._which("ip") or "/usr/sbin/ip"
                 r = self._o._run([*self._o._priv(), ip, "netns", "delete", self.name],

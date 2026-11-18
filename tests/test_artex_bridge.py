@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import io
 import json
 import os
 import shlex
@@ -1507,6 +1508,18 @@ class TestConfinementExtensionsKeepTheL2Path(unittest.TestCase):
         sess._teardown()                                   # raised AttributeError before
         self.assertFalse(sess.leftover)
         self.assertTrue(any(c[-4:] == ["delete", "table", "inet", "aegis_l2_0123456789ab"] for c in self.calls))
+
+    def test_teardown_closes_relay_read_pipe(self):
+        from aegis.confinement import ConfinementSession
+        owner = self.owner()
+        owner.fresh_identity = lambda: 4242
+        sess = ConfinementSession(owner, "127.0.0.1", 1)
+        relay = unittest.mock.Mock()
+        relay.stdout = io.StringIO("READY\n")
+        sess._relay = relay
+        sess._teardown()
+        self.assertTrue(relay.stdout.closed)
+        relay.wait.assert_called_once_with(timeout=5)
 
     def test_a_kill_freezes_the_cgroup_before_killing_and_entry_refuses_a_frozen_one(self):
         from aegis import confinement as cf
