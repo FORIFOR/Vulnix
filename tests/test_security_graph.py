@@ -90,6 +90,16 @@ class SecurityGraphTest(unittest.TestCase):
             '    return order')
         self.assertEqual(authorization_paths(self.build(nested))[0].status, "unknown")
 
+    def test_conditional_rejection_does_not_count_as_guard(self):
+        conditional = VULNERABLE.replace('    return order',
+            '    if order.org_id != identity["org_id"]:\n'
+            '        if identity.get("is_admin"):\n'
+            '            raise HTTPException(status_code=403)\n'
+            '    return order')
+        graph = self.build(conditional)
+        self.assertEqual(authorization_paths(graph)[0].status, "unknown")
+        self.assertEqual(len(research(graph, RuleBasedResearchModel())), 1)
+
     def test_bad_model_references_rejected(self):
         class BadModel:
             def propose(self, _):

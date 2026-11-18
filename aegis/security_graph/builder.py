@@ -39,7 +39,9 @@ def _guarded(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
         names = {_name(x) for x in ast.walk(node.test) if isinstance(x, (ast.Name, ast.Attribute))}
         resource = any("org" in n.lower() and ("order" in n.lower() or "resource" in n.lower()) for n in names)
         identity = any("identity" in n.lower() or "user" in n.lower() for n in names)
-        reject = any(isinstance(x, ast.Raise) for statement in node.body for x in ast.walk(statement))
+        # A nested branch may reject only some mismatches. Recognize a guard
+        # only when the mismatch branch itself raises unconditionally.
+        reject = bool(node.body) and isinstance(node.body[0], ast.Raise)
         if resource and identity and reject:
             return True
     return False
