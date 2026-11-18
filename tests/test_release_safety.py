@@ -805,6 +805,7 @@ class TestUntrustedAuthStateOverHttp(unittest.TestCase):
             self.assertNotEqual(self.post("/auth/login", {"name": "op", "password": "op-password"})[0], 200)
             code, body, _ = self.post("/assessments/scan_001/emergency-stop", {}, cookie)
             self.assertEqual(code, 200, body)                    # stopping is always possible
+            self.assertEqual(body, {"stopped": True, "details_unavailable": True})
         self.ops._last_retry = -1e9                              # (retries happen at most once a second)
         self.assertEqual(self.post("/auth/login", {"name": "op", "password": "op-password"})[0], 200)
 

@@ -1379,6 +1379,10 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     return self._json(200, result)
                 elif p == base + "/pause":
                     svc.pause(actor)
+                    if not ops.trusted():
+                        # A failed auth-state save must not disable a safety stop,
+                        # but its snapshot cannot be sent without a live grant.
+                        return self._json(200, {"stopped": True, "details_unavailable": True})
                     paused_snapshot = svc.snapshot()
                     return self._authorized_org_read(
                         sess, getattr(self, "_bound_org", DEFAULT_ORG),
@@ -1388,6 +1392,8 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         svc.resume(actor)
                 elif p == base + "/emergency-stop":
                     stop_report = svc.emergency_stop(actor)
+                    if not ops.trusted():
+                        return self._json(200, {"stopped": True, "details_unavailable": True})
                     return self._authorized_org_read(
                         sess, getattr(self, "_bound_org", DEFAULT_ORG),
                         lambda _: self._json(200, {"stop_report": stop_report}))
