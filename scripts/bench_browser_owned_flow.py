@@ -310,7 +310,7 @@ def main() -> None:
                             page.get_by_role("button", name="診断を開始", exact=True).click()
                             actions.append("start")
                             page.wait_for_url("**/assessments/scan_001", timeout=120000 if real_bin else 15000)
-                            page.get_by_role("tab", name="問題").click()
+                            page.get_by_role("tab", name="結果").click()
                             actions.append("open_findings")
                             try:
                                 page.locator("h3").filter(has_text="Apache mod_status の公開露出").wait_for(
@@ -408,7 +408,7 @@ def main() -> None:
                                 assert evidence_ids and any(evidence_id in report_text for evidence_id in evidence_ids)
                                 page.get_by_text("レポートプレビューを表示").wait_for()
                                 report_exported = True
-                                page.get_by_role("tab", name="問題").click()
+                                page.get_by_role("tab", name="結果").click()
                             if args.cors_note:
                                 page.goto(base + "/findings/f_l1_cors?a=scan_001")
                                 page.get_by_text("観測したこと：", exact=False).first.wait_for()
@@ -419,7 +419,7 @@ def main() -> None:
                                 page.screenshot(path=str(ROOT / "docs/CORS_390_RESULT.png"), full_page=True)
                                 assert not page_errors, page_errors
                                 page.goto(base + "/assessments/scan_001")
-                                page.get_by_role("tab", name="問題").click()
+                                page.get_by_role("tab", name="結果").click()
                                 page.locator("h3").filter(has_text="Apache mod_status の公開露出").wait_for()
                             if args.reconnect_events:
                                 page.wait_for_timeout(5000)
@@ -440,12 +440,12 @@ def main() -> None:
                                 other_markdown = other_report.json()["markdown"]
                                 assert HOST not in other_markdown
                                 assert "Apache mod_status" not in other_markdown
-                                page.get_by_role("tab", name="問題").click()
+                                page.get_by_role("tab", name="結果").click()
                                 assert page.get_by_text("Apache mod_status の公開露出").count() == 0
                                 page.locator("#org-switch").select_option("default")
                                 page.wait_for_url("**/dashboard")
                                 page.goto(base + "/assessments/scan_001")
-                                page.get_by_role("tab", name="問題").click()
+                                page.get_by_role("tab", name="結果").click()
                                 page.locator("h3").filter(has_text="Apache mod_status の公開露出").wait_for()
                                 org_switch_isolated = True
                             assert not page_errors, page_errors
@@ -551,7 +551,7 @@ def main() -> None:
                                 other_dialogs: list[str] = []
                                 other_tab.on("dialog", lambda dialog: (other_dialogs.append(dialog.message), dialog.accept()))
                                 other_tab.goto(base + "/assessments/scan_001")
-                                other_tab.get_by_role("tab", name="問題").click()
+                                other_tab.get_by_role("tab", name="結果").click()
                                 other_finding = other_tab.locator("h3").filter(has_text="Apache mod_status の公開露出")
                                 other_finding.wait_for()
                                 page.evaluate("localStorage.setItem('vulnix:logout-notice', 'null')")

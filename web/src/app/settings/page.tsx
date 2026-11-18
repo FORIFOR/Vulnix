@@ -9,7 +9,7 @@ import { PasswordChangeForm } from "@/components/settings/PasswordChangeForm";
 import { Card, Pill } from "@/components/ui";
 import { command } from "@/lib/api";
 import { diagnosisSource } from "@/lib/diagnosisSource";
-import { fmtTime } from "@/lib/labels";
+import { fmtTime, threatFeedSummary } from "@/lib/labels";
 import {
   clearLearningHistory,
   getLearningServerSnapshot,
@@ -219,7 +219,7 @@ export default function Settings() {
           <dt className="text-zinc-500">結果の解説</dt><dd>{snap ? diagnosisSource(snap).explanation : "確認中…"}</dd>
           <dt className="text-zinc-500">脅威情報</dt>
           <dd>
-            NVD 登録 {cveSt?.cve_count ?? 2} 件 / CISA KEV 悪用確認 {cveSt?.kev_count ?? 2} 件（最終同期: {fmtTime(cveSt?.last_synced_at)}）
+            {threatFeedSummary(cveSt)}
           </dd>
         </dl>
       </Card>

@@ -23,7 +23,7 @@ import { EvidenceOverview, EVIDENCE_STATES } from "./EvidenceOverview";
 
 const TABS = [
   { key: "assessment", label: "診断" },
-  { key: "findings", label: "問題" },
+  { key: "findings", label: "結果" },
   { key: "logs", label: "ログ" },
 ] as const;
 

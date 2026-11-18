@@ -58,6 +58,8 @@ class AccessHoldoutTests(unittest.TestCase):
                                      "VULNIX_ARTEX_CI_BINARY_SHA256": "0" * 64}):
             row = measure_holdout("cross_account_allowed", "adaptive")
         self.assertTrue(row["idor_proven"])
+        self.assertEqual(row["engine_kind"], "unverified")
+        self.assertEqual(row["local_model_calls"], 0)
 
 
 if __name__ == "__main__":

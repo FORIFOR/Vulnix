@@ -1,7 +1,8 @@
 """Source-only inventory of the Vulnix request flow (no imports or network calls).
 
 Run from the repository root: python3 scripts/flow_inventory.py > docs/PROCESS_INVENTORY.json
-This deliberately reads only tracked source paths, never local configuration or data.
+This reads source files in fixed code directories, including matching untracked files;
+it never reads local configuration or data directories.
 """
 from __future__ import annotations
 

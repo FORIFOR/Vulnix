@@ -140,7 +140,7 @@ def main() -> None:
                     page.get_by_text("✓ 修正前後の防御比較（実測）").wait_for()
                     page.get_by_text("proven →", exact=False).first.wait_for()
                     page.get_by_text("not_reproduced", exact=False).first.wait_for()
-                    page.get_by_role("tab", name="問題").click()
+                    page.get_by_role("tab", name="結果").click()
                     page.locator("h3").filter(has_text="IDOR").locator("xpath=../..").get_by_role(
                         "link", name="詳しく見る →").click()
                     page.get_by_text("今回のアクセスは拒否されました").wait_for()

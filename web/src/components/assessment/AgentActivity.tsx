@@ -3,7 +3,7 @@
 import { useState, type Dispatch, type SetStateAction } from "react";
 import { applyChatReply } from "@/lib/assessmentEvents";
 import { command } from "@/lib/api";
-import { fmtTime } from "@/lib/labels";
+import { completedHeadline, fmtTime } from "@/lib/labels";
 import { failureHeadline, statusNotices, stoppedHeadline } from "@/lib/statusNotices";
 import { canApprove, useSession } from "@/lib/useSession";
 import type { AegisEvent, Approval, AuditEntry, Snapshot } from "@/lib/types";
@@ -48,7 +48,7 @@ function headline(s: Snapshot): string {
     case "paused": return "一時停止中です。新しい操作は実行されません（実行中の処理は完了まで続きます）。";
     case "stopped": return stoppedHeadline(s);
     case "failed": return failureHeadline(s);
-    case "completed": return `診断が完了しました。${s.findings.filter((f) => !f.demo_fixture).length} 件の問題を記録しています。`;
+    case "completed": return completedHeadline(s.findings);
     default: return running ? `${running.label}：${running.detail}` : "処理を進めています。";
   }
 }

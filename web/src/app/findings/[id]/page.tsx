@@ -46,7 +46,7 @@ function Detail() {
   return (
     <main className="mx-auto max-w-3xl space-y-4 p-4 md:p-8">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <Link href={`/assessments/${aid}?tab=findings`} className="text-sm text-zinc-500 hover:underline">← 問題一覧</Link>
+        <Link href={`/assessments/${aid}?tab=findings`} className="text-sm text-zinc-500 hover:underline">← 結果一覧</Link>
         {!(snap.is_external_service && (multiTenant || snap.real_site_read_only)) && <button
           type="button"
           disabled={busy}
