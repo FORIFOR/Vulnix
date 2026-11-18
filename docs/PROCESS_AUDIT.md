@@ -2,9 +2,9 @@
 
 ## PR #85の動的経路・失効再監査（2026-11-19 JST）
 
-[API到達性表](PR85_API_REACHABILITY.md)で`server.py`の動的パス、組織・管理者・認証関連API、Webの利用元、CSRF、処理中失効の確認範囲を照合した。停止を許したまま応答を隠すP46を追加した。`/pause`と`/emergency-stop`では`_bind`後の失効で停止情報を200で返す競合を赤テストで再現し、401/403へ修正した。所有確認中、レポート生成中、ログアウト、組織除名、SSE再接続は[390px/1280pxの模擬ブラウザ記録](PR85_REVOKE_BROWSER_QA.md)へ分けて記す。全動的分岐と実行時外部送信先の完全網羅は未証明。
+[API到達性表](PR85_API_REACHABILITY.md)で`server.py`の動的パス、組織・管理者・認証関連API、Webの利用元、CSRF、処理中失効の確認範囲を照合した。停止を許したまま応答を隠すP46と、CVE状態の送信時にセッションを再確認するP47を追加した。`/pause`と`/emergency-stop`では`_bind`後の失効で停止情報を200で返す競合を赤テストで再現し、401/403へ修正した。所有確認中、レポート生成中、ログアウト、組織除名、SSE再接続は[390px/1280pxの模擬ブラウザ記録](PR85_REVOKE_BROWSER_QA.md)へ分けて記す。全動的分岐と実行時外部送信先の完全網羅は未証明。
 
-最新の開発コードとP01〜P46の対応表は[CURRENT_FLOW.md](CURRENT_FLOW.md)を参照。以下は監査時点の履歴を含む。後続DraftではP15のSSEへ通し番号付き心拍を追加し、正常な接続での静穏時再取得を削減した。390px幅・独立ラボ・Next.js本番ビルドの24秒待機でAPI要求12→6回、SSE遮断時にはsnapshotと監査ログの代替取得が続いた。[測定値](STATUS_EXPOSURE_INTEGRATION.md)は各1回であり、Cloudflare経由の遅延や失効通知の遅れは未測定。
+最新の開発コードとP01〜P47の対応表は[CURRENT_FLOW.md](CURRENT_FLOW.md)を参照。以下は監査時点の履歴を含む。後続DraftではP15のSSEへ通し番号付き心拍を追加し、正常な接続での静穏時再取得を削減した。390px幅・独立ラボ・Next.js本番ビルドの24秒待機でAPI要求12→6回、SSE遮断時にはsnapshotと監査ログの代替取得が続いた。[測定値](STATUS_EXPOSURE_INTEGRATION.md)は各1回であり、Cloudflare経由の遅延や失効通知の遅れは未測定。
 
 対象: `codex/flow-audit-gates`（基礎監査は`codex/process-chain-optimization`）。起点は [REQUEST_FLOW.md](REQUEST_FLOW.md)。実コードの機械抽出結果は [PROCESS_INVENTORY.json](PROCESS_INVENTORY.json)、再生成は `python3 scripts/flow_inventory.py > docs/PROCESS_INVENTORY.json`。この抽出は**ソースの条件式・定義・呼び出し箇所の一覧**であり、動的に構成するパスと環境変数の実行先をすべて解決した呼び出しグラフではない。以下の手動追跡と組み合わせて読む。
 

@@ -1,5 +1,7 @@
 # 公開β判定
 
+2026-11-19 JSTの最新追記: Draft PR #85はコード`084fb44`までpush済み。停止後応答とCVE状態の処理中失効に対する赤/緑テストを追加した。[198ファイルのレビュー台帳](PR85_FILE_REVIEW.md)では24件を対象経路照合、174件を分類のみと記録。前コミット`ec74b55`の[Linux CI #44354783049](https://github.com/FORIFOR/Vulnix/actions/runs/44354783049)は緊急停止の保存失敗時契約2件で失敗したが、ログartifactを回収できた。`084fb44`で停止を許したまま保護詳細を隠すよう修正。修正後の単独ローカル全1,781件成功・27件スキップ・1,252.488秒。[Linux CI #44359394810](https://github.com/FORIFOR/Vulnix/actions/runs/44359394810)は3/3成功、Pythonログで1,781件成功・17件スキップ、模擬失敗artifactの保存・再読込も確認。実モデル採用0/2、実DNS・許可済み実サイトE2E、正式GitHubレビュー0件は変わらず、**公開不可**。
+
 2026-11-19 JSTの追記: 資料コミット`5317e0f`の[Linux CI #44331685004](https://github.com/FORIFOR/Vulnix/actions/runs/44331685004)は3/3成功し、Pythonログartifactから1,742件成功・17件スキップを確認した。現在の開発ツリーでは[API到達性](PR85_API_REACHABILITY.md)、[195ファイルのレビュー台帳](PR85_FILE_REVIEW.md)、[両幅の失効ブラウザQA](PR85_REVOKE_BROWSER_QA.md)を追加し、停止後応答のP2を修正したが、後続CIと正式レビューはまだ未確認。公開不可は変わらない。
 
 最新`7effe09`（製品コード`d199021`）の単独ローカル全バックエンド1,742件・27件スキップ・ResourceWarning 0件、Web119件・Lint・ビルド・390px模擬ブラウザが成功した。[Linux CI #44325797831](https://github.com/FORIFOR/Vulnix/actions/runs/44325797831)もPython・Web・実ARTEXの3/3成功し、Pythonログartifactを取得した。ただし前CIの初回はPythonジョブが約51分後にログなしで失敗し、原因未特定。正常時のログ保存成功はその不安定性の解消を証明しない。実モデルの採用0/2、実DNS・実サイトE2E、正式GitHubレビューは変わらず未完了で、公開不可の判定を維持する。以下の詳細表の古いコミット値は過去の測定範囲を表す。

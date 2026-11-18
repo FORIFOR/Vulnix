@@ -1,5 +1,14 @@
 # 次の作業と再開手順
 
+## 最新の再開地点（2026-11-19 JST、この節を優先）
+
+- 作業ツリー`/Users/shuhei/Projects/Vulnix-integration-readiness`、ブランチ`codex/goal-integration-readiness`、最新コード`084fb44`。`git status --short --branch`と`git diff --check`を先に実行し、未コミット資料を保持する。元の`/Users/shuhei/Projects/Vulnix`と別ツリーは変更しない。
+- `f6608da`は停止後応答の401/403、198ファイルの分類、API到達性、両幅の失効ブラウザQA、CIの模擬失敗artifact検証を含む。`ec74b55`は`GET /api/cve/status`の生成中ログアウトで旧コード200、新コード401の再現・修正。両コミットを開発ブランチにpush済み。
+- `ec74b55`のローカル全1,781件は2件失敗した。原因は認証状態保存失敗時も緊急停止を200で受ける既存契約と、停止応答の失効再検査の衝突であり、環境競合ではない。`084fb44`では停止処理後に保護詳細を省いた200応答へ修正し、既存の200期待値を保った2件と失効後401/403の2件を再実行して成功。修正後の単独ローカル全バックエンドは`VULNIX_NO_ENV_LOCAL=1 python3 -m unittest discover -s tests`で1,781件成功・27件スキップ・1,252.488秒。ログは`/tmp/vulnix-pr85-084fb44-full.log`。別ツリーのプロセスは変更していない。
+- 最終コードの[Linux CI #44359394810](https://github.com/FORIFOR/Vulnix/actions/runs/44359394810)はPython・Web・実ARTEXの3/3成功。Pythonログartifactで1,781件成功・17件スキップ・1,848.515秒を確認。`failure-upload-probe-attempt-1`をダウンロードして内容照合済み。前コード`ec74b55`のCI #44354783049は同じ2件で失敗したが、失敗名とtracebackがログartifactに保存され、再取得できた。旧CIを最終合格に使わない。
+- 本資料を開発ブランチへ保存した後、そのコミットのCIとPR #85本文を確認する。PR本文には失効修正、旧CIの2件失敗と回復、失敗時ログartifact、両幅ブラウザの証拠を反映する。その後は未読差分の独立レビュー準備と、実DNS・有料AIなど外部ゲートに必要な具体的承認を整理する。模擬artifactは生存ランナー上の失敗ステップだけを検証し、ランナー消失を証明しない。
+- ローカル全件とCIが成功した後も、実Abliteration AIの採用0/2、実DNS・許可済み実サイトE2E、正式GitHubレビュー0件、main統合・公開承認は別ゲート。追加有料AI、実サイト診断、DNS変更、mainマージ、本番公開は行わない。
+
 ## 最新の作業地点（2026-11-19 JST、下記の旧記録より優先）
 
 - 作業ツリーは`/Users/shuhei/Projects/Vulnix-integration-readiness`、ブランチ`codex/goal-integration-readiness`。開始時HEADは`5317e0f`、Draft PR #85は195ファイル・正式レビュー0件。[Linux CI #44331685004](https://github.com/FORIFOR/Vulnix/actions/runs/44331685004)は3/3成功し、Pythonログartifactで1,742件成功・17件スキップを確認。現在の変更はコミット・Linux CI前なので、再開時に`git status --short --branch`と`git diff --check`を必ず確認し、未コミット変更を保持する。

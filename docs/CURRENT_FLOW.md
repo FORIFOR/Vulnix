@@ -82,7 +82,8 @@ flowchart LR
 | P43 | `GET /api/router/status`の組織別状態 | `server.py` `_bind` → `_authorized_org_read` → 組織の`AssessmentService.planner_status` | `test_tenancy.py`。別組織403、ログアウト後401、組織別の状態を模擬確認。外部AIへ送信しない。公開βでの失効競合は未検証 |
 | P44 | 結果画面の診断元・AI未実施表示 | `diagnosisSource` → `WorkspaceHeader`。実ARTEX、検証用プランナー、実行元不明、固定設定検査のみを分ける | `diagnosisSource.test.mjs`, `bench_browser_owned_flow.py`。固定のみならAI追加検査未実施、模擬プランナーが追加GETした場合はその出所を表示。390px Chromiumでは実表示を待って記録。実モデル品質と公開βの証拠ではない |
 | P45 | 動的`/api/assessments/{id}/lab-mode`、`/request-l2`、`/verify-finding`、`/approvals/{req_id}` | `server.py` `do_POST`・`_dispatch` → `set_lab_mode`、`AssessmentService.request_l2_run` / `verify_finding` / `decide_approval` | `test_tenancy.py`, `test_server.py`, `test_real_service.py`。共有模擬ラボのモード変更は組織分離のある公開経路で403。L2は依頼者と承認者を分けて権限・証拠を確認。実サイトL2は引き続き禁止し、一般UIの基本フローに入れない |
-| P46 | 安全停止中の失効と応答秘匿 | `POST /api/assessments/{id}/pause`・`/emergency-stop` → `_bind` → 停止処理 → `_authorized_org_read`で応答前の生存読取権限を確認 | `test_tenancy.py`。修正前は結合後のログアウト・除名で停止処理の詳細を200で返した。修正後は停止ハンドラを呼び、失効時に401/403で保護情報を返さない。実Workerの停止効果は既存のGateway/隔離テストで別途確認 |
+| P46 | 安全停止中の失効と応答秘匿 | `POST /api/assessments/{id}/pause`・`/emergency-stop` → `_bind` → 停止処理 → `_authorized_org_read`で応答前の生存読取権限を確認 | `test_tenancy.py`。結合後のログアウト・除名では停止ハンドラを呼び、401/403で保護情報を返さない。認証状態の保存に失敗した場合は停止の200を維持し、詳細を含まない`stopped/details_unavailable`だけを返すことを`test_release_safety.py`で確認。実Workerの停止効果は既存のGateway/隔離テストで別途確認 |
+| P47 | CVE状態生成中のログアウト | `GET /api/cve/status` → `cve_monitor.status` → 現行セッションを再確認して送信 | `test_tenancy.py`。修正前は生成中のログアウト後も200で全体状態を返した。修正後は401。送信中は既存の管理GETと同じ2秒ソケット上限を適用。公開βの中継は未検証 |
 
 ## 時系列と異常系
 

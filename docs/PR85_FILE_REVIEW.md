@@ -1,8 +1,8 @@
 # PR #85 ファイル別レビュー台帳
 
-基準: `origin/main...5317e0f`、変更195ファイル。これは変更ファイルの分類とレビュー進捗であり、すべての差分を監査済みという意味ではない。後続の作業コミットは別途確認する。
+基準: `origin/main...f6608da`、変更198ファイル。開始時の195ファイルに今回のレビュー資料3ファイルを加えた。これは変更ファイルの分類とレビュー進捗であり、すべての差分を監査済みという意味ではない。
 
-状態: `対象経路を照合` は今回または既存の安全性資料で挙げた経路を確認したこと（23ファイル）、`分類のみ` は差分の精査が未完了であること（172ファイル）を示す。どちらも正式GitHubレビューではない。重要ファイルの全行監査は別ゲート。
+状態: `対象経路を照合` は今回または既存の安全性資料で挙げた経路を確認したこと（24ファイル）、`分類のみ` は差分の精査が未完了であること（174ファイル）を示す。どちらも正式GitHubレビューではない。重要ファイルの全行監査は別ゲート。
 
 `.env.example`は変更ファイル名だけを列挙した。リポジトリの秘密情報保護指示に従い、`.env*`の内容は読んでいない。
 
@@ -73,6 +73,9 @@
 | `docs/NEXT_ACTION.md` | 資料・実測 | 通常 | 分類のみ |
 | `docs/PROCESS_AUDIT.md` | 資料・実測 | 通常 | 分類のみ |
 | `docs/PROCESS_INVENTORY.json` | 資料・実測 | 通常 | 分類のみ |
+| `docs/PR85_API_REACHABILITY.md` | 資料・実測 | 通常 | 分類のみ |
+| `docs/PR85_FILE_REVIEW.md` | 資料・実測 | 通常 | 分類のみ |
+| `docs/PR85_REVOKE_BROWSER_QA.md` | 資料・実測 | 通常 | 分類のみ |
 | `docs/PR_INTEGRATION_PLAN.md` | 資料・実測 | 通常 | 分類のみ |
 | `docs/PUBLIC_BETA.md` | 資料・実測 | 通常 | 分類のみ |
 | `docs/QA_BROWSER_INTEGRATION.md` | 資料・実測 | 通常 | 分類のみ |
@@ -110,7 +113,7 @@
 | `scripts/bench_status_selection_holdout.py` | 測定・検証スクリプト | 通常 | 分類のみ |
 | `scripts/check_cookie_https.py` | 測定・検証スクリプト | 通常 | 分類のみ |
 | `scripts/check_cookie_ui_390.py` | 測定・検証スクリプト | 通常 | 分類のみ |
-| `scripts/eval_selection_model.py` | 測定・検証スクリプト | 通常 | 分類のみ |
+| `scripts/eval_selection_model.py` | 模擬・有料評価スクリプト | 高 | 対象経路を照合 |
 | `scripts/flow_inventory.py` | 測定・検証スクリプト | 通常 | 分類のみ |
 | `tests/artex_mock_llm.py` | バックエンドテスト | 通常 | 分類のみ |
 | `tests/fake_artex_planner.py` | バックエンドテスト | 通常 | 分類のみ |

@@ -2,6 +2,8 @@
 
 基準: `aegis/server.py`、`web/src`、`tests/test_tenancy.py`を照合。対象はPR #85の公開β用HTTP経路。静的な呼出し元の照合であり、実行時に設定される外部送信先や全分岐の到達性を証明しない。実DNS、Google、実サイト、実モデルには通信していない。
 
+追加照合: `aegis/server.py`の文字列リテラルに含まれる`/api/`経路を抽出し、この表との差分が0件であることを確認した。診断ID、承認ID、ARTEX itemを組み立てる動的分岐は下表と`do_GET`/`do_POST`の条件式を別途照合した。これは実行時の全経路到達を証明しない。
+
 ## 共通境界
 
 - Python側はHostをループバックに限定する。WebのAPI中継は許可済みHostから固定の`AEGIS_API`へ転送する。`AEGIS_API`の実運用値は未確認。
@@ -70,8 +72,8 @@
 | `POST /api/assessments/{id}/start` | id、対象権限・範囲・期限 | 開始時と起動時の生存権限 | 所有確認、実行操作 |
 | `POST /api/assessments/{id}/restart` | id、対象権限・範囲・期限 | 開始時と起動時の生存権限 | 実行操作 |
 | `POST /api/assessments/{id}/resume` | id | 開始時と再開時の生存権限 | 実行操作 |
-| `POST /api/assessments/{id}/pause` | id。閲覧者も安全停止可 | 停止は実行、応答直前の読取再検査で失効401/403（今回の修正） | 実行操作 |
-| `POST /api/assessments/{id}/emergency-stop` | id。閲覧者も安全停止可 | 停止は実行、応答直前の読取再検査で失効401/403（今回の修正） | 実行操作 |
+| `POST /api/assessments/{id}/pause` | id。閲覧者も安全停止可 | 停止は実行、応答直前の読取再検査で失効401/403。認証状態の保存障害時は詳細なし200 | 実行操作 |
+| `POST /api/assessments/{id}/emergency-stop` | id。閲覧者も安全停止可 | 停止は実行、応答直前の読取再検査で失効401/403。認証状態の保存障害時は詳細なし200 | 実行操作 |
 | `POST /api/assessments/{id}/verify-finding` | finding_id、サービス側の承認判定 | 開始時と検証要求時の権限。応答時競合は未実証 | 所見詳細、結果画面 |
 | `POST /api/assessments/{id}/artex/plan` | llm_mode/llm_approval。承認時はapprover | 開始時、モデル送信前の生存権限 | ARTEX計画 |
 | `POST /api/assessments/{id}/artex/items/{item}/execute` | itemは英数字/下線80字以内、Gateway再審査 | 開始時、Worker起動直前の生存権限 | ARTEX計画 |
@@ -88,7 +90,7 @@
 | `GET /api/system/status` | 組織別状態 | 生成前後の読取再検査、401/403 | サイドバー |
 | `GET /api/router/status` | 組織別モデル状態 | 送信時の読取再検査、401/403 | 画面なし |
 | `GET /api/l2-profiles` | 全体admin/approver | 送信時の役割再検査、401/403 | 設定 |
-| `GET /api/cve/status` | 認証済み（公開β設定） | 生成後の失効競合は未実証 | 画面なし |
+| `GET /api/cve/status` | 認証済み（公開β設定） | 生成後の送信時に現行セッションを再検査。ログアウト後401を模擬確認 | 画面なし |
 | `POST /api/l2-profiles/accept` | 全体admin、id/sha256 | 開始時とサービス側のプロファイル照合 | 設定 |
 | `POST /api/router/verify` | 全体admin/approver | 開始時。実行時の外部先は設定依存・未照合 | 画面なし |
 | `POST /api/cve/sync` | 全体admin/approver、nvd/kev/source | 開始時。HTTP入力を取り込む。外部URL取得は通常経路にない | 設定 |
@@ -98,6 +100,6 @@
 ## 残る到達性検証
 
 1. `AEGIS_API`、モデル上流、Google、対象URLは実行時設定から決まる。静的文字列から実運用の送信先を確定しない。
-2. 所有確認の保存後から応答まで、通常POSTの処理中失効、`/api/cve/status`の失効境界を追加テストする。
-3. 390px/1280pxの模擬ブラウザでは結果、報告書、組織切替、SSE再接続、失効後の非表示を確認した。診断実行中の除名、所有確認中の失効、報告書生成中の失効を同じ画面から開始する競合は未検証。
+2. 所有確認の保存後から応答までと、通常POSTの処理中失効を追加テストする。`/api/cve/status`の生成中ログアウトは赤テストの200から401へ修正した。
+3. 390px/1280pxの模擬ブラウザでは結果、報告書、組織切替、SSE再接続、失効後の非表示に加え、診断中の除名、所有確認中の失効、レポート生成中の失効も確認した。公開β、中継、長時間Workerの境界は未検証。
 4. 正式GitHubレビューと公開βの実DNS・実サイト経路は別ゲート。
