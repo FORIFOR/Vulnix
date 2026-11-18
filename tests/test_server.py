@@ -602,7 +602,11 @@ class TestServer(unittest.TestCase):
         self.assertEqual(self._req(f"{self.root}/router/verify", {})[0], 403)    # spawns a CLI + model call
         self.assertEqual(self._req(f"{self.root}/cve/sync", {})[0], 403)         # replaces feed data
         self.login("appr", "appr-pw")
-        code, rep = self._req(f"{self.root}/router/verify", {})
+        # This public API route must not discover a configured paid endpoint.
+        # External model evaluation has its own approval and budget boundary.
+        with patch("aegis.router.AbliterationBackend.from_env",
+                   side_effect=AssertionError("configured model must not be used")):
+            code, rep = self._req(f"{self.root}/router/verify", {})
         self.assertEqual(code, 200)
         self.assertTrue(rep["all_verified"])
         self.assertTrue(rep["artex_cli"]["verified"])

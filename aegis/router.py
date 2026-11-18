@@ -567,10 +567,12 @@ class ArtexEngine:
 def verify_planner_connections(*, abliteration_url: str | None = None,
                                api_key: str | None = None,
                                model: str = "abliteration-sec-1") -> dict:
-    """Execute a live end-to-end verification of both:
+    """Execute an end-to-end adapter verification of both:
       1. External ARTEX CLI process (`ArtexSubprocessBackend`)
-      2. OpenAI-compatible Abliteration AI API (`AbliterationBackend.propose` + `.chat`)
-    over real subprocess pipes and real HTTP sockets, returning a cryptographic proof."""
+      2. OpenAI-compatible adapter (`AbliterationBackend.propose` + `.chat`)
+    over real subprocess pipes and HTTP sockets. With no explicit URL, the model
+    endpoint is a loopback mock; a configured paid endpoint is never discovered
+    by this diagnostic path."""
     import hashlib
     import time
     from .abliteration_server import start_abliteration_server
@@ -591,17 +593,11 @@ def verify_planner_connections(*, abliteration_url: str | None = None,
     # 2. Verify live OpenAI-compatible Abliteration API round-trip
     temp_srv = None
     target_url = abliteration_url
-    endpoint_mode = "external"
+    endpoint_mode = "external" if target_url else "local_openai_server"
     if not target_url:
-        env_backend = AbliterationBackend.from_env()
-        if env_backend is not None:
-            target_url = env_backend._url
-            api_key = env_backend._key
-            model = env_backend._model or model
-        else:
-            temp_srv = start_abliteration_server(0)
-            target_url = f"http://127.0.0.1:{temp_srv.server_port}/v1/chat/completions"
-            endpoint_mode = "local_openai_server"
+        temp_srv = start_abliteration_server(0)
+        target_url = f"http://127.0.0.1:{temp_srv.server_port}/v1/chat/completions"
+        api_key = None
 
     try:
         ab = AbliterationBackend(
