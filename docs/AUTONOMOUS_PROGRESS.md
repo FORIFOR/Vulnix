@@ -10,6 +10,7 @@
 - 所有者から別SHA・出力上限1,024トークンの再評価1回を新たに承認された。送信前に匿名入力、モデル、SHA、1回・US$0.01・2,000トークン、未使用の承認記録と監査チェーンを再照合。結果は`length`終了、出力1,024トークンすべて推論で本文なし。2回合計のJSON採用は0/2、検査選択精度は未算出。再評価のprompt 608・completion/reasoning 1,024・総1,632トークン、4.956秒、usageと公開単価からUS$0.003680概算。両承認を消費済み。追加の有料送信なし。[詳細](ABLITERATION_SELECTION_REAL_RESULT.md)。
 - `247b1fc`で出力上限1,024のプレビューと別SHA承認照合を既存評価器に追加。変更前に追加テスト2件が失敗、変更後に評価器12件成功、Ruff成功。ローカル全バックエンド1,729件成功・27件スキップ・ResourceWarning 0件（1207.817秒）。Web118件、Lintエラー0/警告5、ビルド成功。新コードのLinux CIは確認中。
 - 最終コミット`b238556`の[Linux CI](https://github.com/FORIFOR/Vulnix/actions/runs/44228114370)はPython・Web・実ARTEXの3/3成功。次のローカル改善では公式Chat Completions仕様のJSONオブジェクト指定だけをGatewayに通し、`length`終了のJSONを採用しないテストを追加。関連92件・Ruff・Web118件・Lint・ビルド成功。全バックエンドと次のCIは確認中。詳細は[構造化出力契約](ABLITERATION_OUTPUT_CONTRACT.md)。有料APIは呼んでいない。
+- 新コード`02fcac2`のローカル全バックエンド1,733件成功・27件スキップ・ResourceWarning 0件（1203.148秒）。[Linux CI #44233247944](https://github.com/FORIFOR/Vulnix/actions/runs/44233247944)と資料更新後の最新CIを確認する。実モデルへの追加送信なし。
 
 ## 2026-11-17：統合候補の作成
 

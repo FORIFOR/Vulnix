@@ -6,11 +6,11 @@
 
 最新コード`247b1fc`のローカル全バックエンド1,729件成功・27件スキップ・ResourceWarning 0件（1207.817秒、`/tmp/vulnix-pr85-model-output-cap-full.log`）。Web118件、Lintエラー0/警告5、ビルド成功。最新コードを含むLinux CIは確認中。承認済み実モデル2回はJSON採用0/2、両承認消費済み。
 
-新コード`02fcac2`の評価器・Gateway関連92件とRuffは成功。Web118件、Lintエラー0/警告5、ビルド成功。全バックエンドとLinux CIは進行中。`response_format`は固定のJSONオブジェクト指定だけを通し、`length`終了のJSONを採用しない。実モデルは未再評価。
+新コード`02fcac2`のローカル全バックエンド1,733件成功・27件スキップ・ResourceWarning 0件（1203.148秒、`/tmp/vulnix-pr85-json-object-full.log`）。評価器・Gateway関連92件、Ruff、Web118件、Lintエラー0/警告5、ビルド成功。[Linux CI #44233247944](https://github.com/FORIFOR/Vulnix/actions/runs/44233247944)と資料更新後の最新CIはGitHubで確認する。`response_format`は固定のJSONオブジェクト指定だけを通し、`length`終了のJSONを採用しない。実モデルは未再評価。
 
 ## 次に実行する作業
 
-1. `gh pr checks 85` と `git status --short --branch` で最新ヘッドのCIと作業ツリーを確認する。コード`02fcac2`の関連92件は成功、全件とLinux CIは進行中。残る保護GET・5,000件バックログの単発除名待ち0.0017秒の限界を確認する。厳密な遅延保証、残る保護GET、正式レビュー資料を追加監査する。
+1. `gh pr checks 85` と `git status --short --branch` で最新ヘッドのCIと作業ツリーを確認する。コード`02fcac2`の関連92件とローカル全1,733件は成功。Linux CI #44233247944と最新ヘッドの結果を確認し、失敗時は原因を修正する。残る保護GET・5,000件バックログの単発除名待ち0.0017秒の限界、正式レビュー資料を追加監査する。
 2. `aegis/server.py` のSSE大量履歴、残る保護GET、組織/管理者操作の失効境界を模擬環境で測る。変更した場合は関連テスト→全件→Linux CIを再実行する。今回の差分ではoverlayを変更していない。
 3. [実モデル2回の評価](ABLITERATION_SELECTION_REAL_RESULT.md)は出力上限384・1,024とも全量が推論でJSON採用0/2。両承認を消費済み。鍵は元ツリーの保護された設定から利用できた。追加有料送信は行わず、構造化出力・モデル適性を模擬環境で検討する。新しい固定要求には別の明示承認が必要。
    [未送信の構造化出力候補](ABLITERATION_OUTPUT_CONTRACT.md)は別SHAでローカル検証中。公式OpenAPIはJSON Schema、`reasoning_effort`、推論トークン上限を定義するが、対象モデルでの効果は未確認。実モデルへの送信には新しい承認が必要。
