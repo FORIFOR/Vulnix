@@ -1808,6 +1808,33 @@ class TestFourthReviewLows(TestTenantIsolationOverHttp):
 class TestPublicDeploymentSwitches(TestTenantIsolationOverHttp):
     """Switches for the public beta: no traffic to real sites, bounded AI spending."""
 
+    def test_multi_tenant_real_site_stays_read_only_under_legacy_broad_switch(self):
+        from aegis import server as srvmod
+        a = self.signup("alice")
+        with patch.multiple(srvmod, REAL_SERVICE_DIAGNOSIS=True, REAL_SITE_L1_ONLY=False):
+            me = self.req(a, "/auth/me")[1]
+            self.assertIs(me["real_site_read_only"], True)
+            self.assertIs(me["real_service_diagnosis"], True)
+            code, _ = self.req(a, "/assets/challenge", {"url": "https://owned.example.test/"})
+            self.assertEqual(code, 200)
+            osvc = self.reg.service(a["orgs"][0]["id"])
+            self.assertTrue(osvc.real_site_read_only)
+            from aegis.ownership import challenge_for_host
+            token = challenge_for_host("owned.example.test", osvc._ownership_secret)["token"]
+            with patch("aegis.ownership.default_dns_txt_lookup", return_value=[f'"{token}"']):
+                self.assertEqual(self.req(a, "/assets/verify-ownership", {
+                    "host": "owned.example.test", "method": "dns_txt"})[0], 200)
+            self.assertEqual(self.req(a, "/assets/confirm-scope", {
+                "host": "owned.example.test", "confirmed_prohibited": True,
+                "activate_workspace": True})[0], 200)
+            for route, body in (("/request-l2", {"finding_id": "f_x"}),
+                                ("/verify-finding", {"finding_id": "f_x"}),
+                                ("/approvals/req_0a", {"decision": "approve"}),
+                                ("/verify-fix", {})):
+                code, out = self.req(a, f"/assessments/{osvc.a.id}{route}", body)
+                self.assertEqual(code, 403, route)
+                self.assertIn("読み取り", out["error"], route)
+
     def test_real_site_traffic_is_refused_when_switched_off(self):
         from aegis import server as srvmod
         a = self.signup("alice")

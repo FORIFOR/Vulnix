@@ -14,11 +14,13 @@ import { postJSON } from "@/lib/api";
 import { findingReason } from "@/lib/findingReason";
 import type { Snapshot } from "@/lib/types";
 import { useAssessment } from "@/lib/useAssessment";
+import { useSession } from "@/lib/useSession";
 
 function Detail() {
   const { id } = useParams<{ id: string }>();
   const aid = useSearchParams().get("a") ?? "scan_001";
   const { snap, setSnap, audit, chainValid, error } = useAssessment(aid);
+  const { multiTenant } = useSession();
   const [busy, setBusy] = useState(false);
   const [verifyErr, setVerifyErr] = useState<string | null>(null);
   if (!snap) return <p className="p-6 text-sm">{error ? `読み込めませんでした：${error}` : "読み込み中…"}</p>;
@@ -45,7 +47,7 @@ function Detail() {
     <main className="mx-auto max-w-3xl space-y-4 p-4 md:p-8">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <Link href={`/assessments/${aid}?tab=findings`} className="text-sm text-zinc-500 hover:underline">← 問題一覧</Link>
-        {!(snap.is_external_service && snap.real_site_read_only) && <button
+        {!(snap.is_external_service && (multiTenant || snap.real_site_read_only)) && <button
           type="button"
           disabled={busy}
           onClick={runLiveVerify}

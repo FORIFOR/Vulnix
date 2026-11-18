@@ -201,7 +201,7 @@ export function AssessmentTabs({ id }: { id: string }) {
                   {/* a real site's traffic is pinned to the addresses checked for it, not to a fixed range */}
                   <dt className="text-zinc-500">許可IP</dt><dd>{snap.is_external_service ? "このサイトの確認済みの公開アドレスのみ" : auth.scope.cidrs.join(", ")}</dd>
                   <dt className="text-zinc-500">ポート</dt><dd>{auth.scope.ports.join(", ")}</dd>
-                  <dt className="text-zinc-500">許可操作</dt><dd>{snap.is_external_service && snap.real_site_read_only ? "ページの読み取りのみ" : auth.allowed_actions.join(", ")}</dd>
+                  <dt className="text-zinc-500">許可操作</dt><dd>{snap.is_external_service && (multiTenant || snap.real_site_read_only) ? "ページの読み取りのみ" : auth.allowed_actions.join(", ")}</dd>
                 </dl>
               </Card>
               {snap.defense_comparison && (
@@ -301,7 +301,7 @@ export function AssessmentTabs({ id }: { id: string }) {
                   f={f}
                   assessmentId={snap.id}
                   labEndpoint={snap.lab_endpoint}
-                  readOnly={Boolean(snap.is_external_service && snap.real_site_read_only)}
+                  readOnly={Boolean(snap.is_external_service && (multiTenant || snap.real_site_read_only))}
                   onUpdate={setSnap}
                   onBusyChange={setCardBusy}
                 />

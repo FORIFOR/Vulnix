@@ -64,7 +64,8 @@ CHAT_PER_ORG_PER_HOUR = 30       # AI explanation questions per organization
 CHAT_PLATFORM_PER_HOUR = 300     # AI explanation questions, whole platform (one API key)
 CHAT_PLATFORM_PER_DAY = int(os.environ.get("VULNIX_CHAT_PER_DAY", "1000") or 1000)
 # Traffic to real (non-lab) sites: ownership checks over the network and diagnoses.
-#   1 (default)  everything the service allows (L1, approved L2, ARTEX on the lab only)
+#   1            legacy single-service mode (L1, approved L2, ARTEX on the lab only);
+#                multi-tenant mode still enforces read-only real-site checks
 #   l1           public beta: ownership checks and the read-only (L1) diagnosis of a
 #                site whose ownership this organization proved; nothing beyond that
 #   0            no traffic to real sites at all
@@ -347,7 +348,9 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 return None
             self._bound_org = wanted
             # enforced again inside the service, under its lock (an asset switch cannot race it)
-            osvc.real_site_read_only = not REAL_SERVICE_DIAGNOSIS
+            # The legacy broad switch is only for the single-service mode. A tenant
+            # must never inherit real-site L2 from a process-wide environment value.
+            osvc.real_site_read_only = True
             return osvc, dataclasses.replace(sess, roles=service_roles(roles))
 
         def _authorized_org_read(self, sess, org, action, *, reader=True, approver=False):
@@ -407,8 +410,10 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             sess = self._session()
             if p == "/api/auth/me":
                 me = {"session": self._public_session(sess), "self_registration": self_registration_allowed()}
+                # This reports the process configuration so the public launcher can
+                # still reject a broad setting, even though tenants stay read-only.
                 me["real_service_diagnosis"] = REAL_SERVICE_DIAGNOSIS
-                me["real_site_read_only"] = REAL_SITE_L1_ONLY
+                me["real_site_read_only"] = REAL_SITE_L1_ONLY or tenancy is not None
                 me["google_ownership"] = google_ownership.config() is not None
                 me["optional_status_check"] = optional_status_check_configured()
                 me["development"] = development_mode()
@@ -793,8 +798,11 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         return None
                     osvc, osess = bound
                     self._select_target = str(body.get("id", "")) if p == "/api/assets/select" else ""
-                    if not REAL_SERVICE_DIAGNOSIS and self._touches_real_site(p, osvc):
-                        refusal = self._real_site_refusal(p, osvc) if REAL_SITE_L1_ONLY else \
+                    # Mode 0 always disables real-site traffic. Only the legacy
+                    # broad switch is narrowed to L1 when tenants are present.
+                    read_only_real = REAL_SITE_L1_ONLY or (tenancy is not None and REAL_SERVICE_DIAGNOSIS)
+                    if (not REAL_SERVICE_DIAGNOSIS or tenancy is not None) and self._touches_real_site(p, osvc):
+                        refusal = self._real_site_refusal(p, osvc) if read_only_real else \
                             "このβ版では、実サイトへの通信（所有確認の実行・診断）はまだ有効になっていません。模擬ラボで機能をお試しください"
                         if refusal:
                             paudit.record("tenancy.real_site_refused", actor=sess.operator, route=p[-60:])
@@ -810,7 +818,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     limited = None
                     artex_item = bool(re.fullmatch(
                         f"/api/assessments/{osvc.a.id}" + r"/artex/items/[A-Za-z0-9_]{1,80}/execute", p))
-                    if REAL_SITE_L1_ONLY and not real_site_traffic and (
+                    if read_only_real and not real_site_traffic and (
                             p.endswith(("/start", "/restart", "/resume")) or artex_item):
                         # the workspace can be switched onto a proven site between this check and
                         # the run: every run of an organization holding one is counted
@@ -818,7 +826,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                             real_site_traffic = osvc.has_scoped_real_site()
                         except Exception:   # noqa: BLE001 - when in doubt, count it
                             real_site_traffic = True
-                    if real_site_traffic and REAL_SITE_L1_ONLY:
+                    if real_site_traffic and read_only_real:
                         if p == "/api/assets/verify-ownership":
                             limited = (verify_times, verify_all, OWNERSHIP_CHECKS_PER_ORG_PER_HOUR,
                                        OWNERSHIP_CHECKS_PLATFORM_PER_HOUR,

@@ -47,9 +47,9 @@ export function ArtexPlanPanel({ snap, onUpdate }: {
     <Card className="mb-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
-          <h2 className="font-semibold">{realSite ? "AIによる追加確認" : "ARTEX 計画（提案のみ・Gateway 経由で実行）"}</h2>
+          <h2 className="font-semibold">{realSite ? (verified ? "ARTEXによる追加確認" : "追加確認の計画") : "ARTEX 計画（提案のみ・Gateway 経由で実行）"}</h2>
           <p className="mt-0.5 text-xs text-zinc-500">
-            {realSite ? "AIの提案をもとに、安全性を確認した読み取り専用の検査だけを実行できます。提案は検出結果ではありません。"
+            {realSite ? "計画の提案元を確認し、安全性を確認した読み取り専用の検査だけを実行できます。提案は検出結果ではありません。"
               : "ARTEX は方向を提案するだけです。対象・操作・引数は Vulnix が登録済み対象と許可済み検証カタログから再構成します。"}
           </p>
         </div>

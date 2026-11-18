@@ -3,13 +3,15 @@
 import { useState } from "react";
 import { getJSON, postJSON } from "@/lib/api";
 import type { SecretsStatus, Snapshot } from "@/lib/types";
+import { useSession } from "@/lib/useSession";
 
 /** Banner + L2 test-account settings shown only for an ownership-verified real service. */
 export function RealServicePanel({ snap, onUpdate }: { snap: Snapshot; onUpdate: (s: Snapshot) => void }) {
   const status = snap.secrets_status;
   const [open, setOpen] = useState(false);
   // the public beta (multi-tenant) only reads real sites: no test accounts, no extra checks
-  const readOnly = Boolean(snap.real_site_read_only);
+  const { multiTenant } = useSession();
+  const readOnly = multiTenant || Boolean(snap.real_site_read_only);
   const [tokens, setTokens] = useState<Record<string, string>>({});
   const [paths, setPaths] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);

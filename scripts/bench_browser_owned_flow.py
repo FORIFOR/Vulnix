@@ -378,6 +378,12 @@ def main() -> None:
                             fallback_label.first.wait_for(state="hidden")
                             source_label_visible = source_label.count() > 0
                             fixed_l1_only_label_visible = fallback_label.count() > 0
+                            page.get_by_role("tab", name="診断").click()
+                            assert page.get_by_role("button", name="L2検証", exact=False).count() == 0
+                            expected_plan_heading = "ARTEXによる追加確認" if real_bin else "追加確認の計画"
+                            page.get_by_role("heading", name=expected_plan_heading, exact=True).wait_for()
+                            if not real_bin:
+                                assert page.get_by_role("heading", name="AIによる追加確認", exact=True).count() == 0
                             if real_bin:
                                 assert plan["engine"]["pinned"] is True
                                 assert model.requests, "the real ARTEX did not call the local model"
