@@ -57,8 +57,9 @@ def _run_linux(code: Path, harness: Path, pool=None, prelaunch=None) -> str:
             raise SandboxUnavailable("Linux kernel confinement failed") from exc
 
 
-def run_synthetic_case(source: str, *, pool=None, prelaunch=None) -> dict:
-    """Execute only the fixed synthetic fixture, never customer source."""
+def _run_synthetic_program(source: str, harness_source: str, expected_keys: frozenset[str],
+                           *, pool=None, prelaunch=None) -> dict:
+    """Shared confinement for code literals owned by synthetic lab callers."""
     system = platform.system()
     if system not in {"Darwin", "Linux"} or (system == "Darwin" and not shutil.which("sandbox-exec")):
         raise SandboxUnavailable("synthetic sandbox unavailable")
@@ -67,7 +68,7 @@ def run_synthetic_case(source: str, *, pool=None, prelaunch=None) -> dict:
         code = root / "api.py"
         harness = root / "test.py"
         code.write_text(source, encoding="utf-8")
-        harness.write_text(HARNESS, encoding="utf-8")
+        harness.write_text(harness_source, encoding="utf-8")
         if system == "Linux":
             # The worker uses a fresh UID. No source checkout is mounted back.
             root.chmod(0o755)
@@ -75,7 +76,7 @@ def run_synthetic_case(source: str, *, pool=None, prelaunch=None) -> dict:
             if len(stdout) > 4096:
                 raise SandboxUnavailable("synthetic output too large")
             parsed = json.loads(stdout)
-            if set(parsed) != {"own", "other"}:
+            if not isinstance(parsed, dict) or set(parsed) != expected_keys:
                 raise SandboxUnavailable("invalid synthetic result")
             return parsed
         home = str(Path.home().resolve())
@@ -92,7 +93,7 @@ def run_synthetic_case(source: str, *, pool=None, prelaunch=None) -> dict:
                 result.output_truncated or len(result.stdout) > 4096):
                 raise SandboxUnavailable("synthetic runner failed")
             parsed = json.loads(result.stdout)
-            if set(parsed) != {"own", "other"}:
+            if not isinstance(parsed, dict) or set(parsed) != expected_keys:
                 raise SandboxUnavailable("invalid synthetic result")
             return parsed
         with prelaunch() if prelaunch else contextlib.nullcontext():
@@ -108,6 +109,12 @@ def run_synthetic_case(source: str, *, pool=None, prelaunch=None) -> dict:
         if proc.returncode or len(stdout) > 4096:
             raise SandboxUnavailable("synthetic runner failed")
         parsed = json.loads(stdout)
-        if set(parsed) != {"own", "other"}:
+        if not isinstance(parsed, dict) or set(parsed) != expected_keys:
             raise SandboxUnavailable("invalid synthetic result")
         return parsed
+
+
+def run_synthetic_case(source: str, *, pool=None, prelaunch=None) -> dict:
+    """Execute only the fixed two-organization fixture, never customer source."""
+    return _run_synthetic_program(source, HARNESS, frozenset({"own", "other"}),
+                                  pool=pool, prelaunch=prelaunch)

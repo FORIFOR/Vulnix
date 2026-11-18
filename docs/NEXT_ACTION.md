@@ -1,5 +1,12 @@
 # Security Graph v2 作業の再開点
 
+## 固定MCPポリシーラボ（2026-11-19）
+
+- 現行作業ツリー `/Users/shuhei/Projects/Vulnix-graph-mcp-policy-lab`、ブランチ `codex/graph-mcp-policy-lab`、コードコミット `ba1174b`。基点は[Draft PR #89](https://github.com/FORIFOR/Vulnix/pull/89) の `1da769a`。この変更は別の小さなDraft PRとして提出する。
+- `aegis/validation/mcp_policy_lab.py` に固定の合成FastMCPコントロールを追加。通常登録、内側のロールガード、登録より外側のガードを同じ合成データで比較する。既存のMac sandbox-exec / Linux KernelConfinementとWorkerPool実行器を共有し、外部ネットワーク・顧客秘密情報・任意ソースを使わない。
+- Security Graphは内側のロール宣言も適用実証とは扱わず、ラボ実行結果は顧客ツールの検証結果へ昇格させない。関連25件、Ruff、差分チェック成功。バックエンド全件、Web、Linux CIはこのコミットでは未確認。
+- 再開時は `git status --short --branch`、`git diff --check`、`VULNIX_NO_ENV_LOCAL=1 python3 -m unittest tests.test_mcp_policy_lab tests.test_source_workflow` を確認し、全件とLinux CIを実行する。次は登録済み合成リポジトリの特定候補と固定コントロール結果を結びつけるValidationBrokerを設計し、候補・実測・実証範囲を分離して保存する。
+
 ## MCP経路の誤検知修正（2026-11-19）
 
 - 現行作業ツリーは `/Users/shuhei/Projects/Vulnix-graph-mcp-validation`、ブランチ `codex/graph-mcp-validation`、コードコミット `05bb593`、[Draft PR #89](https://github.com/FORIFOR/Vulnix/pull/89)。PR #88 の最新ヘッド `1cc2d9e` の上に積んだ。
