@@ -1,19 +1,19 @@
 # Security Graph v2 作業の再開点
 
-更新: 2026-11-18。現行の作業ツリーは `/Users/shuhei/Projects/Vulnix-security-graph-v2`、ブランチ `codex/security-graph-v2`、基点は Draft PR #85 の `e1011afb8266df36985514a80a724a7fe210e84c`。Graph実装は `d4c7785`、UI文言は `34ab3c9`、Linuxの高FD修正は `7a31412`、合成Worker起動直前の組織権限リースは `51be685`、Python認可ガードの誤認修正は `fcae4ec`、ARTEX Graph入力固定は `c0edd88`。Draft PR は [#86](https://github.com/FORIFOR/Vulnix/pull/86)。元ツリーと旧 `Vulnix-security-graph-e2e` ツリーの未コミット差分は保持した。
+更新: 2026-11-18。現行の作業ツリーは `/Users/shuhei/Projects/Vulnix-security-graph-v2`、ブランチ `codex/security-graph-v2`、基点は Draft PR #85 の `e1011afb8266df36985514a80a724a7fe210e84c`。Graph実装は `d4c7785`、UI文言は `34ab3c9`、Linuxの高FD修正は `7a31412`、合成Worker起動直前の組織権限リースは `51be685`、Python認可ガードの誤認修正は `fcae4ec`、ARTEX Graph入力固定は `c0edd88`、隔離リレーのパイプ後片付けは `b0815a8`。Draft PR は [#86](https://github.com/FORIFOR/Vulnix/pull/86)。元ツリーと旧 `Vulnix-security-graph-e2e` ツリーの未コミット差分は保持した。
 
 ## 現在の実装と証拠
 
 - `aegis/security_graph/`: 組織別 SQLite、コミット固定の不変スナップショット、Python/TypeScript AST による FastAPI/Next.js の基本関係、根拠参照、8ホップ/5,000状態/100経路の有界探索、修正効果の予測、コミット間の構造比較。
-- `aegis/research/`: 交換可能な研究モデル、オフライン基準モデル、ARTEXの検証済み構造化出力からのアダプタ、根拠照合と反証処理。ARTEXへ渡したGraph要求のSHA-256を実行結果に記録し、別スナップショットの結果の流用を拒否。固定バイナリ・Linux隔離・ループバックモデルを要求するGraph研究入口を追加。実ARTEXのGraph仮説テストはCI待ち。実LLMの採用率は未検証。Abliteration AI の実回答0/2の未合格状態は変わらない。
+- `aegis/research/`: 交換可能な研究モデル、オフライン基準モデル、ARTEXの検証済み構造化出力からのアダプタ、根拠照合と反証処理。ARTEXへ渡したGraph要求のSHA-256を実行結果に記録し、別スナップショットの結果の流用を拒否。固定バイナリ・Linux隔離・ループバックモデルを要求するGraph研究入口を追加。実ARTEXとローカル模擬モデルによるGraph仮説テストはCI #44295128892で2回実行・成功。実LLMの採用率は未検証。Abliteration AI の実回答0/2の未合格状態は変わらない。
 - `aegis/validation/`, `aegis/remediation/`: 登録済み合成2組織の固定fixtureだけをMacのsandbox-exec、Linuxでは既存KernelConfinementのcgroup/nftables/名前空間で検証する経路を実装し、ローカルDraft差分を生成。Linux実機の合成経路はCIで成功。AssessmentServiceの共有WorkerPoolを使うため、緊急停止の対象に入る。Worker起動直前の組織権限リースと結果保存前の再確認を通す。GraphServiceが仮説・検証・修正を組織別DBに保存。顧客コードの任意実行・実PR作成は行わない。
 - `aegis/server.py`: 組織境界、既存セッション/CSRF/監査/ロール再確認を通すGraph API。HTTPから任意パスやURLを入力できない。
 - `web/src/app/security-graph/`, `attack-paths/`, `remediations/`: 日本語の経路・根拠・予測・合成修正表示。390pxと1280pxのChromium実ブラウザでグラフ選択、証拠、修正効果、横幅はみ出し無しを確認（合成APIモック、`/tmp/vulnix_graph_browser_test.py`）。さらに実バックエンド＋Next.jsの通しE2Eで、合成Next.js＋FastAPIのGitソース登録→解析→仮説→Mac隔離検証→Draft差分表示を両幅で確認（`/tmp/vulnix_graph_live_browser.py`）。
-- リベース前のコード `5dfae01` では関連43件、バックエンド全1,812件成功（27件スキップ、`/tmp/vulnix-graph-v2-backend-5dfae01.log`）、Web123件、lintエラー0（既存警告5）、build、390px/1280pxブラウザE2Eが成功。新しいARTEX入力固定の関連116件（19件スキップ）とRuffは成功。リベース後の全件・Web・ブラウザ・Linux CIは再確認する。
+- `2750e48` では関連116件（19件スキップ）、バックエンド全1,818件成功（29件スキップ、`/tmp/vulnix-graph-v2-backend-2750e48.log`）、Web123件、lintエラー0（既存警告5）、build、390px/1280pxブラウザE2E、Ruffが成功。後続の隔離リレー後片付け `b0815a8` では関連90件（4件スキップ）とRuffが成功。最新コードの全件・CIは再確認する。
 
 ## 未完了のゲート
 
-- [先行Linux CI #44280933793](https://github.com/FORIFOR/Vulnix/actions/runs/44280933793) の高FD失敗は `selectors.DefaultSelector` と高FD回帰テストで解消。[Linux CI #44288248725](https://github.com/FORIFOR/Vulnix/actions/runs/44288248725) はリベース前のコード `5dfae01` で Python全件・Ruff・Linuxカーネル隔離と緊急停止・Web・実ARTEXの3ジョブすべて成功。最新 `c0edd88` のCIは未確認。CI内のモデル応答は明示的なローカル模擬サーバーであり、有料の実モデルへは送っていない。独立した安全レビューは未確認。Mac合成サンドボックスを顧客コードの隔離実行に転用しない。
+- [先行Linux CI #44280933793](https://github.com/FORIFOR/Vulnix/actions/runs/44280933793) の高FD失敗は `selectors.DefaultSelector` と高FD回帰テストで解消。[Linux CI #44288248725](https://github.com/FORIFOR/Vulnix/actions/runs/44288248725) はリベース前のコードで3ジョブ成功。[CI #44295128892](https://github.com/FORIFOR/Vulnix/actions/runs/44295128892) は `2750e48` でWeb・実ARTEX・Linux Python/隔離の3ジョブ成功。実ARTEXログに隔離リレーの未クローズ `ResourceWarning` があり、`b0815a8` で終了時の読取パイプを閉じる修正を追加したため、その最終CIは未確認。CI内のモデル応答は明示的なローカル模擬サーバーであり、有料の実モデルへは送っていない。独立した安全レビューは未確認。Mac合成サンドボックスを顧客コードの隔離実行に転用しない。
 - Python/TypeScriptの動的認可、共通ミドルウェア、AI/MCP、依存関係全体の解析精度は未測定。既知の合成ケースのみ確認し、未知コードでの誤検知率・見逃し率は未測定。
 - GitHub Appの顧客リポジトリ接続、実モデル、実サイト、実Draft PR、継続監視、公開判定は未実装/未承認。合成結果を実証済みの顧客問題として扱わない。
 
