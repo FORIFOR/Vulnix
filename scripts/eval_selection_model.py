@@ -30,7 +30,9 @@ SYSTEM = (
 )
 
 
-def build_request() -> tuple[dict, dict[str, str]]:
+def build_request(*, max_output_tokens: int = 384) -> tuple[dict, dict[str, str]]:
+    if type(max_output_tokens) is not int or max_output_tokens not in (384, 1024):
+        raise ValueError("unsupported evaluation output cap")
     owners = json.loads((FIXTURES / "access_control_owner_specs.json").read_text(encoding="utf-8"))
     truth = json.loads((FIXTURES / "access_control_truth.json").read_text(encoding="utf-8"))
     recorded = json.loads(MEASUREMENTS.read_text(encoding="utf-8"))["adaptive_plan"]
@@ -48,7 +50,7 @@ def build_request() -> tuple[dict, dict[str, str]]:
                "messages": [{"role": "system", "content": SYSTEM},
                             {"role": "user", "content": json.dumps({"cases": cases},
                                                                        ensure_ascii=False, sort_keys=True)}],
-               "temperature": 0, "max_tokens": 384}
+               "temperature": 0, "max_tokens": max_output_tokens}
     return request, mapping
 
 
@@ -96,8 +98,8 @@ def selection_errors(selected: set[str], mapping: dict[str, str]) -> list[dict]:
             for case_id in sorted(selected ^ actual)]
 
 
-def run_preview() -> dict:
-    request, mapping = build_request()
+def run_preview(*, max_output_tokens: int = 384) -> dict:
+    request, mapping = build_request(max_output_tokens=max_output_tokens)
 
     def local_reference(clean: dict) -> dict:
         # An explicitly labelled fixed-rule reference, never an AI-quality result.
@@ -124,10 +126,10 @@ def run_preview() -> dict:
 
 
 def run_approved(*, approval_sha256: str, api_key: str, audit: AuditLog,
-                 transport=None) -> dict:
+                 transport=None, max_output_tokens: int = 384) -> dict:
     """One explicitly approved model call; returns only aggregate quality and usage."""
-    request, mapping = build_request()
-    preview = run_preview()["gateway"]
+    request, mapping = build_request(max_output_tokens=max_output_tokens)
+    preview = run_preview(max_output_tokens=max_output_tokens)["gateway"]
     if not hmac.compare_digest(approval_sha256, preview["first_request_sha256"]):
         raise ValueError("approval does not match the fixed preview")
     if not api_key or audit is None:

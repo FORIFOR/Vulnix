@@ -60,6 +60,44 @@ class TestSelectionModelEval(unittest.TestCase):
         self.assertEqual(report["mock_selection"]["tp"], 8)
         self.assertEqual(len(report["preview_request"]["messages"]), 2)
 
+    def test_larger_output_preview_is_distinct_and_stays_within_budget(self):
+        original = evaluation.run_preview()
+        candidate = evaluation.run_preview(max_output_tokens=1024)
+        self.assertEqual(original["gateway"]["first_request_sha256"],
+                         "52c4598a8c7563a3dc9e9d4a61c89bd6157a0e2bb0faa98a5f015c03931e6c62")
+        self.assertEqual(candidate["preview_request"]["max_tokens"], 1024)
+        self.assertNotEqual(candidate["gateway"]["first_request_sha256"],
+                            original["gateway"]["first_request_sha256"])
+        self.assertEqual(candidate["gateway"]["calls"], 1)
+        self.assertLessEqual(candidate["gateway"]["est_tokens"], 2000)
+        self.assertLessEqual(candidate["gateway"]["est_cost_usd"], 0.01)
+        with self.assertRaises(ValueError):
+            evaluation.run_preview(max_output_tokens=2000)
+
+    def test_larger_output_requires_its_own_approval_hash(self):
+        old_hash = evaluation.run_preview()["gateway"]["first_request_sha256"]
+        candidate_hash = evaluation.run_preview(max_output_tokens=1024)["gateway"]["first_request_sha256"]
+        sent = []
+
+        def local_transport(*args):
+            sent.append(args)
+            return json.dumps({"choices": [{"message": {"role": "assistant",
+                                                       "content": '{"selected":[]}'}}]}).encode()
+
+        with tempfile.TemporaryDirectory() as tmp, patch.object(evaluation, "APPROVAL_DIR", Path(tmp) / "approvals"):
+            audit = AuditLog(Path(tmp) / "audit.jsonl")
+            with self.assertRaises(ValueError):
+                evaluation.run_approved(approval_sha256=old_hash, api_key="test-only-key",
+                                        audit=audit, transport=local_transport,
+                                        max_output_tokens=1024)
+            self.assertEqual(sent, [])
+            result = evaluation.run_approved(approval_sha256=candidate_hash, api_key="test-only-key",
+                                             audit=audit, transport=local_transport,
+                                             max_output_tokens=1024)
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(json.loads(sent[0][2])["max_tokens"], 1024)
+        self.assertTrue(result["accepted"])
+
     def test_approved_path_uses_same_hash_one_call_and_durable_audit(self):
         expected = evaluation.run_preview()["gateway"]["first_request_sha256"]
         seen = []
