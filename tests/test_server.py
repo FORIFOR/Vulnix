@@ -56,6 +56,14 @@ class TestServer(unittest.TestCase):
         self.cookie = None
 
     def tearDown(self):
+        # SSE tests may leave the scan runner active after closing the stream.
+        # Stop and join it before removing the service's temporary storage;
+        # otherwise a late state/audit write can recreate an entry during rmtree.
+        runner = self.svc._thread
+        if runner is not None and runner.is_alive():
+            self.svc.emergency_stop("test_teardown")
+            runner.join(timeout=10)
+            self.assertFalse(runner.is_alive(), "scan runner outlived the test")
         self.svc.workers.kill_all()
         self.srv.shutdown()
         self.srv.server_close()
