@@ -280,6 +280,18 @@ def main() -> None:
                                 page.get_by_text("レポートプレビューを表示").wait_for()
                                 report_exported = True
                                 page.get_by_role("tab", name="問題").click()
+                            if args.cors_note:
+                                page.goto(base + "/findings/f_l1_cors?a=scan_001")
+                                page.get_by_text("観測したこと：", exact=False).first.wait_for()
+                                page.get_by_text("Access-Control-Allow-Credentials: true", exact=False).first.wait_for()
+                                page.get_by_text("機密情報をブラウザから読み取れたことは実証していません", exact=False).first.wait_for()
+                                page.get_by_text("別のサイトから、ログイン状態を使って", exact=False).first.wait_for()
+                                assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+                                page.screenshot(path=str(ROOT / "docs/CORS_390_RESULT.png"), full_page=True)
+                                assert not page_errors, page_errors
+                                page.goto(base + "/assessments/scan_001")
+                                page.get_by_role("tab", name="問題").click()
+                                page.locator("h3").filter(has_text="Apache mod_status の公開露出").wait_for()
                             if args.reconnect_events:
                                 page.wait_for_timeout(5000)
                                 assert event_connections[0] >= 2, "SSE did not reconnect after first disconnect"
@@ -324,15 +336,6 @@ def main() -> None:
                                 revocation_hidden_s = round(time.monotonic() - revoked_at, 3)
                             if args.idle_seconds > 0:
                                 page.wait_for_timeout(args.idle_seconds * 1000)
-                            if args.cors_note:
-                                page.goto(base + "/findings/f_l1_cors?a=scan_001")
-                                page.get_by_text("観測したこと：", exact=False).first.wait_for()
-                                page.get_by_text("Access-Control-Allow-Credentials: true", exact=False).first.wait_for()
-                                page.get_by_text("機密情報をブラウザから読み取れたことは実証していません", exact=False).first.wait_for()
-                                page.get_by_text("別のサイトから、ログイン状態を使って", exact=False).first.wait_for()
-                                assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
-                                page.screenshot(path=str(ROOT / "docs/CORS_390_RESULT.png"), full_page=True)
-                                assert not page_errors, page_errors
                             print(json.dumps({"viewport_width": args.viewport_width,
                                               "web_mode": "production" if args.production else "development",
                                               "actions_from_site_open_to_result": len(actions),
