@@ -33,6 +33,15 @@ test("a real site without a completed ARTEX plan reports the built-in check", ()
     artex_plan: { configured: true, plan: null } }).plan, "公開ページの設定を確認（AIによる追加検査は未実施）");
 });
 
+test("a real site with an unverified planner does not claim only the built-in check ran", () => {
+  const run = { ...base, is_external_service: true,
+    artex_plan: { configured: true, plan: { engine: { kind: "unverified", pinned: false } } },
+    plan_source: { engine: "unverified", pinned: false, model: "mock-local" } };
+  assert.equal(diagnosisSource(run).plan, "検証用プランナーの計画（モデル: mock-local）");
+  assert.equal(diagnosisSource({ ...run, artex_plan: { configured: true,
+    plan: { engine: { kind: "unknown", pinned: false } } } }).plan, "診断計画の実行元を確認できません");
+});
+
 test("a real site keeps its actual pinned engine and used model after a server restart", () => {
   const run = { ...base, is_external_service: true,
     artex_plan: { configured: true, plan: null },

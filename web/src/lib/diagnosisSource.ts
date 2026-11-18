@@ -9,7 +9,11 @@ export function diagnosisSource(snap: Pick<Snapshot, "is_external_service" | "pl
   const model = snap.plan_source?.model;
   const modelLabel = model ? `（モデル: ${model}）` : "";
   if (snap.is_external_service) {
-    return { plan: usedArtex ? `ARTEXで作成した計画${modelLabel}` : "公開ページの設定を確認（AIによる追加検査は未実施）",
+    const plan = usedArtex ? `ARTEXで作成した計画${modelLabel}`
+      : kind === "unverified" ? `検証用プランナーの計画${modelLabel}`
+      : kind ? "診断計画の実行元を確認できません"
+      : "公開ページの設定を確認（AIによる追加検査は未実施）";
+    return { plan,
       explanation: usedModel ? `${usedModel.actor}を使用` : "解説は内蔵機能で作成" };
   }
 
