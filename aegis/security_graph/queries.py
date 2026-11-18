@@ -15,7 +15,7 @@ def authorization_paths(graph: SecurityGraph) -> tuple[AuthorizationPath, ...]:
     nodes = {node.id: node for node in graph.nodes}
     result = []
     for exposure in graph.edges:
-        if exposure.relation != "EXPOSES":
+        if exposure.relation != "EXPOSES" or nodes[exposure.source].kind != "route":
             continue
         reads = [edge for edge in graph.edges if edge.source == exposure.target and edge.relation == "READS"]
         if not reads:

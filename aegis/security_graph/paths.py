@@ -80,7 +80,8 @@ def search_paths(graph: SecurityGraph, starts: tuple[str, ...], targets: tuple[s
 
 
 def candidate_paths(graph: SecurityGraph, **limits) -> PathSearchResult:
-    starts = tuple(node.id for node in graph.nodes if node.kind == "route" and node.status == "observed")
+    starts = tuple(node.id for node in graph.nodes
+                   if (node.kind == "route" and node.status == "observed") or node.kind == "ai_tool")
     targets = tuple(node.id for node in graph.nodes if node.kind in {"resource", "database", "ai_tool"})
     if not starts or not targets:
         return PathSearchResult((), 0, False)

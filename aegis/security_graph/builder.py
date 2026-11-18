@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 from aegis.connectors.github_source import read_pinned_file
+from .extract_ai_tools import extract_mcp_tools
 from .extract_typescript import extract_route
 from .models import Evidence, GraphEdge, GraphNode, SecurityGraph
 
@@ -167,13 +168,21 @@ def build_graph(root: Path, commit_sha: str) -> SecurityGraph:
             elif isinstance(statement, ast.Import):
                 for alias in statement.names:
                     imports[alias.asname or alias.name.split(".")[0]] = (alias.name, statement.lineno)
+        tool_registrations = extract_mcp_tools(tree)
         for fn in (n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))):
             route_decorators = [d for d in fn.decorator_list if isinstance(d, ast.Call) and
                                 _name(d.func).split(".")[-1] in _METHODS]
-            if not route_decorators:
+            tool_registration = tool_registrations.get(fn)
+            if not route_decorators and tool_registration is None:
                 continue
             handler = add_node("handler", fn.name, path, fn.lineno, lines,
-                               "guard_observed" if _guarded(fn) else "unknown")
+                               "guard_observed" if route_decorators and _guarded(fn) else "unknown")
+            if tool_registration is not None:
+                tool = add_node("ai_tool", tool_registration.name, path,
+                                tool_registration.decorator_line, lines, tool_registration.status)
+                edges.append(GraphEdge(tool.id, handler.id, "EXPOSES", 1.0,
+                                       tuple(dict.fromkeys((*tool.evidence_ids, *handler.evidence_ids))),
+                                       path, tool_registration.decorator_line, commit_sha))
             used_names = {node.id for node in ast.walk(fn) if isinstance(node, ast.Name)}
             for alias in sorted(used_names & imports.keys()):
                 module, line = imports[alias]
