@@ -5,7 +5,7 @@ import ts from "typescript";
 
 const source = readFileSync(new URL("../src/lib/securityGraph.ts", import.meta.url), "utf8");
 const { outputText } = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } });
-const { pathStatusLabel, pathIsVerified, syntheticValidationLabel } = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`);
+const { pathStatusLabel, pathIsVerified, syntheticValidationLabel, mcpScopeLabel } = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`);
 
 test("observed structure is never labelled a confirmed attack", () => {
   assert.equal(pathIsVerified("observed_structure"), false);
@@ -24,4 +24,9 @@ test("synthetic validation is labelled without claiming customer verification", 
   assert.match(syntheticValidationLabel("synthetic_fixed"), /合成ラボ/);
   assert.match(syntheticValidationLabel("synthetic_fixed"), /ローカル修正/);
   assert.doesNotMatch(syntheticValidationLabel("synthetic_fixed"), /顧客環境/);
+});
+test("MCP role declaration is never labelled as effective authorization", () => {
+  assert.match(mcpScopeLabel("scope_unknown"), /未確認/);
+  assert.match(mcpScopeLabel("role_declaration_unverified"), /未検証/);
+  assert.doesNotMatch(mcpScopeLabel("role_declaration_unverified"), /安全|防御済み/);
 });

@@ -1127,8 +1127,11 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
             (root / "api.py").write_text("from fastapi import FastAPI\napp=FastAPI()\n"
                 "@app.get('/orders/{id}')\ndef get_order(id):\n"
                 "    order=store.get(id)\n    return order\n")
+            (root / "tools.py").write_text("from fastmcp import FastMCP\n"
+                "server=FastMCP('lab')\n@server.tool()\ndef read_customer(id):\n"
+                "    return store.get(id)\n")
             subprocess.run(["git", "init", "-q", str(root)], check=True)
-            subprocess.run(["git", "-C", str(root), "add", ".vulnix-synthetic-lab", "api.py"], check=True)
+            subprocess.run(["git", "-C", str(root), "add", ".vulnix-synthetic-lab", "api.py", "tools.py"], check=True)
             subprocess.run(["git", "-C", str(root), "-c", "user.name=Lab",
                 "-c", "user.email=lab@lab.test", "commit", "-qm", "fixture"], check=True)
             sha = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
@@ -1142,9 +1145,14 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
             self.assertEqual(self.req(alice, "/security-graph/snapshots", org=a_org)[1][0]["id"], snapshot)
             self.assertTrue(self.req(alice, f"/security-graph/nodes?snapshot={snapshot}", org=a_org)[1])
             paths = self.req(alice, f"/security-graph/paths?snapshot={snapshot}", org=a_org)[1]
-            self.assertEqual(len(paths), 1)
+            self.assertEqual(len(paths), 2)
+            scope = self.req(alice, f"/security-graph/mcp-scope?snapshot={snapshot}", org=a_org)
+            self.assertEqual(scope[0], 200)
+            self.assertEqual(len(scope[1]), 1)
+            self.assertEqual(scope[1][0]["status"], "scope_unknown")
             self.assertTrue(self.req(alice, f"/security-graph/evidence?snapshot={snapshot}", org=a_org)[1])
-            path_id = paths[0]["id"]
+            api_path = next(path for path in paths if path["nodes"][0].startswith("route:"))
+            path_id = api_path["id"]
             self.assertEqual(self.req(alice, f"/security-graph/paths/{path_id}?snapshot={snapshot}", org=a_org)[1]["id"], path_id)
             code, hypotheses = self.req(alice, "/security-graph/research", {"snapshot_id": snapshot}, org=a_org)
             self.assertEqual(code, 200)
@@ -1152,12 +1160,14 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
             self.assertEqual(self.req(alice, f"/security-graph/hypotheses?snapshot={snapshot}", org=a_org)[1], hypotheses)
             self.assertEqual(self.req(alice, f"/security-graph/validations?snapshot={snapshot}", org=a_org)[1], [])
             self.assertEqual(self.req(alice, f"/security-graph/remediations?snapshot={snapshot}", org=a_org)[1], [])
-            handler = paths[0]["nodes"][1]
+            handler = api_path["nodes"][1]
             import urllib.parse
             impact = self.req(alice, f"/security-graph/remediation-impact?snapshot={snapshot}&node={urllib.parse.quote(handler)}", org=a_org)[1]
             self.assertEqual(impact["status"], "prediction_only")
             self.assertEqual(self.req(bob, "/security-graph/snapshots", org=b_org)[1], [])
             self.assertEqual(self.req(bob, f"/security-graph/nodes?snapshot={snapshot}", org=b_org)[0], 404)
+            self.assertEqual(self.req(bob, f"/security-graph/mcp-scope?snapshot={snapshot}", org=b_org)[0], 404)
+            self.assertEqual(self.req(bob, f"/security-graph/mcp-scope?snapshot={snapshot}", org=a_org)[0], 403)
             self.assertEqual(self.req(bob, f"/security-graph/validations?snapshot={snapshot}", org=b_org)[0], 404)
             self.assertEqual(self.req(bob, f"/security-graph/remediations?snapshot={snapshot}", org=b_org)[0], 404)
             self.assertEqual(self.req(bob, "/security-graph/snapshots", org=a_org)[0], 403)

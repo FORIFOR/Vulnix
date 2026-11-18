@@ -1,6 +1,24 @@
 # Security Graph v2 作業の再開点
 
-更新: 2026-11-18。現行の作業ツリーは `/Users/shuhei/Projects/Vulnix-security-graph-v2`、ブランチ `codex/security-graph-v2`、基点は Draft PR #85 の `e1011afb8266df36985514a80a724a7fe210e84c`。Graph実装は `d4c7785`、UI文言は `34ab3c9`、Linuxの高FD修正は `7a31412`、合成Worker起動直前の組織権限リースは `51be685`、Python認可ガードの誤認修正は `fcae4ec`、ARTEX Graph入力固定は `c0edd88`、隔離リレーのパイプ後片付けは `b0815a8`、追加のAST認可解析修正は `edb3ae5`。Draft PR は [#86](https://github.com/FORIFOR/Vulnix/pull/86)。元ツリーと旧 `Vulnix-security-graph-e2e` ツリーの未コミット差分は保持した。
+## AI/MCP拡張の現在地
+
+- 現行作業ツリーは `/Users/shuhei/Projects/Vulnix-graph-mcp-scope`、ブランチ `codex/graph-mcp-scope`、コードコミット `6aae9ff`。基点はMCPツール構造抽出の[Draft PR #87](https://github.com/FORIFOR/Vulnix/pull/87)（`267f7d2`）、本変更は[Draft PR #88](https://github.com/FORIFOR/Vulnix/pull/88)。元の[Graph PR #86](https://github.com/FORIFOR/Vulnix/pull/86)は `1fff083` でLinux CI #44311300150 の3ジョブ成功。
+- PR #87はFastMCPの明示登録をASTで抽出し、`ai_tool → handler → resource` を未確定の構造経路として保存する。再代入・動的名は安全確認に使わず、既存のAPI認可不備仮説には混ぜない。パーサー版は `source-ast-v3`。ローカル全1,835件成功（29件スキップ、`/tmp/vulnix-mcp-graph-backend.log`）、Web123件・lintエラー0（既存警告5）・build・Ruff成功。[Linux CI #44318721657](https://github.com/FORIFOR/Vulnix/actions/runs/44318721657) は3ジョブ成功。
+- PR #88はMCPツールのデータ参照とロール宣言をレビュー候補として組織別API・日本語UIへ接続。宣言の適用順を考慮し、ロール名原文は保存しない。候補は `scope_unknown` または `role_declaration_unverified`、検証は `not_run`。パーサー版は `source-ast-v4`。関連14件、ローカル全1,840件成功（29件スキップ、`/tmp/vulnix-mcp-scope-backend-full.log`）、Web124件・lintエラー0（既存警告5）・build・Ruff、実バックエンド＋Next.jsの1280px/390pxブラウザ確認が成功。[Linux CI #44320273080](https://github.com/FORIFOR/Vulnix/actions/runs/44320273080) は3ジョブ成功。Linux Python全1,840件（20件スキップ）、カーネル隔離・緊急停止12件も成功。
+- 次はMCPの実行時権限、承認、外部文書注入、権限委譲を合成・隔離ハーネスで評価し、誤検知・見逃しを未知条件で測る。顧客コード、実サイト、有料モデルには接続しない。正式独立レビュー、GitHub App顧客接続、顧客コード隔離実行、実モデル品質、実修正PR、継続監視、公開判定は未完了。
+
+```sh
+cd /Users/shuhei/Projects/Vulnix-graph-mcp-scope
+git status --short --branch
+git diff --check
+VULNIX_NO_ENV_LOCAL=1 python3 -m unittest discover -s tests
+ruff check aegis tests
+cd web && npm test && npm run lint && npm run build
+```
+
+## Graph基盤の履歴
+
+更新: 2026-11-18。基盤作業ツリーは `/Users/shuhei/Projects/Vulnix-security-graph-v2`、ブランチ `codex/security-graph-v2`、基点は Draft PR #85 の `e1011afb8266df36985514a80a724a7fe210e84c`。Graph実装は `d4c7785`、UI文言は `34ab3c9`、Linuxの高FD修正は `7a31412`、合成Worker起動直前の組織権限リースは `51be685`、Python認可ガードの誤認修正は `fcae4ec`、ARTEX Graph入力固定は `c0edd88`、隔離リレーのパイプ後片付けは `b0815a8`、追加のAST認可解析修正は `edb3ae5`。Draft PR は [#86](https://github.com/FORIFOR/Vulnix/pull/86)。元ツリーと旧 `Vulnix-security-graph-e2e` ツリーの未コミット差分は保持した。
 
 ## 現在の実装と証拠
 

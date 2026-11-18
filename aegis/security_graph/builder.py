@@ -183,6 +183,12 @@ def build_graph(root: Path, commit_sha: str) -> SecurityGraph:
                 edges.append(GraphEdge(tool.id, handler.id, "EXPOSES", 1.0,
                                        tuple(dict.fromkeys((*tool.evidence_ids, *handler.evidence_ids))),
                                        path, tool_registration.decorator_line, commit_sha))
+                for declaration in tool_registration.role_declarations:
+                    role = add_node("role", declaration.name_digest, path,
+                                    declaration.decorator_line, lines, "declaration_unverified")
+                    edges.append(GraphEdge(handler.id, role.id, "REQUIRES_ROLE", 0.4,
+                                           tuple(dict.fromkeys((*handler.evidence_ids, *role.evidence_ids))),
+                                           path, declaration.decorator_line, commit_sha, "inferred"))
             used_names = {node.id for node in ast.walk(fn) if isinstance(node, ast.Name)}
             for alias in sorted(used_names & imports.keys()):
                 module, line = imports[alias]

@@ -1,6 +1,13 @@
 """Identify explicit FastMCP tool registration without importing source code."""
 import ast
+import hashlib
 from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class RoleDeclaration:
+    name_digest: str
+    decorator_line: int
 
 
 @dataclass(frozen=True)
@@ -8,6 +15,7 @@ class ToolRegistration:
     name: str
     decorator_line: int
     status: str
+    role_declarations: tuple[RoleDeclaration, ...] = ()
 
 
 def _factory_call(expr: ast.expr, imported_names: set[str], imported_modules: set[str]) -> bool:
@@ -21,7 +29,7 @@ def _factory_call(expr: ast.expr, imported_names: set[str], imported_modules: se
 
 def _registration(fn: ast.FunctionDef | ast.AsyncFunctionDef,
                   instances: set[str]) -> ToolRegistration | None:
-    for decorator in fn.decorator_list:
+    for index, decorator in enumerate(fn.decorator_list):
         if not (isinstance(decorator, ast.Call) and isinstance(decorator.func, ast.Attribute) and
                 decorator.func.attr == "tool" and isinstance(decorator.func.value, ast.Name) and
                 decorator.func.value.id in instances):
@@ -38,7 +46,18 @@ def _registration(fn: ast.FunctionDef | ast.AsyncFunctionDef,
                     status = "unknown"
         if decorator.args or any(keyword.arg is None for keyword in decorator.keywords):
             status = "unknown"
-        return ToolRegistration(name, decorator.lineno, status)
+        roles = []
+        # Python applies decorators bottom-up. A role wrapper above tool()
+        # cannot be assumed to protect the callable already registered by it.
+        for inner in fn.decorator_list[index + 1:]:
+            if (not isinstance(inner, ast.Call) or not isinstance(inner.func, ast.Name) or
+                    inner.func.id != "requires_role" or len(inner.args) != 1 or inner.keywords or
+                    not isinstance(inner.args[0], ast.Constant) or
+                    not isinstance(inner.args[0].value, str)):
+                continue
+            digest = hashlib.sha256(inner.args[0].value.encode()).hexdigest()[:16]
+            roles.append(RoleDeclaration(f"role-sha256:{digest}", inner.lineno))
+        return ToolRegistration(name, decorator.lineno, status, tuple(roles))
     return None
 
 

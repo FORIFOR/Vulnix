@@ -573,6 +573,8 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         return self._json(200, graph.nodes(snapshot, limit=limit, offset=offset))
                     if p == "/api/security-graph/paths":
                         return self._json(200, graph.paths(snapshot))
+                    if p == "/api/security-graph/mcp-scope":
+                        return self._json(200, graph.mcp_scope(snapshot))
                     if p == "/api/security-graph/evidence":
                         return self._json(200, graph.evidence(snapshot))
                     if m := re.fullmatch(r"/api/security-graph/paths/([0-9a-f]{24})", p):

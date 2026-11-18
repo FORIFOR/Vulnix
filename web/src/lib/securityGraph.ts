@@ -52,6 +52,24 @@ export type GraphHypothesis = {
   confidence: number;
   verdict: string;
 };
+export type McpScopeCandidate = {
+  id: string;
+  tool_id: string;
+  handler_id: string;
+  resource_ids: string[];
+  declared_role_ids: string[];
+  evidence_ids: string[];
+  status: string;
+  validation_status: string;
+};
+
+export function mcpScopeLabel(status: string): string {
+  const labels: Record<string, string> = {
+    scope_unknown: "MCPツールの権限範囲は未確認",
+    role_declaration_unverified: "コード上にロール宣言あり（実効性は未検証）",
+  };
+  return labels[status] ?? "MCPツールの権限状態は未確認";
+}
 
 export function pathStatusLabel(status: string): string {
   const labels: Record<string, string> = {
