@@ -12,6 +12,9 @@ from .models import Evidence, GraphEdge, GraphNode, SecurityGraph
 _SHA = re.compile(r"[0-9a-f]{40}")
 _SKIP = {".git", ".next", "node_modules", "data", "venv", ".venv", "__pycache__", "tests", "fixtures"}
 _METHODS = {"get", "post", "put", "patch", "delete"}
+_ORG_FIELDS = {"org_id", "orgId"}
+_RESOURCE_NAMES = {"order", "resource"}
+_IDENTITY_NAMES = {"identity", "session", "user"}
 
 
 def _name(expr):
@@ -26,24 +29,37 @@ def _call_names(tree):
     return [(_name(n.func), n.lineno) for n in ast.walk(tree) if isinstance(n, ast.Call)]
 
 
+def _org_owner(expr: ast.expr) -> str:
+    if isinstance(expr, ast.Attribute) and expr.attr in _ORG_FIELDS and isinstance(expr.value, ast.Name):
+        base = expr.value.id
+    elif (isinstance(expr, ast.Subscript) and isinstance(expr.value, ast.Name) and
+          isinstance(expr.slice, ast.Constant) and expr.slice.value in _ORG_FIELDS):
+        base = expr.value.id
+    else:
+        return ""
+    if base in _RESOURCE_NAMES:
+        return "resource"
+    if base in _IDENTITY_NAMES:
+        return "identity"
+    return ""
+
+
 def _guarded(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     """Recognize only explicit resource/identity comparison followed by rejection.
 
     Other middleware and dynamic checks are unknown. This is not proof of safety.
     """
     for node in fn.body:
-        if not isinstance(node, ast.If) or not isinstance(node.test, ast.Compare):
-            continue
-        if len(node.test.ops) != 1 or not isinstance(node.test.ops[0], ast.NotEq):
-            continue
-        names = {_name(x) for x in ast.walk(node.test) if isinstance(x, (ast.Name, ast.Attribute))}
-        resource = any("org" in n.lower() and ("order" in n.lower() or "resource" in n.lower()) for n in names)
-        identity = any("identity" in n.lower() or "user" in n.lower() for n in names)
-        # A nested branch may reject only some mismatches. Recognize a guard
-        # only when the mismatch branch itself raises unconditionally.
-        reject = bool(node.body) and isinstance(node.body[0], ast.Raise)
-        if resource and identity and reject:
-            return True
+        if (isinstance(node, ast.If) and isinstance(node.test, ast.Compare) and
+                len(node.test.ops) == 1 and isinstance(node.test.ops[0], ast.NotEq)):
+            owners = {_org_owner(node.test.left), _org_owner(node.test.comparators[0])}
+            # A nested branch may reject only some mismatches. Recognize a guard
+            # only when the mismatch branch itself raises unconditionally.
+            reject = bool(node.body) and isinstance(node.body[0], ast.Raise)
+            if owners == {"resource", "identity"} and reject:
+                return True
+        if any(isinstance(item, ast.Return) for item in ast.walk(node)):
+            return False  # a prior exit may bypass a later guard
     return False
 
 

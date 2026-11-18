@@ -100,6 +100,22 @@ class SecurityGraphTest(unittest.TestCase):
         self.assertEqual(authorization_paths(graph)[0].status, "unknown")
         self.assertEqual(len(research(graph, RuleBasedResearchModel())), 1)
 
+    def test_unreachable_guard_after_return_is_unknown(self):
+        unreachable = VULNERABLE.replace('    return order',
+            '    return order\n'
+            '    if order.org_id != identity["org_id"]:\n'
+            '        raise HTTPException(status_code=403)')
+        graph = self.build(unreachable)
+        self.assertEqual(authorization_paths(graph)[0].status, "unknown")
+        self.assertEqual(len(research(graph, RuleBasedResearchModel())), 1)
+
+    def test_dynamic_identity_fallback_is_unknown(self):
+        fallback = PROTECTED.replace('identity["org_id"]',
+                                     'identity.get("org_id", order.org_id)')
+        graph = self.build(fallback)
+        self.assertEqual(authorization_paths(graph)[0].status, "unknown")
+        self.assertEqual(len(research(graph, RuleBasedResearchModel())), 1)
+
     def test_bad_model_references_rejected(self):
         class BadModel:
             def propose(self, _):
