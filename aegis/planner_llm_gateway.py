@@ -59,6 +59,8 @@ FORCEABLE_FIRST_TOOLS = frozenset({"add_intent"})
 MAX_REQUEST_BYTES = 256 * 1024
 MAX_RESPONSE_BYTES = 1 << 20
 MAX_COMPLETION_TOKENS = 2048
+LOCAL_REASONING_EFFORTS = {"abliterated-model": frozenset({"none", "low"})}
+LOCAL_REASONING_TOKEN_CAP = {"abliterated-model": 256}
 
 # Unmistakable key formats: checked in EVERY message (also the model's own turns).
 STRONG_SECRET_PATTERNS = [re.compile(p) for p in (
@@ -477,6 +479,25 @@ class PlannerLLMGateway:
             if type(response_format) is not dict or response_format != {"type": "json_object"}:
                 raise GatewayRefused("response_format", "only plain JSON object output is allowed")
             out["response_format"] = {"type": "json_object"}
+        # The generic provider schema lists these controls, but this model's
+        # behavior is unverified. Keep them in local previews/mocks only. Never
+        # silently strip an attempted control from a real request.
+        if "reasoning_effort" in body or "reasoning" in body:
+            if self.real or self.model not in LOCAL_REASONING_EFFORTS \
+                    or ("reasoning_effort" in body and "reasoning" in body):
+                raise GatewayRefused("reasoning_config", "reasoning control is not approved for this model and upstream")
+            if "reasoning_effort" in body:
+                effort = body["reasoning_effort"]
+                if type(effort) is not str or effort not in LOCAL_REASONING_EFFORTS[self.model]:
+                    raise GatewayRefused("reasoning_config", "unsupported reasoning effort")
+                out["reasoning_effort"] = effort
+            else:
+                config = body["reasoning"]
+                if type(config) is not dict or set(config) != {"max_tokens"} \
+                        or type(config["max_tokens"]) is not int \
+                        or not 1 <= config["max_tokens"] <= LOCAL_REASONING_TOKEN_CAP[self.model]:
+                    raise GatewayRefused("reasoning_config", "unsupported reasoning token cap")
+                out["reasoning"] = {"max_tokens": config["max_tokens"]}
         tools = self._tools(body.get("tools"))
         if tools:
             out["tools"] = tools
@@ -704,6 +725,10 @@ class PlannerLLMGateway:
             if self._tools_sha is None and clean.get("tools"):
                 self._tools_sha = tools_sha
         self._record("planner_llm.call", rec, extra=_response_shape(resp, clean.get("tools") or []))
+        if self._failed.is_set():
+            # Provider usage exceeded the reserved budget. Do not expose a
+            # syntactically valid answer as an adoptable planner result.
+            return 409, {"error": {"message": "upstream usage exceeded the run budget"}}
         return 200, resp
 
     def _send_upstream(self, headers: dict, payload: bytes) -> bytes:
@@ -751,10 +776,18 @@ class PlannerLLMGateway:
                     except GatewayRefused:
                         continue
                     self._model_turns[_turn_digest(turn)] = turn
-            if isinstance(usage, dict) and isinstance(usage.get("completion_tokens"), int):
-                completion = max(0, min(int(usage["completion_tokens"]), clean["max_tokens"]))
-                pt = usage.get("prompt_tokens")
-                prompt_real = max(0, pt) if isinstance(pt, int) else 0
+            if usage is not None and (type(usage) is not dict or
+                    any(k in usage and (type(usage[k]) is not int or usage[k] < 0)
+                        for k in ("prompt_tokens", "completion_tokens"))):
+                self._failed.set()
+                rec.reason = "invalid_usage"
+                self.failure = {"index": rec.index, "error_type": "InvalidUsage"}
+            elif isinstance(usage, dict) and usage:
+                # A reported half of usage still counts. Missing completion
+                # retains the reserved output cap; missing prompt retains the
+                # conservative input estimate. Never clamp reported usage.
+                completion = usage.get("completion_tokens", clean["max_tokens"])
+                prompt_real = usage.get("prompt_tokens", 0)
                 actual_tokens = max(prompt_real, prompt_tokens) + completion
                 actual_cost = self.budget.estimate(max(prompt_real, prompt_tokens, rec.request_bytes), completion)
                 # settle against actual usage (never below zero)

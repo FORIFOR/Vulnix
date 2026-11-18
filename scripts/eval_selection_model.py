@@ -1,7 +1,8 @@
-"""One-call, preview-only blind selection evaluation for the access-control lab.
+"""One-call blind selection evaluation for the access-control lab.
 
 The committed request contains structural observations and owner requirements only.
-Truth labels stay local. This module cannot contact a paid model or a target.
+Truth labels stay local. Preview is local; the separately approved path can
+contact a paid model once, but neither path contacts a diagnostic target.
 """
 from __future__ import annotations
 
@@ -31,11 +32,15 @@ SYSTEM = (
 
 
 def build_request(*, max_output_tokens: int = 384,
-                  structured_output: bool = False) -> tuple[dict, dict[str, str]]:
+                  structured_output: bool = False,
+                  local_reasoning: dict | None = None) -> tuple[dict, dict[str, str]]:
     if type(max_output_tokens) is not int or max_output_tokens not in (384, 960, 1024):
         raise ValueError("unsupported evaluation output cap")
     if type(structured_output) is not bool:
         raise ValueError("invalid structured output setting")
+    if local_reasoning is not None and (type(local_reasoning) is not dict or
+                                        set(local_reasoning) not in ({"reasoning"}, {"reasoning_effort"})):
+        raise ValueError("invalid local reasoning setting")
     owners = json.loads((FIXTURES / "access_control_owner_specs.json").read_text(encoding="utf-8"))
     truth = json.loads((FIXTURES / "access_control_truth.json").read_text(encoding="utf-8"))
     recorded = json.loads(MEASUREMENTS.read_text(encoding="utf-8"))["adaptive_plan"]
@@ -56,6 +61,8 @@ def build_request(*, max_output_tokens: int = 384,
                "temperature": 0, "max_tokens": max_output_tokens}
     if structured_output:
         request["response_format"] = {"type": "json_object"}
+    if local_reasoning:
+        request.update(local_reasoning)
     return request, mapping
 
 
@@ -104,9 +111,11 @@ def selection_errors(selected: set[str], mapping: dict[str, str]) -> list[dict]:
 
 
 def run_preview(*, max_output_tokens: int = 384,
-                structured_output: bool = False) -> dict:
+                structured_output: bool = False,
+                local_reasoning: dict | None = None) -> dict:
     request, mapping = build_request(max_output_tokens=max_output_tokens,
-                                     structured_output=structured_output)
+                                     structured_output=structured_output,
+                                     local_reasoning=local_reasoning)
 
     def local_reference(clean: dict) -> dict:
         # An explicitly labelled fixed-rule reference, never an AI-quality result.
@@ -175,10 +184,15 @@ def run_approved(*, approval_sha256: str, api_key: str, audit: AuditLog,
         status, response = gateway.handle(json.dumps(request).encode(), f"Bearer {gateway.token}")
         elapsed = round(time.monotonic() - started, 3)
         if status != 200:
+            report = gateway.report()
+            failure_type = (report.get("failed_upstream") or {}).get("error_type")
+            failure_reason = {"UsageExceededBudget": "usage_exceeded_budget",
+                              "InvalidUsage": "invalid_usage"}.get(failure_type)
             return {"selection": None, "accepted": False, "response_adoption_rate": 0.0,
-                    "reject_reason": "upstream_exchange_failed" if status == 409 else "gateway_refused",
+                    "reject_reason": failure_reason or ("upstream_exchange_failed" if status == 409
+                                                         else "gateway_refused"),
                     "selection_errors": [], "selected_case_ids": [], "usage": {},
-                    "finish_reason": None, "elapsed_s": elapsed, "gateway": gateway.report(),
+                    "finish_reason": None, "elapsed_s": elapsed, "gateway": report,
                     "provider_billed_cost_usd": None, "target_get": 0, "worker_launches": 0}
         content = response["choices"][0]["message"].get("content")
         try:
@@ -204,10 +218,11 @@ def run_approved(*, approval_sha256: str, api_key: str, audit: AuditLog,
         finish_reason = response["choices"][0].get("finish_reason")
         if finish_reason not in ("stop", "length", "tool_calls", "content_filter"):
             finish_reason = "other" if finish_reason is not None else None
-        if accepted and finish_reason in ("length", "content_filter", "tool_calls"):
+        if accepted and finish_reason != "stop":
             selected, accepted = set(), False
             reject_reason = {"length": "truncated", "content_filter": "filtered",
-                             "tool_calls": "unexpected_tool_call"}[finish_reason]
+                             "tool_calls": "unexpected_tool_call"}.get(finish_reason,
+                                                                          "unknown_finish_reason")
         return {"selection": score(selected, mapping) if accepted else None, "accepted": accepted,
                 "response_adoption_rate": 1.0 if accepted else 0.0, "reject_reason": reject_reason,
                 "selection_errors": selection_errors(selected, mapping) if accepted else [],

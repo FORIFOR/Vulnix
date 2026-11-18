@@ -1058,6 +1058,10 @@ class TestL1Diagnosis(RealServiceBase):
             snap = self.run_l1()
         self.assertEqual(snap["state"], "completed")
         self.assertEqual([path for path, _ in self.fake.seen], ["/"])
+        self.assertTrue(self.svc.ledger.scan_usage[HOST].get("root_fingerprint"))
+        self.assertTrue(any(e["event"] == "artex.initial_fallback" and
+                            e["fields"].get("reason") == "planner_failure"
+                            for e in self.svc.audit.entries()))
 
     def test_initial_plan_revocation_does_not_complete(self):
         self.svc.real_site_read_only = True

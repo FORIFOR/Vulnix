@@ -150,6 +150,30 @@ class TestInspection(unittest.TestCase):
                         {"type": "text"}, "json_object", {}):
             self.refused(chat(tools=(), response_format=invalid), "response_format")
 
+    def test_reasoning_controls_are_model_bound_and_local_only(self):
+        body = chat(tools=(), reasoning_effort="low")
+        with preview() as gw:
+            self.assertEqual(gw.inspect(body)["reasoning_effort"], "low")
+            self.assertNotEqual(sha_of(gw, body), sha_of(gw, chat(tools=())))
+        with PlannerLLMGateway(mode="preview", model="other-model", responder=canned) as gw:
+            with self.assertRaises(GatewayRefused):
+                gw.inspect(body)
+        with forward(ok_transport) as gw:
+            with self.assertRaises(GatewayRefused):
+                gw.inspect(body)
+
+    def test_invalid_reasoning_controls_are_refused_before_send(self):
+        for extra in ({"reasoning_effort": "high"}, {"reasoning_effort": 1},
+                      {"reasoning": {"max_tokens": 0}}, {"reasoning": {"max_tokens": -1}},
+                      {"reasoning": {"max_tokens": 257}}, {"reasoning": {"max_tokens": True}},
+                      {"reasoning": {"unexpected": 1}},
+                      {"reasoning_effort": "low", "reasoning": {"max_tokens": 32}}):
+            with self.subTest(extra=extra):
+                self.refused(chat(tools=(), **extra), "reasoning_config")
+        with preview() as gw:
+            self.assertEqual(gw.inspect(chat(tools=(), reasoning={"max_tokens": 128}))
+                             ["reasoning"], {"max_tokens": 128})
+
 
 class TestPreviewSendsNothing(unittest.TestCase):
     def test_preview_records_what_would_be_sent_and_never_forwards(self):
@@ -211,7 +235,7 @@ class TestBudgets(unittest.TestCase):
         budget = Budget(max_calls=3, max_total_tokens=20_000, max_cost_usd=0.009,
                         usd_per_1k_input=0.001, usd_per_1k_output=0.003)
         with forward(high_usage, audit=Audit(), budget=budget) as gw:
-            self.assertEqual(post(gw, chat())[0], 200)
+            self.assertEqual(post(gw, chat())[0], 409)
             self.assertEqual(post(gw, chat())[0], 403)
         self.assertEqual(len(sent), 1)
         self.assertTrue(gw.failed)

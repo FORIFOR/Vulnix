@@ -82,7 +82,8 @@ class TestSelectionModelEval(unittest.TestCase):
         def local_transport(*args):
             sent.append(args)
             return json.dumps({"choices": [{"message": {"role": "assistant",
-                                                       "content": '{"selected":[]}'}}]}).encode()
+                                                       "content": '{"selected":[]}'},
+                                            "finish_reason": "stop"}]}).encode()
 
         with tempfile.TemporaryDirectory() as tmp, patch.object(evaluation, "APPROVAL_DIR", Path(tmp) / "approvals"):
             audit = AuditLog(Path(tmp) / "audit.jsonl")
@@ -107,6 +108,24 @@ class TestSelectionModelEval(unittest.TestCase):
         self.assertEqual(structured["gateway"]["calls"], 1)
         self.assertLessEqual(structured["gateway"]["est_tokens"], 2000)
         self.assertLessEqual(structured["gateway"]["est_cost_usd"], 0.01)
+
+    def test_reasoning_candidates_change_hash_but_never_enter_approved_request(self):
+        base = evaluation.run_preview(max_output_tokens=960, structured_output=True)
+        for setting in ({"reasoning_effort": "none"}, {"reasoning": {"max_tokens": 128}}):
+            candidate = evaluation.run_preview(max_output_tokens=960, structured_output=True,
+                                               local_reasoning=setting)
+            self.assertNotEqual(candidate["gateway"]["first_request_sha256"],
+                                base["gateway"]["first_request_sha256"])
+            self.assertLessEqual(candidate["gateway"]["est_tokens"], 2000)
+            self.assertLessEqual(candidate["gateway"]["est_cost_usd"], 0.01)
+            self.assertEqual(candidate["paid_model_cost_usd"], 0)
+        with self.assertRaises(ValueError):
+            evaluation.run_preview(local_reasoning={"reasoning": {"max_tokens": 257}})
+        with self.assertRaises(ValueError):
+            evaluation.build_request(local_reasoning={"reasoning_effort": "low", "unexpected": True})
+        approved, _ = evaluation.build_request(max_output_tokens=960, structured_output=True)
+        self.assertNotIn("reasoning", approved)
+        self.assertNotIn("reasoning_effort", approved)
 
     def test_length_finish_rejects_even_syntactically_valid_json(self):
         expected = evaluation.run_preview()["gateway"]["first_request_sha256"]
@@ -133,6 +152,8 @@ class TestSelectionModelEval(unittest.TestCase):
             ('{"selected":["C01","C01"]}', "stop", False, "invalid_case_id"),
             ('{"selected":[],"extra":true}', "stop", False, "invalid_shape"),
             ('{"selected":[]}', "content_filter", False, "filtered"),
+            ('{"selected":[]}', None, False, "unknown_finish_reason"),
+            ('{"selected":[]}', "unknown", False, "unknown_finish_reason"),
         )
         for content, finish, accepted, reason in cases:
             with self.subTest(content=content, finish=finish):
@@ -168,7 +189,8 @@ class TestSelectionModelEval(unittest.TestCase):
             seen.append((url, headers, json.loads(body)))
             ids = [c["id"] for c in json.loads(seen[-1][2]["messages"][1]["content"])["cases"][:2]]
             return json.dumps({"choices": [{"message": {"role": "assistant",
-                                                      "content": json.dumps({"selected": ids})}}],
+                                                      "content": json.dumps({"selected": ids})},
+                                           "finish_reason": "stop"}],
                                "usage": {"prompt_tokens": 900, "completion_tokens": 30}}).encode()
 
         with tempfile.TemporaryDirectory() as tmp, patch.object(evaluation, "APPROVAL_DIR", Path(tmp) / "approvals"):
@@ -240,6 +262,44 @@ class TestSelectionModelEval(unittest.TestCase):
         self.assertIsNone(result["selection"])
         self.assertGreaterEqual(result["elapsed_s"], 0)
 
+    def test_over_budget_provider_usage_cannot_adopt_valid_json(self):
+        expected = evaluation.run_preview()["gateway"]["first_request_sha256"]
+        sent = []
+
+        def over_budget(*args):
+            sent.append(args)
+            return json.dumps({"choices": [{"message": {"role": "assistant",
+                                                       "content": '{"selected":[]}'},
+                                            "finish_reason": "stop"}],
+                               "usage": {"completion_tokens": 100000}}).encode()
+
+        with tempfile.TemporaryDirectory() as tmp, patch.object(evaluation, "APPROVAL_DIR", Path(tmp) / "approvals"):
+            result = evaluation.run_approved(approval_sha256=expected, api_key="test-only-key",
+                                             audit=AuditLog(Path(tmp) / "audit.jsonl"), transport=over_budget)
+        self.assertEqual(len(sent), 1)
+        self.assertFalse(result["accepted"])
+        self.assertEqual(result["reject_reason"], "usage_exceeded_budget")
+        self.assertIsNone(result["selection"])
+        self.assertEqual(result["gateway"]["failed_upstream"]["error_type"], "UsageExceededBudget")
+
+    def test_partial_and_invalid_usage_are_not_accepted(self):
+        expected = evaluation.run_preview()["gateway"]["first_request_sha256"]
+        for usage, reason in (({"prompt_tokens": 100000}, "UsageExceededBudget"),
+                              ({"completion_tokens": "100000"}, "InvalidUsage")):
+            with self.subTest(usage=usage), tempfile.TemporaryDirectory() as tmp, \
+                    patch.object(evaluation, "APPROVAL_DIR", Path(tmp) / "approvals"):
+                def response(*_args):
+                    return json.dumps({"choices": [{"message": {"role": "assistant",
+                                                               "content": '{"selected":[]}'},
+                                                    "finish_reason": "stop"}],
+                                       "usage": usage}).encode()
+                result = evaluation.run_approved(approval_sha256=expected, api_key="test-only-key",
+                                                 audit=AuditLog(Path(tmp) / "audit.jsonl"), transport=response)
+                self.assertFalse(result["accepted"])
+                self.assertEqual(result["reject_reason"],
+                                 "usage_exceeded_budget" if reason == "UsageExceededBudget" else "invalid_usage")
+                self.assertEqual(result["gateway"]["failed_upstream"]["error_type"], reason)
+
     def test_missing_content_is_reported_after_the_only_model_call(self):
         expected = evaluation.run_preview()["gateway"]["first_request_sha256"]
         def no_content(*_args):
@@ -261,7 +321,8 @@ class TestSelectionModelEval(unittest.TestCase):
         def local_transport(*args):
             sent.append(args)
             return json.dumps({"choices": [{"message": {"role": "assistant",
-                                                      "content": '{"selected":[]}'}}]}).encode()
+                                                       "content": '{"selected":[]}'},
+                                            "finish_reason": "stop"}]}).encode()
 
         with tempfile.TemporaryDirectory() as tmp, patch.object(evaluation, "APPROVAL_DIR", Path(tmp) / "approvals"):
             audit = AuditLog(Path(tmp) / "audit.jsonl")
