@@ -25,6 +25,16 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Set up TypeScript AST parser
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install pinned TypeScript compiler for graph parser tests
+        run: npm --prefix web ci
+
       - name: Install Linux nftables and iproute2
         run: |
           sudo apt-get update
@@ -44,7 +54,9 @@ jobs:
           # The same tests also run in the suite above; here a skip is a failure, so
           # a runner without cgroup v2 / nft / sudo cannot pass this step silently.
           python3 -m unittest -v tests.test_release_safety.TestOnLinuxWithTheRealKernelConfinement \
-            tests.test_fail_closed.TestKernelConfinementOnLinux 2>&1 | tee linux-e2e.log
+            tests.test_fail_closed.TestKernelConfinementOnLinux \
+            tests.test_graph_service.GraphServiceTest.test_import_research_sandbox_remediation_records \
+            tests.test_source_workflow.SourceWorkflowTest.test_vulnerable_to_fixed_draft 2>&1 | tee linux-e2e.log
           if grep -q "skipped" linux-e2e.log; then echo "Linux confinement tests were skipped"; exit 1; fi
           grep -q "^OK" linux-e2e.log
 
@@ -56,8 +68,15 @@ jobs:
         run: |
           python3 -c '
           import json
+          from aegis.abliteration_server import start_abliteration_server
           from aegis.router import verify_planner_connections
-          rep = verify_planner_connections()
+          local = start_abliteration_server(0)
+          try:
+              rep = verify_planner_connections(
+                  abliteration_url=f"http://127.0.0.1:{local.server_port}/v1/chat/completions")
+          finally:
+              local.shutdown()
+              local.server_close()
           print(json.dumps(rep, ensure_ascii=False, indent=2))
           assert rep["all_verified"], rep
           '

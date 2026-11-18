@@ -1107,6 +1107,65 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
         self.assertIn("alice-site.lab.test", a_logs)
         self.assertNotIn("alice-site.lab.test", b_logs)
 
+    def test_research_report_is_scoped_to_its_organization(self):
+        alice, bob = self.signup("researchalice"), self.signup("researchbob")
+        a_org, b_org = alice["orgs"][0]["id"], bob["orgs"][0]["id"]
+        self.reg.service(a_org).save_research_report({"status": "synthetic", "hypothesis_id": "alice-only"})
+        self.reg.service(b_org).save_research_report({"status": "synthetic", "hypothesis_id": "bob-only"})
+        self.assertEqual(self.req(alice, "/research/report", org=a_org)[1]["hypothesis_id"], "alice-only")
+        self.assertEqual(self.req(bob, "/research/report", org=b_org)[1]["hypothesis_id"], "bob-only")
+        self.assertEqual(self.req(bob, "/research/report", org=a_org)[0], 403)
+        self.assertEqual(self.req(alice, "/research/report", org=b_org)[0], 403)
+
+    def test_security_graph_routes_keep_source_and_snapshots_in_one_org(self):
+        from aegis.security_graph.service import SourceRegistration
+        alice, bob = self.signup("graphalice"), self.signup("graphbob")
+        a_org, b_org = alice["orgs"][0]["id"], bob["orgs"][0]["id"]
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / ".vulnix-synthetic-lab").write_text("synthetic-only\n")
+            (root / "api.py").write_text("from fastapi import FastAPI\napp=FastAPI()\n"
+                "@app.get('/orders/{id}')\ndef get_order(id):\n"
+                "    order=store.get(id)\n    return order\n")
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            subprocess.run(["git", "-C", str(root), "add", ".vulnix-synthetic-lab", "api.py"], check=True)
+            subprocess.run(["git", "-C", str(root), "-c", "user.name=Lab",
+                "-c", "user.email=lab@lab.test", "commit", "-qm", "fixture"], check=True)
+            sha = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+            self.reg.service(a_org).graph_service.register_source(SourceRegistration("lab", "repo-lab", root, sha))
+            self.assertEqual(self.req(alice, "/security-graph/sources", org=a_org)[1][0]["id"], "lab")
+            self.assertEqual(self.req(bob, "/security-graph/sources", org=b_org)[1], [])
+            self.assertEqual(self.req(bob, "/security-graph/sources", org=a_org)[0], 403)
+            code, result = self.req(alice, "/security-graph/import", {"source_id": "lab"}, org=a_org)
+            self.assertEqual(code, 200, result)
+            snapshot = result["snapshot_id"]
+            self.assertEqual(self.req(alice, "/security-graph/snapshots", org=a_org)[1][0]["id"], snapshot)
+            self.assertTrue(self.req(alice, f"/security-graph/nodes?snapshot={snapshot}", org=a_org)[1])
+            paths = self.req(alice, f"/security-graph/paths?snapshot={snapshot}", org=a_org)[1]
+            self.assertEqual(len(paths), 1)
+            self.assertTrue(self.req(alice, f"/security-graph/evidence?snapshot={snapshot}", org=a_org)[1])
+            path_id = paths[0]["id"]
+            self.assertEqual(self.req(alice, f"/security-graph/paths/{path_id}?snapshot={snapshot}", org=a_org)[1]["id"], path_id)
+            code, hypotheses = self.req(alice, "/security-graph/research", {"snapshot_id": snapshot}, org=a_org)
+            self.assertEqual(code, 200)
+            self.assertEqual(hypotheses[0]["verdict"], "unverified")
+            self.assertEqual(self.req(alice, f"/security-graph/hypotheses?snapshot={snapshot}", org=a_org)[1], hypotheses)
+            self.assertEqual(self.req(alice, f"/security-graph/validations?snapshot={snapshot}", org=a_org)[1], [])
+            self.assertEqual(self.req(alice, f"/security-graph/remediations?snapshot={snapshot}", org=a_org)[1], [])
+            handler = paths[0]["nodes"][1]
+            import urllib.parse
+            impact = self.req(alice, f"/security-graph/remediation-impact?snapshot={snapshot}&node={urllib.parse.quote(handler)}", org=a_org)[1]
+            self.assertEqual(impact["status"], "prediction_only")
+            self.assertEqual(self.req(bob, "/security-graph/snapshots", org=b_org)[1], [])
+            self.assertEqual(self.req(bob, f"/security-graph/nodes?snapshot={snapshot}", org=b_org)[0], 404)
+            self.assertEqual(self.req(bob, f"/security-graph/validations?snapshot={snapshot}", org=b_org)[0], 404)
+            self.assertEqual(self.req(bob, f"/security-graph/remediations?snapshot={snapshot}", org=b_org)[0], 404)
+            self.assertEqual(self.req(bob, "/security-graph/snapshots", org=a_org)[0], 403)
+            self.assertEqual(self.req(bob, "/security-graph/import", {"source_id": "lab"}, org=a_org)[0], 403)
+            self.assertEqual(self.req(bob, "/security-graph/validate-synthetic", {
+                "snapshot_id": snapshot, "hypothesis_id": hypotheses[0]["hypothesis_id"]}, org=a_org)[0], 403)
+            self.assertEqual(self.req(alice, "/security-graph/import", {"source_id": "/tmp/no"}, org=a_org)[0], 404)
+
     def test_the_ui_cookie_selects_the_org_and_is_still_membership_checked(self):
         a, b = self.signup("alice"), self.signup("bobby")
         a_org = a["orgs"][0]["id"]

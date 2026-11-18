@@ -34,6 +34,10 @@ const NAV = [
   { href: "/dashboard", label: "ホーム", icon: "⌂" },
   { href: "/assets", label: "サイト", icon: "▤" },
   { href: "/assessments/scan_001", label: "診断ワークスペース", icon: "◎" },
+  { href: "/research", label: "コード調査", icon: "◇" },
+  { href: "/security-graph", label: "Security Graph", icon: "▦" },
+  { href: "/attack-paths", label: "攻撃経路", icon: "⇢" },
+  { href: "/remediations", label: "修正効果", icon: "✓" },
   { href: "/settings", label: "設定", icon: "⚙" },
 ];
 
