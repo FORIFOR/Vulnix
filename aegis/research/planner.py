@@ -32,12 +32,16 @@ class RuleBasedResearchModel:
                 for i, p in enumerate(context["paths"], 1) if p["status"] == "unknown"]
 
 
-def research(graph: SecurityGraph, model: ResearchModel) -> tuple[Hypothesis, ...]:
+def make_research_context(graph: SecurityGraph) -> dict:
     # Send identifiers and statuses, never raw source text or secret values.
-    context = {"commit_sha": graph.commit_sha,
-               "paths": [dict(route_id=p.route_id, handler_id=p.handler_id,
-                              resource_ids=list(p.resource_ids), evidence_ids=list(p.evidence_ids),
-                              status=p.status) for p in authorization_paths(graph)]}
+    return {"commit_sha": graph.commit_sha,
+            "paths": [dict(route_id=p.route_id, handler_id=p.handler_id,
+                           resource_ids=list(p.resource_ids), evidence_ids=list(p.evidence_ids),
+                           status=p.status) for p in authorization_paths(graph)]}
+
+
+def research(graph: SecurityGraph, model: ResearchModel) -> tuple[Hypothesis, ...]:
+    context = make_research_context(graph)
     raw_items = model.propose(context)
     if not isinstance(raw_items, list) or len(raw_items) > 100:
         return ()
