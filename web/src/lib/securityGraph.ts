@@ -68,3 +68,13 @@ export function pathStatusLabel(status: string): string {
 export function pathIsVerified(status: string): boolean {
   return status === "verified";
 }
+
+export function syntheticValidationLabel(status: string): string {
+  const labels: Record<string, string> = {
+    synthetic_fixed: "合成ラボで越境を再現し、ローカル修正後に解消を確認",
+    confirmed_in_synthetic_lab: "合成ラボで越境を再現（修正は未確認）",
+    not_reproduced: "合成ラボで越境は再現せず",
+    inconclusive: "合成ラボの結果は判定不能",
+  };
+  return labels[status] ?? "合成ラボの結果は未確認";
+}

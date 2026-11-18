@@ -5,7 +5,7 @@ import ts from "typescript";
 
 const source = readFileSync(new URL("../src/lib/securityGraph.ts", import.meta.url), "utf8");
 const { outputText } = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } });
-const { pathStatusLabel, pathIsVerified } = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`);
+const { pathStatusLabel, pathIsVerified, syntheticValidationLabel } = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`);
 
 test("observed structure is never labelled a confirmed attack", () => {
   assert.equal(pathIsVerified("observed_structure"), false);
@@ -19,4 +19,9 @@ test("guarded and hypothetical routes retain uncertainty", () => {
 test("only verified state receives verified language", () => {
   assert.equal(pathIsVerified("verified"), true);
   assert.match(pathStatusLabel("verified"), /隔離検証/);
+});
+test("synthetic validation is labelled without claiming customer verification", () => {
+  assert.match(syntheticValidationLabel("synthetic_fixed"), /合成ラボ/);
+  assert.match(syntheticValidationLabel("synthetic_fixed"), /ローカル修正/);
+  assert.doesNotMatch(syntheticValidationLabel("synthetic_fixed"), /顧客環境/);
 });

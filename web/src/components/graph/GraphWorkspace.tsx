@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { getJSON, postJSON } from "@/lib/api";
-import { pathStatusLabel, type GraphEvidence, type GraphHypothesis, type GraphNode,
+import { pathStatusLabel, syntheticValidationLabel, type GraphEvidence, type GraphHypothesis, type GraphNode,
   type GraphPath, type GraphSnapshot } from "@/lib/securityGraph";
 
 type Panel = "assets" | "graph" | "detail";
@@ -166,7 +166,7 @@ export function GraphWorkspace({ title = "Security Graph", initialPathId }: {
             {relatedHypotheses.length ? relatedHypotheses.map(item => <div key={item.hypothesis_id} className="mt-2 rounded-lg bg-amber-50 p-3 text-xs text-amber-950 dark:bg-amber-950/30 dark:text-amber-100">
               <strong>{item.summary}</strong><p className="mt-1">仮説の前提: {item.assumptions.join("、")}</p>
               {validations.find(v => v.hypothesis_id === item.hypothesis_id) ?
-                <p className="mt-2">合成ラボ: {validations.find(v => v.hypothesis_id === item.hypothesis_id)?.status}。顧客環境では未検証。</p> :
+                <p className="mt-2">{syntheticValidationLabel(validations.find(v => v.hypothesis_id === item.hypothesis_id)?.status ?? "")}。顧客環境では未検証。</p> :
                 <button type="button" disabled={busy} onClick={() => validateSynthetic(item.hypothesis_id)} className="mt-2 rounded border px-2 py-1 disabled:opacity-50">登録済み合成ラボで検証</button>}
             </div>) : <p className="mt-2 text-xs text-zinc-500">保存された仮説はありません。</p>}
           </> : <p className="mt-4 text-sm text-zinc-500">ノードを選ぶと根拠を表示します。</p>}
