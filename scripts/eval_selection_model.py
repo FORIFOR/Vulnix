@@ -30,9 +30,12 @@ SYSTEM = (
 )
 
 
-def build_request(*, max_output_tokens: int = 384) -> tuple[dict, dict[str, str]]:
-    if type(max_output_tokens) is not int or max_output_tokens not in (384, 1024):
+def build_request(*, max_output_tokens: int = 384,
+                  structured_output: bool = False) -> tuple[dict, dict[str, str]]:
+    if type(max_output_tokens) is not int or max_output_tokens not in (384, 960, 1024):
         raise ValueError("unsupported evaluation output cap")
+    if type(structured_output) is not bool:
+        raise ValueError("invalid structured output setting")
     owners = json.loads((FIXTURES / "access_control_owner_specs.json").read_text(encoding="utf-8"))
     truth = json.loads((FIXTURES / "access_control_truth.json").read_text(encoding="utf-8"))
     recorded = json.loads(MEASUREMENTS.read_text(encoding="utf-8"))["adaptive_plan"]
@@ -51,6 +54,8 @@ def build_request(*, max_output_tokens: int = 384) -> tuple[dict, dict[str, str]
                             {"role": "user", "content": json.dumps({"cases": cases},
                                                                        ensure_ascii=False, sort_keys=True)}],
                "temperature": 0, "max_tokens": max_output_tokens}
+    if structured_output:
+        request["response_format"] = {"type": "json_object"}
     return request, mapping
 
 
@@ -98,8 +103,10 @@ def selection_errors(selected: set[str], mapping: dict[str, str]) -> list[dict]:
             for case_id in sorted(selected ^ actual)]
 
 
-def run_preview(*, max_output_tokens: int = 384) -> dict:
-    request, mapping = build_request(max_output_tokens=max_output_tokens)
+def run_preview(*, max_output_tokens: int = 384,
+                structured_output: bool = False) -> dict:
+    request, mapping = build_request(max_output_tokens=max_output_tokens,
+                                     structured_output=structured_output)
 
     def local_reference(clean: dict) -> dict:
         # An explicitly labelled fixed-rule reference, never an AI-quality result.
@@ -126,10 +133,13 @@ def run_preview(*, max_output_tokens: int = 384) -> dict:
 
 
 def run_approved(*, approval_sha256: str, api_key: str, audit: AuditLog,
-                 transport=None, max_output_tokens: int = 384) -> dict:
+                 transport=None, max_output_tokens: int = 384,
+                 structured_output: bool = False) -> dict:
     """One explicitly approved model call; returns only aggregate quality and usage."""
-    request, mapping = build_request(max_output_tokens=max_output_tokens)
-    preview = run_preview(max_output_tokens=max_output_tokens)["gateway"]
+    request, mapping = build_request(max_output_tokens=max_output_tokens,
+                                     structured_output=structured_output)
+    preview = run_preview(max_output_tokens=max_output_tokens,
+                          structured_output=structured_output)["gateway"]
     if not hmac.compare_digest(approval_sha256, preview["first_request_sha256"]):
         raise ValueError("approval does not match the fixed preview")
     if not api_key or audit is None:
@@ -194,6 +204,10 @@ def run_approved(*, approval_sha256: str, api_key: str, audit: AuditLog,
         finish_reason = response["choices"][0].get("finish_reason")
         if finish_reason not in ("stop", "length", "tool_calls", "content_filter"):
             finish_reason = "other" if finish_reason is not None else None
+        if accepted and finish_reason in ("length", "content_filter", "tool_calls"):
+            selected, accepted = set(), False
+            reject_reason = {"length": "truncated", "content_filter": "filtered",
+                             "tool_calls": "unexpected_tool_call"}[finish_reason]
         return {"selection": score(selected, mapping) if accepted else None, "accepted": accepted,
                 "response_adoption_rate": 1.0 if accepted else 0.0, "reject_reason": reject_reason,
                 "selection_errors": selection_errors(selected, mapping) if accepted else [],

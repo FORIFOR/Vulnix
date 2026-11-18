@@ -98,6 +98,68 @@ class TestSelectionModelEval(unittest.TestCase):
         self.assertEqual(json.loads(sent[0][2])["max_tokens"], 1024)
         self.assertTrue(result["accepted"])
 
+    def test_structured_output_preview_is_distinct_and_local_only(self):
+        plain = evaluation.run_preview(max_output_tokens=1024)
+        structured = evaluation.run_preview(max_output_tokens=960, structured_output=True)
+        self.assertEqual(structured["preview_request"]["response_format"], {"type": "json_object"})
+        self.assertNotEqual(structured["gateway"]["first_request_sha256"],
+                            plain["gateway"]["first_request_sha256"])
+        self.assertEqual(structured["gateway"]["calls"], 1)
+        self.assertLessEqual(structured["gateway"]["est_tokens"], 2000)
+        self.assertLessEqual(structured["gateway"]["est_cost_usd"], 0.01)
+
+    def test_length_finish_rejects_even_syntactically_valid_json(self):
+        expected = evaluation.run_preview()["gateway"]["first_request_sha256"]
+        def truncated(*_args):
+            return json.dumps({"choices": [{"message": {"role": "assistant",
+                                                        "content": '{"selected":[]}'},
+                                            "finish_reason": "length"}]}).encode()
+        with tempfile.TemporaryDirectory() as tmp, patch.object(evaluation, "APPROVAL_DIR", Path(tmp) / "approvals"):
+            result = evaluation.run_approved(approval_sha256=expected, api_key="test-only-key",
+                                             audit=AuditLog(Path(tmp) / "audit.jsonl"), transport=truncated)
+        self.assertFalse(result["accepted"])
+        self.assertIsNone(result["selection"])
+        self.assertEqual(result["selected_case_ids"], [])
+        self.assertEqual(result["reject_reason"], "truncated")
+
+    def test_structured_contract_fails_closed_for_local_response_shapes(self):
+        expected = evaluation.run_preview(max_output_tokens=960, structured_output=True)["gateway"]["first_request_sha256"]
+        cases = (
+            ('{"selected":[]}', "stop", True, None),
+            (None, "length", False, "missing_content"),
+            ('{"selected":[]}', "length", False, "truncated"),
+            ("not json", "stop", False, "invalid_json"),
+            ('{"selected":["C99"]}', "stop", False, "invalid_case_id"),
+            ('{"selected":["C01","C01"]}', "stop", False, "invalid_case_id"),
+            ('{"selected":[],"extra":true}', "stop", False, "invalid_shape"),
+            ('{"selected":[]}', "content_filter", False, "filtered"),
+        )
+        for content, finish, accepted, reason in cases:
+            with self.subTest(content=content, finish=finish):
+                sent = []
+
+                def transport(_url, _headers, body):
+                    sent.append(json.loads(body))
+                    message = {"role": "assistant"}
+                    if content is not None:
+                        message["content"] = content
+                    return json.dumps({"choices": [{"message": message,
+                                                    "finish_reason": finish}]}).encode()
+
+                with tempfile.TemporaryDirectory() as tmp, patch.object(evaluation, "APPROVAL_DIR", Path(tmp) / "approvals"):
+                    audit = AuditLog(Path(tmp) / "audit.jsonl")
+                    result = evaluation.run_approved(
+                        approval_sha256=expected, api_key="test-only-key", audit=audit,
+                        transport=transport, max_output_tokens=960, structured_output=True)
+                    self.assertTrue(audit.verify())
+                self.assertEqual(len(sent), 1)
+                self.assertEqual(sent[0]["response_format"], {"type": "json_object"})
+                self.assertEqual(result["accepted"], accepted)
+                self.assertEqual(result["reject_reason"], reason)
+                self.assertEqual(result["target_get"], 0)
+                self.assertEqual(result["worker_launches"], 0)
+                self.assertEqual(result["gateway"]["calls"], 1)
+
     def test_approved_path_uses_same_hash_one_call_and_durable_audit(self):
         expected = evaluation.run_preview()["gateway"]["first_request_sha256"]
         seen = []

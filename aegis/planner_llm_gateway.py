@@ -472,6 +472,11 @@ class PlannerLLMGateway:
         for k in ("temperature", "top_p"):
             if isinstance(body.get(k), (int, float)):
                 out[k] = body[k]
+        if "response_format" in body:
+            response_format = body["response_format"]
+            if type(response_format) is not dict or response_format != {"type": "json_object"}:
+                raise GatewayRefused("response_format", "only plain JSON object output is allowed")
+            out["response_format"] = {"type": "json_object"}
         tools = self._tools(body.get("tools"))
         if tools:
             out["tools"] = tools

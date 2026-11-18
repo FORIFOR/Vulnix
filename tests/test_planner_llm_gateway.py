@@ -141,6 +141,15 @@ class TestInspection(unittest.TestCase):
         self.assertEqual(preview().inspect(chat())["max_tokens"], 2048)
         self.assertEqual(preview().inspect(chat(max_tokens=99999))["max_tokens"], 2048)
 
+    def test_only_plain_json_response_format_is_forwarded_and_fingerprinted(self):
+        body = chat(tools=(), response_format={"type": "json_object"})
+        out = preview().inspect(body)
+        self.assertEqual(out["response_format"], {"type": "json_object"})
+        self.assertNotEqual(sha_of(preview(), body), sha_of(preview(), chat(tools=())))
+        for invalid in ({"type": "json_schema"}, {"type": "json_object", "extra": "x"},
+                        {"type": "text"}, "json_object", {}):
+            self.refused(chat(tools=(), response_format=invalid), "response_format")
+
 
 class TestPreviewSendsNothing(unittest.TestCase):
     def test_preview_records_what_would_be_sent_and_never_forwards(self):
