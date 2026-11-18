@@ -1059,6 +1059,9 @@ class TestL1Diagnosis(RealServiceBase):
         self.assertEqual(snap["state"], "completed")
         self.assertEqual([path for path, _ in self.fake.seen], ["/"])
         self.assertTrue(self.svc.ledger.scan_usage[HOST].get("root_fingerprint"))
+        root_finding = next(f for f in snap["findings"] if f["id"] == "f_headers")
+        self.assertIn(root_finding["evidence_status"], ("detected", "proven"))
+        self.assertTrue(root_finding["evidence"][0]["audit_hash"])
         self.assertTrue(any(e["event"] == "artex.initial_fallback" and
                             e["fields"].get("reason") == "planner_failure"
                             for e in self.svc.audit.entries()))
