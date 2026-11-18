@@ -3,8 +3,8 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { getJSON, postJSON } from "@/lib/api";
-import { mcpScopeLabel, pathStatusLabel, syntheticValidationLabel, type GraphEvidence, type GraphHypothesis,
-  type GraphNode, type GraphPath, type GraphSnapshot, type McpScopeCandidate } from "@/lib/securityGraph";
+import { mcpScopeLabel, mcpValidationStatusLabel, pathStatusLabel, syntheticValidationLabel, type GraphEvidence, type GraphHypothesis,
+  type GraphNode, type GraphPath, type GraphSnapshot, type McpScopeCandidate, type McpValidation } from "@/lib/securityGraph";
 
 type Panel = "assets" | "graph" | "detail";
 type GraphSource = { id: string; repository_id: string; commit_sha: string; scope: string };
@@ -20,6 +20,7 @@ export function GraphWorkspace({ title = "Security Graph", initialPathId }: {
   const [evidence, setEvidence] = useState<GraphEvidence[]>([]);
   const [hypotheses, setHypotheses] = useState<GraphHypothesis[]>([]);
   const [mcpScope, setMcpScope] = useState<McpScopeCandidate[]>([]);
+  const [mcpValidations, setMcpValidations] = useState<McpValidation[]>([]);
   const [validations, setValidations] = useState<{ hypothesis_id: string; status: string; before: { status: string } }[]>([]);
   const [selectedPath, setSelectedPath] = useState(initialPathId ?? "");
   const [selectedNode, setSelectedNode] = useState("");
@@ -45,10 +46,12 @@ export function GraphWorkspace({ title = "Security Graph", initialPathId }: {
       getJSON<GraphEvidence[]>(`/api/security-graph/evidence${q}`),
       getJSON<GraphHypothesis[]>(`/api/security-graph/hypotheses${q}`),
       getJSON<McpScopeCandidate[]>(`/api/security-graph/mcp-scope${q}`),
+      getJSON<McpValidation[]>(`/api/security-graph/mcp-validations${q}`),
       getJSON<typeof validations>(`/api/security-graph/validations${q}`),
-    ]).then(([n, p, e, h, scope, v]) => {
+    ]).then(([n, p, e, h, scope, mcpResults, v]) => {
       if (cancelled) return;
-      setNodes(n); setPaths(p); setEvidence(e); setHypotheses(h); setMcpScope(scope); setValidations(v);
+      setNodes(n); setPaths(p); setEvidence(e); setHypotheses(h); setMcpScope(scope);
+      setMcpValidations(mcpResults); setValidations(v);
       setSelectedPath(current => p.some(path => path.id === current) ? current :
         p.some(path => path.id === initialPathId) ? initialPathId! : p[0]?.id ?? "");
     }, e => { if (!cancelled) setError((e as Error).message); });
@@ -61,6 +64,7 @@ export function GraphWorkspace({ title = "Security Graph", initialPathId }: {
   const evidenceMap = useMemo(() => new Map(evidence.map(item => [item.id, item])), [evidence]);
   const relatedHypotheses = hypotheses.filter(item => path?.evidence_ids.some(id => item.evidence_ids.includes(id)));
   const selectedMcpScope = mcpScope.find(item => item.tool_id === path?.nodes[0]);
+  const selectedMcpValidation = mcpValidations.find(item => item.candidate_id === selectedMcpScope?.id);
   const panelClass = (panel: Panel) => mobilePanel === panel ? "block" : "hidden md:block";
 
   async function runResearch() {
@@ -81,6 +85,18 @@ export function GraphWorkspace({ title = "Security Graph", initialPathId }: {
         snapshot_id: snapshot, hypothesis_id: hypothesisId,
       });
       setValidations(await getJSON<typeof validations>(`/api/security-graph/validations?snapshot=${encodeURIComponent(snapshot)}`));
+    } catch (e) { setError((e as Error).message); }
+    finally { setBusy(false); }
+  }
+
+  async function validateMcpSynthetic(candidateId: string) {
+    if (!snapshot || busy) return;
+    setBusy(true); setError("");
+    try {
+      await postJSON("/api/security-graph/mcp-validate-synthetic", {
+        snapshot_id: snapshot, candidate_id: candidateId,
+      });
+      setMcpValidations(await getJSON<McpValidation[]>(`/api/security-graph/mcp-validations?snapshot=${encodeURIComponent(snapshot)}`));
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
   }
@@ -165,7 +181,17 @@ export function GraphWorkspace({ title = "Security Graph", initialPathId }: {
               <p className="mt-1">{mcpScopeLabel(selectedMcpScope.status)}</p>
               <p className="mt-1">データ参照の関係を観測しました。MCPサーバー側の認証・承認と実行時の権限は未検証です。</p>
               <p className="mt-1">ロール宣言: {selectedMcpScope.declared_role_ids.length ? `${selectedMcpScope.declared_role_ids.length}件（実効性未検証）` : "この解析範囲では未確認"}</p>
-              <p className="mt-1">隔離検証: 未実施</p>
+              {selectedMcpValidation ? <>
+                <p className="mt-1">{mcpValidationStatusLabel(selectedMcpValidation.status)}。顧客環境と当該MCP実装の権限は未検証です。</p>
+                <ul className="mt-1 list-inside list-disc">{Object.entries(selectedMcpValidation.observation).map(([key, value]) =>
+                  <li key={key}>{key === "viewer_denied" ? "合成viewerの拒否" :
+                    key === "admin_reached_data" ? "合成adminのデータ到達" : "合成viewerのデータ到達"}: {value ? "観測" : "未観測"}</li>)}</ul>
+              </> : <>
+                <p className="mt-1">隔離検証: 未実施</p>
+                <button type="button" disabled={busy} onClick={() => validateMcpSynthetic(selectedMcpScope.id)}
+                  className="mt-2 rounded border border-amber-600 px-2 py-1 disabled:opacity-50">固定合成ケースを照合</button>
+                <p className="mt-1">登録済みの固定合成ソースにだけ対応します。</p>
+              </>}
             </div>}
             <h3 className="mt-5 text-xs font-semibold">根拠ID</h3>
             <ul className="mt-2 space-y-2">{Array.from(new Set([...(path?.evidence_ids ?? node.evidence_ids), ...(selectedMcpScope?.evidence_ids ?? [])])).map(id => {

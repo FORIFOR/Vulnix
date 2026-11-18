@@ -4,6 +4,7 @@ import tests  # noqa: F401  (hermetic revocation-marker directory)
 import json
 import http.client
 import os
+import sys
 import socketserver
 import subprocess
 import tempfile
@@ -17,6 +18,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from aegis.assessment import AssessmentService
+from aegis.confinement import KernelConfinement
 from aegis.lab import start_lab
 from aegis.operators import OperatorStore, hash_password, totp_code
 from aegis.server import make_handler
@@ -1150,6 +1152,12 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
             self.assertEqual(scope[0], 200)
             self.assertEqual(len(scope[1]), 1)
             self.assertEqual(scope[1][0]["status"], "scope_unknown")
+            self.assertEqual(self.req(alice, f"/security-graph/mcp-validations?snapshot={snapshot}", org=a_org)[1], [])
+            self.assertEqual(self.req(bob, f"/security-graph/mcp-validations?snapshot={snapshot}", org=b_org)[0], 404)
+            self.assertEqual(self.req(bob, f"/security-graph/mcp-validations?snapshot={snapshot}", org=a_org)[0], 403)
+            mcp_body = {"snapshot_id": snapshot, "candidate_id": scope[1][0]["id"]}
+            self.assertEqual(self.req(bob, "/security-graph/mcp-validate-synthetic", mcp_body, org=a_org)[0], 403)
+            self.assertEqual(self.req(alice, "/security-graph/mcp-validate-synthetic", mcp_body, org=a_org)[0], 400)
             self.assertTrue(self.req(alice, f"/security-graph/evidence?snapshot={snapshot}", org=a_org)[1])
             api_path = next(path for path in paths if path["nodes"][0].startswith("route:"))
             path_id = api_path["id"]
@@ -1175,6 +1183,41 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
             self.assertEqual(self.req(bob, "/security-graph/validate-synthetic", {
                 "snapshot_id": snapshot, "hypothesis_id": hypotheses[0]["hypothesis_id"]}, org=a_org)[0], 403)
             self.assertEqual(self.req(alice, "/security-graph/import", {"source_id": "/tmp/no"}, org=a_org)[0], 404)
+
+    @unittest.skipUnless(sys.platform == "darwin" or
+                         (sys.platform.startswith("linux") and KernelConfinement().status()["ok"]),
+                         "synthetic sandbox requires kernel confinement or macOS")
+    def test_mcp_synthetic_validation_is_scoped_to_its_organization(self):
+        from aegis.security_graph.service import SourceRegistration
+        from aegis.validation.mcp_policy_lab import SOURCE as MCP_LAB_SOURCE
+
+        alice, bob = self.signup("mcplabalice"), self.signup("mcplabbob")
+        a_org, b_org = alice["orgs"][0]["id"], bob["orgs"][0]["id"]
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / ".vulnix-synthetic-lab").write_text("synthetic-only\n")
+            (root / "tools.py").write_text(MCP_LAB_SOURCE)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            subprocess.run(["git", "-C", str(root), "add", ".vulnix-synthetic-lab", "tools.py"], check=True)
+            subprocess.run(["git", "-C", str(root), "-c", "user.name=Lab",
+                            "-c", "user.email=lab@lab.test", "commit", "-qm", "mcp-fixture"], check=True)
+            sha = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+            self.reg.service(a_org).graph_service.register_source(SourceRegistration("mcp-lab", "mcp-fixture", root, sha))
+            code, imported = self.req(alice, "/security-graph/import", {"source_id": "mcp-lab"}, org=a_org)
+            self.assertEqual(code, 200, imported)
+            snapshot = imported["snapshot_id"]
+            nodes = {node["id"]: node for node in self.req(alice, f"/security-graph/nodes?snapshot={snapshot}", org=a_org)[1]}
+            candidates = self.req(alice, f"/security-graph/mcp-scope?snapshot={snapshot}", org=a_org)[1]
+            candidate = next(item for item in candidates if nodes[item["tool_id"]]["name"] == "guarded_customer")
+            body = {"snapshot_id": snapshot, "candidate_id": candidate["id"]}
+            self.assertEqual(self.req(bob, "/security-graph/mcp-validate-synthetic", body, org=a_org)[0], 403)
+            code, result = self.req(alice, "/security-graph/mcp-validate-synthetic", body, org=a_org)
+            self.assertEqual(code, 200, result)
+            self.assertTrue(result["synthetic_only"])
+            self.assertEqual(result["observation"], {"viewer_denied": True, "admin_reached_data": True})
+            self.assertEqual(self.req(alice, f"/security-graph/mcp-validations?snapshot={snapshot}", org=a_org)[1], [result])
+            self.assertEqual(self.req(bob, f"/security-graph/mcp-validations?snapshot={snapshot}", org=b_org)[0], 404)
+            self.assertEqual(self.req(bob, f"/security-graph/mcp-validations?snapshot={snapshot}", org=a_org)[0], 403)
 
     def test_the_ui_cookie_selects_the_org_and_is_still_membership_checked(self):
         a, b = self.signup("alice"), self.signup("bobby")
