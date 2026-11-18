@@ -549,7 +549,18 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 # these START a verification job: POST only (CSRF-checked, role-checked, audited)
                 return self._json(405, {"error": "この操作は POST で実行してください"}, [("Allow", "POST")])
             if p == "/api/cve/status":
-                return self._json(200, svc.cve_monitor.status())
+                status_payload = svc.cve_monitor.status()
+                if enforce_read_auth:
+                    with ops.locked_session(sess.token) as current:
+                        if current is None or current.operator != sess.operator:
+                            return self._json(401, {"error": "ログインの有効期限が切れました。もう一度ログインしてください"})
+                        previous_timeout = self.connection.gettimeout()
+                        self.connection.settimeout(2.0)
+                        try:
+                            return self._json(200, status_payload)
+                        finally:
+                            self.connection.settimeout(previous_timeout)
+                return self._json(200, status_payload)
             return self._json(404, {"error": "not found"})
 
         def _get_org(self, p, u, svc, sess):

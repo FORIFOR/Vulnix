@@ -279,6 +279,28 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
         self.assertFalse(thread.is_alive())
         self.assertEqual(response[0][0], 401)
 
+    def test_logout_during_cve_status_generation_cannot_read_platform_status(self):
+        who = self.signup("cvestatuslogout")
+        entered, release = threading.Event(), threading.Event()
+        response = []
+
+        def delayed_status():
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("CVE status test did not release generation")
+            return {"cve_count": 12345}
+
+        with patch.object(self.svc.cve_monitor, "status", side_effect=delayed_status):
+            thread = threading.Thread(target=lambda: response.append(self.req(who, "/cve/status")))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            self.ops.logout(who["cookie"].split("=", 1)[1])
+            release.set()
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(response[0][0], 401)
+        self.assertNotIn("cve_count", response[0][1])
+
     def test_membership_removal_after_org_binding_cannot_read_report(self):
         owner, member = self.signup("reportowner"), self.signup("reportmember")
         org_id = owner["orgs"][0]["id"]
