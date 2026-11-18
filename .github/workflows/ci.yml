@@ -39,10 +39,11 @@ jobs:
         run: |
           # Bound a stalled suite while the job may still upload its output.
           # A prior 51-minute failure left no retrievable log; its cause is unknown.
-          set -o pipefail
+          # Bound the entire pipeline. A child retaining stdout after Python
+          # exits must not keep tee (and the artifact upload) waiting forever.
           timeout --signal=INT --kill-after=30s 42m \
-            python3 -u -X faulthandler -m unittest discover -s tests -p "test_*.py" -v \
-            2>&1 | tee python-suite.log
+            bash -o pipefail -c \
+            'python3 -u -X faulthandler -m unittest discover -s tests -p "test_*.py" -v 2>&1 | tee python-suite.log'
 
       - name: Preserve Python suite output
         if: ${{ !cancelled() }}
@@ -95,7 +96,7 @@ jobs:
         run: |
           sudo python3 -m aegis.control_verification
 
-      - name: Verify ARTEX CLI & Abliteration OpenAI API Live Round-Trip (P1)
+      - name: Verify ARTEX CLI & local OpenAI-compatible adapter round trip (P1)
         run: |
           python3 -c '
           import json
@@ -103,6 +104,7 @@ jobs:
           rep = verify_planner_connections()
           print(json.dumps(rep, ensure_ascii=False, indent=2))
           assert rep["all_verified"], rep
+          assert rep["abliteration_api"]["endpoint_mode"] == "local_openai_server", rep
           '
 
       - name: Verify Real Software Stack (SQLite + Sandbox FS) CVE Before/After Remediation (P2)

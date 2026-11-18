@@ -1751,8 +1751,8 @@ class AssessmentService:
             self._last_planner_verification = redact_verification_report(data["last_planner_verification"])
 
     def verify_planner_connections(self, actor: str = "operator") -> dict:
-        """Run a live end-to-end connection verification of external ARTEX CLI and
-        Abliteration OpenAI-compatible API, recording the cryptographic proof in audit."""
+        """Verify the configured ARTEX CLI and a local model adapter round trip.
+        An external model evaluation requires its separate approval and budget."""
         rep = verify_planner_connections()
         with self._lock:
             self._artex_cli_verified = bool(rep["artex_cli"]["verified"])
