@@ -223,6 +223,9 @@ def run_approved(*, approval_sha256: str, api_key: str, audit: AuditLog,
             reject_reason = {"length": "truncated", "content_filter": "filtered",
                              "tool_calls": "unexpected_tool_call"}.get(finish_reason,
                                                                           "unknown_finish_reason")
+        if accepted and gateway.failed:
+            selected, accepted = set(), False
+            reject_reason = "gateway_terminal_response"
         return {"selection": score(selected, mapping) if accepted else None, "accepted": accepted,
                 "response_adoption_rate": 1.0 if accepted else 0.0, "reject_reason": reject_reason,
                 "selection_errors": selection_errors(selected, mapping) if accepted else [],

@@ -300,6 +300,26 @@ class TestSelectionModelEval(unittest.TestCase):
                                  "usage_exceeded_budget" if reason == "UsageExceededBudget" else "invalid_usage")
                 self.assertEqual(result["gateway"]["failed_upstream"]["error_type"], reason)
 
+    def test_gateway_terminal_response_cannot_be_adopted_as_selection(self):
+        expected = evaluation.run_preview()["gateway"]["first_request_sha256"]
+
+        def contradictory(*_args):
+            return json.dumps({"choices": [{"message": {"role": "assistant",
+                                                       "content": '{"selected":[]}',
+                                                       "tool_calls": [{"id": "c1", "type": "function",
+                                                                       "function": {"name": "add_intent",
+                                                                                    "arguments": "{}"}}]},
+                                            "finish_reason": "stop"}]}).encode()
+
+        with tempfile.TemporaryDirectory() as tmp, patch.object(evaluation, "APPROVAL_DIR", Path(tmp) / "approvals"):
+            result = evaluation.run_approved(approval_sha256=expected, api_key="test-only-key",
+                                             audit=AuditLog(Path(tmp) / "audit.jsonl"), transport=contradictory)
+        self.assertFalse(result["accepted"])
+        self.assertIsNone(result["selection"])
+        self.assertEqual(result["selected_case_ids"], [])
+        self.assertEqual(result["reject_reason"], "gateway_terminal_response")
+        self.assertEqual(result["gateway"]["failed_upstream"]["error_type"], "IncompleteCompletion")
+
     def test_missing_content_is_reported_after_the_only_model_call(self):
         expected = evaluation.run_preview()["gateway"]["first_request_sha256"]
         def no_content(*_args):
