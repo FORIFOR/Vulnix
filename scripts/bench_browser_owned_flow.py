@@ -248,9 +248,11 @@ def main() -> None:
                                            for f in snap["findings"])
                             plan = snap["artex_plan"]["plan"]
                             assert plan["engine"]["kind"] == ("artex-binary" if real_bin else "unverified")
+                            fallback_label = page.get_by_text("AIによる追加検査は未実施", exact=False)
                             if real_bin:
                                 assert plan["engine"]["pinned"] is True
                                 assert model.requests, "the real ARTEX did not call the local model"
+                                assert fallback_label.count() == 0
                                 model_input = json.dumps(model.requests, ensure_ascii=False)
                                 assert HOST not in model_input and target not in model_input
                                 page.get_by_role("tab", name="診断").click()
@@ -258,6 +260,7 @@ def main() -> None:
                                 page.get_by_text("AIモデル:", exact=False).first.wait_for(timeout=10000)
                             else:
                                 assert len(model.requests) == 0, len(model.requests)
+                                fallback_label.first.wait_for()
                             report_exported = False
                             if args.report_export:
                                 page.get_by_role("tab", name="診断").click()
@@ -341,6 +344,7 @@ def main() -> None:
                                               "revocation_hidden_s": revocation_hidden_s,
                                               "target_paths": list(site.seen), "local_model_calls": len(model.requests),
                                               "engine_kind": plan["engine"]["kind"],
+                                              "fixed_l1_only_label_visible": not real_bin,
                                               "model_input_excludes_host": True if real_bin else None,
                                               "engine_and_model_visible": True if real_bin else None,
                                               "cors_observation_and_limit_visible": args.cors_note,

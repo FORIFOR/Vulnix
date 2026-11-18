@@ -30,7 +30,7 @@ test("a real site credits a pinned ARTEX plan but never infers AI explanation fr
 
 test("a real site without a completed ARTEX plan reports the built-in check", () => {
   assert.equal(diagnosisSource({ ...base, is_external_service: true,
-    artex_plan: { configured: true, plan: null } }).plan, "公開ページの設定を確認");
+    artex_plan: { configured: true, plan: null } }).plan, "公開ページの設定を確認（AIによる追加検査は未実施）");
 });
 
 test("a real site keeps its actual pinned engine and used model after a server restart", () => {
@@ -38,7 +38,7 @@ test("a real site keeps its actual pinned engine and used model after a server r
     artex_plan: { configured: true, plan: null },
     plan_source: { engine: "artex-binary", pinned: true, model: "mock-local" } };
   assert.equal(diagnosisSource(run).plan, "ARTEXで作成した計画（モデル: mock-local）");
-  assert.equal(diagnosisSource({ ...run, plan_source: null }).plan, "公開ページの設定を確認");
+  assert.equal(diagnosisSource({ ...run, plan_source: null }).plan, "公開ページの設定を確認（AIによる追加検査は未実施）");
 });
 
 test("a real site names the model only after an accepted explanation", () => {
