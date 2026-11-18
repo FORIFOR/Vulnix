@@ -575,6 +575,8 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         return self._json(200, graph.paths(snapshot))
                     if p == "/api/security-graph/mcp-scope":
                         return self._json(200, graph.mcp_scope(snapshot))
+                    if p == "/api/security-graph/mcp-validations":
+                        return self._json(200, graph.mcp_validations(snapshot))
                     if p == "/api/security-graph/evidence":
                         return self._json(200, graph.evidence(snapshot))
                     if m := re.fullmatch(r"/api/security-graph/paths/([0-9a-f]{24})", p):
@@ -1258,6 +1260,29 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         return self._json(503, {"error": "隔離検証環境が利用できません"})
                     svc.audit.record("graph.validate_synthetic", actor=actor,
                                      snapshot=body["snapshot_id"], hypothesis=body["hypothesis_id"])
+                    return self._json(200, result)
+                if p == "/api/security-graph/mcp-validate-synthetic":
+                    if (set(body) != {"snapshot_id", "candidate_id"} or
+                        any(type(body[key]) is not str for key in body) or
+                        not re.fullmatch(r"[0-9a-f]{32}", body["snapshot_id"]) or
+                        not re.fullmatch(r"[0-9a-f]{24}", body["candidate_id"])):
+                        return self._json(400, {"error": "スナップショットとMCP候補IDが必要です"})
+                    try:
+                        result = svc.graph_service.validate_mcp_synthetic(
+                            body["snapshot_id"], body["candidate_id"],
+                            commit_guard=lambda: live_grant_roles(
+                                sess, self._bound_org if tenancy is not None else DEFAULT_ORG))
+                    except KeyError:
+                        return self._json(404, {"error": "この組織にMCP候補がありません"})
+                    except ValueError as e:
+                        return self._json(400, {"error": str(e)})
+                    except Exception as e:
+                        from .validation.sandbox import SandboxUnavailable
+                        if not isinstance(e, SandboxUnavailable):
+                            raise
+                        return self._json(503, {"error": "隔離検証環境が利用できません"})
+                    svc.audit.record("graph.mcp_validate_synthetic", actor=actor,
+                                     snapshot=body["snapshot_id"], candidate=body["candidate_id"])
                     return self._json(200, result)
                 if p == "/api/assets":
                     asset = svc.register_asset(

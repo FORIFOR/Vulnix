@@ -62,6 +62,24 @@ export type McpScopeCandidate = {
   status: string;
   validation_status: string;
 };
+export type McpValidation = {
+  validation_id: string;
+  candidate_id: string;
+  tool_id: string;
+  commit_sha: string;
+  evidence_ids: string[];
+  observation: Record<string, boolean>;
+  status: string;
+  synthetic_only: true;
+};
+
+export function mcpValidationStatusLabel(status: string): string {
+  const labels: Record<string, string> = {
+    synthetic_control_observed: "固定合成ラボで権限動作を観測",
+    inconclusive: "固定合成ラボの結果は判定不能",
+  };
+  return labels[status] ?? "固定合成ラボの検証状態は未確認";
+}
 
 export function mcpScopeLabel(status: string): string {
   const labels: Record<string, string> = {
