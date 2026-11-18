@@ -1,16 +1,16 @@
 # Vulnix Goal 完了判定表
 
-更新基点：[Draft PR #85](https://github.com/FORIFOR/Vulnix/pull/85)の最新コード `d199021`（`codex/goal-integration-readiness`）、`origin/main` `5ecfc51`。最新コードと所見保持テストの単独ローカル全バックエンド1,742件成功・27件スキップ・ResourceWarning 0件（1219.162秒、`/tmp/vulnix-pr85-d199-full-isolated.log`）。[Linux CI #44272121286](https://github.com/FORIFOR/Vulnix/actions/runs/44272121286)はPython・Web・実ARTEXの3/3成功。Web119件・Lintエラー0/警告5・ビルド、Ruff、390px実ブラウザのローカル模擬操作も成功。PRはDraft・未マージ・正式GitHubレビュー0件。これは統合候補の模擬検証であり、公開βの実動作や実モデル品質のPASSではない。
+更新基点：[Draft PR #85](https://github.com/FORIFOR/Vulnix/pull/85)の検証済みコミット`42f101d`（最新の製品コードは`d199021`、後続はテスト・資料の修正）、`origin/main` `5ecfc51`。単独ローカル全バックエンド1,742件成功・27件スキップ・ResourceWarning 0件（1215.301秒、`/tmp/vulnix-pr85-sse-teardown-full.log`）。[Linux CI #44282408784](https://github.com/FORIFOR/Vulnix/actions/runs/44282408784)はPython・Web・実ARTEXの3/3成功。Web119件・Lintエラー0/警告5・ビルド、Ruff、390px実ブラウザのローカル模擬操作も成功。PRはDraft・未マージ・正式GitHubレビュー0件。これは統合候補の模擬検証であり、公開βの実動作や実モデル品質のPASSではない。
 
 各行に記載した過去コミットとCIは、その時点の測定範囲を表す。各行のPASSは書かれた条件のみに適用し、公開β・実モデル・正式レビューはそれぞれ独立したゲートとして扱う。
 
-後続資料コミット`eaa162c`の[Linux CI #44277414011](https://github.com/FORIFOR/Vulnix/actions/runs/44277414011)はWeb・実ARTEX成功、PythonでSSEテストの終了処理が一時ディレクトリ削除と競合して1件失敗した。テストの後片付けで診断runnerの停止・joinを追加し、該当1件と`test_server`全30件のローカル成功を確認した。修正後の全件・最終CIが完了するまでは最新コミットのCI全件成功とは判定しない。
+後続資料コミット`eaa162c`の[Linux CI #44277414011](https://github.com/FORIFOR/Vulnix/actions/runs/44277414011)はWeb・実ARTEX成功、PythonでSSEテストの終了処理が一時ディレクトリ削除と競合して1件失敗した。テストの後片付けで診断runnerの停止・joinを追加。修正`42f101d`では該当1件、`test_server`全30件、単独ローカル全1,742件、Linux CI #44282408784の3/3が成功した。直前資料コミット`22c0514`の[Linux CI #44279354231](https://github.com/FORIFOR/Vulnix/actions/runs/44279354231)も3/3成功しており、元の失敗は競合による不安定さだったと判断する。
 
 `PASS` は記載した限定範囲の実証、`FAIL` は確認した不合格、`BLOCKED` は外部承認・設定が必要、`NOT_TESTED` はまだ十分な証拠がないことを示す。PASSを他の対象・環境へ一般化しない。
 
 | 要件 | 判定 | 根拠と限界 | 担当工程 | 次のアクション |
 | --- | --- | --- | --- | --- |
-| 累積コードの統合候補 | PASS | PR #53〜#84を#85へ集約。最新`d199021`と所見保持テストのローカル全1,742件成功・27件スキップ・警告0、Web119件・Lint・ビルド・Ruff・390px模擬ブラウザ成功。Linux CI #44272121286は3/3成功。PASSは統合候補の模擬検証に限定し、正式レビュー・実モデル・公開βは別行で未完了 | 統合 | 正式独立レビューと外部公開ゲートを完了する |
+| 累積コードの統合候補 | PASS | PR #53〜#84を#85へ集約。最新製品コード`d199021`と後続テスト修正`42f101d`のローカル全1,742件成功・27件スキップ・警告0、Web119件・Lint・ビルド・Ruff・390px模擬ブラウザ成功。Linux CI #44282408784は3/3成功。PASSは統合候補の模擬検証に限定し、正式レビュー・実モデル・公開βは別行で未完了 | 統合 | 正式独立レビューと外部公開ゲートを完了する |
 | 処理系統の列挙と可視化 | NOT_TESTED | [機械抽出](PROCESS_INVENTORY.json)を最新コードで再生成し、バックエンド関数815・API分岐81・通信/プロセス呼出し38件を列挙。[P01〜P45の図・対応表](CURRENT_FLOW.md)へP42モデル失敗・P43組織状態・P44出所表示・P45動的な模擬/承認APIを追加。動的URLと実行時送信先の全到達性、全分岐の無漏れまでは証明できない | 統合/監査 | 動的経路と未使用候補をコード・テストと照合し、正式レビューへ渡す |
 | 独立した正式GitHubレビュー | BLOCKED | #85の正式レビュー0件。別担当の読み取りレビューと表示文言の再確認は正式Approveではない | 統合 | 独立レビュアーによる正式レビューと指摘修正 |
 | mainへの統合 | BLOCKED | 所有者の事前承認が必要。実行していない | リリース | 正式レビュー・統合CI・公開判定資料を揃えて承認を受ける |
