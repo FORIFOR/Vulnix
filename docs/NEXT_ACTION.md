@@ -1,6 +1,6 @@
 # Security Graph v2 作業の再開点
 
-更新: 2026-11-18。現行の作業ツリーは `/Users/shuhei/Projects/Vulnix-security-graph-v2`、ブランチ `codex/security-graph-v2`、基点は Draft PR #85 の `e1011afb8266df36985514a80a724a7fe210e84c`。Graph実装は `d4c7785`、UI文言は `34ab3c9`、Linuxの高FD修正は `7a31412`、合成Worker起動直前の組織権限リースは `51be685`、Python認可ガードの誤認修正は `fcae4ec`、ARTEX Graph入力固定は `c0edd88`、隔離リレーのパイプ後片付けは `b0815a8`。Draft PR は [#86](https://github.com/FORIFOR/Vulnix/pull/86)。元ツリーと旧 `Vulnix-security-graph-e2e` ツリーの未コミット差分は保持した。
+更新: 2026-11-18。現行の作業ツリーは `/Users/shuhei/Projects/Vulnix-security-graph-v2`、ブランチ `codex/security-graph-v2`、基点は Draft PR #85 の `e1011afb8266df36985514a80a724a7fe210e84c`。Graph実装は `d4c7785`、UI文言は `34ab3c9`、Linuxの高FD修正は `7a31412`、合成Worker起動直前の組織権限リースは `51be685`、Python認可ガードの誤認修正は `fcae4ec`、ARTEX Graph入力固定は `c0edd88`、隔離リレーのパイプ後片付けは `b0815a8`、追加のAST認可解析修正は `edb3ae5`。Draft PR は [#86](https://github.com/FORIFOR/Vulnix/pull/86)。元ツリーと旧 `Vulnix-security-graph-e2e` ツリーの未コミット差分は保持した。
 
 ## 現在の実装と証拠
 
@@ -9,11 +9,11 @@
 - `aegis/validation/`, `aegis/remediation/`: 登録済み合成2組織の固定fixtureだけをMacのsandbox-exec、Linuxでは既存KernelConfinementのcgroup/nftables/名前空間で検証する経路を実装し、ローカルDraft差分を生成。Linux実機の合成経路はCIで成功。AssessmentServiceの共有WorkerPoolを使うため、緊急停止の対象に入る。Worker起動直前の組織権限リースと結果保存前の再確認を通す。GraphServiceが仮説・検証・修正を組織別DBに保存。顧客コードの任意実行・実PR作成は行わない。
 - `aegis/server.py`: 組織境界、既存セッション/CSRF/監査/ロール再確認を通すGraph API。HTTPから任意パスやURLを入力できない。
 - `web/src/app/security-graph/`, `attack-paths/`, `remediations/`: 日本語の経路・根拠・予測・合成修正表示。390pxと1280pxのChromium実ブラウザでグラフ選択、証拠、修正効果、横幅はみ出し無しを確認（合成APIモック、`/tmp/vulnix_graph_browser_test.py`）。さらに実バックエンド＋Next.jsの通しE2Eで、合成Next.js＋FastAPIのGitソース登録→解析→仮説→Mac隔離検証→Draft差分表示を両幅で確認（`/tmp/vulnix_graph_live_browser.py`）。
-- `2750e48` では関連116件（19件スキップ）、バックエンド全1,818件成功（29件スキップ）、Web123件、lintエラー0（既存警告5）、build、Ruffが成功。最新コード `149f1ad` では隔離リレー後片付けの関連90件（4件スキップ）、バックエンド全1,819件成功（29件スキップ、`/tmp/vulnix-graph-v2-backend-149f1ad.log`）、Ruffが成功。実バックエンド＋Next.jsの390px/1280pxブラウザE2Eも最新コードで再成功。[Linux CI #44300217997](https://github.com/FORIFOR/Vulnix/actions/runs/44300217997) は3ジョブ成功。
+- `2750e48` では関連116件（19件スキップ）、バックエンド全1,818件成功（29件スキップ）、Web123件、lintエラー0（既存警告5）、build、Ruffが成功。`149f1ad` では隔離リレー後片付けの関連90件（4件スキップ）、バックエンド全1,819件成功（29件スキップ、`/tmp/vulnix-graph-v2-backend-149f1ad.log`）、Ruffが成功。[Linux CI #44300217997](https://github.com/FORIFOR/Vulnix/actions/runs/44300217997) は3ジョブ成功。最新コード `edb3ae5` ではPython/TypeScriptの認可ガードをAST上の直接比較・直接拒否に限定し、条件付き拒否、403応答へのデータ混入、先行returnをunknownに残す。Next.jsの静的なexported arrow handlerを抽出し、動的handlerはunknownのまま。関連31件、バックエンド全1,827件成功（29件スキップ、`/tmp/vulnix-graph-v2-backend-edb3ae5.log`）、Web123件、lintエラー0（既存警告5）、build、Ruff、実バックエンド＋Next.jsの390px/1280pxブラウザE2Eが成功。[Linux CI #44306364319](https://github.com/FORIFOR/Vulnix/actions/runs/44306364319) はWeb・実ARTEX・Pythonの3ジョブ成功。Linux Python全1,827件（20件スキップ）とカーネル隔離・緊急停止12件も成功。CIログに `ResourceWarning` は0件。
 
 ## 未完了のゲート
 
-- [先行Linux CI #44280933793](https://github.com/FORIFOR/Vulnix/actions/runs/44280933793) の高FD失敗は `selectors.DefaultSelector` と高FD回帰テストで解消。[CI #44295128892](https://github.com/FORIFOR/Vulnix/actions/runs/44295128892) は `2750e48` で3ジョブ成功したが、実ARTEXログに隔離リレーの未クローズ `ResourceWarning` があった。`b0815a8` で終了時の読取パイプを閉じ、最新の[CI #44300217997](https://github.com/FORIFOR/Vulnix/actions/runs/44300217997) ではPython全件・Linuxカーネル隔離と緊急停止・Web・実ARTEXの3ジョブ成功。実ARTEXのGraph仮説テストは2回とも成功し、ARTEXジョブログの `ResourceWarning` は0件。CI内のモデル応答は明示的なローカル模擬サーバーであり、有料の実モデルへは送っていない。独立した安全レビューは未確認。Mac合成サンドボックスを顧客コードの隔離実行に転用しない。
+- [先行Linux CI #44280933793](https://github.com/FORIFOR/Vulnix/actions/runs/44280933793) の高FD失敗は `selectors.DefaultSelector` と高FD回帰テストで解消。[CI #44295128892](https://github.com/FORIFOR/Vulnix/actions/runs/44295128892) は `2750e48` で3ジョブ成功したが、実ARTEXログに隔離リレーの未クローズ `ResourceWarning` があった。`b0815a8` で終了時の読取パイプを閉じ、[CI #44300217997](https://github.com/FORIFOR/Vulnix/actions/runs/44300217997) と最新コードの[CI #44306364319](https://github.com/FORIFOR/Vulnix/actions/runs/44306364319) ではPython全件・Linuxカーネル隔離と緊急停止・Web・実ARTEXの3ジョブ成功。実ARTEXのGraph仮説テストは先行CIで2回とも成功し、最新CI全ログの `ResourceWarning` は0件。CI内のモデル応答は明示的なローカル模擬サーバーであり、有料の実モデルへは送っていない。独立した安全レビューは未確認。Mac合成サンドボックスを顧客コードの隔離実行に転用しない。
 - Python/TypeScriptの動的認可、共通ミドルウェア、AI/MCP、依存関係全体の解析精度は未測定。既知の合成ケースのみ確認し、未知コードでの誤検知率・見逃し率は未測定。
 - GitHub Appの顧客リポジトリ接続、実モデル、実サイト、実Draft PR、継続監視、公開判定は未実装/未承認。合成結果を実証済みの顧客問題として扱わない。
 
