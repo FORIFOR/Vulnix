@@ -441,6 +441,57 @@ class TestNoPathFromAdviceToAWorker(unittest.TestCase):
 
 
 class TestAdvisorAuditBudget(unittest.TestCase):
+    def test_restarted_audit_rejects_valid_prefix_rollback_before_another_paid_send(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "audit.jsonl"
+            audit = AuditLog(path)
+            audit.record_with_budget("advisor.safe_send_requested", reserve_micro_usd=300_000,
+                                     cap_micro_usd=900_000, endpoint_kind="external")
+            older_valid_prefix = path.read_text()
+            audit.record_with_budget("advisor.safe_send_requested", reserve_micro_usd=300_000,
+                                     cap_micro_usd=900_000, endpoint_kind="external")
+            path.write_text(older_valid_prefix)
+
+            reopened = AuditLog(path)
+            with self.assertRaisesRegex(ValueError, "audit budget history invalid"):
+                reopened.record_with_budget("advisor.safe_send_requested", reserve_micro_usd=300_000,
+                                            cap_micro_usd=900_000, endpoint_kind="external")
+
+    def test_missing_budget_floor_and_interrupted_append_fail_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "audit.jsonl"
+            audit = AuditLog(path)
+            audit.record_with_budget("advisor.safe_send_requested", reserve_micro_usd=300_000,
+                                     cap_micro_usd=900_000, endpoint_kind="external")
+            floor = path.with_name(path.name + ".advisor-budget")
+            self.assertEqual(floor.read_text().strip(), "300000")
+            self.assertEqual(floor.stat().st_mode & 0o777, 0o600)
+            floor.unlink()
+            with self.assertRaisesRegex(ValueError, "audit budget history invalid"):
+                AuditLog(path).record_with_budget("advisor.safe_send_requested", reserve_micro_usd=1,
+                                                  cap_micro_usd=900_000, endpoint_kind="external")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "audit.jsonl"
+            # A pre-upgrade valid record has no separate floor. Its history
+            # cannot be attested after restart, so another paid send is refused.
+            AuditLog(path).record("advisor.safe_send_requested", endpoint_kind="external",
+                                  reserved_micro_usd=300_000, budget_cap_micro_usd=900_000)
+            with self.assertRaisesRegex(ValueError, "audit budget history invalid"):
+                AuditLog(path).record_with_budget("advisor.safe_send_requested", reserve_micro_usd=1,
+                                                  cap_micro_usd=900_000, endpoint_kind="external")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "audit.jsonl"
+            audit = AuditLog(path)
+            with patch.object(audit, "_append_locked", side_effect=OSError("audit append failed")):
+                with self.assertRaises(OSError):
+                    audit.record_with_budget("advisor.safe_send_requested", reserve_micro_usd=300_000,
+                                             cap_micro_usd=900_000, endpoint_kind="external")
+            with self.assertRaisesRegex(ValueError, "audit budget history invalid"):
+                AuditLog(path).record_with_budget("advisor.safe_send_requested", reserve_micro_usd=1,
+                                                  cap_micro_usd=900_000, endpoint_kind="external")
+
     def test_budget_survives_reopen_and_counts_concurrent_reservations(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "audit.jsonl"

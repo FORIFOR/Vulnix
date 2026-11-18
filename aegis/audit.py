@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import tempfile
 import threading
 import time
 from contextlib import contextmanager
@@ -106,8 +107,36 @@ class AuditLog:
                 if not isinstance(amount, int) or isinstance(amount, bool) or amount <= 0:
                     raise ValueError("unpriced external advisor send")
                 spent += amount
+            floor_path = self.path.with_name(self.path.name + ".advisor-budget")
+            try:
+                if floor_path.is_symlink():
+                    raise ValueError("audit budget history invalid")
+                floor = floor_path.read_text(encoding="ascii").strip() if floor_path.exists() else None
+            except (OSError, UnicodeError) as exc:
+                raise ValueError("audit budget history invalid") from exc
+            if (floor is None and spent != 0) or (floor is not None and floor != str(spent)):
+                # A valid older JSONL prefix can pass the hash-chain check after
+                # restart. Keep its paid-send total in a separate durable floor.
+                raise ValueError("audit budget history invalid")
             if spent + reserve_micro_usd > cap_micro_usd:
                 raise ValueError("advisor budget exceeded")
+            # Persist the new floor before the audit append. A crash between
+            # these writes leaves paid calls disabled, never undercounted.
+            fd, temp_name = tempfile.mkstemp(prefix=".advisor-budget-", dir=self.path.parent)
+            try:
+                with os.fdopen(fd, "w", encoding="ascii") as stream:
+                    stream.write(f"{spent + reserve_micro_usd}\n")
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temp_name, floor_path)
+                dir_fd = os.open(self.path.parent, os.O_RDONLY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+            finally:
+                if os.path.exists(temp_name):
+                    os.unlink(temp_name)
             entry = self._append_locked(event, {**fields, "reserved_micro_usd": reserve_micro_usd,
                                                 "budget_cap_micro_usd": cap_micro_usd})
         for listener in list(self.listeners):
