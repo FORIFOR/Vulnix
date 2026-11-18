@@ -2,7 +2,7 @@
 
 この文書はDraft PR #53〜#84をまとめたPR #85統合候補の経路を示す。公開βへ反映済みという意味ではない。APIと関数の基礎的な静的列挙は[PROCESS_INVENTORY.json](PROCESS_INVENTORY.json)、履歴と重複候補は[PROCESS_AUDIT.md](PROCESS_AUDIT.md)、同一ラボ測定は[STATUS_EXPOSURE_INTEGRATION.md](STATUS_EXPOSURE_INTEGRATION.md)。後続の検査選択評価は[ACCESS_CONTROL_BLIND_LAB.md](ACCESS_CONTROL_BLIND_LAB.md)、HTTP 200認証拒否の再測定は[AUTH_RESPONSE_LAB.md](AUTH_RESPONSE_LAB.md)、Cookie用途の再測定は[COOKIE_PURPOSE_LAB.md](COOKIE_PURPOSE_LAB.md)に分離した。静的列挙は後続PRのスクリプトまで網羅せず、動的URLや実行時設定も解決できないため、P17以降をコードと照合して追記した。
 
-この累積コードとmainは異なる。PR #63以降はDraft・未マージ。#68の実Abliteration AI固定評価は別々に承認された2回ともJSON本文なしで不採用。公開βの実DNS所有確認・実サイト診断も未実証。以下の動作証拠は、明記がなければ隔離した模擬対象による。
+この累積コードとmainは異なる。PR #63以降はDraft・未マージ。#68の実Abliteration AI固定評価は別々に承認された2回ともJSON本文なしで不採用。後続の`d199021`までのモデル応答・組織状態・画面出所境界をP42〜P44に追記した。公開βの実DNS所有確認・実サイト診断も未実証。以下の動作証拠は、明記がなければ隔離した模擬対象による。
 
 ## 構成
 
@@ -15,11 +15,14 @@ flowchart LR
   G --> W[P08 隔離Worker: 初回GET]
   W --> E[P11 証拠・実測特徴]
   E --> A[P09 ARTEXとローカルモデル]
+  A --> Q[P42 モデル要求・応答を検証]
+  Q --> A
   A -. 未信頼の案 .-> V[P09 固定カタログ・同意を照合]
   V -->|固定L1のみ| G2[P10 Gateway再審査]
   G2 --> W2[P10 隔離Worker: 追加GET]
   W2 --> R[P11 証拠判定・保存]
-  E --> R --> UI[結果表示]
+  E --> R --> UI[P44 出所と未実施を明示して結果表示]
+  B --> M[P43 組織別モデル状態参照] --> UI
   UI -->|解説を要求| J[P12 許可済みAIまたは内蔵解説]
   J --> UI
   O -->|取消・期限切れ| X[P13 拒否・停止]
@@ -47,10 +50,10 @@ flowchart LR
 | P11 | `GET /api/assessments/{id}`, `GET .../logs`, `GET .../events`, `GET .../report` | `_analyze`, `_record_status_result_locked`, `analyze_status_marker_report`, `snapshot` | `test_real_service.py`, `test_status_exposure_lab.py`。証拠と監査ハッシュから`detected`。案のみは`candidate` |
 | P12 | `POST /api/assessments/{id}/chat` | `live_request_authority` → `ask_chat` → `_safe_real_ai_explanation` または `_answer_question`。外部AI時は予算監査→TLS接続→`send_scope`（セッション→組織→診断状態を保持）→HTTP要求送出→リース解放→応答検証 | `test_ai_advisor.py`, `test_tenancy.py`。固定項目だけ送信、失効後は代替モデルへ進まない。不採用なら許可が続く間だけ内蔵解説。TLS接続はリース前、既に送出した要求の取消しは保証外。実API未検証 |
 | P13 | 停止・取消・期限切れ | `emergency_stop`, `_expiry_watch`, `_launch_guard`、Gateway起動世代 | `test_gateway.py`, `test_authority_ledger.py`。失効後の起動と結果採用を拒否 |
-| P14 | `/api/system/verify-controls`, `/api/cve/*`, `/api/router/*` | `server.py` `JOB_ROUTES`, `control_verification.py`, `cve.py` | `test_cve.py`, `test_server.py`。通常診断から独立 |
+| P14 | `/api/system/verify-controls`, `/api/cve/*`, `/api/router/*` | `server.py` `JOB_ROUTES`, `control_verification.py`, `cve.py`、`router/status`はP43 | `test_cve.py`, `test_server.py`, `test_tenancy.py`。通常診断から独立。組織別モデル状態の参照はP43の結合・失効確認を通る |
 | P15 | SSE心拍と静穏時の代替取得 | `useAssessment`、`polling.ts`、`server.py` `_sse_loop` | `web/tests/polling.test.mjs`, `test_server.py`。通し番号付き心拍で正常時の重複取得を抑え、欠落・切断時はsnapshotと監査ログへ収束。正常な心拍でも30秒ごとに正式な状態を再取得 |
 | P16 | 画面内通知・承認待ち | `EventBus.publish`/`wait`, `_sse_loop`, `_decide` | `test_server.py`。メール・Webhook送信は見つからない |
-| P17 | 14条件の実モデル選択評価（診断APIとは独立） | `scripts/eval_selection_model.py` `run_preview`, `run_approved` → 既存LLM Gateway | `test_selection_model_eval.py`と[2回の実測](ABLITERATION_SELECTION_REAL_RESULT.md)。別SHA・各1回・US$0.01予算・2,000トークン。承認済み2回ともJSON不採用。対象GET・Worker起動なし |
+| P17 | 14条件の実モデル選択評価（診断APIとは独立） | `scripts/eval_selection_model.py` `run_preview`, `run_approved` → 既存LLM Gateway → P42の出力検証 | `test_selection_model_eval.py`と[2回の実測](ABLITERATION_SELECTION_REAL_RESULT.md)。別SHA・各1回・US$0.01予算・2,000トークン。承認済み2回ともJSON不採用。推論設定を加えた新候補はローカル限定・未送信。対象GET・Worker起動なし |
 | P18 | 認証・アクセス制御の模擬検証 | 初回GET → `analyze_l1_service_response`、観測リンク → ARTEX計画 → `execute_artex_item` → Gateway・Worker | `test_access_control_lab.py`, `bench_access_control.py`。14条件の独立正解、実ARTEX＋ローカル模擬モデルで選択精度を比較。IDORの再現は模擬対象限定 |
 | P19 | IDOR・CORSの結果表示と競合制御 | `idorEvidence.ts`、`FindingLearningCard`、`FindingCard`、`useAssessment`、`polling.ts` | Webユニットテストと390px模擬ブラウザ。IDORの取得断定には対照証拠とbackend `proven` が必要。古い401/403で新しい画面を消さない |
 | P20 | HTTP 200の認証拒否JSON | `analyze_l1_service_response` → `_auth_error_only` | `test_auth_response_lab.py`。6条件でGateway/Worker各6回、対象GET6回。本文全体と限定した拒否文言が確認できた場合だけ`candidate`へ下げる |
@@ -75,6 +78,9 @@ flowchart LR
 | P39 | 同じHTTP接続での組織権限と全体権限 | 組織要求は明示的に渡された`svc`と現在の`_bound_org`を照合 → 全体要求は現在のグローバル役割のみ使用 | `server.py`, `test_tenancy.py`。HTTP/1.1接続に残る組織ownerのadmin役割が全体L2プロファイル承認に使われるP1を再現し、全体要求で403・承認0へ修正 |
 | P40 | 長時間操作中の要求者失効 | HTTP要求に紐付く`live_request_allowed` → ARTEXの`may_start`・Planner Gatewayの各`may_forward`・採用前 → Planner送出時の`send_scope` → foreground `execute_artex_item`/`verify_finding`のTLS継承 → Gatewayの`_launch_guard` | `server.py`, `assessment.py`, `test_planner_llm_gateway.py`, `test_tenancy.py`。ログアウト後のモデル転送と新しいWorker起動を検査境界で拒否。実サイトのPlanner先はループバック。有料forwardの送出境界と残る停止時間の限界はP34に記録 |
 | P41 | 前景Workerの起動直前失効 | `live_request_authority.lease` → `AssessmentService._late_launch_guard` → `Gateway` → `WorkerPool.run` → アカウント・組織の短いロック → poolのepoch確認・Popen登録 | `server.py`, `assessment.py`, `gateway.py`, `runtime.py`, `test_gateway.py`, `test_tenancy.py`。隔離コマンド準備中とpool lock待ちの失効を単体競合で確認。実Gateway/Workerとログアウトの同時E2E、背景診断の範囲取消競合は未実証 |
+| P42 | モデル推論設定・出力終了・費用の拒否 | `PlannerLLMGateway.inspect` → `_send` → `_settle` → `AssessmentService._plan_with_artex`または`eval_selection_model.run_approved` | `test_planner_llm_gateway.py`, `test_selection_model_eval.py`, `test_real_service.py`。未確認の`reasoning_effort`/`reasoning.max_tokens`はローカル模擬だけ。外部送信前に拒否し、要求SHAと予約費用を別計算。`length`/`content_filter`/未知終了・本文なし・矛盾したtool_calls・不正/過大usageは計画・評価へ採用しない。固定L1所見と監査ハッシュは保持。実モデルの採用0/2は変わらない |
+| P43 | `GET /api/router/status`の組織別状態 | `server.py` `_bind` → `_authorized_org_read` → 組織の`AssessmentService.planner_status` | `test_tenancy.py`。別組織403、ログアウト後401、組織別の状態を模擬確認。外部AIへ送信しない。公開βでの失効競合は未検証 |
+| P44 | 結果画面の診断元・AI未実施表示 | `diagnosisSource` → `WorkspaceHeader`。実ARTEX、検証用プランナー、実行元不明、固定設定検査のみを分ける | `diagnosisSource.test.mjs`, `bench_browser_owned_flow.py`。固定のみならAI追加検査未実施、模擬プランナーが追加GETした場合はその出所を表示。390px Chromiumでは実表示を待って記録。実モデル品質と公開βの証拠ではない |
 
 ## 時系列と異常系
 
@@ -84,8 +90,13 @@ sequenceDiagram
   participant UI as Web
   participant S as 組織別AssessmentService
   participant A as 隔離ARTEX/ローカルモデル
+  participant L as LLM Gateway
   participant G as Gateway
   participant W as 隔離Worker
+  opt モデル状態を参照
+    UI->>S: P43 組織結合と現在の権限を確認
+    S-->>UI: 組織別状態、失効なら401/403
+  end
   U->>UI: URLを入力
   UI->>S: P03 資産登録・証明値発行
   alt Google設定済みで所有者権限あり
@@ -101,6 +112,8 @@ sequenceDiagram
   W-->>S: 応答と監査証拠
   opt 初回ARTEXを明示設定済み
     S->>A: P09 許可済み固定特徴
+    A->>L: P42 固定要求と予算を検証
+    L-->>A: 完全な応答またはterminal failure
     A-->>S: 未信頼の計画案
     alt 失敗・未対応・同意なし
       S-->>UI: 固定L1結果を表示
@@ -111,7 +124,7 @@ sequenceDiagram
     end
   end
   S->>S: P11 採用直前に所有・範囲・世代を再確認
-  S-->>UI: 証拠と検証状態を表示
+  S-->>UI: P44 証拠・検証状態・実際の計画元を表示
   opt 解説を要求
     UI->>S: P12 所見IDを指定
     S-->>UI: 検証済みAI解説または内蔵解説
@@ -147,8 +160,10 @@ flowchart LR
   end
   subgraph B2[組織ごとの制御プレーン]
     H[P01-P02 認証・所属・CSRF]
+    T[P43 組織別状態と失効確認]
     S[P03-P07 証明・範囲・期限]
     V[P09 固定スキーマ・カタログ]
+    L[P42 モデル要求・出力・費用の検証]
     G[P08-P10 Gateway直前審査]
     E[P11 証拠・監査・保存]
   end
@@ -157,11 +172,14 @@ flowchart LR
     W[P08-P10 Worker]
   end
   U --> H --> S --> G --> W --> X
+  H --> T
   X -.実測.-> W --> E
   E -.許可済み固定項目.-> A
+  A --> L --> A
   A -.案のみ.-> V --> G
   M -.検証対象.-> V
   E -.許可済み固定項目.-> M
+  E --> D[P44 出所と未実施の表示]
 ```
 
 AIにはホスト名、URL、認証情報、個人情報、応答本文、秘密情報を無断送信しない。ARTEXにWorker起動権限はない。Gatewayの実行直前審査は時間差・失効・DNS/IP変化・停止競合に必要なため削らない。
@@ -188,6 +206,8 @@ flowchart LR
 ```
 
 正解ラベルはモデル入力へ入れず、評価応答から診断・Worker起動へ向かう辺もない。初回はJSON本文なしで不採用のため、実モデルの検査選択指標は未算出である。
+
+P42は`json_object`だけでは推論トークンを制御できると仮定しない。対象モデルの推論設定はローカル模擬要求に限り、実外部送信を拒否する。`length`等の途中終了と過大使用量はGatewayで失敗にし、P09の計画採用前にも確認する。P17の評価器もGatewayの失敗状態とJSONの既知ID・重複・余分な項目を別々に検証する。失敗時はP08で得た固定L1所見と監査証拠を維持し、AI追加検査を実施済みと扱わない。P43は組織別モデル状態のGETを既存の所属確認と送信時の失効確認に通す。P44は実際の計画元で表示を分けるため、検証用プランナーが追加GETした結果を「固定検査のみ」と誤表示しない。[安全性と未送信要求](ABLITERATION_OUTPUT_CONTRACT.md)および[完了判定](GOAL_COMPLETION_MATRIX.md)に測定範囲を記録する。
 
 ## 最適化の実測と残件
 
