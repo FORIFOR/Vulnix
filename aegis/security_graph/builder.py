@@ -27,7 +27,27 @@ def _name(expr):
 
 
 def _call_names(tree):
-    return [(_name(n.func), n.lineno) for n in ast.walk(tree) if isinstance(n, ast.Call)]
+    calls = []
+
+    class DirectCalls(ast.NodeVisitor):
+        def visit_Call(self, node):
+            calls.append((_name(node.func), node.lineno))
+            if isinstance(node.func, ast.Lambda):
+                # This lambda executes now; a lambda merely assigned to a
+                # variable does not. Keep the direct call without treating
+                # every nested callable as part of the handler.
+                self.visit(node.func.body)
+            self.generic_visit(node)
+
+        def visit_FunctionDef(self, node):
+            pass  # A nested callable has not been invoked by the handler.
+
+        visit_AsyncFunctionDef = visit_FunctionDef
+        visit_Lambda = visit_FunctionDef
+        visit_ClassDef = visit_FunctionDef
+
+    DirectCalls().visit(tree)
+    return calls
 
 
 def _org_owner(expr: ast.expr) -> str:

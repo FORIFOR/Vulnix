@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from aegis.security_graph.builder import build_graph
+from aegis.analyzers.ai_agents import review_mcp_tool_scope
 from aegis.security_graph.paths import candidate_paths
 from aegis.security_graph.queries import authorization_paths
 from aegis.security_graph.models import SecurityGraph
@@ -82,12 +83,36 @@ class AiToolGraphTest(unittest.TestCase):
         graph = self.build(source)
         self.assertEqual(len([node for node in graph.nodes if node.kind == "ai_tool"]), 1)
 
+    def test_uninvoked_nested_helper_is_not_a_tool_data_read(self):
+        source = MCP_SOURCE.replace("    return store.get(customer_id)",
+                                    "    def unused():\n"
+                                    "        return store.get(customer_id)\n"
+                                    "    return 'ok'")
+        graph = self.build(source)
+        self.assertFalse(any(edge.relation == "READS" for edge in graph.edges))
+        self.assertEqual(review_mcp_tool_scope(graph), ())
+
+    def test_uninvoked_lambda_is_not_a_tool_data_read(self):
+        source = MCP_SOURCE.replace("    return store.get(customer_id)",
+                                    "    unused = lambda: store.get(customer_id)\n"
+                                    "    return 'ok'")
+        graph = self.build(source)
+        self.assertFalse(any(edge.relation == "READS" for edge in graph.edges))
+        self.assertEqual(review_mcp_tool_scope(graph), ())
+
+    def test_immediately_invoked_lambda_keeps_data_read(self):
+        source = MCP_SOURCE.replace("return store.get(customer_id)",
+                                    "return (lambda: store.get(customer_id))()")
+        graph = self.build(source)
+        self.assertTrue(any(edge.relation == "READS" for edge in graph.edges))
+        self.assertEqual(len(review_mcp_tool_scope(graph)), 1)
+
     def test_parser_upgrade_preserves_prior_commit_snapshot(self):
         graph = self.build(MCP_SOURCE)
         with tempfile.TemporaryDirectory() as temp:
             with GraphStore(Path(temp) / "security-graph.sqlite") as store:
                 old_id = store.save_snapshot("lab", SecurityGraph(graph.commit_sha, (), (), {}),
-                                             "source-ast-v2")
+                                             "source-ast-v4")
                 new_id = store.save_snapshot("lab", graph, PARSER_VERSION)
                 self.assertNotEqual(old_id, new_id)
                 self.assertEqual(store.load_graph(old_id).nodes, ())

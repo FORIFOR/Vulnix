@@ -10,7 +10,7 @@ from pathlib import Path
 from .models import Evidence, GraphEdge, GraphNode, SecurityGraph
 
 SCHEMA_VERSION = 3
-PARSER_VERSION = "source-ast-v4"
+PARSER_VERSION = "source-ast-v5"
 
 
 def _canonical(value) -> str:
