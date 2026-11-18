@@ -2,7 +2,9 @@
 
 ## 最新の再開地点（2026-11-18、旧記録より優先）
 
-- 作業ツリー `/Users/shuhei/Projects/Vulnix-integration-readiness`、ブランチ `codex/goal-integration-readiness`、検証済みコミット`42f101d`（最新製品コードは`d199021`、後続はテスト・資料）、Draft PR #85。別ツリーの変更には触れない。再開時は`git status --short --branch`、`git diff --check`、`git log -3 --oneline`を確認する。
+- 作業ツリー `/Users/shuhei/Projects/Vulnix-integration-readiness`、ブランチ `codex/goal-integration-readiness`、最新検証済みコミット`e1011af`（最新製品コードは`d199021`、後続はテスト・資料・ブラウザQA）、Draft PR #85。別ツリーの変更には触れない。再開時は`git status --short --branch`、`git diff --check`、`git log -3 --oneline`を確認する。
+- [Linux CI #44293223522](https://github.com/FORIFOR/Vulnix/actions/runs/44293223522)は試行1のPythonが約51分後にログなしで失敗し、試行2は約27分で3/3成功。初回の原因は未特定。次の差分では`.github/workflows/ci.yml`のPython全件を非バッファ出力・42分上限・`tee`で記録し、失敗時もログartifactを回収する。ランナー消失ならartifactも失われ得る。新CIでログとartifactの動作を確認し、再発なら試験名・停止点・ランナー状態を切り分ける。
+- 重点読み取り再監査では所有確認、組織権限、ARTEX/Gateway/Worker、費用予約、緊急停止に新たな具体的P1/P2なし。ただし195ファイル全体と正式Approveの代替ではない。`scripts/public-app.sh`の広い実サイトモード拒否を確認したが、公開βの実際の設定とランチャー利用は未確認。390pxのSSE遮断・無通知所見変更の模擬実行は7.83秒で表示回復、対象GET2・API24・ページエラー0。次の自律作業は新CIの結果とartifactを確認し、動的API・失効・未検証画面の模擬検証を進める。
 - `f68cbaf`では公式OpenAPIの推論設定をローカル候補に限定し、実外部送信へは通さない。Gatewayの過大・片側・不正usage、評価器の未知終了理由を安全側で拒否。独立した読み取りレビューの2指摘を修正済み。関連98件、修正後の評価器19件、Ruff、Web118件、Lintエラー0/警告5、ビルド成功。実モデル送信、実サイト通信は0。
 - 最新`d199021`と所見保持テストの単独ローカル全1,742件成功・27件スキップ・ResourceWarning 0件（1219.162秒、`/tmp/vulnix-pr85-d199-full-isolated.log`）。[Linux CI #44272121286](https://github.com/FORIFOR/Vulnix/actions/runs/44272121286)もPython・Web・実ARTEXの3/3成功。Web119件、Lintエラー0/警告5、ビルド、Ruff、390px模擬ブラウザが成功（8操作、対象GET2、モデル0、追加検査を行った検証用プランナーの表示と固定検査のみ文言の非表示）。最初の全件実行は別作業ツリーとの固定ポート競合30件で無効だったが、単独再実行では再発しなかった。
 - [GOAL_COMPLETION_MATRIX.md](GOAL_COMPLETION_MATRIX.md)と[AUTONOMOUS_PROGRESS.md](AUTONOMOUS_PROGRESS.md)へ証拠を反映し、PR #85本文・[正式レビュー資料](SECURITY_REVIEW.md)を更新した。開発ブランチの最終CIを確認する。実Abliteration AIは0/2採用のままで、未送信候補の要求SHAは[ABLITERATION_OUTPUT_CONTRACT.md](ABLITERATION_OUTPUT_CONTRACT.md)に記録。追加有料送信には新しい承認が必要。
