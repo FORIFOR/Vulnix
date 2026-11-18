@@ -169,6 +169,161 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
         self.assertEqual(response[0][0], 401)
         self.assertFalse(started.is_set())
 
+    def test_logout_after_asset_selection_cannot_receive_snapshot(self):
+        who = self.signup("lateselect")
+        org_id = who["orgs"][0]["id"]
+        svc = self.reg.service(org_id)
+        entered, release = threading.Event(), threading.Event()
+        response = []
+        original_assets = svc.assets
+
+        def delayed_assets():
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("asset selection response did not release")
+            return original_assets()
+
+        with patch.object(svc, "assets", side_effect=delayed_assets):
+            thread = threading.Thread(target=lambda: response.append(
+                self.req(who, "/assets/select", {"id": svc.a.asset["id"]}, org=org_id)))
+            thread.start()
+            try:
+                self.assertTrue(entered.wait(5))
+                self.ops.logout(who["cookie"].split("=", 1)[1])
+            finally:
+                release.set()
+                thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(response[0][0], 401)
+        self.assertNotIn("snapshot", response[0][1])
+
+    def test_logout_after_asset_registration_cannot_receive_asset_list(self):
+        who = self.signup("lateregisterasset")
+        org_id = who["orgs"][0]["id"]
+        svc = self.reg.service(org_id)
+        entered, release = threading.Event(), threading.Event()
+        response = []
+        original_assets = svc.assets
+
+        def delayed_assets():
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("asset registration response did not release")
+            return original_assets()
+
+        with patch.object(svc, "register_asset", return_value={"id": "mock_asset"}), \
+                patch.object(svc, "assets", side_effect=delayed_assets):
+            thread = threading.Thread(target=lambda: response.append(self.req(
+                who, "/assets", {"name": "lab.test", "authorization_ref": "lab-only"}, org=org_id)))
+            thread.start()
+            try:
+                self.assertTrue(entered.wait(5))
+                self.ops.logout(who["cookie"].split("=", 1)[1])
+            finally:
+                release.set()
+                thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(response[0][0], 401)
+        self.assertNotIn("assets", response[0][1])
+
+    def test_logout_after_asset_secret_or_delete_commit_cannot_receive_snapshot(self):
+        cases = (
+            ("secrets", "configure_asset_secrets", {"configured": True}, {"host": "lab.test"}),
+            ("delete", "delete_asset", [], {"id": "asset_001"}),
+        )
+        for suffix, method, result, body in cases:
+            with self.subTest(suffix=suffix):
+                who = self.signup(f"late{suffix}")
+                org_id = who["orgs"][0]["id"]
+                svc = self.reg.service(org_id)
+                entered, release = threading.Event(), threading.Event()
+                response = []
+                original_snapshot = svc.snapshot
+
+                def delayed_snapshot():
+                    entered.set()
+                    if not release.wait(5):
+                        raise TimeoutError("asset mutation response did not release")
+                    return original_snapshot()
+
+                with patch.object(svc, method, return_value=result), \
+                        patch.object(svc, "snapshot", side_effect=delayed_snapshot):
+                    thread = threading.Thread(target=lambda: response.append(
+                        self.req(who, f"/assets/{suffix}", body, org=org_id)))
+                    thread.start()
+                    try:
+                        self.assertTrue(entered.wait(5))
+                        self.ops.logout(who["cookie"].split("=", 1)[1])
+                    finally:
+                        release.set()
+                        thread.join(5)
+                self.assertFalse(thread.is_alive())
+                self.assertEqual(response[0][0], 401)
+                self.assertNotIn("snapshot", response[0][1])
+
+    def test_logout_during_diagnostic_post_cannot_receive_result(self):
+        cases = (
+            ("verify-finding", "verify_finding", {"finding_id": "f_mock"}),
+            ("artex/plan", "plan_with_artex", {}),
+            ("artex/items/mock/execute", "execute_artex_item", {}),
+            ("verify-fix", "verify_fix", {}),
+            ("chat", "ask_chat", {"question": "結果を説明してください"}),
+        )
+        for index, (suffix, method, body) in enumerate(cases):
+            with self.subTest(suffix=suffix):
+                who = self.signup(f"latepost{index}")
+                org_id = who["orgs"][0]["id"]
+                svc = self.reg.service(org_id)
+                entered, release = threading.Event(), threading.Event()
+                response = []
+
+                def delayed_result(*args, **kwargs):
+                    entered.set()
+                    if not release.wait(5):
+                        raise TimeoutError("diagnostic response did not release")
+                    return {"private_result": "must-not-be-returned"}
+
+                with patch.object(svc, method, side_effect=delayed_result):
+                    thread = threading.Thread(target=lambda: response.append(self.req(
+                        who, f"/assessments/scan_001/{suffix}", body, org=org_id)))
+                    thread.start()
+                    try:
+                        self.assertTrue(entered.wait(5))
+                        self.ops.logout(who["cookie"].split("=", 1)[1])
+                    finally:
+                        release.set()
+                        thread.join(5)
+                self.assertFalse(thread.is_alive())
+                self.assertEqual(response[0][0], 401)
+                self.assertNotIn("private_result", response[0][1])
+
+    def test_logout_during_diagnostic_error_hides_exception_detail(self):
+        who = self.signup("lateerror")
+        org_id = who["orgs"][0]["id"]
+        svc = self.reg.service(org_id)
+        entered, release = threading.Event(), threading.Event()
+        response = []
+
+        def delayed_error(*args, **kwargs):
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("diagnostic error test did not release")
+            raise ValueError("PRIVATE_DIAGNOSTIC_ERROR_DETAIL")
+
+        with patch.object(svc, "ask_chat", side_effect=delayed_error):
+            thread = threading.Thread(target=lambda: response.append(self.req(
+                who, "/assessments/scan_001/chat", {"question": "説明"}, org=org_id)))
+            thread.start()
+            try:
+                self.assertTrue(entered.wait(5))
+                self.ops.logout(who["cookie"].split("=", 1)[1])
+            finally:
+                release.set()
+                thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(response[0][0], 401)
+        self.assertNotIn("PRIVATE_DIAGNOSTIC_ERROR_DETAIL", response[0][1])
+
     def test_logout_after_binding_invokes_stop_without_returning_protected_data(self):
         for suffix, method in (("pause", "pause"), ("emergency-stop", "emergency_stop")):
             with self.subTest(suffix=suffix):
@@ -939,7 +1094,9 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
         org_id = who["orgs"][0]["id"]
         svc = self.reg.service(org_id)
         entered, release, logged_out = threading.Event(), threading.Event(), threading.Event()
+        response_waiting, release_response = threading.Event(), threading.Event()
         response = []
+        original_record = svc.audit.record
 
         def paused_start():
             entered.set()
@@ -950,19 +1107,35 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
             self.ops.logout(who["cookie"].split("=", 1)[1])
             logged_out.set()
 
-        with patch.object(svc, "start", side_effect=paused_start):
+        def paused_record(event, *args, **kwargs):
+            if event == "assessment.start_requested":
+                response_waiting.set()
+                if not release_response.wait(5):
+                    raise TimeoutError("start response test did not release")
+            return original_record(event, *args, **kwargs)
+
+        with patch.object(svc, "start", side_effect=paused_start), \
+                patch.object(svc.audit, "record", side_effect=paused_record):
             request = threading.Thread(target=lambda: response.append(
                 self.req(who, "/assessments/scan_001/start", {}, org=org_id)))
             request.start()
-            self.assertTrue(entered.wait(5))
-            revocation = threading.Thread(target=logout)
-            revocation.start()
-            self.assertFalse(logged_out.wait(0.1))
-            release.set()
-            request.join(5)
-            revocation.join(5)
+            revocation = None
+            try:
+                self.assertTrue(entered.wait(5))
+                revocation = threading.Thread(target=logout)
+                revocation.start()
+                self.assertFalse(logged_out.wait(0.1))
+                release.set()
+                self.assertTrue(response_waiting.wait(5))
+                self.assertTrue(logged_out.wait(5))
+            finally:
+                release.set()
+                release_response.set()
+                request.join(5)
+                if revocation is not None:
+                    revocation.join(5)
         self.assertFalse(request.is_alive() or revocation.is_alive())
-        self.assertEqual(response[0][0], 200)
+        self.assertEqual(response[0][0], 401)
         self.assertTrue(logged_out.is_set())
 
     def test_long_plan_receives_live_request_authority(self):
@@ -1074,7 +1247,7 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
                 request.join(5)
             self.assertFalse(request.is_alive())
             popen.assert_not_called()
-        self.assertEqual(response[0][0], 200)
+        self.assertEqual(response[0][0], 401)
         self.assertFalse([e for e in svc.audit.entries() if e["event"] == "result"])
         self.assertEqual(sum(len(f.get("evidence") or []) for f in svc.snapshot()["findings"]),
                          before_evidence)

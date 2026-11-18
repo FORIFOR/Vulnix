@@ -85,6 +85,8 @@ flowchart LR
 | P46 | 安全停止中の失効と応答秘匿 | `POST /api/assessments/{id}/pause`・`/emergency-stop` → `_bind` → 停止処理 → `_authorized_org_read`で応答前の生存読取権限を確認 | `test_tenancy.py`。結合後のログアウト・除名では停止ハンドラを呼び、401/403で保護情報を返さない。認証状態の保存に失敗した場合は停止の200を維持し、詳細を含まない`stopped/details_unavailable`だけを返すことを`test_release_safety.py`で確認。実Workerの停止効果は既存のGateway/隔離テストで別途確認 |
 | P47 | CVE状態生成中のログアウト | `GET /api/cve/status` → `cve_monitor.status` → 現行セッションを再確認して送信 | `test_tenancy.py`。修正前は生成中のログアウト後も200で全体状態を返した。修正後は401。送信中は既存の管理GETと同じ2秒ソケット上限を適用。公開βの中継は未検証 |
 | P48 | 所有確認の保存後から応答までの失効 | `POST /api/assets/challenge`・`/verify-ownership`・`/confirm-scope`・Google開始/完了 → 所有確認処理 → 送信直前の現行権限確認 | `test_tenancy.py`の登録トークン、証明結果、範囲スナップショットに対するログアウト3件と、登録トークンに対する組織役割降格1件。旧コードの登録応答200を再現し、修正後401/403。Google完了は外部照会の後、証明保存と応答を単一の権限リースで直列化し、既存の同時ログアウト200契約を維持。実Google・公開βは未実証 |
+| P49 | 資産操作の保存後から応答までの失効 | `POST /api/assets`・`/select`・`/secrets`・`/delete` → 対象登録/選択/設定/削除 → 現行の組織操作権限（検証用設定と実サイト削除は承認者）を送信時に再確認 | `test_tenancy.py`で選択、設定、削除の旧200を再現し、修正後401。登録応答も同じ送信時確認で401を個別確認。操作後の応答秘匿だけを実証し、外部通信や失効後の副作用停止までは主張しない |
+| P50 | 診断POSTの処理後から応答までの失効 | `POST /api/assessments/{id}/verify-finding`・ARTEX計画/実行・`/verify-fix`・`/chat`等 → サービスの検証/推論 → 現行の組織操作権限を送信時に再確認 | `test_tenancy.py`で計画・実行・所見再確認・解説・修正後確認の処理中ログアウト後401と結果非送信を模擬確認。例外文の旧409漏れも再現し、失効後401に変更。Worker起動と外部AI送信は従来の実行直前の権限境界が別途必要。処理中の取り消しや全POSTエラー応答は未実証 |
 
 ## 時系列と異常系
 

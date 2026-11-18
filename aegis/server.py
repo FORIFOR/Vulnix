@@ -1191,7 +1191,10 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         activate_workspace=bool(body.get("activate_workspace", False)),
                         actor=actor,
                     )
-                    return self._json(200, {"asset": asset, "assets": svc.assets()})
+                    payload = {"asset": asset, "assets": svc.assets()}
+                    return self._authorized_org_read(
+                        sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                        lambda _: self._json(200, payload), reader=False)
                 elif p == "/api/assets/challenge":
                     target_host = ""
                     try:
@@ -1341,16 +1344,26 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         mock_paths=raw_paths if isinstance(raw_paths, dict) else None,
                         actor=actor,
                     )
-                    return self._json(200, {"secrets_status": res, "snapshot": svc.snapshot()})
+                    payload = {"secrets_status": res, "snapshot": svc.snapshot()}
+                    return self._authorized_org_read(
+                        sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                        lambda _: self._json(200, payload), reader=False, approver=True)
                 elif p == "/api/assets/delete":
-                    if svc.asset_is_real_service(asset_id=str(body.get("id", ""))) and "approver" not in sess.roles:
+                    real_asset = svc.asset_is_real_service(asset_id=str(body.get("id", "")))
+                    if real_asset and "approver" not in sess.roles:
                         # deleting a real service revokes its scope and stored test accounts
                         return self._json(403, {"error": "実サービスの削除には承認責任者の権限が必要です"})
                     assets = svc.delete_asset(str(body.get("id", "")), actor=actor)
-                    return self._json(200, {"assets": assets, "snapshot": svc.snapshot()})
+                    payload = {"assets": assets, "snapshot": svc.snapshot()}
+                    return self._authorized_org_read(
+                        sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                        lambda _: self._json(200, payload), reader=False, approver=real_asset)
                 elif p == "/api/assets/select":
                     snap = svc.select_asset(str(body.get("id", "")), actor=actor)
-                    return self._json(200, {"assets": svc.assets(), "snapshot": snap})
+                    payload = {"assets": svc.assets(), "snapshot": snap}
+                    return self._authorized_org_read(
+                        sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                        lambda _: self._json(200, payload), reader=False)
                 elif p == "/api/l2-profiles/accept":
                     if "admin" not in sess.roles:
                         paudit.record("l2.profile_accept_denied", actor=actor, profile=str(body.get("id", ""))[:64])
@@ -1395,7 +1408,9 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 elif p == base + "/restart":
                     with live_grant_roles(sess, getattr(self, "_bound_org", DEFAULT_ORG)):
                         result = svc.restart(actor)
-                    return self._json(200, result)
+                    return self._authorized_org_read(
+                        sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                        lambda _: self._json(200, result), reader=False)
                 elif p == base + "/pause":
                     svc.pause(actor)
                     if not ops.trusted():
@@ -1422,27 +1437,39 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         return self._json(400, {"error": "finding_id is required"})
                     # the service decides whether this needs an approver, under its own
                     # lock (a check here could be invalidated by a concurrent switch)
-                    return self._json(200, svc.verify_finding(
+                    result = svc.verify_finding(
                         fid, actor, roles=tuple(sess.roles),
                         request_authorized=live_request_authority(
                             sess, getattr(self, "_bound_org", DEFAULT_ORG),
-                            approver="approver" in sess.roles)))
+                            approver="approver" in sess.roles))
+                    return self._authorized_org_read(
+                        sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                        lambda _: self._json(200, result), reader=False,
+                        approver="approver" in sess.roles)
                 elif p == base + "/artex/plan":
                     # the REAL ARTEX planner (planner-only overlay) proposes; Vulnix rebuilds
                     approval = body.get("llm_approval") if isinstance(body.get("llm_approval"), dict) else None
                     llm_mode = body.get("llm_mode") if isinstance(body.get("llm_mode"), str) else None
-                    return self._json(200, svc.plan_with_artex(actor, llm_approval=approval,
-                                                               roles=tuple(sess.roles), llm_mode=llm_mode,
-                                                               request_authorized=live_request_authority(
-                                                                   sess, getattr(self, "_bound_org", DEFAULT_ORG),
-                                                                   approver=approval is not None)))
+                    result = svc.plan_with_artex(actor, llm_approval=approval,
+                                                 roles=tuple(sess.roles), llm_mode=llm_mode,
+                                                 request_authorized=live_request_authority(
+                                                     sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                                                     approver=approval is not None))
+                    return self._authorized_org_read(
+                        sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                        lambda _: self._json(200, result), reader=False,
+                        approver=approval is not None)
                 elif m := re.fullmatch(base + r"/artex/items/([A-Za-z0-9_]{1,80})/execute", p):
                     # L2 needs an approver: decided by the service, with the caller's roles
-                    return self._json(200, svc.execute_artex_item(
+                    result = svc.execute_artex_item(
                         m.group(1), actor, roles=tuple(sess.roles),
                         request_authorized=live_request_authority(
                             sess, getattr(self, "_bound_org", DEFAULT_ORG),
-                            approver="approver" in sess.roles)))
+                            approver="approver" in sess.roles))
+                    return self._authorized_org_read(
+                        sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                        lambda _: self._json(200, result), reader=False,
+                        approver="approver" in sess.roles)
                 elif p == base + "/request-l2":
                     fid = str(body.get("finding_id", "")).strip()
                     if not fid:
@@ -1451,7 +1478,10 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         # a second identity anyone can mint is not a second person
                         return self._json(403, {"error": "自己登録のアカウントはL2検証を依頼できません。"
                                                          "管理者が作成したアカウントで依頼してください"})
-                    return self._json(200, svc.request_l2_run(fid, actor))
+                    result = svc.request_l2_run(fid, actor)
+                    return self._authorized_org_read(
+                        sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                        lambda _: self._json(200, result), reader=False)
                 elif p == base + "/lab-mode":
                     mode = str(body.get("mode", "vulnerable")).strip()
                     set_lab_mode(mode)
@@ -1460,17 +1490,23 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 elif p == base + "/verify-fix":
                     if "approver" not in sess.roles:
                         return self._json(403, {"error": "修正後の再検証には承認責任者の権限が必要です"})
-                    return self._json(200, svc.verify_fix(actor))
+                    result = svc.verify_fix(actor)
+                    return self._authorized_org_read(
+                        sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                        lambda _: self._json(200, result), reader=False, approver=True)
                 elif p == base + "/chat":
                     q = str(body.get("question", "")).strip()
                     if not q:
                         return self._json(400, {"error": "質問を入力してください"})
                     term = str(body.get("term") or "") or None
                     finding_id = str(body.get("finding_id") or "") or None
-                    return self._json(200, svc.ask_chat(q, actor, term=term, finding_id=finding_id,
-                                                       safe_advice=body.get("safe_advice") is True,
-                                                       request_authorized=live_request_authority(
-                                                           sess, getattr(self, "_bound_org", DEFAULT_ORG))))
+                    result = svc.ask_chat(q, actor, term=term, finding_id=finding_id,
+                                          safe_advice=body.get("safe_advice") is True,
+                                          request_authorized=live_request_authority(
+                                              sess, getattr(self, "_bound_org", DEFAULT_ORG)))
+                    return self._authorized_org_read(
+                        sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                        lambda _: self._json(200, result), reader=False)
                 elif m := re.fullmatch(base + r"/approvals/(req_[0-9a-f]+)", p):
                     decision = body.get("decision")
                     if decision not in ("approve", "reject"):
@@ -1488,8 +1524,20 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 # the withdrawal stands, but it is not reported as completed
                 return self._json(500, {"error": str(e), "stop_confirmed": False})
             except Exception as e:
-                return self._json(409, {"error": str(e)})
-            return self._json(200, svc.snapshot())
+                if tenancy is not None and not getattr(self, "_bound_org", None):
+                    # Platform jobs have no tenant grant to bind. Their exception
+                    # text can contain operational details, so return a fixed error.
+                    return self._json(409, {"error": "操作を完了できませんでした"})
+                error = str(e)
+                return self._authorized_org_read(
+                    sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                    lambda _: self._json(409, {"error": error}),
+                    reader=p.endswith(("/pause", "/emergency-stop")))
+            snapshot = svc.snapshot()
+            return self._authorized_org_read(
+                sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                lambda _: self._json(200, snapshot), reader=False,
+                approver=bool(re.fullmatch(base + r"/approvals/req_[0-9a-f]+", p)))
 
     return H
 

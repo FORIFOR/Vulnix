@@ -41,21 +41,21 @@
 
 ## 対象登録・所有確認
 
-この表のGETは選択組織へ結合し、送信時に読み取り権限を再検査する。POSTは共通CSRF、組織結合、少なくとも`operator/approver/admin`の操作権限を通す。所有確認や範囲確定の長い処理には個別の`grant_guard`があり、結果保存時の失効を拒否する。`5217969`で登録・証明・範囲確定とGoogle開始/完了の成功応答にも現行権限確認を加えた。通常の失効エラー応答など、すべてのPOST分岐の送信時競合は未証明。
+この表のGETは選択組織へ結合し、送信時に読み取り権限を再検査する。POSTは共通CSRF、組織結合、少なくとも`operator/approver/admin`の操作権限を通す。所有確認や範囲確定の長い処理には個別の`grant_guard`があり、結果保存時の失効を拒否する。`5217969`で登録・証明・範囲確定とGoogle開始/完了の成功応答にも現行権限確認を加えた。資産登録・選択・検証用設定・削除の成功応答でも送信時の操作権限を確認する。通常の失効エラー応答など、すべてのPOST分岐の送信時競合は未証明。
 
 | API | 追加権限・要求値 | 失効時の確認範囲 | Web利用元 |
 | --- | --- | --- | --- |
 | `GET /api/assets` | なし | 読取再検査 | ダッシュボード、対象一覧 |
 | `GET /api/assets/secrets-status` | host query | 読取再検査 | 画面なし |
-| `POST /api/assets` | name/kind/environment/authorization_ref等 | 開始時。実サイト権限はサービスでも判定 | 対象登録 |
+| `POST /api/assets` | name/kind/environment/authorization_ref等 | 開始時・成功応答送信時。実サイト権限はサービスでも判定 | 対象登録 |
 | `POST /api/assets/challenge` | url/sow_id。既確認対象の再登録はapprover | 保存時の`grant_guard`、送信時の操作権限。ログアウト401・役割降格403を模擬確認 | 所有確認 |
 | `POST /api/assets/google/start` | url/host、Google設定済み、短期state | state発行後の送信時に操作権限を再確認。実Google環境は未実証 | 所有確認 |
 | `POST /api/assets/google/finish` | code/state、同一アカウント・組織・期限 | 外部照会後、証明保存から応答まで生存権限リース。既承認の保存中ログアウトは応答後に完了 | Google戻り画面 |
 | `POST /api/assets/verify-ownership` | url/host/method。既確認対象の再確認はapprover | DNS/ファイル照会後の保存時`grant_guard`、送信時の操作権限。ログアウト401を模擬確認 | 所有確認 |
 | `POST /api/assets/confirm-scope` | url/host、禁止事項への同意、approver | 保存時`grant_guard`、送信時の承認者権限。ログアウト401を模擬確認 | 所有確認 |
-| `POST /api/assets/secrets` | host/tokens等、approver | 開始時とサービス側の範囲確認 | 診断設定 |
-| `POST /api/assets/delete` | id。実サイトはapprover | 開始時とサービス側の対象確認 | ダッシュボード、対象一覧 |
-| `POST /api/assets/select` | id | 開始時とサービス側の対象確認 | ダッシュボード、対象一覧 |
+| `POST /api/assets/secrets` | host/tokens等、approver | 開始時とサービス側の範囲確認、成功応答送信時の承認者権限 | 診断設定 |
+| `POST /api/assets/delete` | id。実サイトはapprover | 開始時とサービス側の対象確認、成功応答送信時の操作権限（実サイトは承認者） | ダッシュボード、対象一覧 |
+| `POST /api/assets/select` | id | 開始時とサービス側の対象確認、成功応答送信時の操作権限 | ダッシュボード、対象一覧 |
 
 ## 診断・証拠・イベント
 
@@ -69,19 +69,19 @@
 | `GET /api/assessments/{id}/remotion` | anonymize query。無匿名はapprover/admin | 生成前後の権限と無匿名権限を再検査、401/403 | 実サイト設定 |
 | `GET /api/assessments/{id}/artex/llm-preview` | approver | 読取再検査、401/403 | 画面なし |
 | `GET /api/assessments/{id}/events` | Last-Event-ID/after | 接続後も各イベント・心拍で再検査。失効後は配信終了 | 結果画面`useAssessment` |
-| `POST /api/assessments/{id}/start` | id、対象権限・範囲・期限 | 開始時と起動時の生存権限 | 所有確認、実行操作 |
-| `POST /api/assessments/{id}/restart` | id、対象権限・範囲・期限 | 開始時と起動時の生存権限 | 実行操作 |
-| `POST /api/assessments/{id}/resume` | id | 開始時と再開時の生存権限 | 実行操作 |
+| `POST /api/assessments/{id}/start` | id、対象権限・範囲・期限 | 開始時・起動時・成功応答時の生存権限 | 所有確認、実行操作 |
+| `POST /api/assessments/{id}/restart` | id、対象権限・範囲・期限 | 開始時・起動時・成功応答時の生存権限 | 実行操作 |
+| `POST /api/assessments/{id}/resume` | id | 開始時・再開時・成功応答時の生存権限 | 実行操作 |
 | `POST /api/assessments/{id}/pause` | id。閲覧者も安全停止可 | 停止は実行、応答直前の読取再検査で失効401/403。認証状態の保存障害時は詳細なし200 | 実行操作 |
 | `POST /api/assessments/{id}/emergency-stop` | id。閲覧者も安全停止可 | 停止は実行、応答直前の読取再検査で失効401/403。認証状態の保存障害時は詳細なし200 | 実行操作 |
-| `POST /api/assessments/{id}/verify-finding` | finding_id、サービス側の承認判定 | 開始時と検証要求時の権限。応答時競合は未実証 | 所見詳細、結果画面 |
-| `POST /api/assessments/{id}/artex/plan` | llm_mode/llm_approval。承認時はapprover | 開始時、モデル送信前の生存権限 | ARTEX計画 |
-| `POST /api/assessments/{id}/artex/items/{item}/execute` | itemは英数字/下線80字以内、Gateway再審査 | 開始時、Worker起動直前の生存権限 | ARTEX計画 |
-| `POST /api/assessments/{id}/request-l2` | finding_id。依頼者と承認者を分ける設定では自己登録アカウントは禁止 | 開始時とサービス側の依頼権限 | 所見詳細 |
+| `POST /api/assessments/{id}/verify-finding` | finding_id、サービス側の承認判定 | 開始時・検証要求時・成功応答時の権限 | 所見詳細、結果画面 |
+| `POST /api/assessments/{id}/artex/plan` | llm_mode/llm_approval。承認時はapprover | 開始時・モデル送信前・成功応答時の生存権限 | ARTEX計画 |
+| `POST /api/assessments/{id}/artex/items/{item}/execute` | itemは英数字/下線80字以内、Gateway再審査 | 開始時・Worker起動直前・成功応答時の生存権限 | ARTEX計画 |
+| `POST /api/assessments/{id}/request-l2` | finding_id。依頼者と承認者を分ける設定では自己登録アカウントは禁止 | 開始時・サービス側の依頼権限・成功応答時の生存権限 | 所見詳細 |
 | `POST /api/assessments/{id}/lab-mode` | mode。複数組織では403 | 複数組織では実行不可 | 結果画面の模擬ラボ操作 |
-| `POST /api/assessments/{id}/verify-fix` | approver | 開始時とサービス側の権限確認 | 実行操作 |
-| `POST /api/assessments/{id}/chat` | question、任意term/finding_id/safe_advice | 開始時、外部送信時の生存権限 | 解説画面 |
-| `POST /api/assessments/{id}/approvals/{req_id}` | req_+16進ID、decision=approve/reject、approver | 開始時とサービス側の承認権限 | AgentActivity |
+| `POST /api/assessments/{id}/verify-fix` | approver | 開始時・サービス側・成功応答時の承認者権限 | 実行操作 |
+| `POST /api/assessments/{id}/chat` | question、任意term/finding_id/safe_advice | 開始時・外部送信時・成功応答時の生存権限 | 解説画面 |
+| `POST /api/assessments/{id}/approvals/{req_id}` | req_+16進ID、decision=approve/reject、approver | 開始時・サービス側・成功応答時の承認者権限 | AgentActivity |
 
 ## 全体管理・運用
 
