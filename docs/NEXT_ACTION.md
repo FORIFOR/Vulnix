@@ -1,5 +1,13 @@
 # Security Graph v2 作業の再開点
 
+## MCP候補への合成検証紐付け（2026-11-19）
+
+- 現行作業ツリー `/Users/shuhei/Projects/Vulnix-graph-mcp-verified`、ブランチ `codex/graph-mcp-verified`、コードコミット `91a4707`。基点は[Draft PR #90](https://github.com/FORIFOR/Vulnix/pull/90) の `d42bea3`。この変更は別の小さなDraft PRとして提出する。
+- SQLiteスキーマをv4へ移行し、AI仮説用の検証テーブルとは別に、MCP候補とスナップショット内ツールノードを参照する不変の合成検証記録を追加。v3からの移行で既存スナップショットを保持するテストを追加。
+- `McpValidationBroker` は登録済み合成ソースの固定 `tools.py` が対象コミットと完全一致する場合だけ、既存WorkerPool・権限リースを通して固定ハーネスを実行。変更後checkout、未登録候補、別組織スナップショット、失効したリースを拒否。顧客ツールの実証や脆弱性確定には昇格しない。
+- 関連21件、Ruff、Web124件、lintエラー0（既存警告5）、build成功。最初の関連523件は新作業ツリーにTypeScript AST依存関係がなく1件失敗し、`npm ci --offline` 後の単独6件・関連21件は成功。バックエンド全件は `/tmp/vulnix-mcp-verified-backend-full.log` に実行中。
+- PR #90の[Linux CI #44332783026](https://github.com/FORIFOR/Vulnix/actions/runs/44332783026) は試行1でPythonランナー終了・ログ未保存、試行2を実行中。再開時に両方の結果を確認する。次は組織別API・日本語UIへ記録を接続し、`tests/test_tenancy.py` に他組織からの読取・操作拒否を追加する。
+
 ## 固定MCPポリシーラボ（2026-11-19）
 
 - 現行作業ツリー `/Users/shuhei/Projects/Vulnix-graph-mcp-policy-lab`、ブランチ `codex/graph-mcp-policy-lab`、コードコミット `ba1174b`。基点は[Draft PR #89](https://github.com/FORIFOR/Vulnix/pull/89) の `1da769a`。この変更は別の小さなDraft PRとして提出する。

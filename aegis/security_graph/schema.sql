@@ -87,6 +87,16 @@ CREATE TABLE IF NOT EXISTS graph_validations (
     PRIMARY KEY (snapshot_id, validation_id),
     FOREIGN KEY (snapshot_id, hypothesis_id) REFERENCES graph_hypotheses(snapshot_id, hypothesis_id)
 );
+CREATE TABLE IF NOT EXISTS graph_mcp_validations (
+    snapshot_id TEXT NOT NULL,
+    validation_id TEXT NOT NULL,
+    candidate_id TEXT NOT NULL,
+    tool_id TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (snapshot_id, validation_id),
+    FOREIGN KEY (snapshot_id, tool_id) REFERENCES graph_nodes(snapshot_id, node_id)
+);
 CREATE TABLE IF NOT EXISTS graph_remediations (
     snapshot_id TEXT NOT NULL,
     remediation_id TEXT NOT NULL,
@@ -99,6 +109,8 @@ CREATE TABLE IF NOT EXISTS graph_remediations (
 CREATE INDEX IF NOT EXISTS graph_edges_from_idx ON graph_edges(snapshot_id, source_node);
 CREATE INDEX IF NOT EXISTS graph_edges_to_idx ON graph_edges(snapshot_id, target_node);
 CREATE INDEX IF NOT EXISTS graph_snapshots_repo_idx ON graph_snapshots(repository_id, created_at);
+CREATE INDEX IF NOT EXISTS graph_mcp_validations_candidate_idx
+ON graph_mcp_validations(snapshot_id, candidate_id);
 CREATE TRIGGER IF NOT EXISTS graph_snapshots_no_delete BEFORE DELETE ON graph_snapshots
 BEGIN SELECT RAISE(ABORT, 'immutable snapshot'); END;
 DROP TRIGGER IF EXISTS graph_snapshots_one_transition;
@@ -155,8 +167,12 @@ CREATE TRIGGER IF NOT EXISTS graph_validations_no_update BEFORE UPDATE ON graph_
 BEGIN SELECT RAISE(ABORT, 'immutable validation'); END;
 CREATE TRIGGER IF NOT EXISTS graph_validations_no_delete BEFORE DELETE ON graph_validations
 BEGIN SELECT RAISE(ABORT, 'immutable validation'); END;
+CREATE TRIGGER IF NOT EXISTS graph_mcp_validations_no_update BEFORE UPDATE ON graph_mcp_validations
+BEGIN SELECT RAISE(ABORT, 'immutable MCP validation'); END;
+CREATE TRIGGER IF NOT EXISTS graph_mcp_validations_no_delete BEFORE DELETE ON graph_mcp_validations
+BEGIN SELECT RAISE(ABORT, 'immutable MCP validation'); END;
 CREATE TRIGGER IF NOT EXISTS graph_remediations_no_update BEFORE UPDATE ON graph_remediations
 BEGIN SELECT RAISE(ABORT, 'immutable remediation'); END;
 CREATE TRIGGER IF NOT EXISTS graph_remediations_no_delete BEFORE DELETE ON graph_remediations
 BEGIN SELECT RAISE(ABORT, 'immutable remediation'); END;
-PRAGMA user_version = 3;
+PRAGMA user_version = 4;
