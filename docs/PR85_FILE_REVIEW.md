@@ -1,8 +1,8 @@
 # PR #85 ファイル別レビュー台帳
 
-基準: `origin/main...f6608da`、変更198ファイル。開始時の195ファイルに今回のレビュー資料3ファイルを加えた。これは変更ファイルの分類とレビュー進捗であり、すべての差分を監査済みという意味ではない。
+基準: `origin/main...b623256`、変更198ファイル。開始時の195ファイルに今回のレビュー資料3ファイルを加えた。これは変更ファイルの分類とレビュー進捗であり、すべての差分を監査済みという意味ではない。
 
-状態: `対象経路を照合` は今回または既存の安全性資料で挙げた経路を確認したこと（24ファイル）、`分類のみ` は差分の精査が未完了であること（174ファイル）を示す。どちらも正式GitHubレビューではない。重要ファイルの全行監査は別ゲート。
+状態: `対象経路を照合` は今回または既存の安全性資料で挙げた経路を確認したこと（28ファイル）、`分類のみ` は差分の精査が未完了であること（170ファイル）を示す。どちらも正式GitHubレビューではない。重要ファイルの全行監査は別ゲート。
 
 `.env.example`は変更ファイル名だけを列挙した。リポジトリの秘密情報保護指示に従い、`.env*`の内容は読んでいない。
 
@@ -23,8 +23,8 @@
 | `aegis/evidence.py` | バックエンド制御・診断 | 高 | 対象経路を照合 |
 | `aegis/gateway.py` | バックエンド制御・診断 | 高 | 対象経路を照合 |
 | `aegis/google_ownership.py` | バックエンド制御・診断 | 高 | 対象経路を照合 |
-| `aegis/l2_rules.py` | バックエンド制御・診断 | 通常 | 分類のみ |
-| `aegis/lab.py` | バックエンド制御・診断 | 通常 | 分類のみ |
+| `aegis/l2_rules.py` | バックエンド制御・診断 | 通常 | 対象経路を照合 |
+| `aegis/lab.py` | バックエンド制御・診断 | 通常 | 対象経路を照合 |
 | `aegis/operators.py` | バックエンド制御・診断 | 高 | 対象経路を照合 |
 | `aegis/planner_llm_gateway.py` | バックエンド制御・診断 | 高 | 対象経路を照合 |
 | `aegis/router.py` | バックエンド制御・診断 | 通常 | 分類のみ |
@@ -96,8 +96,8 @@
 | `scripts/bench_access_link_holdout.py` | 測定・検証スクリプト | 通常 | 分類のみ |
 | `scripts/bench_advisor_prompt_bytes.py` | 測定・検証スクリプト | 通常 | 分類のみ |
 | `scripts/bench_audit_logs.py` | 測定・検証スクリプト | 通常 | 分類のみ |
-| `scripts/bench_browser_lab_recheck.py` | 測定・検証スクリプト | 通常 | 分類のみ |
-| `scripts/bench_browser_owned_flow.py` | 測定・検証スクリプト | 通常 | 分類のみ |
+| `scripts/bench_browser_lab_recheck.py` | 測定・検証スクリプト | 通常 | 対象経路を照合 |
+| `scripts/bench_browser_owned_flow.py` | 測定・検証スクリプト | 通常 | 対象経路を照合 |
 | `scripts/bench_cookie_purpose.py` | 測定・検証スクリプト | 通常 | 分類のみ |
 | `scripts/bench_cors_policy_precision.py` | 測定・検証スクリプト | 通常 | 分類のみ |
 | `scripts/bench_first_prompt_selection.py` | 測定・検証スクリプト | 通常 | 分類のみ |

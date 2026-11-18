@@ -1,5 +1,12 @@
 # 次の作業と再開手順
 
+## 最新の追記（2026-11-19 JST）
+
+- `codex/goal-integration-readiness`の最新製品コードは`5217969`、後続資料コミットは`b623256`。PR #85はDraft・未マージ・正式レビュー0件。作業ツリーを先に確認し、元の`/Users/shuhei/Projects/Vulnix`など他ツリーを変更しない。
+- 製品コードのLinux CI #44368482725は3/3成功、Python1,801件成功・17件スキップ。資料コミット`b623256`のCI #44375093173はPythonと実ARTEXの実行中、Web成功（この追記時点）。最後のCIを`gh run view 44375093173 --json status,conclusion,jobs`で追跡し、最終HEADのCIを別途確認する。
+- 198ファイル台帳のうち28件は対象経路を照合、170件は分類のみ。新たにブラウザ模擬スクリプトのループバック固定、L2未承認仕様の保留化、IDORラボの所有者対照応答を読み、認証・Cookie関連ローカル20件が成功。次は高優先の未読差分を読み、実行時の外部通信先・権限失効を重点確認。正式Approveと実行環境の設定確認は未完了。
+- 未完了の外部ゲートは実Abliteration AIの採用可能な評価（既存2承認は消費済み）、公開βの実DNS・許可済み実サイトE2E、正式GitHubレビュー、main統合・本番公開。追加の有料送信、実サイト通信、DNS変更、mainマージ、公開反映は承認なく実行しない。
+
 ## 最新の再開地点（2026-11-19 JST、この節を優先）
 
 - 作業ツリー`/Users/shuhei/Projects/Vulnix-integration-readiness`、ブランチ`codex/goal-integration-readiness`、最新コード`5217969`。`git status --short --branch`と`git diff --check`を先に実行し、未コミット資料を保持する。元の`/Users/shuhei/Projects/Vulnix`と別ツリーは変更しない。
