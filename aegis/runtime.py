@@ -107,7 +107,8 @@ class WorkerPool:
         self._closed = False
 
     def run(self, argv: list[str], timeout_s: float, *, extra_env: dict[str, str] | None = None,
-            session=None, permit=None, prelaunch=None, progress: bool = False) -> WorkerResult:
+            session=None, permit=None, prelaunch=None, progress: bool = False,
+            cwd: str | os.PathLike | None = None) -> WorkerResult:
         """`session` is a kernel confinement session (confinement.py): the worker is
         started inside it, and killing the worker kills everything in it.
         `progress`: record the stage markers the worker writes on stderr."""
@@ -143,7 +144,7 @@ class WorkerPool:
                     proc = subprocess.Popen(
                         argv, stdin=subprocess.DEVNULL,       # never the control plane's terminal or socket
                         stdout=subprocess.PIPE, stderr=subprocess.PIPE,   # bytes: decoded once, at the end
-                        start_new_session=True, close_fds=True, env=proc_env,
+                        start_new_session=True, close_fds=True, env=proc_env, cwd=cwd,
                         preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu)),
                     )
                     t0 = self._clock()

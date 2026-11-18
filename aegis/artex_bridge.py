@@ -372,6 +372,10 @@ def run_artex_planner(command: list[str], request: dict, *, llm_url: str, llm_mo
     require_loopback_llm(llm_url)
     if pg_dsn:
         require_loopback_dsn(pg_dsn)
+    try:
+        request_bytes = json.dumps(request, ensure_ascii=False).encode()
+    except (TypeError, ValueError):
+        raise ArtexBridgeError("ARTEX の入力は JSON で表現できる必要があります") from None
     exe = command[0]
     try:
         exe_bytes = Path(exe).read_bytes()
@@ -462,7 +466,7 @@ def run_artex_planner(command: list[str], request: dict, *, llm_url: str, llm_mo
             # a stop landed between the check and the start: it dies right away
             sess.kill()
         try:
-            out, err = proc.communicate(json.dumps(request, ensure_ascii=False).encode(), timeout=timeout_s)
+            out, err = proc.communicate(request_bytes, timeout=timeout_s)
         except subprocess.TimeoutExpired:
             if sess is not None:
                 sess.kill()                      # it runs as another uid: kill the cgroup
@@ -501,6 +505,7 @@ def run_artex_planner(command: list[str], request: dict, *, llm_url: str, llm_mo
         msg = data.get("error") if isinstance(data, dict) else None
         raise ArtexBridgeError(f"ARTEX プランナーが失敗しました（exit {proc.returncode}）: {str(msg or '')[:200]}")
     run = parse_planner_output(data, provenance, elapsed)
+    run.provenance["request_sha256"] = hashlib.sha256(request_bytes).hexdigest()
     run.provenance["stderr_tail_sha256"] = hashlib.sha256(err[-4096:]).hexdigest()
     run.provenance["isolation"] = isolation
     if run.provenance.get("egress_canary"):

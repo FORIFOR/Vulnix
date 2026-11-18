@@ -33,6 +33,7 @@ from __future__ import annotations
 import ipaddress
 import os
 import re
+import selectors
 import secrets
 import shutil
 import subprocess
@@ -41,6 +42,13 @@ import time
 from pathlib import Path
 
 from .network import HARD_DENY
+
+
+def _fd_readable(stream, timeout: float) -> bool:
+    """Wait for relay readiness without select(2)'s FD_SETSIZE limit."""
+    with selectors.DefaultSelector() as selector:
+        selector.register(stream, selectors.EVENT_READ)
+        return bool(selector.select(timeout))
 
 CGROUP_ROOT = Path("/sys/fs/cgroup")
 PROBE_ADDR = ("198.51.100.1", 443)          # TEST-NET-2 (RFC 5737): documentation only
@@ -459,9 +467,7 @@ class ConfinementSession:
                 self.name, str(self.uid), *[str(pt) for pt in self.ns["ports"]]]
         self._relay = self._o._popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                      stderr=subprocess.DEVNULL, close_fds=True, text=True)
-        import select
-        ready, _, _ = select.select([self._relay.stdout], [], [], 10)
-        line = self._relay.stdout.readline().strip() if ready else ""
+        line = self._relay.stdout.readline().strip() if _fd_readable(self._relay.stdout, 10) else ""
         if line != "READY":
             raise ConfinementError("名前空間への中継を起動できません")
 
@@ -835,6 +841,12 @@ class ConfinementSession:
                     relay.wait(timeout=5)       # killed with the cgroup; reaped here
                 except (subprocess.TimeoutExpired, OSError):
                     pass
+                finally:
+                    if relay.stdout is not None:
+                        try:
+                            relay.stdout.close()
+                        except OSError:
+                            pass
             if removed and getattr(self, "_netns", False):
                 ip = self._o._which("ip") or "/usr/sbin/ip"
                 r = self._o._run([*self._o._priv(), ip, "netns", "delete", self.name],

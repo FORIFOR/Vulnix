@@ -8,6 +8,8 @@ when VULNIX_ARTEX_REAL_BIN points at the overlay binary (built in Linux CI).
 from __future__ import annotations
 
 import contextlib
+import hashlib
+import io
 import json
 import os
 import shlex
@@ -186,6 +188,18 @@ class TestTheStandInIsNeverMistakenForArtex(unittest.TestCase):
 class TestRunningThePlanner(unittest.TestCase):
     def run_fake(self, **req):
         return ab.run_artex_planner(FAKE, {"targets": TARGETS, **req}, llm_url=LOOPBACK_LLM, timeout_s=10)
+
+    def test_run_records_exact_request_digest(self):
+        request = {"targets": TARGETS, "goal": "synthetic graph"}
+        run = ab.run_artex_planner(FAKE, request, llm_url=LOOPBACK_LLM, timeout_s=10)
+        expected = hashlib.sha256(json.dumps(request, ensure_ascii=False).encode()).hexdigest()
+        self.assertEqual(run.provenance["request_sha256"], expected)
+
+    def test_non_json_request_is_rejected_before_planner_launch(self):
+        with patch.object(ab.subprocess, "Popen") as launch:
+            with self.assertRaises(ab.ArtexBridgeError):
+                ab.run_artex_planner(FAKE, {"graph": object()}, llm_url=LOOPBACK_LLM)
+            launch.assert_not_called()
 
     def test_the_planner_gets_a_clean_environment(self):
         dump = Path(tempfile.mkdtemp()) / "env.json"
@@ -1289,6 +1303,31 @@ class TestRealArtexPlanner(ServiceBase):
             env.start()
             self.addCleanup(env.stop)
 
+    def test_real_planner_selects_pinned_graph_hypothesis(self):
+        from aegis.research.graph_context import run_confined_graph_research
+        from aegis.security_graph.builder import build_graph
+
+        if not self.confined:
+            self.skipTest("graph research requires Linux kernel confinement")
+        self.mock.intents = [{"summary": "Review organization boundary", "asset_ids": [1], "priority": 5}]
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "api.py").write_text(
+                "from fastapi import FastAPI\napp = FastAPI()\n"
+                "@app.get('/orders/{id}')\ndef get_order(id):\n"
+                "    order = store.get(id)\n    return order\n")
+            graph = build_graph(root, "a" * 40)
+            hypotheses = run_confined_graph_research(
+                graph, self.command, llm_url=self.llm_url,
+                expected_sha256=self.expected_sha256,
+                confinement=self.svc._l2_confinement,
+                pg_dsn=os.environ.get("VULNIX_ARTEX_PG_DSN", ""))
+        self.assertEqual(len(hypotheses), 1)
+        self.assertEqual(hypotheses[0].verdict, "unverified")
+        self.assertTrue(hypotheses[0].evidence_ids)
+        self.assertTrue(self.mock.requests)
+        self.assertNotIn("return order", json.dumps(self.mock.requests))
+
     def test_real_planner_selects_status_check_and_gateway_records_evidence(self):
         from tests.fixtures.status_exposure_lab import StatusExposureLab
 
@@ -1469,6 +1508,18 @@ class TestConfinementExtensionsKeepTheL2Path(unittest.TestCase):
         sess._teardown()                                   # raised AttributeError before
         self.assertFalse(sess.leftover)
         self.assertTrue(any(c[-4:] == ["delete", "table", "inet", "aegis_l2_0123456789ab"] for c in self.calls))
+
+    def test_teardown_closes_relay_read_pipe(self):
+        from aegis.confinement import ConfinementSession
+        owner = self.owner()
+        owner.fresh_identity = lambda: 4242
+        sess = ConfinementSession(owner, "127.0.0.1", 1)
+        relay = unittest.mock.Mock()
+        relay.stdout = io.StringIO("READY\n")
+        sess._relay = relay
+        sess._teardown()
+        self.assertTrue(relay.stdout.closed)
+        relay.wait.assert_called_once_with(timeout=5)
 
     def test_a_kill_freezes_the_cgroup_before_killing_and_entry_refuses_a_frozen_one(self):
         from aegis import confinement as cf

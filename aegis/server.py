@@ -470,7 +470,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     return self._tenancy_get(p, u, sess)
                 finally:
                     self.connection.settimeout(previous_timeout)
-            if p.startswith(("/api/assets", "/api/assessments/")):
+            if p.startswith(("/api/assets", "/api/assessments/", "/api/security-graph/")) or p == "/api/research/report":
                 bound = self._bind(sess, (parse_qs(u.query).get("org") or [None])[0])
                 if bound is None:
                     return None
@@ -479,7 +479,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 org = self._bound_org if tenancy is not None else DEFAULT_ORG
                 if p.endswith("/events"):
                     return self._get_org(p, u, *bound)  # long stream: per-batch lease below
-                if p in {f"/api/assessments/{bound[0].a.id}",
+                if p in {"/api/research/report", f"/api/assessments/{bound[0].a.id}",
                          f"/api/assessments/{bound[0].a.id}/logs",
                          f"/api/assessments/{bound[0].a.id}/report",
                          f"/api/assessments/{bound[0].a.id}/remotion"}:
@@ -496,7 +496,9 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         return self._json(403, {"error": "この組織のメンバーではありません"})
                     if not allowed_identified:
                         return self._json(403, {"error": "匿名化なしの出力には承認責任者または管理者の権限が必要です"})
-                    if p == f"/api/assessments/{bound[0].a.id}":
+                    if p == "/api/research/report":
+                        payload = bound[0].research_report()
+                    elif p == f"/api/assessments/{bound[0].a.id}":
                         payload = bound[0].snapshot()
                     elif p.endswith("/logs"):
                         payload = bound[0].logs()
@@ -554,6 +556,48 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
 
         def _get_org(self, p, u, svc, sess):
             """Reads of one organization's data, from that organization's service only."""
+            if p.startswith("/api/security-graph/"):
+                graph = svc.graph_service
+                q = parse_qs(u.query)
+                snapshot = (q.get("snapshot") or [""])[0]
+                if p == "/api/security-graph/snapshots":
+                    return self._json(200, graph.snapshots())
+                if p == "/api/security-graph/sources":
+                    return self._json(200, graph.sources())
+                if not re.fullmatch(r"[0-9a-f]{32}", snapshot):
+                    return self._json(400, {"error": "有効なスナップショットを指定してください"})
+                try:
+                    if p == "/api/security-graph/nodes":
+                        limit = int((q.get("limit") or ["200"])[0])
+                        offset = int((q.get("offset") or ["0"])[0])
+                        return self._json(200, graph.nodes(snapshot, limit=limit, offset=offset))
+                    if p == "/api/security-graph/paths":
+                        return self._json(200, graph.paths(snapshot))
+                    if p == "/api/security-graph/evidence":
+                        return self._json(200, graph.evidence(snapshot))
+                    if m := re.fullmatch(r"/api/security-graph/paths/([0-9a-f]{24})", p):
+                        return self._json(200, graph.path_detail(snapshot, m.group(1)))
+                    if p == "/api/security-graph/remediation-impact":
+                        node_id = (q.get("node") or [""])[0]
+                        return self._json(200, graph.remediation_impact(snapshot, node_id))
+                    if p == "/api/security-graph/diff":
+                        after = (q.get("after") or [""])[0]
+                        if not re.fullmatch(r"[0-9a-f]{32}", after):
+                            return self._json(400, {"error": "比較先のスナップショットが必要です"})
+                        return self._json(200, graph.diff(snapshot, after))
+                    if p == "/api/security-graph/hypotheses":
+                        return self._json(200, graph.hypotheses(snapshot))
+                    if p == "/api/security-graph/validations":
+                        return self._json(200, graph.validations(snapshot))
+                    if p == "/api/security-graph/remediations":
+                        return self._json(200, graph.remediations(snapshot))
+                except KeyError:
+                    return self._json(404, {"error": "指定されたグラフはこの組織にありません"})
+                except ValueError as e:
+                    return self._json(400, {"error": str(e)})
+                return self._json(404, {"error": "not found"})
+            if p == "/api/research/report":
+                return self._json(200, svc.research_report())
             if p == "/api/assets":
                 return self._json(200, svc.assets())
             if p == "/api/assets/secrets-status":
@@ -1170,6 +1214,49 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             base = f"/api/assessments/{svc.a.id}"
             actor = sess.operator
             try:
+                if p == "/api/security-graph/import":
+                    if set(body) != {"source_id"} or type(body["source_id"]) is not str:
+                        return self._json(400, {"error": "登録済みのソースIDだけを指定してください"})
+                    try:
+                        snapshot = svc.graph_service.import_source(
+                            body["source_id"], commit_guard=lambda: live_grant_roles(
+                                sess, self._bound_org if tenancy is not None else DEFAULT_ORG))
+                    except KeyError:
+                        return self._json(404, {"error": "登録済みの合成ソースがありません"})
+                    svc.audit.record("graph.import", actor=actor, snapshot=snapshot)
+                    return self._json(200, {"snapshot_id": snapshot})
+                if p == "/api/security-graph/research":
+                    if set(body) != {"snapshot_id"} or type(body["snapshot_id"]) is not str:
+                        return self._json(400, {"error": "スナップショットIDだけを指定してください"})
+                    try:
+                        hypotheses = svc.graph_service.research(
+                            body["snapshot_id"], commit_guard=lambda: live_grant_roles(
+                                sess, self._bound_org if tenancy is not None else DEFAULT_ORG))
+                    except KeyError:
+                        return self._json(404, {"error": "指定されたグラフはこの組織にありません"})
+                    svc.audit.record("graph.research", actor=actor, snapshot=body["snapshot_id"])
+                    return self._json(200, hypotheses)
+                if p == "/api/security-graph/validate-synthetic":
+                    if (set(body) != {"snapshot_id", "hypothesis_id"} or
+                        any(type(body[key]) is not str for key in body)):
+                        return self._json(400, {"error": "スナップショットと仮説IDが必要です"})
+                    try:
+                        result = svc.graph_service.validate_synthetic(
+                            body["snapshot_id"], body["hypothesis_id"],
+                            commit_guard=lambda: live_grant_roles(
+                                sess, self._bound_org if tenancy is not None else DEFAULT_ORG))
+                    except KeyError:
+                        return self._json(404, {"error": "この組織に仮説がありません"})
+                    except ValueError as e:
+                        return self._json(400, {"error": str(e)})
+                    except Exception as e:
+                        from .validation.sandbox import SandboxUnavailable
+                        if not isinstance(e, SandboxUnavailable):
+                            raise
+                        return self._json(503, {"error": "隔離検証環境が利用できません"})
+                    svc.audit.record("graph.validate_synthetic", actor=actor,
+                                     snapshot=body["snapshot_id"], hypothesis=body["hypothesis_id"])
+                    return self._json(200, result)
                 if p == "/api/assets":
                     asset = svc.register_asset(
                         name=str(body.get("name", "")),

@@ -58,6 +58,8 @@ from .l2_rules import BUILTIN_PROFILE_DIR, L2RuleSet, site_profile_dirs
 from .service_diag import (analyze_l1_service_response, analyze_status_marker_report,
                            build_l2_candidates, clean_target_text, compute_finding_risk_score)
 from .google_ownership import METHOD as GOOGLE_METHOD, covering_property
+from .security_graph.storage import read_report, write_report
+from .security_graph.service import GraphService
 
 SEVERITY_WEIGHT = {"critical": 40, "high": 25, "medium": 10, "low": 3, "info": 0}
 VERDICT_FACTOR = {"proven": 1.0, "detected": 0.6, "candidate": 0.0, "unverified": 0.0, "aborted": 0.0,
@@ -303,6 +305,7 @@ class AssessmentService:
                  revocation_marker_dirs: list[Path] | None = None,
                  real_site_read_only: bool = True):
         self.data_dir = Path(data_dir)
+        self.graph_service = GraphService(self.data_dir)
         # A service used outside the HTTP server still refuses real-site L2 and
         # re-checks by default. The trusted caller must explicitly select legacy mode.
         self.real_site_read_only = bool(real_site_read_only)
@@ -382,6 +385,9 @@ class AssessmentService:
         from .runtime import HeldSessions
         self._held_sessions = HeldSessions()
         self.workers = WorkerPool(max_concurrent=2, held=self._held_sessions)
+        # Synthetic graph validation shares the service pool so emergency stop
+        # kills it together with every other worker in this organization.
+        self.graph_service.worker_pool_provider = lambda: self.workers
         self.gateway = Gateway(
             engagement=eng, tokens=self.tokens, approvals=self.approval_store,
             egress=EgressGuard(self._resolve_host),
@@ -2550,6 +2556,14 @@ class AssessmentService:
 
 
     # ---- snapshot -----------------------------------------------------------
+    def research_report(self) -> dict:
+        """Read only this service's organization-scoped research metadata."""
+        return read_report(self.data_dir / "research-report.json")
+
+    def save_research_report(self, report: dict) -> None:
+        """Trusted offline workflow only; no HTTP write route is exposed."""
+        write_report(report, self.data_dir / "research-report.json")
+
     def assets(self) -> list[dict]:
         with self._lock:
             risk = self._risk()

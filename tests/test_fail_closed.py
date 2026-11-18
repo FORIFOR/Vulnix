@@ -24,7 +24,7 @@ from unittest.mock import patch
 from tests import TEST_CONFINEMENT
 from aegis.assessment import AssessmentService
 from aegis.confinement import (ConfinementError, ConfinementSession, KernelConfinement,
-                               dropped_packets, ruleset)
+                               _fd_readable, dropped_packets, ruleset)
 from aegis.policy import PolicyError
 from aegis.runtime import WorkerPool
 from tests.test_real_service import HOST, LAB_PORT, PROFILE_DIRS, TOKEN_A, TOKEN_B, RealServiceBase
@@ -617,6 +617,26 @@ class _FakeRun:
 
 
 class TestKernelConfinementLogic(unittest.TestCase):
+
+    def test_relay_readiness_handles_file_descriptors_above_select_limit(self):
+        import fcntl
+        import resource
+        if resource.getrlimit(resource.RLIMIT_NOFILE)[0] <= 1024:
+            self.skipTest("host cannot allocate a high file descriptor")
+        read_fd, write_fd = os.pipe()
+        try:
+            high_fd = fcntl.fcntl(read_fd, fcntl.F_DUPFD, 1024)
+            os.close(read_fd)
+            read_fd = -1
+            with os.fdopen(high_fd, "r") as stream:
+                self.assertFalse(_fd_readable(stream, 0))
+                os.write(write_fd, b"READY\n")
+                self.assertTrue(_fd_readable(stream, 1))
+                self.assertEqual(stream.readline(), "READY\n")
+        finally:
+            if read_fd >= 0:
+                os.close(read_fd)
+            os.close(write_fd)
     def make(self, run, *, euid=1000, tools=("nft", "sh", "sudo", "setpriv"), controllers=True):
         root = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, root, True)
