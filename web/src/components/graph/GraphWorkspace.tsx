@@ -3,8 +3,8 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { getJSON, postJSON } from "@/lib/api";
-import { pathStatusLabel, syntheticValidationLabel, type GraphEvidence, type GraphHypothesis, type GraphNode,
-  type GraphPath, type GraphSnapshot } from "@/lib/securityGraph";
+import { mcpScopeLabel, pathStatusLabel, syntheticValidationLabel, type GraphEvidence, type GraphHypothesis,
+  type GraphNode, type GraphPath, type GraphSnapshot, type McpScopeCandidate } from "@/lib/securityGraph";
 
 type Panel = "assets" | "graph" | "detail";
 type GraphSource = { id: string; repository_id: string; commit_sha: string; scope: string };
@@ -19,6 +19,7 @@ export function GraphWorkspace({ title = "Security Graph", initialPathId }: {
   const [paths, setPaths] = useState<GraphPath[]>([]);
   const [evidence, setEvidence] = useState<GraphEvidence[]>([]);
   const [hypotheses, setHypotheses] = useState<GraphHypothesis[]>([]);
+  const [mcpScope, setMcpScope] = useState<McpScopeCandidate[]>([]);
   const [validations, setValidations] = useState<{ hypothesis_id: string; status: string; before: { status: string } }[]>([]);
   const [selectedPath, setSelectedPath] = useState(initialPathId ?? "");
   const [selectedNode, setSelectedNode] = useState("");
@@ -43,10 +44,11 @@ export function GraphWorkspace({ title = "Security Graph", initialPathId }: {
       getJSON<GraphPath[]>(`/api/security-graph/paths${q}`),
       getJSON<GraphEvidence[]>(`/api/security-graph/evidence${q}`),
       getJSON<GraphHypothesis[]>(`/api/security-graph/hypotheses${q}`),
+      getJSON<McpScopeCandidate[]>(`/api/security-graph/mcp-scope${q}`),
       getJSON<typeof validations>(`/api/security-graph/validations${q}`),
-    ]).then(([n, p, e, h, v]) => {
+    ]).then(([n, p, e, h, scope, v]) => {
       if (cancelled) return;
-      setNodes(n); setPaths(p); setEvidence(e); setHypotheses(h); setValidations(v);
+      setNodes(n); setPaths(p); setEvidence(e); setHypotheses(h); setMcpScope(scope); setValidations(v);
       setSelectedPath(current => p.some(path => path.id === current) ? current :
         p.some(path => path.id === initialPathId) ? initialPathId! : p[0]?.id ?? "");
     }, e => { if (!cancelled) setError((e as Error).message); });
@@ -58,6 +60,7 @@ export function GraphWorkspace({ title = "Security Graph", initialPathId }: {
   const node = nodeMap.get(selectedNode) ?? (path ? nodeMap.get(path.nodes[0]) : undefined);
   const evidenceMap = useMemo(() => new Map(evidence.map(item => [item.id, item])), [evidence]);
   const relatedHypotheses = hypotheses.filter(item => path?.evidence_ids.some(id => item.evidence_ids.includes(id)));
+  const selectedMcpScope = mcpScope.find(item => item.tool_id === path?.nodes[0]);
   const panelClass = (panel: Panel) => mobilePanel === panel ? "block" : "hidden md:block";
 
   async function runResearch() {
@@ -139,7 +142,7 @@ export function GraphWorkspace({ title = "Security Graph", initialPathId }: {
           <h2 className="text-sm font-semibold">選択中の経路</h2>
           {path ? <>
             <p className="mt-1 text-xs text-zinc-500">{pathStatusLabel(path.status)}</p>
-            <div className="mt-8 flex flex-wrap items-center justify-center gap-2" role="img" aria-label="APIからデータへの関係図">
+            <div className="mt-8 flex flex-wrap items-center justify-center gap-2" role="img" aria-label="入口からデータへの関係図">
               {path.nodes.map((id, index) => <div key={`${id}-${index}`} className="flex min-w-0 items-center gap-2">
                 {index > 0 && <span aria-hidden className="text-xl text-zinc-400">→</span>}
                 <button type="button" onClick={() => { setSelectedNode(id); setMobilePanel("detail"); }} className={`max-w-[180px] rounded-xl border-2 p-3 text-left text-sm shadow-sm ${node?.id === id ? "border-blue-500" : "border-zinc-300"}`}>
@@ -157,8 +160,15 @@ export function GraphWorkspace({ title = "Security Graph", initialPathId }: {
           {node ? <>
             <p className="mt-3 break-all text-sm font-medium">{node.name}</p>
             <p className="mt-1 break-all text-xs text-zinc-500">{node.source_path}:{node.source_line} · {node.status}</p>
+            {selectedMcpScope && <div className="mt-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-950 dark:bg-amber-950/30 dark:text-amber-100">
+              <h3 className="font-semibold">MCPツールの権限範囲</h3>
+              <p className="mt-1">{mcpScopeLabel(selectedMcpScope.status)}</p>
+              <p className="mt-1">データ参照の関係を観測しました。MCPサーバー側の認証・承認と実行時の権限は未検証です。</p>
+              <p className="mt-1">ロール宣言: {selectedMcpScope.declared_role_ids.length ? `${selectedMcpScope.declared_role_ids.length}件（実効性未検証）` : "この解析範囲では未確認"}</p>
+              <p className="mt-1">隔離検証: 未実施</p>
+            </div>}
             <h3 className="mt-5 text-xs font-semibold">根拠ID</h3>
-            <ul className="mt-2 space-y-2">{(path?.evidence_ids ?? node.evidence_ids).map(id => {
+            <ul className="mt-2 space-y-2">{Array.from(new Set([...(path?.evidence_ids ?? node.evidence_ids), ...(selectedMcpScope?.evidence_ids ?? [])])).map(id => {
               const item = evidenceMap.get(id);
               return <li key={id} className="break-all rounded-lg border p-2 text-xs"><strong>{id}</strong><br />{item ? `${item.source_path}:${item.source_line}` : "位置未取得"}</li>;
             })}</ul>

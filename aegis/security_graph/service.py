@@ -5,6 +5,7 @@ import threading
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from aegis.analyzers.ai_agents import review_mcp_tool_scope
 from aegis.connectors.github_source import open_pinned_local_checkout, read_pinned_file
 from aegis.remediation.impact import predict_node_impact
 from aegis.remediation.github_pr import draft_pr_description
@@ -80,6 +81,11 @@ class GraphService:
     def paths(self, snapshot_id: str) -> list[dict]:
         with GraphStore(self.database) as store:
             return store.records("graph_paths", snapshot_id)
+
+    def mcp_scope(self, snapshot_id: str) -> list[dict]:
+        with GraphStore(self.database) as store:
+            graph = store.load_graph(snapshot_id)
+        return [asdict(item) for item in review_mcp_tool_scope(graph)]
 
     def evidence(self, snapshot_id: str, *, limit: int = 500) -> list[dict]:
         if not 1 <= limit <= 500:
