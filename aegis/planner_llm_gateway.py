@@ -479,19 +479,25 @@ class PlannerLLMGateway:
             if type(response_format) is not dict or response_format != {"type": "json_object"}:
                 raise GatewayRefused("response_format", "only plain JSON object output is allowed")
             out["response_format"] = {"type": "json_object"}
-        # The generic provider schema lists these controls, but this model's
-        # behavior is unverified. Keep them in local previews/mocks only. Never
-        # silently strip an attempted control from a real request.
+        # Official docs (docs.abliteration.ai/capabilities/thinking & compatibility-matrix)
+        # confirm `reasoning_effort` ("none", "low") on Chat Completions for
+        # `abliterated-model`. Forward it to a real upstream only when the run's
+        # approval explicitly binds the exact `reasoning_effort`. Keep OpenRouter-style
+        # `reasoning.max_tokens` local-only.
         if "reasoning_effort" in body or "reasoning" in body:
-            if self.real or self.model not in LOCAL_REASONING_EFFORTS \
+            if self.model not in LOCAL_REASONING_EFFORTS \
                     or ("reasoning_effort" in body and "reasoning" in body):
                 raise GatewayRefused("reasoning_config", "reasoning control is not approved for this model and upstream")
             if "reasoning_effort" in body:
                 effort = body["reasoning_effort"]
                 if type(effort) is not str or effort not in LOCAL_REASONING_EFFORTS[self.model]:
                     raise GatewayRefused("reasoning_config", "unsupported reasoning effort")
+                if self.real and self.approval.get("reasoning_effort") != effort:
+                    raise GatewayRefused("reasoning_config", "reasoning control is not approved for this model and upstream")
                 out["reasoning_effort"] = effort
             else:
+                if self.real:
+                    raise GatewayRefused("reasoning_config", "reasoning control is not approved for this model and upstream")
                 config = body["reasoning"]
                 if type(config) is not dict or set(config) != {"max_tokens"} \
                         or type(config["max_tokens"]) is not int \
@@ -795,9 +801,13 @@ class PlannerLLMGateway:
                     except GatewayRefused:
                         continue
                     self._model_turns[_turn_digest(turn)] = turn
+            details = usage.get("completion_tokens_details") if isinstance(usage, dict) else None
             if usage is not None and (type(usage) is not dict or
                     any(k in usage and (type(usage[k]) is not int or usage[k] < 0)
-                        for k in ("prompt_tokens", "completion_tokens"))):
+                        for k in ("prompt_tokens", "completion_tokens", "total_tokens")) or
+                    (details is not None and (type(details) is not dict or
+                        ("reasoning_tokens" in details and (type(details["reasoning_tokens"]) is not int
+                                                            or details["reasoning_tokens"] < 0))))):
                 self._failed.set()
                 rec.decision = "failed"
                 rec.reason = "invalid_usage"

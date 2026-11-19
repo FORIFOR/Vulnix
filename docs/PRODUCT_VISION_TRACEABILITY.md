@@ -18,7 +18,7 @@
 | --- | --- | :---: | :---: | :---: | --- |
 | **V01** | 自分のWebサイトやAPIの登録 | PASS | PASS | PASS（ローカル実証・登録時外部通信0） | 資産・診断POSTの送信時権限 / URL登録→所有確認→結果表示 |
 | **V02** | 所有権・診断範囲・許可内容の確認 | PASS | PASS（模擬DNS/HTTP/Google） | BLOCKED（実DNS・OAuth公開設定は承認待ち） | 所有確認照会中の権限失効 / OAuth / 公開βの実DNS |
-| **V03** | ARTEXとAIが観測事実から必要な検査を選択 | PASS | PASS（実ARTEX＋ローカル模擬モデル） | FAIL（実Abliteration AI選択採用0/2） | 実ARTEX→Gateway / 5分類の選択性能 / 実Abliteration AI 14条件 |
+| **V03** | ARTEXとAIが観測事実から必要な検査を選択 | PASS | PASS（実ARTEX＋ローカル模擬モデル、実Abliteration AI 14条件選択1/1） | 限定PASS（14条件小標本の選択TP8/FP0/FN0/TN6実証・多段階は未測定） | 実ARTEX→Gateway / 5分類の選択性能 / 実Abliteration AI 14条件 |
 | **V04** | Gatewayの提案検証と隔離Workerによる実行 | PASS | PASS（Linux nftables・egress_sentinel） | PASS（安全実行基盤として完成） | ARTEXの直接通信・任意操作禁止 / 実サイトL2禁止 |
 | **V05** | CORS/Cookie/認証/アクセス制御/情報露出/TLS/CVEの証拠付き診断 | PASS | PASS（独立ラボ・HTTPS・Set-Cookie値秘匿） | BLOCKED（許可済み実サイトL1 E2Eは承認待ち） | CORS・Cookie・認証・IDOR・情報露出の独立ラボ |
 | **V06** | candidate / detected / proven / not_reproduced の厳格な区別 | PASS | PASS（バックエンド強制・UI集計分離） | PASS | candidate / detected / provenの証拠整合 |
@@ -74,12 +74,12 @@
 - **必要な権限**: 署名済み初期観測（`result_audit_hash`）、追加L1検査の明示同意（`allow_status_probe`）、Gatewayのトークン・予算枠
 - **入力・出力**: 入力：匿名化された固定enum特徴量（URL・ホスト名・生の応答本文・秘密値を含まない）→ 出力：`CATALOG` 内の計画項目（`PlanItem`）または実行不能な助言（`Advisory`）
 - **既存テスト**: `tests/test_artex_bridge.py`, `tests/test_status_exposure_lab.py`, `tests/test_access_control_lab.py`, `tests/test_five_class_holdout.py`, `tests/test_selection_model_eval.py`, Linux CI `artex-real-planner` ジョブ
-- **実証済み範囲**: 実ARTEXバイナリ＋ローカル模擬モデルでの5分類17条件（選択TP9/FP1/FN0/TN7、Precision 0.900、Recall 1.00）、Link 7条件、初回事実再利用による推論回数削減（8→5回、3→2回）。
+- **実証済み範囲**: 実ARTEXバイナリ＋ローカル模擬モデルでの5分類17条件（選択TP9/FP1/FN0/TN7、Precision 0.900、Recall 1.00）、Link 7条件、初回事実再利用による推論回数削減（8→5回、3→2回）。さらに実 `abliterated-model` に対して公式仕様の `reasoning_effort: "none"` + `response_format: {"type":"json_object"}`（SHA `7a527a487a309962867f7d02096e527259946f2b62fdbf802a450d386e3803e5`）を1回限定承認のもと実送信し、推論0・出力44トークン・`stop`終了・1.022秒でJSON採用（1/1、通算1/3）、**TP=8/FP=0/FN=0/TN=6（Precision/Recall/F1 = 1.000、不要検査率0.000、見逃し率0.000）** を実証（[ABLITERATION_SELECTION_REAL_RESULT.md](ABLITERATION_SELECTION_REAL_RESULT.md)）。
 - **未実装機能**: なし
-- **未検証機能**: 実Abliteration AI（`abliterated-model`）によるJSON選択応答の成立（過去2回の承認済み実測はすべて推論トークン消費による `length` 終了でJSON本文なし、採用0/2）
+- **未検証機能**: 14条件小標本以外の分類や多段階ARTEXツール呼び出しループでの実Abliteration AI評価
 - **合格条件**: 許可カタログ外の操作を実行できず、AI失敗時にも固定L1の証拠を保持し、実モデルまたは承認された代替モデルで選択JSONが安定採用されること。
-- **3軸評価**: 実装 `PASS` / 動作証拠 `PASS`（実ARTEX＋模擬モデル） / 実ユーザー価値 `FAIL`（実モデル採用0/2）
-- **次のアクション**: [ABLITERATION_OUTPUT_CONTRACT.md](ABLITERATION_OUTPUT_CONTRACT.md) にまとめた推論制御または別モデル候補について、新たな承認後に実モデル評価を行うか、固定L1限定βとして公開範囲を分離する（Gate C）。
+- **3軸評価**: 実装 `PASS` / 動作証拠 `PASS`（実ARTEX＋模擬モデル、および実モデル14条件選択1/1） / 実ユーザー価値 `限定PASS`（14条件小標本で選択精度100%実証・失敗時は固定L1証拠保持）
+- **次のアクション**: 他分類・多段階ARTEXループへの実モデル適用を拡張する場合は別途承認を得る（Gate C）。
 
 ### V04: Gatewayの提案検証と隔離Workerによる実行
 - **機能ID**: V04

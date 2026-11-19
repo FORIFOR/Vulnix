@@ -91,11 +91,17 @@ def score(selected: set[str], mapping: dict[str, str]) -> dict:
     actual = truth_ids(mapping)
     tp, fp, fn, tn = (len(selected & actual), len(selected - actual),
                       len(actual - selected), len(set(mapping) - selected - actual))
+    precision = tp / (tp + fp) if tp + fp else None
+    recall = tp / (tp + fn) if tp + fn else None
+    f1 = (2 * tp / (2 * tp + fp + fn)) if (2 * tp + fp + fn) else None
+    miss_rate = (fn / (tp + fn)) if (tp + fn) else None
     return {"tp": tp, "fp": fp, "fn": fn, "tn": tn,
-            "precision": tp / (tp + fp) if tp + fp else None,
-            "recall": tp / (tp + fn) if tp + fn else None,
+            "precision": precision,
+            "recall": recall,
+            "f1": f1,
             "unnecessary_check_rate": fp / (tp + fp) if tp + fp else None,
-            "unnecessary_case_rate": fp / len(mapping)}
+            "unnecessary_case_rate": fp / len(mapping),
+            "miss_rate": miss_rate}
 
 
 def truth_ids(mapping: dict[str, str]) -> set[str]:
@@ -143,21 +149,37 @@ def run_preview(*, max_output_tokens: int = 384,
 
 def run_approved(*, approval_sha256: str, api_key: str, audit: AuditLog,
                  transport=None, max_output_tokens: int = 384,
-                 structured_output: bool = False) -> dict:
+                 structured_output: bool = False,
+                 reasoning_effort: str | None = None) -> dict:
     """One explicitly approved model call; returns only aggregate quality and usage."""
+    if reasoning_effort is not None and (type(reasoning_effort) is not str
+                                         or reasoning_effort not in ("none", "low")):
+        raise ValueError("unsupported approved reasoning effort")
+    local_reasoning = {"reasoning_effort": reasoning_effort} if reasoning_effort is not None else None
     request, mapping = build_request(max_output_tokens=max_output_tokens,
-                                     structured_output=structured_output)
+                                     structured_output=structured_output,
+                                     local_reasoning=local_reasoning)
     preview = run_preview(max_output_tokens=max_output_tokens,
-                          structured_output=structured_output)["gateway"]
+                          structured_output=structured_output,
+                          local_reasoning=local_reasoning)["gateway"]
     if not hmac.compare_digest(approval_sha256, preview["first_request_sha256"]):
         raise ValueError("approval does not match the fixed preview")
     if not api_key or audit is None:
         raise ValueError("a server-side key and durable audit are required")
+    try:
+        audit_ok = bool(audit.verify())
+    except Exception as exc:
+        raise ValueError("audit chain verification failed") from exc
+    if not audit_ok:
+        raise ValueError("audit chain verification failed")
+    approval_cfg: dict = {"max_calls": 1, "first_request_sha256": approval_sha256}
+    if reasoning_effort is not None:
+        approval_cfg["reasoning_effort"] = reasoning_effort
     gateway = PlannerLLMGateway(
         mode="forward", model=MODEL, upstream_url=ENDPOINT, api_key=api_key,
         budget=Budget(max_calls=1, max_total_tokens=2000, max_cost_usd=0.01,
                       usd_per_1k_input=0.001, usd_per_1k_output=0.003),
-        approval={"max_calls": 1, "first_request_sha256": approval_sha256},
+        approval=approval_cfg,
         audit=audit, transport=transport or partial(_external_transport, timeout_s=30))
     try:
         # One owner approval must survive a process restart and a failed upstream call.
@@ -208,11 +230,12 @@ def run_approved(*, approval_sha256: str, api_key: str, audit: AuditLog,
                              "duplicate answer key": "duplicate_json_key",
                              "answer shape rejected": "invalid_shape",
                              "answer contains an invalid or repeated case": "invalid_case_id"}.get(str(exc), "invalid_answer")
-        usage = response.get("usage") if isinstance(response.get("usage"), dict) else {}
+        raw_usage = response.get("usage")
+        usage = raw_usage if type(raw_usage) is dict else {}
         details = usage.get("completion_tokens_details") or {}
-        reported_usage = {k: usage[k] for k in ("prompt_tokens", "completion_tokens")
-                          if isinstance(usage.get(k), int) and usage[k] >= 0}
-        if isinstance(details, dict) and isinstance(details.get("reasoning_tokens"), int) \
+        reported_usage = {k: usage[k] for k in ("prompt_tokens", "completion_tokens", "total_tokens")
+                          if type(usage.get(k)) is int and usage[k] >= 0}
+        if type(details) is dict and type(details.get("reasoning_tokens")) is int \
                 and details["reasoning_tokens"] >= 0:
             reported_usage["reasoning_tokens"] = details["reasoning_tokens"]
         finish_reason = response["choices"][0].get("finish_reason")
@@ -226,6 +249,9 @@ def run_approved(*, approval_sha256: str, api_key: str, audit: AuditLog,
         if accepted and gateway.failed:
             selected, accepted = set(), False
             reject_reason = "gateway_terminal_response"
+        if accepted and ("prompt_tokens" not in reported_usage or "completion_tokens" not in reported_usage):
+            selected, accepted = set(), False
+            reject_reason = "missing_usage" if not raw_usage else "incomplete_usage"
         return {"selection": score(selected, mapping) if accepted else None, "accepted": accepted,
                 "response_adoption_rate": 1.0 if accepted else 0.0, "reject_reason": reject_reason,
                 "selection_errors": selection_errors(selected, mapping) if accepted else [],

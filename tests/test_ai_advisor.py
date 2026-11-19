@@ -217,6 +217,16 @@ class TestPhaseOneIsMockOnly(unittest.TestCase):
         request = json.loads(seen[0][2])
         self.assertLessEqual(request["max_tokens"], 2048)
         self.assertEqual(request["response_format"], {"type": "json_object"})
+        self.assertEqual(request["reasoning_effort"], "none")
+        for bad_finish in ("length", "content_filter"):
+            bad_advisor = adv.ExternalAbliterationAdvisor(
+                "https://api.abliteration.ai/v1/chat/completions", api_key="test-only-key",
+                transport=lambda _u, _h, _b, fr=bad_finish: json.dumps(
+                    {"choices": [{"message": {"content": '{"advice": []}'},
+                                  "finish_reason": fr}]}).encode(),
+            )
+            with self.assertRaises(adv.AdvisorError):
+                bad_advisor.advise([_leaky_finding()])
 
     def test_external_transport_holds_send_scope_only_while_request_is_written(self):
         events = []

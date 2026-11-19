@@ -521,7 +521,10 @@ class AbliterationAdvisor:
             else:
                 raw = self._send(self.url, self._headers(), body)
             data = json.loads(raw)
-            content = data["choices"][0]["message"]["content"]
+            choice = data["choices"][0]
+            if choice.get("finish_reason") in ("length", "content_filter"):
+                raise ValueError(f"unusable finish_reason: {choice.get('finish_reason')}")
+            content = choice["message"]["content"]
         except Exception as e:  # noqa: BLE001 - any transport / format failure is one error
             raise AdvisorError(f"no usable reply: {type(e).__name__}") from None
         parsed = _extract_json_from_text(content) if isinstance(content, str) else None
@@ -583,6 +586,7 @@ def _external_transport(url: str, headers: dict, body: bytes, *, timeout_s: floa
 class ExternalAbliterationAdvisor(AbliterationAdvisor):
     """Explicit remote adapter; the default advisor remains loopback-only."""
 
+    model: str = "abliterated-model"
     api_key: str = field(default="", repr=False)
 
     def _require_endpoint(self) -> None:
@@ -605,6 +609,8 @@ class ExternalAbliterationAdvisor(AbliterationAdvisor):
         payload = json.loads(body)
         payload["max_tokens"] = 2048
         payload["response_format"] = {"type": "json_object"}
+        if self.model in ("abliterated-model", "abliterated-model-large-flash"):
+            payload["reasoning_effort"] = "none"
         return json.dumps(payload, ensure_ascii=False).encode("utf-8"), ref_map
 
     def __post_init__(self) -> None:

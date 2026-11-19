@@ -46,19 +46,32 @@
 
 [公開料金表](https://abliteration.ai/pricing/)には`abliterated-model-large-flash`も掲載され、入力US$1/100万・出力US$2/100万トークンとされる。出力形式の採用率、推論トークン消費、検査選択精度は未測定。モデル変更は評価対象と送信ハッシュを変えるため、この候補の成果として扱わず、別の承認・評価計画が必要。
 
-## 次回実モデル評価の承認申請仕様（未送信・承認待ち）
+## 次回実モデル評価の承認申請仕様と3回目（候補B）の実測結果（2026-11-19 更新）
 
-実モデルへの送信はユーザーの新たな明示承認後に限る。次回評価候補の10項目仕様を以下に整理する。
+### 1. 公式仕様の調査結果（Phase 2）と候補A〜Dのローカル比較（Phase 3）
 
-| 項目 | 仕様・制約 |
-| --- | --- |
-| **1. モデル名** | 候補A: `abliterated-model`（`response_format: {"type":"json_object"}` 指定）<br>候補B（別承認オプション）: `abliterated-model-large-flash` |
-| **2. モデル別対応パラメータ** | 外部送信で許可する構造化指定は `response_format: {"type":"json_object"}` のみ。`reasoning_effort`（`none`/`low`）および `reasoning.max_tokens`（`1〜256`）は実モデルの対応が確認されるまでローカル模擬限定とし、明示承認なしに外部送信へ付与しない（`json_schema` はモデル別プロファイル依存のため未採用）。 |
-| **3. 匿名入力の構成** | 固定14条件（`C01`〜`C14`）の匿名化された観測特徴量のみ（解説経路では `finding_to_payload_item` の固定enum項目：`ref`, `rule`, `category`, `severity`, `verdict`, `verdict_basis`, `cve`, `risk_score`, `kev` のみ）。ホスト名、URL、IPアドレス、Set-Cookie、認証トークン、応答本文、正解ラベルは一切含めない。 |
-| **4. 出力契約** | 選択評価: `{"selected": ["C01", ...]}`（既知条件IDの重複なし配列、余分なキー禁止、`finish_reason == "stop"` かつ `tool_calls` なし）。<br>日本語解説: `{"advice": [{"ref", "claim_level", "cites", "risk_explanation", "remediation": [{"fix", "detail"}], "next_checks": [{"operation", "purpose"}]}]}`（`advisor_catalog.py` の許可IDおよび `chat_guard.py` の安全検査を通過すること）。 |
-| **5. 最大入力・出力トークン** | 単回上限: 出力 `max_tokens = 960`、Gateway予約合計 `1,941` トークン（設定ハード上限 `2,000` トークン）。 |
-| **6. 最大費用** | Gateway予約費用 `US$0.005824`（1回あたり設定ハード上限 `US$0.01 = 10,000 µUSD`）。監査ログおよび `0600` 累積予約額ファイルで原子的に上限を強制する。 |
-| **7. 要求SHA-256** | 候補A（推論設定なし・`json_object`）: `ac4a5fbdb37594be88a4a1432636169105349f3fbab6be41b420f9e90b4f7b23`<br>（※ローカル検証用の `reasoning_effort: none` は `7a527a487a309962867f7d02096e527259946f2b62fdbf802a450d386e3803e5`、`reasoning.max_tokens: 128` は `bd449aa117851dae1979fbb90c61e7f3aab9b454ad3f86847177c30d704bbbf2`） |
-| **8. 想定する採用基準** | HTTP 200、`finish_reason == "stop"`、有効な単一JSONオブジェクト、未知・重複IDなし、報告 `usage` が非負整数かつ予約トークン上限以内であり、独立正解ラベルに対して選択 Precision / Recall が固定L1基準を下回らないこと。 |
-| **9. 失敗時の停止条件** | `finish_reason` が `length` / `content_filter` / 未知値、本文欠落、`tool_calls` 混在、JSON解析失敗、報告 `usage` の欠落・片側欠落・予約超過時は即座に `terminal failure` として不採用にし、単回承認マーカーを消費済みとして再送を停止する（診断本体は固定L1結果と内蔵解説へフォールバック）。 |
-| **10. 評価後の保存内容** | 監査チェーン（`audit.jsonl`）および評価結果JSONに、要求SHA-256、単回消費マーカー、終了理由、報告 `usage`（prompt / completion / reasoning tokens）、概算費用、採用可否、不採用理由または選択 TP/FP/FN/TN を保存する（APIキーや秘密値は一切保存しない）。 |
+公式ドキュメント（`https://docs.abliteration.ai/capabilities/thinking.md`、`https://docs.abliteration.ai/compatibility-matrix.md`、`https://docs.abliteration.ai/models.md`、`https://api.abliteration.ai/openapi.json`、`https://abliteration.ai/pricing/`）の精査により以下を確認した：
+- 全モデルが既定で回答前に推論（`choices[].message.reasoning_content` / `usage.completion_tokens_details.reasoning_tokens`）を実行し、推論トークンが `max_tokens` 枠を消費する（`abliterated-model` の既定は `Native depth`、`abliterated-model-large-flash` の既定は `high`）。
+- `POST /v1/chat/completions` において、`abliterated-model` および `abliterated-model-large-flash` は `reasoning_effort: "none"` に公式対応しており、**「`none` request: Turns reasoning off — the model does not reason; only the final answer is generated (fewer tokens)」** と明記されている（`abliterated-model-large-v2` のみ `none` でも `low` 推論が走る例外）。
+- `include_reasoning: false` は推論トレースを応答から隠すだけで推論トークンは消費される（"does not save reasoning tokens"）。また `reasoning.max_tokens` はOpenRouter互換エイリアス（effort段階への変換）であるのに対し、`reasoning_effort: "none"` はChat Completionsのネイティブ指定である。
+
+| 比較項目 | 候補A（`json_object` のみ） | **候補B（`json_object` + `reasoning_effort: "none"`）［採用］** | 候補C（プロンプト短縮のみ） | 候補D（`abliterated-model-large-flash` + `json_object`） |
+| --- | --- | --- | --- | --- |
+| **モデルID** | `abliterated-model` | **`abliterated-model`** | `abliterated-model` | `abliterated-model-large-flash` |
+| **要求SHA-256** | `ac4a5fbdb37594be88a4a1432636169105349f3fbab6be41b420f9e90b4f7b23` | **`7a527a487a309962867f7d02096e527259946f2b62fdbf802a450d386e3803e5`** | 入力変更に伴い別SHA | モデル変更に伴い別SHA |
+| **入力トークン推定（UTF-8 bytes）** | `981`（2,944 bytes、実測608） | **`990`（2,972 bytes、実測610）** | 約`910`（約2,730 bytes） | `985`（2,956 bytes） |
+| **最大出力トークン（`max_tokens`）** | `960` | **`960`** | `960` | `960` |
+| **推論制御** | なし（既定 `Native depth`） | **`reasoning_effort: "none"`（公式推論停止）** | なし（既定 `Native depth`） | なし（既定 `high`） |
+| **JSON出力形式** | `response_format: {"type":"json_object"}` | **`response_format: {"type":"json_object"}`** | `response_format: {"type":"json_object"}` | `response_format: {"type":"json_object"}` |
+| **事前予約トークン / 上限** | `1,941 / 2,000` | **`1,950 / 2,000`** | 約`1,870 / 2,000` | `1,945 / 2,000` |
+| **事前予約費用 / 上限** | `US$0.005824 / US$0.01` | **`US$0.005852 / US$0.01`** | 約`US$0.005610 / US$0.01` | `US$0.004876 / US$0.01` |
+| **API互換性・モデル対応根拠** | 対応（ただし推論抑制なし） | **公式 `thinking.md` & `compatibility-matrix.md` で確認済み** | 対応（推論抑制なし） | 対応（別モデルへ変更） |
+| **予想される失敗条件・リスク** | 過去2回（384/1,024トークン全量推論消費）と同様、`960` トークンを推論で使い切り `length` 終了するリスクが大 | **推論トークンを0に抑え最終JSONのみ出力。リスクは推論停止時の選択精度への影響** | 入力608トークンは元々小さく、プロンプト短縮では既定推論を止められない | 既定 `high` 推論で `length` リスクが残り、過去2回との同一モデル比較可能性も失う |
+
+### 2. 候補Bの1回限定・承認済み実送信結果（Phase 7〜8）
+
+所有者の1回限定承認のもと、21条件のローカル異常系・安全テスト（`tests/test_selection_model_eval.py`）と12項目の送信直前ゲートを通過した上で、候補B（SHA-256: `7a527a487a309962867f7d02096e527259946f2b62fdbf802a450d386e3803e5`）を `PlannerLLMGateway` から **1回だけ** 送信した（詳細は [ABLITERATION_SELECTION_REAL_RESULT.md](ABLITERATION_SELECTION_REAL_RESULT.md)）：
+- **応答・トークン**: HTTP 200、`finish_reason="stop"`、`prompt_tokens=610`、`completion_tokens=44`、**`reasoning_tokens=0`**、`total_tokens=654`、応答時間 `1.022秒`。
+- **JSON採用と選択精度**: **採用PASS（1/1、通算1/3）**。選択ID `["C01", "C03", "C04", "C05", "C06", "C07", "C08", "C13"]` は独立正解ラベルと14条件すべて一致し、**`TP=8, FP=0, FN=0, TN=6`（`Precision=1.000, Recall=1.000, F1=1.000`、不要検査率 `0.000`、見逃し率 `0.000`）**。
+- **費用**: Gateway事前予約 `US$0.005852`、精算後保守値 `US$0.003104`、公開単価×報告usage概算 **`US$0.000742`**（確定請求額は未照合 `null`）。承認消費記録を永続保存済み（再送不可）。
+- **製品への反映（Phase 10）**: 日本語解説アダプタ `ExternalAbliterationAdvisor`（`aegis/ai_advisor.py`）でも `abliterated-model` / `abliterated-model-large-flash` に対して `reasoning_effort: "none"` を付与し、`finish_reason in ("length", "content_filter")` を安全側で拒否するよう改善した（`tests/test_ai_advisor.py` で検証済み）。

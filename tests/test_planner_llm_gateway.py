@@ -150,7 +150,7 @@ class TestInspection(unittest.TestCase):
                         {"type": "text"}, "json_object", {}):
             self.refused(chat(tools=(), response_format=invalid), "response_format")
 
-    def test_reasoning_controls_are_model_bound_and_local_only(self):
+    def test_reasoning_controls_are_model_bound_and_require_explicit_approval_to_forward(self):
         body = chat(tools=(), reasoning_effort="low")
         with preview() as gw:
             self.assertEqual(gw.inspect(body)["reasoning_effort"], "low")
@@ -161,6 +161,17 @@ class TestInspection(unittest.TestCase):
         with forward(ok_transport) as gw:
             with self.assertRaises(GatewayRefused):
                 gw.inspect(body)
+        approved_gw = PlannerLLMGateway(
+            mode="forward", model="abliterated-model", upstream_url=UP, api_key=KEY,
+            allowed_hosts={"lab.test"}, transport=ok_transport, budget=Budget(**PRICED),
+            approval={"max_calls": 1, "first_request_sha256": sha_of(preview(), body),
+                      "reasoning_effort": "low"})
+        with approved_gw as gw:
+            self.assertEqual(gw.inspect(body)["reasoning_effort"], "low")
+            with self.assertRaises(GatewayRefused):
+                gw.inspect(chat(tools=(), reasoning_effort="none"))
+            with self.assertRaises(GatewayRefused):
+                gw.inspect(chat(tools=(), reasoning={"max_tokens": 128}))
 
     def test_invalid_reasoning_controls_are_refused_before_send(self):
         for extra in ({"reasoning_effort": "high"}, {"reasoning_effort": 1},

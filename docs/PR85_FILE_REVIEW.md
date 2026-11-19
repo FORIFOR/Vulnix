@@ -3,10 +3,10 @@
 基準: `origin/main` からの全変更ファイル（208ファイル）。開始時の195ファイルにレビュー・トレーサビリティ・CVE・E2E資料と今回の追加修正・テストを加えた。これは変更ファイルの分類とレビュー進捗であり、すべての差分を第三者が監査済みという意味ではない。
 
 状態は以下の段階を明確に区別する。
-- `問題を修正・再検証した`: 読み取り・監査で具体的な問題（P1/P2/P3や測定不整合）を発見し、赤テストで再現した上で修正・再検証まで完了したファイル（**36ファイル**）
+- `問題を修正・再検証した`: 読み取り・監査で具体的な問題（P1/P2/P3や測定不整合）を発見し、赤テストで再現した上で修正・再検証まで完了したファイル（**38ファイル**）
 - `コードとテストを確認した`: 対象経路のコード差分と対応する自動テストの双方を確認したファイル（**46ファイル**）
-- `対象経路を照合`: 既存の安全性・品質資料で挙げた処理経路や数値を照合したファイル（**103ファイル**、上記2段階と合わせて **185ファイル**）
-- `分類のみ`: ファイルを分類しただけで差分の精査が未完了（または進行に応じて随時更新される進行記録文書・`.env.example` など、**23ファイル**）
+- `対象経路を照合`: 既存の安全性・品質資料で挙げた処理経路や数値を照合したファイル（**122ファイル**、上記2段階と合わせて **206ファイル**）
+- `分類のみ`: 秘密情報保護規則により内容を読まない `.env.example` と画像資産 `docs/CORS_390_RESULT.png` のみ（**2ファイル**）
 - `独立レビュアーが正式確認した`: **0ファイル**（別担当の読み取りレビューは実施済みだが、GitHubの正式Approveではないため0件として厳密に区別する）
 
 `.env.example`は変更ファイル名だけを列挙した。リポジトリの秘密情報保護指示に従い、`.env*`の内容は読んでいない。
@@ -46,17 +46,17 @@
 | `docs/ABLITERATION_SELECTION_REAL_RESULT.md` | 資料・実測 | 通常 | 対象経路を照合 |
 | `docs/ACCESS_CONTROL_BLIND_LAB.md` | 資料・実測 | 通常 | 対象経路を照合 |
 | `docs/ACCESS_CONTROL_BLIND_LOCAL.json` | 資料・実測 | 通常 | 対象経路を照合 |
-| `docs/ACCESS_CONTROL_BLIND_REAL_ARTEX.json` | 資料・実測 | 通常 | 分類のみ |
+| `docs/ACCESS_CONTROL_BLIND_REAL_ARTEX.json` | 資料・実測 | 通常 | 対象経路を照合 |
 | `docs/ACCESS_CONTROL_LAB.md` | 資料・実測 | 通常 | 対象経路を照合 |
-| `docs/ACCESS_CONTROL_LAB_COMPARISON.json` | 資料・実測 | 通常 | 分類のみ |
-| `docs/ACCESS_CONTROL_REAL_ARTEX_CI.json` | 資料・実測 | 通常 | 分類のみ |
+| `docs/ACCESS_CONTROL_LAB_COMPARISON.json` | 資料・実測 | 通常 | 対象経路を照合 |
+| `docs/ACCESS_CONTROL_REAL_ARTEX_CI.json` | 資料・実測 | 通常 | 対象経路を照合 |
 | `docs/ACCESS_FRESH_HOLDOUT.md` | 資料・実測 | 通常 | 対象経路を照合 |
 | `docs/ACCESS_LINK_HOLDOUT.md` | 資料・実測 | 通常 | 対象経路を照合 |
 | `docs/ARTEX_INITIAL_PLAN_REVIEW.md` | 資料・実測 | 通常 | 対象経路を照合 |
 | `docs/ARTEX_MODEL_EVALUATION.md` | 資料・実測 | 通常 | 対象経路を照合 |
-| `docs/AUTH_RESPONSE_LAB.md` | 資料・実測 | 通常 | 分類のみ |
-| `docs/AUTONOMOUS_PROGRESS.md` | 資料・実測 | 通常 | 分類のみ |
-| `docs/BLOCKERS.md` | 資料・実測 | 通常 | 分類のみ |
+| `docs/AUTH_RESPONSE_LAB.md` | 資料・実測 | 通常 | 対象経路を照合 |
+| `docs/AUTONOMOUS_PROGRESS.md` | 資料・実測 | 通常 | 対象経路を照合 |
+| `docs/BLOCKERS.md` | 資料・実測 | 通常 | 対象経路を照合 |
 | `docs/BROWSER_IDLE_AFTER.json` | 資料・実測 | 通常 | 対象経路を照合 |
 | `docs/BROWSER_IDLE_BEFORE.json` | 資料・実測 | 通常 | 対象経路を照合 |
 | `docs/BROWSER_IDLE_BOUNDED_REFRESH.json` | 資料・実測 | 通常 | 対象経路を照合 |
@@ -68,35 +68,35 @@
 | `docs/CORS_390_BROWSER.json` | 資料・実測 | 通常 | 対象経路を照合 |
 | `docs/CORS_390_RESULT.png` | 資料・実測 | 通常 | 分類のみ |
 | `docs/CORS_POLICY_PRECISION.json` | 資料・実測 | 通常 | 対象経路を照合 |
-| `docs/CORS_POLICY_PRECISION.md` | 資料・実測 | 通常 | 分類のみ |
-| `docs/CURRENT_FLOW.md` | 資料・実測 | 通常 | 分類のみ |
+| `docs/CORS_POLICY_PRECISION.md` | 資料・実測 | 通常 | 対象経路を照合 |
+| `docs/CURRENT_FLOW.md` | 資料・実測 | 通常 | 対象経路を照合 |
 | `docs/CVE_READINESS.md` | 資料・実測 | 通常 | コードとテストを確認した |
 | `docs/DIAGNOSTIC_QUALITY_REPORT.md` | 資料・実測 | 通常 | 対象経路を照合 |
 | `docs/FIRST_PROMPT_SELECTION.md` | 資料・実測 | 通常 | 対象経路を照合 |
 | `docs/FIVE_CLASS_HOLDOUT.md` | 資料・実測 | 通常 | 対象経路を照合 |
-| `docs/GOAL_COMPLETION_MATRIX.md` | 資料・実測 | 通常 | 分類のみ |
+| `docs/GOAL_COMPLETION_MATRIX.md` | 資料・実測 | 通常 | 対象経路を照合 |
 | `docs/INITIAL_EXTRA_SELECTION.md` | 資料・実測 | 通常 | 対象経路を照合 |
-| `docs/INITIAL_MIXED_HOLDOUT.md` | 資料・実測 | 通常 | 分類のみ |
+| `docs/INITIAL_MIXED_HOLDOUT.md` | 資料・実測 | 通常 | 対象経路を照合 |
 | `docs/MULTICLASS_BLIND_LAB.md` | 資料・実測 | 通常 | 対象経路を照合 |
-| `docs/NEXT_ACTION.md` | 資料・実測 | 通常 | 分類のみ |
-| `docs/PROCESS_AUDIT.md` | 資料・実測 | 通常 | 分類のみ |
-| `docs/PROCESS_INVENTORY.json` | 資料・実測 | 通常 | 分類のみ |
+| `docs/NEXT_ACTION.md` | 資料・実測 | 通常 | 対象経路を照合 |
+| `docs/PROCESS_AUDIT.md` | 資料・実測 | 通常 | 対象経路を照合 |
+| `docs/PROCESS_INVENTORY.json` | 資料・実測 | 通常 | 対象経路を照合 |
 | `docs/PRODUCT_VISION_TRACEABILITY.md` | 資料・実測 | 通常 | コードとテストを確認した |
 | `docs/PR85_API_REACHABILITY.md` | 資料・実測 | 通常 | 対象経路を照合 |
-| `docs/PR85_FILE_REVIEW.md` | 資料・実測 | 通常 | 分類のみ |
+| `docs/PR85_FILE_REVIEW.md` | 資料・実測 | 通常 | 対象経路を照合 |
 | `docs/PR85_REVOKE_BROWSER_QA.md` | 資料・実測 | 通常 | 対象経路を照合 |
-| `docs/PR_INTEGRATION_PLAN.md` | 資料・実測 | 通常 | 分類のみ |
+| `docs/PR_INTEGRATION_PLAN.md` | 資料・実測 | 通常 | 対象経路を照合 |
 | `docs/PUBLIC_BETA.md` | 資料・実測 | 通常 | 対象経路を照合 |
 | `docs/QA_BROWSER_INTEGRATION.md` | 資料・実測 | 通常 | 対象経路を照合 |
 | `docs/REAL_SITE_AI_PLAN_DECISION.md` | 資料・実測 | 通常 | 対象経路を照合 |
-| `docs/RELEASE_READINESS.md` | 資料・実測 | 通常 | 分類のみ |
-| `docs/REQUEST_FLOW.md` | 資料・実測 | 通常 | 分類のみ |
-| `docs/SECURITY_REVIEW.md` | 資料・実測 | 通常 | 分類のみ |
+| `docs/RELEASE_READINESS.md` | 資料・実測 | 通常 | 対象経路を照合 |
+| `docs/REQUEST_FLOW.md` | 資料・実測 | 通常 | 対象経路を照合 |
+| `docs/SECURITY_REVIEW.md` | 資料・実測 | 通常 | 対象経路を照合 |
 | `docs/STATUS_EXPOSURE_COMPARISON_REAL_ARTEX.json` | 資料・実測 | 通常 | 対象経路を照合 |
 | `docs/STATUS_EXPOSURE_COMPARISON_STANDIN.json` | 資料・実測 | 通常 | 対象経路を照合 |
 | `docs/STATUS_EXPOSURE_INTEGRATION.md` | 資料・実測 | 通常 | 対象経路を照合 |
-| `docs/STATUS_FIRST_PROMPT.md` | 資料・実測 | 通常 | 分類のみ |
-| `docs/STATUS_SELECTION_HOLDOUT.md` | 資料・実測 | 通常 | 分類のみ |
+| `docs/STATUS_FIRST_PROMPT.md` | 資料・実測 | 通常 | 対象経路を照合 |
+| `docs/STATUS_SELECTION_HOLDOUT.md` | 資料・実測 | 通常 | 対象経路を照合 |
 | `docs/USER_JOURNEY_E2E.md` | 資料・実測 | 通常 | コードとテストを確認した |
 | `integrations/artex/overlay/agent/vulnix_bridge.go` | ARTEX overlay | 高 | 対象経路を照合 |
 | `integrations/artex/overlay/agent/vulnix_bridge_test.go` | ARTEX overlay | 通常 | 対象経路を照合 |
@@ -104,7 +104,7 @@
 | `scripts/bench_access_fresh_holdout.py` | 測定・検証スクリプト | 通常 | 対象経路を照合 |
 | `scripts/bench_access_holdout.py` | 測定・検証スクリプト | 通常 | 対象経路を照合 |
 | `scripts/bench_access_link_holdout.py` | 測定・検証スクリプト | 通常 | 対象経路を照合 |
-| `scripts/bench_advisor_prompt_bytes.py` | 測定・検証スクリプト | 通常 | 分類のみ |
+| `scripts/bench_advisor_prompt_bytes.py` | 測定・検証スクリプト | 通常 | コードとテストを確認した |
 | `scripts/bench_audit_logs.py` | 測定・検証スクリプト | 通常 | 対象経路を照合 |
 | `scripts/bench_browser_lab_recheck.py` | 測定・検証スクリプト | 通常 | 対象経路を照合 |
 | `scripts/bench_browser_owned_flow.py` | 測定・検証スクリプト | 通常 | 対象経路を照合 |
@@ -123,7 +123,7 @@
 | `scripts/bench_status_selection_holdout.py` | 測定・検証スクリプト | 通常 | 対象経路を照合 |
 | `scripts/check_cookie_https.py` | 測定・検証スクリプト | 通常 | 対象経路を照合 |
 | `scripts/check_cookie_ui_390.py` | 測定・検証スクリプト | 通常 | 対象経路を照合 |
-| `scripts/eval_selection_model.py` | 模擬・有料評価スクリプト | 高 | 対象経路を照合 |
+| `scripts/eval_selection_model.py` | 模擬・有料評価スクリプト | 高 | 問題を修正・再検証した |
 | `scripts/flow_inventory.py` | 測定・検証スクリプト | 通常 | 対象経路を照合 |
 | `tests/artex_mock_llm.py` | バックエンドテスト | 通常 | 対象経路を照合 |
 | `tests/fake_artex_planner.py` | バックエンドテスト | 通常 | 対象経路を照合 |
@@ -178,7 +178,7 @@
 | `tests/test_real_service.py` | バックエンドテスト | 通常 | コードとテストを確認した |
 | `tests/test_release_safety.py` | バックエンドテスト | 通常 | コードとテストを確認した |
 | `tests/test_router.py` | バックエンドテスト | 通常 | コードとテストを確認した |
-| `tests/test_selection_model_eval.py` | バックエンドテスト | 通常 | コードとテストを確認した |
+| `tests/test_selection_model_eval.py` | バックエンドテスト | 高 | 問題を修正・再検証した |
 | `tests/test_server.py` | バックエンドテスト | 通常 | 問題を修正・再検証した |
 | `tests/test_status_exposure_lab.py` | バックエンドテスト | 通常 | 対象経路を照合 |
 | `tests/test_status_marker_report.py` | バックエンドテスト | 通常 | 対象経路を照合 |

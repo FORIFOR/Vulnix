@@ -83,7 +83,8 @@ class TestSelectionModelEval(unittest.TestCase):
             sent.append(args)
             return json.dumps({"choices": [{"message": {"role": "assistant",
                                                        "content": '{"selected":[]}'},
-                                            "finish_reason": "stop"}]}).encode()
+                                            "finish_reason": "stop"}],
+                               "usage": {"prompt_tokens": 608, "completion_tokens": 16}}).encode()
 
         with tempfile.TemporaryDirectory() as tmp, patch.object(evaluation, "APPROVAL_DIR", Path(tmp) / "approvals"):
             audit = AuditLog(Path(tmp) / "audit.jsonl")
@@ -109,7 +110,7 @@ class TestSelectionModelEval(unittest.TestCase):
         self.assertLessEqual(structured["gateway"]["est_tokens"], 2000)
         self.assertLessEqual(structured["gateway"]["est_cost_usd"], 0.01)
 
-    def test_reasoning_candidates_change_hash_but_never_enter_approved_request(self):
+    def test_reasoning_candidates_change_hash_and_require_matching_approved_effort(self):
         base = evaluation.run_preview(max_output_tokens=960, structured_output=True)
         for setting in ({"reasoning_effort": "none"}, {"reasoning": {"max_tokens": 128}}):
             candidate = evaluation.run_preview(max_output_tokens=960, structured_output=True,
@@ -123,9 +124,19 @@ class TestSelectionModelEval(unittest.TestCase):
             evaluation.run_preview(local_reasoning={"reasoning": {"max_tokens": 257}})
         with self.assertRaises(ValueError):
             evaluation.build_request(local_reasoning={"reasoning_effort": "low", "unexpected": True})
+        with self.assertRaises(ValueError):
+            evaluation.run_approved(approval_sha256="0" * 64, api_key="test-only-key",
+                                    audit=None, reasoning_effort="high")
         approved, _ = evaluation.build_request(max_output_tokens=960, structured_output=True)
         self.assertNotIn("reasoning", approved)
         self.assertNotIn("reasoning_effort", approved)
+        approved_none, _ = evaluation.build_request(max_output_tokens=960, structured_output=True,
+                                                    local_reasoning={"reasoning_effort": "none"})
+        self.assertEqual(approved_none["reasoning_effort"], "none")
+        preview_none = evaluation.run_preview(max_output_tokens=960, structured_output=True,
+                                              local_reasoning={"reasoning_effort": "none"})
+        self.assertEqual(preview_none["gateway"]["first_request_sha256"],
+                         "7a527a487a309962867f7d02096e527259946f2b62fdbf802a450d386e3803e5")
 
     def test_length_finish_rejects_even_syntactically_valid_json(self):
         expected = evaluation.run_preview()["gateway"]["first_request_sha256"]
@@ -165,7 +176,8 @@ class TestSelectionModelEval(unittest.TestCase):
                     if content is not None:
                         message["content"] = content
                     return json.dumps({"choices": [{"message": message,
-                                                    "finish_reason": finish}]}).encode()
+                                                    "finish_reason": finish}],
+                                       "usage": {"prompt_tokens": 608, "completion_tokens": 16}}).encode()
 
                 with tempfile.TemporaryDirectory() as tmp, patch.object(evaluation, "APPROVAL_DIR", Path(tmp) / "approvals"):
                     audit = AuditLog(Path(tmp) / "audit.jsonl")
@@ -299,6 +311,178 @@ class TestSelectionModelEval(unittest.TestCase):
                 self.assertEqual(result["reject_reason"],
                                  "usage_exceeded_budget" if reason == "UsageExceededBudget" else "invalid_usage")
                 self.assertEqual(result["gateway"]["failed_upstream"]["error_type"], reason)
+        for usage, expected_reject in ((None, "missing_usage"),
+                                       ({}, "missing_usage"),
+                                       ({"prompt_tokens": 608}, "incomplete_usage"),
+                                       ({"completion_tokens": 16}, "incomplete_usage")):
+            with self.subTest(usage=usage, expected_reject=expected_reject), \
+                    tempfile.TemporaryDirectory() as tmp, \
+                    patch.object(evaluation, "APPROVAL_DIR", Path(tmp) / "approvals"):
+                def partial_resp(*_args):
+                    payload = {"choices": [{"message": {"role": "assistant",
+                                                        "content": '{"selected":[]}'},
+                                            "finish_reason": "stop"}]}
+                    if usage is not None:
+                        payload["usage"] = usage
+                    return json.dumps(payload).encode()
+                result = evaluation.run_approved(approval_sha256=expected, api_key="test-only-key",
+                                                 audit=AuditLog(Path(tmp) / "audit.jsonl"),
+                                                 transport=partial_resp)
+                self.assertFalse(result["accepted"])
+                self.assertIsNone(result["selection"])
+                self.assertEqual(result["reject_reason"], expected_reject)
+
+    def test_candidate_b_all_twenty_one_safety_and_failure_conditions(self):
+        expected = "7a527a487a309962867f7d02096e527259946f2b62fdbf802a450d386e3803e5"
+        _, mapping = evaluation.build_request(max_output_tokens=960, structured_output=True,
+                                              local_reasoning={"reasoning_effort": "none"})
+        truth = sorted(evaluation.truth_ids(mapping))
+        # 1-14: Response content, finish_reason, and usage shapes
+        response_cases = (
+            ("valid_json", json.dumps({"selected": truth}), "stop",
+             {"prompt_tokens": 608, "completion_tokens": 42, "total_tokens": 650,
+              "completion_tokens_details": {"reasoning_tokens": 0}}, True, None),
+            ("missing_content", None, "stop",
+             {"prompt_tokens": 608, "completion_tokens": 0}, False, "missing_content"),
+            ("finish_length", json.dumps({"selected": truth}), "length",
+             {"prompt_tokens": 608, "completion_tokens": 960}, False, "truncated"),
+            ("finish_content_filter", json.dumps({"selected": truth}), "content_filter",
+             {"prompt_tokens": 608, "completion_tokens": 10}, False, "filtered"),
+            ("unknown_finish_reason", json.dumps({"selected": truth}), "mystery_reason",
+             {"prompt_tokens": 608, "completion_tokens": 10}, False, "unknown_finish_reason"),
+            ("invalid_json", "{not_json", "stop",
+             {"prompt_tokens": 608, "completion_tokens": 10}, False, "invalid_json"),
+            ("duplicate_json_key", '{"selected":["C01"],"selected":["C02"]}', "stop",
+             {"prompt_tokens": 608, "completion_tokens": 10}, False, "duplicate_json_key"),
+            ("unknown_case_id", '{"selected":["C99"]}', "stop",
+             {"prompt_tokens": 608, "completion_tokens": 10}, False, "invalid_case_id"),
+            ("duplicate_case_id", '{"selected":["C01","C01"]}', "stop",
+             {"prompt_tokens": 608, "completion_tokens": 10}, False, "invalid_case_id"),
+            ("extra_json_key", '{"selected":["C01"],"extra":1}', "stop",
+             {"prompt_tokens": 608, "completion_tokens": 10}, False, "invalid_shape"),
+            ("missing_usage", json.dumps({"selected": truth}), "stop",
+             None, False, "missing_usage"),
+            ("partial_usage", json.dumps({"selected": truth}), "stop",
+             {"prompt_tokens": 608}, False, "incomplete_usage"),
+            ("invalid_usage_type", json.dumps({"selected": truth}), "stop",
+             {"prompt_tokens": 608, "completion_tokens": "42"}, False, "invalid_usage"),
+            ("usage_exceeded_budget", json.dumps({"selected": truth}), "stop",
+             {"prompt_tokens": 608, "completion_tokens": 1500}, False, "usage_exceeded_budget"),
+        )
+        for label, content, finish, usage, ok, reason in response_cases:
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as tmp, \
+                    patch.object(evaluation, "APPROVAL_DIR", Path(tmp) / "approvals"):
+                sent = []
+                def transport(_url, _headers, body):
+                    sent.append(json.loads(body))
+                    msg = {"role": "assistant"}
+                    if content is not None:
+                        msg["content"] = content
+                    payload = {"choices": [{"message": msg, "finish_reason": finish}]}
+                    if usage is not None:
+                        payload["usage"] = usage
+                    return json.dumps(payload).encode()
+                audit = AuditLog(Path(tmp) / "audit.jsonl")
+                res = evaluation.run_approved(
+                    approval_sha256=expected, api_key="test-only-key", audit=audit,
+                    transport=transport, max_output_tokens=960, structured_output=True,
+                    reasoning_effort="none")
+                self.assertEqual(len(sent), 1)
+                self.assertEqual(sent[0]["reasoning_effort"], "none")
+                self.assertEqual(sent[0]["response_format"], {"type": "json_object"})
+                self.assertEqual(res["accepted"], ok)
+                self.assertEqual(res["reject_reason"], reason)
+                if ok:
+                    self.assertEqual(res["selection"]["tp"], 8)
+                    self.assertEqual(res["selection"]["fp"], 0)
+                    self.assertEqual(res["selection"]["fn"], 0)
+                    self.assertEqual(res["selection"]["tn"], 6)
+                    self.assertEqual(res["selection"]["f1"], 1.0)
+                    self.assertEqual(res["selection"]["miss_rate"], 0.0)
+                else:
+                    self.assertIsNone(res["selection"])
+                    self.assertEqual(res["selected_case_ids"], [])
+                self.assertTrue(audit.verify())
+
+        # 15-18: HTTP 429, HTTP 500, Timeout, Connection disconnect
+        import urllib.error
+        import io
+        error_cases = (
+            ("http_429", urllib.error.HTTPError(
+                evaluation.ENDPOINT, 429, "Too Many Requests", {}, io.BytesIO(b'{"error":{"message":"rate limit"}}'))),
+            ("http_500", urllib.error.HTTPError(
+                evaluation.ENDPOINT, 500, "Internal Server Error", {}, io.BytesIO(b'{"error":{"message":"server error"}}'))),
+            ("timeout", TimeoutError("upstream timed out")),
+            ("disconnect", ConnectionResetError("connection reset by peer")),
+        )
+        for label, exc in error_cases:
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as tmp, \
+                    patch.object(evaluation, "APPROVAL_DIR", Path(tmp) / "approvals"):
+                calls = []
+                def failing_transport(*_args):
+                    calls.append(1)
+                    raise exc
+                audit = AuditLog(Path(tmp) / "audit.jsonl")
+                res = evaluation.run_approved(
+                    approval_sha256=expected, api_key="test-only-key", audit=audit,
+                    transport=failing_transport, max_output_tokens=960, structured_output=True,
+                    reasoning_effort="none")
+                self.assertEqual(len(calls), 1)
+                self.assertFalse(res["accepted"])
+                self.assertIsNone(res["selection"])
+                self.assertEqual(res["reject_reason"], "upstream_exchange_failed")
+                self.assertEqual(res["gateway"]["failed"], 1)
+                self.assertTrue(audit.verify())
+                # 21: Approval remains consumed after upstream error; retry is refused
+                with self.assertRaisesRegex(ValueError, "already consumed"):
+                    evaluation.run_approved(
+                        approval_sha256=expected, api_key="test-only-key", audit=audit,
+                        transport=failing_transport, max_output_tokens=960, structured_output=True,
+                        reasoning_effort="none")
+                self.assertEqual(len(calls), 1)
+
+        # 19: Audit write failure / corrupted audit chain prevents any upstream send
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(evaluation, "APPROVAL_DIR", Path(tmp) / "approvals"):
+            sent = []
+            def never_called(*_args):
+                sent.append(1)
+                return b"{}"
+            audit_path = Path(tmp) / "audit.jsonl"
+            audit = AuditLog(audit_path)
+            audit.record("init.ok")
+            audit_path.write_text('{"corrupted": true}\n', encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "audit chain"):
+                evaluation.run_approved(
+                    approval_sha256=expected, api_key="test-only-key", audit=audit,
+                    transport=never_called, max_output_tokens=960, structured_output=True,
+                    reasoning_effort="none")
+            self.assertEqual(sent, [])
+            # Also verify an I/O failure during forwarding audit blocks upstream send
+            audit_io = AuditLog(Path(tmp) / "audit_io.jsonl")
+            with patch.object(audit_io, "record", side_effect=[None, OSError("disk full"), None]):
+                res_io = evaluation.run_approved(
+                    approval_sha256=expected, api_key="test-only-key", audit=audit_io,
+                    transport=never_called, max_output_tokens=960, structured_output=True,
+                    reasoning_effort="none")
+            self.assertEqual(sent, [])
+            self.assertFalse(res_io["accepted"])
+            self.assertEqual(res_io["reject_reason"], "gateway_refused")
+
+        # 20: Approval SHA mismatch prevents any upstream send
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(evaluation, "APPROVAL_DIR", Path(tmp) / "approvals"):
+            sent = []
+            def never_called(*_args):
+                sent.append(1)
+                return b"{}"
+            audit = AuditLog(Path(tmp) / "audit.jsonl")
+            with self.assertRaisesRegex(ValueError, "does not match"):
+                evaluation.run_approved(
+                    approval_sha256="ac4a5fbdb37594be88a4a1432636169105349f3fbab6be41b420f9e90b4f7b23",
+                    api_key="test-only-key", audit=audit, transport=never_called,
+                    max_output_tokens=960, structured_output=True, reasoning_effort="none")
+            self.assertEqual(sent, [])
 
     def test_gateway_terminal_response_cannot_be_adopted_as_selection(self):
         expected = evaluation.run_preview()["gateway"]["first_request_sha256"]
@@ -343,7 +527,8 @@ class TestSelectionModelEval(unittest.TestCase):
             sent.append(args)
             return json.dumps({"choices": [{"message": {"role": "assistant",
                                                        "content": '{"selected":[]}'},
-                                            "finish_reason": "stop"}]}).encode()
+                                            "finish_reason": "stop"}],
+                               "usage": {"prompt_tokens": 608, "completion_tokens": 16}}).encode()
 
         with tempfile.TemporaryDirectory() as tmp, patch.object(evaluation, "APPROVAL_DIR", Path(tmp) / "approvals"):
             audit = AuditLog(Path(tmp) / "audit.jsonl")
