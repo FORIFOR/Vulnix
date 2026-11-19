@@ -214,3 +214,202 @@ class TestCookiePurposeLab(unittest.TestCase):
                     lab.shutdown()
                     lab.server_close()
                     thread.join(timeout=2)
+
+    def test_newly_issued_set_cookie_secret_is_never_persisted_in_evidence_audit_or_exports(self):
+        import http.server
+        import ssl
+        import subprocess
+
+        canary = "CANARY_SECRET_VALUE_9f8e7d6c5b4a"
+        quoted_canary = 'CANARY_QUOTED_"SECRET;Secure"_VALUE'
+        host = "owned-cookie-canary.example.test"
+
+        class _CanaryHandler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *_args):
+                pass
+
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.send_header(
+                    "Set-Cookie",
+                    f"session={canary}; Expires=Wed, 21 Oct 2026 07:28:00 GMT; HttpOnly; Secure; SameSite=Lax",
+                )
+                self.send_header(
+                    "Set-Cookie",
+                    f'auth="{quoted_canary}"; Path=/; Secure; SameSite=Lax',
+                )
+                self.send_header("Content-Length", "2")
+                self.end_headers()
+                self.wfile.write(b"OK")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            cert = tmp_path / "cert.pem"
+            key = tmp_path / "key.pem"
+            subprocess.run(
+                [
+                    "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+                    "-keyout", str(key), "-out", str(cert),
+                    "-subj", f"/CN={host}",
+                    "-addext", f"subjectAltName=DNS:{host},IP:127.0.0.1",
+                    "-days", "1",
+                ],
+                check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            ctx.load_cert_chain(str(cert), str(key))
+            srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _CanaryHandler)
+            srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+            thread = threading.Thread(target=srv.serve_forever, daemon=True)
+            thread.start()
+            try:
+                with patch.dict("os.environ", {"VULNIX_TEST_CA_FILE": str(cert)}):
+                    svc = AssessmentService(tmp_path / "data", 18081, l2_confinement=TEST_CONFINEMENT,
+                                            real_site_read_only=False)
+                    svc._custom_resolver = lambda name: ["127.0.0.1"] if name == host else []
+                    url = f"https://{host}:{srv.server_port}/"
+                    try:
+                        challenge = svc.issue_ownership_challenge(url=url)["challenge"]
+                        svc.verify_asset_ownership(
+                            url_or_host=url, method="dns_txt",
+                            dns_lookup=lambda name: [f'{name} text = "{challenge["dns_txt_value"]}"'],
+                        )
+                        svc.confirm_asset_scope(url_or_host=url, confirmed_prohibited=True,
+                                                activate_workspace=True, allow_loopback_test=True)
+                        profile = validate_profile({
+                            **json.loads((FIXTURES / "l2_profiles/example.json").read_text()),
+                            "cookie_policy": OWNER["session_no_httponly"],
+                        })
+                        profile["checks"] = []
+                        with patch.object(svc, "_l2_profile", return_value=profile):
+                            svc.start()
+                            deadline = time.monotonic() + 20
+                            while time.monotonic() < deadline:
+                                snap = svc.snapshot()
+                                if snap["state"] in ("completed", "failed"):
+                                    break
+                                time.sleep(0.02)
+                            self.assertEqual(snap["state"], "completed", snap.get("failure"))
+
+                        snap_json = json.dumps(snap, ensure_ascii=False)
+                        report_md = svc.report_markdown()
+                        audit_json = json.dumps(svc.logs(), ensure_ascii=False)
+                        remotion_anon = json.dumps(svc.remotion_export(anonymize=True), ensure_ascii=False)
+                        remotion_full = json.dumps(svc.remotion_export(anonymize=False), ensure_ascii=False)
+                        state_disk = (tmp_path / "data" / "state.json").read_text(encoding="utf-8")
+                        audit_disk = (tmp_path / "data" / "audit.jsonl").read_text(encoding="utf-8")
+
+                        for secret in (canary, quoted_canary):
+                            self.assertNotIn(secret, snap_json)
+                            self.assertNotIn(secret, report_md)
+                            self.assertNotIn(secret, audit_json)
+                            self.assertNotIn(secret, remotion_anon)
+                            self.assertNotIn(secret, remotion_full)
+                            self.assertNotIn(secret, state_disk)
+                            self.assertNotIn(secret, audit_disk)
+
+                        cookie_finding = next(f for f in snap["findings"] if f["id"] == "f_l1_cookies")
+                        self.assertEqual(cookie_finding["verdict"], "detected")
+                        checks_by_name = {c["name"]: c for c in cookie_finding["cookie_checks"]}
+                        self.assertEqual(checks_by_name["session"], {
+                            "name": "session", "purpose": "unknown", "verdict": "none", "gaps": [],
+                        })
+                        self.assertEqual(checks_by_name["auth"], {
+                            "name": "auth", "purpose": "session", "verdict": "detected", "gaps": ["HttpOnly"],
+                        })
+                    finally:
+                        svc.close()
+            finally:
+                srv.shutdown()
+                srv.server_close()
+                thread.join(timeout=2)
+
+    def test_set_cookie_edge_cases_and_boundary_defenses(self):
+        from aegis.evidence import enforce_verdict
+        from aegis.service_diag import sanitize_http_probe_payload
+        from aegis.workers.http_probe import sanitize_set_cookie_header
+        from aegis.runtime import WorkerResult
+
+        # 1. Quoted semicolons, Expires commas, case insensitivity, empty value, malformed attributes
+        raw_1 = 'auth="VAL_1;HttpOnly;Secure"; Expires=Wed, 21 Oct 2026 07:28:00 GMT; sEcUrE; SameSite=lAx; Domain=secret.internal.example; Path=/admin/secret'
+        s_1 = sanitize_set_cookie_header(raw_1)
+        self.assertNotIn("VAL_1", s_1)
+        self.assertNotIn("secret.internal.example", s_1)
+        self.assertNotIn("/admin/secret", s_1)
+        self.assertIn("auth=[REDACTED]", s_1)
+        self.assertIn("Secure", s_1)
+        self.assertIn("SameSite=lAx", s_1)
+
+        # Empty value and missing '='
+        self.assertEqual(sanitize_set_cookie_header("empty_val=; HttpOnly; Secure; SameSite=Strict"),
+                         "empty_val=[REDACTED]; HttpOnly; Secure; SameSite=Strict")
+        self.assertEqual(sanitize_set_cookie_header("bare_token_without_equals; Secure"),
+                         "cookie=[REDACTED]; Secure")
+
+        # Huge header and oversized cookie name
+        huge_secret = "SECRET_HUGE_" + ("X" * 20000)
+        huge_name = "N" * 200
+        s_huge = sanitize_set_cookie_header(f"{huge_name}={huge_secret}; Secure; HttpOnly; SameSite=Lax")
+        self.assertNotIn("SECRET_HUGE_", s_huge)
+        self.assertTrue(s_huge.startswith(("N" * 64) + "=[REDACTED]"))
+
+        # Duplicate Set-Cookie headers & conflicting duplicate attributes in a single header
+        observed = sanitize_http_probe_payload({
+            "status": 200,
+            "headers": {"Set-Cookie": "auth=LEAK_HEADER_VAL; Secure"},
+            "set_cookies": [
+                'auth="VAL_1;HttpOnly"; Secure; SameSite=Lax',
+                "auth=VAL_2; Secure; HttpOnly; SameSite=Lax; SameSite=None",
+                "other=VAL_3; sEcUrE; hTtPoNlY; sAmEsItE=sTrIcT",
+            ],
+        })
+        self.assertNotIn("Set-Cookie", observed["headers"])
+        self.assertEqual(len(observed["set_cookies"]), 3)
+        for leaked in ("LEAK_HEADER_VAL", "VAL_1", "VAL_2", "VAL_3"):
+            self.assertNotIn(leaked, json.dumps(observed))
+
+        findings = analyze_l1_service_response(
+            observed, {"audit_hash": "edge-proof", "saved_at": 1},
+            "https://owned-cookie.example.test/", cookie_policy=OWNER["session_no_httponly"])
+        cookie_f = next(f for f in findings if f["id"] == "f_l1_cookies")
+        self.assertEqual(cookie_f["verdict"], "detected")
+        self.assertEqual(cookie_f["cookie_checks"], [
+            {"name": "auth", "purpose": "session", "verdict": "detected", "gaps": ["HttpOnly"]},
+            {"name": "auth", "purpose": "session", "verdict": "candidate", "gaps": ["SameSite=Lax", "属性の重複・不一致"]},
+            {"name": "other", "purpose": "unknown", "verdict": "none", "gaps": []},
+        ])
+
+        # Legacy persisted evidence is scrubbed when loaded via enforce_verdict
+        legacy_finding = {
+            "id": "f_headers",
+            "verdict": "detected",
+            "evidence": [{
+                "evidence_id": "ev_legacy",
+                "tool": "http_probe",
+                "audit_hash": "h",
+                "saved_at": 1.0,
+                "content": json.dumps({
+                    "status": 200,
+                    "headers": {"Set-Cookie": "sid=LEGACY_RAW_COOKIE_SECRET; Path=/"},
+                    "set_cookies": ["sid=LEGACY_RAW_COOKIE_SECRET; Path=/"],
+                }),
+            }],
+        }
+        cleaned_finding = enforce_verdict(legacy_finding)
+        self.assertNotIn("LEGACY_RAW_COOKIE_SECRET", json.dumps(cleaned_finding))
+
+        # Fail-closed when secret redaction fails in Gateway or AssessmentService
+        with tempfile.TemporaryDirectory() as tmp:
+            svc = AssessmentService(Path(tmp), 18081, l2_confinement=TEST_CONFINEMENT)
+            try:
+                with patch.object(svc.workers, "run", return_value=WorkerResult(
+                    0, json.dumps({"status": 200, "headers": {}, "set_cookies": []}), "", False, 0.01
+                )):
+                    with patch.object(svc.gateway, "secret_redactor", side_effect=RuntimeError("boom")):
+                        res, ev = svc._exec("http_probe", "read_only_probe", {"url": "http://lab.test:18081/"})
+                        self.assertIsNone(res)
+                        self.assertIsNone(ev)
+                        self.assertEqual(svc.a.state, "failed")
+            finally:
+                svc.close()

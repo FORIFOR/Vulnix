@@ -56,7 +56,8 @@ from .runtime import WorkerPool
 from .secrets_store import EncryptedSecretStore
 from .l2_rules import BUILTIN_PROFILE_DIR, L2RuleSet, site_profile_dirs
 from .service_diag import (analyze_l1_service_response, analyze_status_marker_report,
-                           build_l2_candidates, clean_target_text, compute_finding_risk_score)
+                           build_l2_candidates, clean_target_text, compute_finding_risk_score,
+                           sanitize_http_probe_payload)
 from .google_ownership import METHOD as GOOGLE_METHOD, covering_property
 
 SEVERITY_WEIGHT = {"critical": 40, "high": 25, "medium": 10, "low": 3, "info": 0}
@@ -4753,7 +4754,19 @@ class AssessmentService:
             self._fail(self._worker_failure_text(tool, d.result))
             return None, None
         entry = next(e for e in reversed(self.audit.entries()) if e["event"] == "result")
-        clean_stdout = self.secrets.redact(d.result.stdout.strip())
+        try:
+            clean_stdout = self.secrets.redact(d.result.stdout.strip())
+            if not isinstance(clean_stdout, str):
+                raise ValueError("secret redactor returned non-string")
+            parsed_out = json.loads(clean_stdout)
+            if tool == "http_probe":
+                parsed_out = sanitize_http_probe_payload(parsed_out)
+                clean_stdout = self.secrets.redact(json.dumps(parsed_out, ensure_ascii=False))
+                if not isinstance(clean_stdout, str):
+                    raise ValueError("secret redactor returned non-string")
+        except Exception:
+            self._fail("Worker 出力の秘密値マスキングに失敗したため、結果を記録しません")
+            return None, None
         evidence = {
             "evidence_id": "ev_" + entry["hash"][:12],
             "kind": f"{tool} 出力",
@@ -4766,7 +4779,7 @@ class AssessmentService:
             "audit_hash": entry["hash"],
             "content": clean_stdout,
         }
-        return json.loads(clean_stdout), evidence
+        return parsed_out, evidence
 
     def _analyze(self, res: dict, ev: dict) -> str:
         if self._stale_runner():

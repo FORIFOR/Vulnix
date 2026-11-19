@@ -374,9 +374,23 @@ class Gateway:
                 except (TypeError, ValueError):
                     raise PolicyError("status marker report is not JSON") from None
                 _validate_status_marker_report(report, result.returncode)
+            elif tool.name == "http_probe" and not result.timed_out and (result.stdout or "").strip():
+                from .service_diag import sanitize_http_probe_payload
+                try:
+                    probe_report = json.loads(result.stdout or "", object_pairs_hook=_unique_json_object)
+                    clean_probe = sanitize_http_probe_payload(probe_report)
+                    result = replace(result, stdout=json.dumps(clean_probe, ensure_ascii=False))
+                except (TypeError, ValueError):
+                    raise PolicyError("http_probe report could not be sanitized") from None
             if self.secret_redactor:
-                result = replace(result, stdout=self.secret_redactor(result.stdout or ""),
-                                 stderr=self.secret_redactor(result.stderr or ""))
+                try:
+                    redacted_out = self.secret_redactor(result.stdout or "")
+                    redacted_err = self.secret_redactor(result.stderr or "")
+                except Exception:
+                    raise PolicyError("secret redaction failed") from None
+                if not isinstance(redacted_out, str) or not isinstance(redacted_err, str):
+                    raise PolicyError("secret redaction returned invalid output")
+                result = replace(result, stdout=redacted_out, stderr=redacted_err)
             self.audit.record("result", jti=claims["jti"], tool=tool.name, rc=result.returncode,
                               killed=result.killed, elapsed=result.elapsed_s, timed_out=result.timed_out,
                               stdout_preview=result.stdout.strip()[:280])

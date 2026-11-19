@@ -17,6 +17,30 @@ from typing import Optional
 import urllib.parse
 
 from . import cve
+from .workers.http_probe import _split_cookie_parts, sanitize_set_cookie_header
+
+
+def sanitize_http_probe_payload(payload: object) -> dict:
+    """Scrub raw Set-Cookie values from an http_probe response dict."""
+    if not isinstance(payload, dict):
+        raise ValueError("http_probe payload is not an object")
+    out = dict(payload)
+    raw_cookies: list[str] = []
+    if isinstance(out.get("set_cookies"), list):
+        raw_cookies.extend(str(c) for c in out["set_cookies"][:50])
+    if isinstance(out.get("headers"), dict):
+        clean_headers = {}
+        for k, v in out["headers"].items():
+            if str(k).lower() in ("set-cookie", "set-cookie2"):
+                if not raw_cookies and isinstance(v, str):
+                    raw_cookies.append(v)
+            else:
+                clean_headers[k] = v
+        out["headers"] = clean_headers
+    if "set_cookies" in out or raw_cookies:
+        out["set_cookies"] = [sanitize_set_cookie_header(c) for c in raw_cookies[:50]]
+    return out
+
 
 
 EXECUTOR_DEFAULT = {
@@ -372,7 +396,9 @@ def analyze_l1_service_response(
     policy_confirmed = bool(cookie_policy and cookie_policy.get("status") == "confirmed"
                             and cookie_policy.get("evidence"))
     for raw_cookie in set_cookies:
-        cookie_name = raw_cookie.split("=", 1)[0].strip()[:64] or "cookie"
+        parts = _split_cookie_parts(raw_cookie)
+        first = parts[0].strip() if parts else ""
+        cookie_name = (first.split("=", 1)[0].strip()[:64] if "=" in first else "") or "cookie"
         if policy_confirmed and cookie_name in cookie_policy["non_session"]:
             cookie_checks.append({"name": cookie_name, "purpose": "non_session",
                                   "verdict": "none", "gaps": []})
@@ -382,12 +408,15 @@ def analyze_l1_service_response(
         # value that merely contains the word "secure" does not count
         attrs = {}
         ambiguous = False
-        for part in raw_cookie.split(";")[1:]:
+        for part in parts[1:]:
             key, _, value = part.strip().partition("=")
-            key = key.lower()
-            if key in attrs and attrs[key] != value.strip():
+            key = key.strip().lower()
+            val = value.strip()
+            if len(val) >= 2 and val[0] == '"' and val[-1] == '"':
+                val = val[1:-1].strip()
+            if key in attrs and attrs[key].lower() != val.lower():
                 ambiguous = True
-            attrs[key] = value.strip()
+            attrs[key] = val
         missing_flags: list[str] = []
         if is_https and "secure" not in attrs:
             missing_flags.append("Secure")
@@ -541,14 +570,17 @@ def analyze_l1_service_response(
         if v
     ]
     if exposed_tech:
+        banner_text = " ".join([server_hdr, powered_by])
+        has_version = cve.banner_has_version(banner_text)
+        cve_feed_available = bool(cve_monitor and getattr(cve_monitor, "catalog", None))
         candidates = (
             cve.detect_from_banner(
-                " ".join([server_hdr, powered_by]),
+                banner_text,
                 source="server-header",
                 catalog=cve_monitor.catalog,
                 kev=cve_monitor.kev,
             )
-            if cve_monitor
+            if cve_feed_available and has_version
             else []
         )
         cve_ids = sorted({c.cve.id for c in candidates})
@@ -561,7 +593,11 @@ def analyze_l1_service_response(
         cve_note = (
             f" 関連CVE候補: {', '.join(cve_ids)}（バナー照合による検出・未実証）。"
             if cve_ids
-            else "（NVD/CISA KEV上の既知悪用バナー一致なし）"
+            else "（バージョン番号が含まれないためCVE照合は未判定。既知CVEへの該当有無は断定できません）"
+            if not has_version
+            else "（CVEフィード未取得のためCVE照合は未実施）"
+            if not cve_feed_available
+            else "（現在のNVD/CISA KEVカタログ上の既知バナー一致なし。安全性の保証ではありません）"
         )
         findings.append(
             {

@@ -30,4 +30,12 @@ test("threat feed count is unknown until status arrives, but measured zero remai
   assert.equal(threatFeedSummary(undefined), "脅威情報の件数を取得できていません。");
   assert.match(threatFeedSummary({ cve_count: 0, kev_count: 0, last_synced_at: 0 }),
     /NVD 登録 0 件 \/ CISA KEV 悪用確認 0 件/);
+  assert.match(
+    threatFeedSummary({ cve_count: 2, kev_count: 2, last_synced_at: 1000, freshness: "stale", stale: true, last_sync_error: "URLError: offline" }),
+    /更新期限超過（要同期）・直近の同期に失敗（以前のデータを保持）/,
+  );
+  assert.match(
+    threatFeedSummary({ cve_count: 0, kev_count: 0, last_synced_at: 0, freshness: "unfetched" }),
+    /フィード未取得/,
+  );
 });

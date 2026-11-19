@@ -45,3 +45,20 @@
 `8b59843`ではterminal failure時のGateway記録も`failed=1`に一致させ、拒否理由・費用予約・監査件数を同じ失敗として追跡可能にした。関連101件と[Linux CI #44267218504](https://github.com/FORIFOR/Vulnix/actions/runs/44267218504)の3/3成功を確認。後続`d199021`のLinux CI #44272121286も3/3成功、単独ローカル全1,742件・27件スキップ・ResourceWarning 0件。この安全境界を経ても実モデルのJSON採用0/2は変わらない。
 
 [公開料金表](https://abliteration.ai/pricing/)には`abliterated-model-large-flash`も掲載され、入力US$1/100万・出力US$2/100万トークンとされる。出力形式の採用率、推論トークン消費、検査選択精度は未測定。モデル変更は評価対象と送信ハッシュを変えるため、この候補の成果として扱わず、別の承認・評価計画が必要。
+
+## 次回実モデル評価の承認申請仕様（未送信・承認待ち）
+
+実モデルへの送信はユーザーの新たな明示承認後に限る。次回評価候補の10項目仕様を以下に整理する。
+
+| 項目 | 仕様・制約 |
+| --- | --- |
+| **1. モデル名** | 候補A: `abliterated-model`（`response_format: {"type":"json_object"}` 指定）<br>候補B（別承認オプション）: `abliterated-model-large-flash` |
+| **2. モデル別対応パラメータ** | 外部送信で許可する構造化指定は `response_format: {"type":"json_object"}` のみ。`reasoning_effort`（`none`/`low`）および `reasoning.max_tokens`（`1〜256`）は実モデルの対応が確認されるまでローカル模擬限定とし、明示承認なしに外部送信へ付与しない（`json_schema` はモデル別プロファイル依存のため未採用）。 |
+| **3. 匿名入力の構成** | 固定14条件（`C01`〜`C14`）の匿名化された観測特徴量のみ（解説経路では `finding_to_payload_item` の固定enum項目：`ref`, `rule`, `category`, `severity`, `verdict`, `verdict_basis`, `cve`, `risk_score`, `kev` のみ）。ホスト名、URL、IPアドレス、Set-Cookie、認証トークン、応答本文、正解ラベルは一切含めない。 |
+| **4. 出力契約** | 選択評価: `{"selected": ["C01", ...]}`（既知条件IDの重複なし配列、余分なキー禁止、`finish_reason == "stop"` かつ `tool_calls` なし）。<br>日本語解説: `{"advice": [{"ref", "claim_level", "cites", "risk_explanation", "remediation": [{"fix", "detail"}], "next_checks": [{"operation", "purpose"}]}]}`（`advisor_catalog.py` の許可IDおよび `chat_guard.py` の安全検査を通過すること）。 |
+| **5. 最大入力・出力トークン** | 単回上限: 出力 `max_tokens = 960`、Gateway予約合計 `1,941` トークン（設定ハード上限 `2,000` トークン）。 |
+| **6. 最大費用** | Gateway予約費用 `US$0.005824`（1回あたり設定ハード上限 `US$0.01 = 10,000 µUSD`）。監査ログおよび `0600` 累積予約額ファイルで原子的に上限を強制する。 |
+| **7. 要求SHA-256** | 候補A（推論設定なし・`json_object`）: `ac4a5fbdb37594be88a4a1432636169105349f3fbab6be41b420f9e90b4f7b23`<br>（※ローカル検証用の `reasoning_effort: none` は `7a527a487a309962867f7d02096e527259946f2b62fdbf802a450d386e3803e5`、`reasoning.max_tokens: 128` は `bd449aa117851dae1979fbb90c61e7f3aab9b454ad3f86847177c30d704bbbf2`） |
+| **8. 想定する採用基準** | HTTP 200、`finish_reason == "stop"`、有効な単一JSONオブジェクト、未知・重複IDなし、報告 `usage` が非負整数かつ予約トークン上限以内であり、独立正解ラベルに対して選択 Precision / Recall が固定L1基準を下回らないこと。 |
+| **9. 失敗時の停止条件** | `finish_reason` が `length` / `content_filter` / 未知値、本文欠落、`tool_calls` 混在、JSON解析失敗、報告 `usage` の欠落・片側欠落・予約超過時は即座に `terminal failure` として不採用にし、単回承認マーカーを消費済みとして再送を停止する（診断本体は固定L1結果と内蔵解説へフォールバック）。 |
+| **10. 評価後の保存内容** | 監査チェーン（`audit.jsonl`）および評価結果JSONに、要求SHA-256、単回消費マーカー、終了理由、報告 `usage`（prompt / completion / reasoning tokens）、概算費用、採用可否、不採用理由または選択 TP/FP/FN/TN を保存する（APIキーや秘密値は一切保存しない）。 |

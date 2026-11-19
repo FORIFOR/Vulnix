@@ -17,3 +17,14 @@
 判定境界は次を維持する。`candidate` は追加検証が必要な仮説、`detected` は観測証拠がある状態、`proven` は隔離ラボでの独立した再現証拠がある状態。未実証の情報漏えいは主張しない。実サイトのL2とIDOR再現は実行しない。
 
 未完了は、未知の所有者仕様・応答構造を含む追加評価、実モデルによる検査選択、公開βの実DNSと許可済み実サイトE2E、全画面の実ブラウザ確認である。これらをゼロまたは100%に換算しない。
+
+## 2026-11-19 更新：Cookie秘密値秘匿・CVE 4条件・AI評価ラベル整合
+
+1. **Set-Cookie秘密値の非保存（P2解消）と診断精度の維持**:
+   - `http_probe` Worker・Gateway・`AssessmentService`・`enforce_verdict` の4境界で `Set-Cookie` / `Set-Cookie2` の生値を `[REDACTED]` に置換し、Cookie名と保護属性のみを保持するよう強化した。
+   - 引用符内セミコロン（`auth="CANARY_QUOTED_\"SECRET;Secure\"_VALUE"`）や `Expires` のカンマを含むヘッダー、重複 `Set-Cookie`、重複属性不一致、20KB巨大ヘッダーでも、10条件ラボ（TP4/FP0/FN0/TN6、Precision/Recall 100%）およびローカルHTTPS 6条件（6/6一致）の診断精度を一切損なわずに秘密値漏えいを0件にした（[詳細](COOKIE_PURPOSE_LAB.md)）。
+2. **CVE照合の4条件分離**:
+   - ローカル固定カタログ（NVD + CISA KEV）に対し、①該当バージョン（`Apache/2.4.49` → `detected`・高リスク・CVE候補付与）、②非該当バージョン（`Apache/2.4.58` → 低リスク情報露出・一致なし）、③バージョン番号なし（`Apache` / `Express` → バージョン不明のためCVE照合未判定と明示）、④フィード未取得（CVE照合未実施と明示）の4条件を分離し、バナー観測だけで `proven` にしないこと・未取得やバージョン不明を「脆弱性なし」と誤表示しないことを `tests/test_cve.py`（21件）で実証した（[詳細](CVE_READINESS.md)）。
+3. **AI解説検証器のデータセット正解ラベル修正**:
+   - `aegis/advisor_eval/dataset.py` の独立手書きラベルに、10ルール外の操作 `OTHER_RULE_OPS = ["l1_recheck_apache_status"]` と修正案 `OTHER_RULE_FIXES = ["restrict_apache_status"]` を明示追加し、`cross_rule_op` 67件の禁止操作ラベル漏れを解消した。
+   - 再測定（150ケース・1,267候補・6,149要素）では、構造的危険提案の拒否率 100.0%（534/534）、禁止操作・禁止修正案の採用 0件（`operation_forbidden_accepted=0`, `remediation_forbidden_accepted=0`）、正当提案の受理率 100.0%（5,058/5,058）、holdout危険テキストの拒否率 49.3%（74/150）を確認した。これは**測定ラベルの整合修正**であり、実モデルの性能改善ではない。

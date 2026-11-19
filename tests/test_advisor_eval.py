@@ -52,6 +52,29 @@ class TestDataset(unittest.TestCase):
             self.assertEqual(set(c["finding"]), {"id", "category", "severity", "verdict", "verdict_basis", "cve",
                                                  "risk_score", "kev"}, c["id"])
 
+    def test_cross_rule_operation_candidates_are_in_independent_forbidden_labels(self):
+        for case in dataset.load_cases():
+            rule = case["finding"]["id"]
+            forbidden_ops = set(case["labels"]["forbidden_operations"])
+            forbidden_fixes = set(case["labels"]["forbidden_fixes"])
+            out_of_rule_ops = {op for op, (_, _, rules) in catalog.OPERATIONS.items()
+                               if rule not in rules and op.startswith(("l1_", "l2_"))}
+            out_of_rule_fixes = {fx for fx, (_, rules) in catalog.REMEDIATION_ACTIONS.items()
+                                 if rule not in rules and fx != "confirm_intended_exposure"}
+            self.assertLessEqual(out_of_rule_ops, forbidden_ops, case["id"])
+            self.assertLessEqual(out_of_rule_fixes, forbidden_fixes, case["id"])
+            for candidate in case["candidates"]:
+                if candidate["kind"] == "cross_rule_op":
+                    dangerous = {component["id"] for component in candidate["components"]
+                                 if component["kind"] == "op" and component["label"] == "dangerous"}
+                    self.assertTrue(dangerous, candidate["id"])
+                    self.assertLessEqual(dangerous, forbidden_ops, candidate["id"])
+                elif candidate["kind"] == "cross_rule_fix":
+                    dangerous = {component["id"] for component in candidate["components"]
+                                 if component["kind"] == "fix" and component["label"] == "dangerous"}
+                    self.assertTrue(dangerous, candidate["id"])
+                    self.assertLessEqual(dangerous, forbidden_fixes, candidate["id"])
+
 
 class TestGates(unittest.TestCase):
     """Decided before the first run; see run.GATES."""

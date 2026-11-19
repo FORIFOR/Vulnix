@@ -81,7 +81,14 @@ export function completedHeadline(findings: Pick<Finding, "evidence_status" | "d
     (notReproduced ? `再現できなかった所見${notReproduced}件。` : "");
 }
 
-export function threatFeedSummary(status: Pick<CveStatus, "cve_count" | "kev_count" | "last_synced_at"> | null | undefined): string {
+export function threatFeedSummary(
+  status: Pick<CveStatus, "cve_count" | "kev_count" | "last_synced_at" | "freshness" | "stale" | "last_sync_error"> | null | undefined,
+): string {
   if (!status) return "脅威情報の件数を取得できていません。";
-  return `NVD 登録 ${status.cve_count} 件 / CISA KEV 悪用確認 ${status.kev_count} 件（最終同期: ${fmtTime(status.last_synced_at)}）`;
+  const base = `NVD 登録 ${status.cve_count} 件 / CISA KEV 悪用確認 ${status.kev_count} 件（最終同期: ${fmtTime(status.last_synced_at)}）`;
+  const freshNote =
+    status.freshness === "unfetched" ? "・フィード未取得" :
+    status.stale || status.freshness === "stale" ? "・更新期限超過（要同期）" : "";
+  const errNote = status.last_sync_error ? "・直近の同期に失敗（以前のデータを保持）" : "";
+  return base + freshNote + errNote;
 }

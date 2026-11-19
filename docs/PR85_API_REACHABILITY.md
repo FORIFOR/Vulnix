@@ -11,6 +11,7 @@
 - 組織データのGET/POSTは原則`_bind`で所属と当該組織の`AssessmentService`を選ぶ。`/api/orgs*`は`_tenancy_get/_tenancy_post`で別途組織権限を確認する。全体管理ルートは組織データ用`_bind`を通らない。
 - 表の「失効」は応答時に確かめた範囲を示す。`読取再検査`は送信時に401（セッション失効）/403（組織権限失効）。`開始時`は`_dispatch`入口で401/403。`操作時`は個別の生存権限ガードも使う。操作後の応答まで必ず401/403になると書いていない行は、その競合が未実証である。
 - Web画面に利用元が見つからないAPIは「画面なし」と記す。`GET /api/health`と`GET /api/auth/me`はログイン前にも呼べる。その他のGETは公開βの読み取り認証設定を前提とする。
+- `SessionProvider`は先行する`GET /api/auth/me`の200がログアウト後に到着しても要求番号で破棄する。同一オリジンの別タブへは`storage`でログアウト開始・成功・失敗を通知し、開始時に保護表示を隠す。開始通知を逃したタブも完了通知で表示を隠し、`/api/auth/me`を再照会する。通知は権限根拠ではなく表示同期であり、サーバー側の現行認証が最終判定となる。異なるブラウザ・端末間の即時同期は未検証。
 
 ## 認証・組織・管理
 
@@ -59,7 +60,7 @@
 
 ## 診断・証拠・イベント
 
-`{id}`は選択組織の診断IDと一致しなければ404。GETは組織読み取り権限、POSTは共通CSRFと組織操作権限を通す。実サイトの読み取り専用モードは追加L2、修正後再現、未許可のARTEX操作を拒否する。`lab-mode`は複数組織モードで結合前に403となる。
+`{id}`は選択組織の診断IDと一致しなければ404。GETは組織読み取り権限、POSTは共通CSRFと組織操作権限を通す。実サイトの読み取り専用モードは追加L2、修正後再現、未許可のARTEX操作を拒否する。複数組織では旧来の広い実サイト設定1を与えても読み取り専用に絞り、設定0なら所有確認・診断通信を全面拒否する（`tests/test_tenancy.py`の9件で設定値を模擬）。`lab-mode`は複数組織モードで結合前に403となる。
 
 | API | 追加権限・要求値 | 失効時の確認範囲 | Web利用元 |
 | --- | --- | --- | --- |
@@ -91,11 +92,11 @@
 | `GET /api/router/status` | 組織別モデル状態 | 送信時の読取再検査、401/403 | 画面なし |
 | `GET /api/l2-profiles` | 全体admin/approver | 送信時の役割再検査、401/403 | 設定 |
 | `GET /api/cve/status` | 認証済み（公開β設定） | 生成後の送信時に現行セッションを再検査。ログアウト後401を模擬確認 | 画面なし |
-| `POST /api/l2-profiles/accept` | 全体admin、id/sha256 | 開始時とサービス側のプロファイル照合 | 設定 |
-| `POST /api/router/verify` | 全体admin/approver | 開始時。実行時の外部先は設定依存・未照合 | 画面なし |
-| `POST /api/cve/sync` | 全体admin/approver、nvd/kev/source | 開始時。HTTP入力を取り込む。外部URL取得は通常経路にない | 設定 |
-| `POST /api/system/verify-controls` | 全体admin/approver | 開始時。隔離検証ジョブ | 設定 |
-| `POST /api/cve/real-software-verify` | 全体admin/approver | 開始時。ローカルソフト比較ジョブ | 画面なし |
+| `POST /api/l2-profiles/accept` | 全体admin、id/sha256 | 開始時・成功/例外応答送信時に全体adminを再確認。サービス側のプロファイル照合 | 設定 |
+| `POST /api/router/verify` | 全体admin/approver | 開始時・成功/例外応答送信時に全体権限を再確認。ARTEX CLIを確認し、モデル側は設定済み有料APIを自動発見せずループバック模擬サーバーでアダプタを検証する。実モデル接続の証明ではない | 画面なし |
+| `POST /api/cve/sync` | 全体admin/approver、nvd/kev/source | 開始時・成功/例外応答送信時に全体権限を再確認。HTTP入力を取り込む。外部URL取得は通常経路にない | 設定 |
+| `POST /api/system/verify-controls` | 全体admin/approver | 開始時・成功/例外応答送信時に全体権限を再確認。隔離検証ジョブ | 設定 |
+| `POST /api/cve/real-software-verify` | 全体admin/approver | 開始時・成功/例外応答送信時に全体権限を再確認。ローカルソフト比較ジョブ | 画面なし |
 
 ## 残る到達性検証
 

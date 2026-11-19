@@ -279,1002 +279,1002 @@
     },
     {
       "file": "aegis/assessment.py",
-      "line": 72,
+      "line": 73,
       "name": "_has_lab_account_resource_link"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 109,
+      "line": 110,
       "name": "demo_verify_tool"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 140,
+      "line": 141,
       "name": "_libpq_env"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 163,
+      "line": 164,
       "name": "_artex_isolation_view"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 180,
+      "line": 181,
       "name": "_preview_responder"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 191,
+      "line": 192,
       "name": "_session_empty"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 202,
+      "line": 203,
       "name": "_StaticProposals.__init__"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 206,
+      "line": 207,
       "name": "_StaticProposals.propose"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 217,
+      "line": 218,
       "name": "_close_data_dir_locks_at_exit"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 238,
+      "line": 239,
       "name": "_claim_data_dir"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 287,
+      "line": 288,
       "name": "artex_failure_message"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 299,
+      "line": 300,
       "name": "AssessmentService.__init__"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 364,
+      "line": 365,
       "name": "AssessmentService.__init__._ledger_event"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 512,
+      "line": 513,
       "name": "AssessmentService._verified_external_hosts"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 516,
+      "line": 517,
       "name": "AssessmentService._verified_external_hosts"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 520,
+      "line": 521,
       "name": "AssessmentService._ownership_proofs"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 524,
+      "line": 525,
       "name": "AssessmentService._ownership_proofs"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 528,
+      "line": 529,
       "name": "AssessmentService._real_service_hosts"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 532,
+      "line": 533,
       "name": "AssessmentService._real_service_hosts"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 536,
+      "line": 537,
       "name": "AssessmentService._accepted_profiles"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 540,
+      "line": 541,
       "name": "AssessmentService._accepted_profiles"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 544,
+      "line": 545,
       "name": "AssessmentService._authority_notice"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 548,
+      "line": 549,
       "name": "AssessmentService._authority_notice"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 552,
+      "line": 553,
       "name": "AssessmentService._authority_epoch"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 556,
+      "line": 557,
       "name": "AssessmentService._marker_pending"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 562,
+      "line": 563,
       "name": "AssessmentService._session_path"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 565,
+      "line": 566,
       "name": "AssessmentService._previous_session_clean"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 586,
+      "line": 587,
       "name": "AssessmentService._begin_session_locked"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 599,
+      "line": 600,
       "name": "AssessmentService._write_session_record"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 616,
+      "line": 617,
       "name": "AssessmentService._hold_all_authority_locked"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 642,
+      "line": 643,
       "name": "AssessmentService.close"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 671,
+      "line": 672,
       "name": "AssessmentService._expiry_watch"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 683,
+      "line": 684,
       "name": "AssessmentService._enforce_scope_window"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 733,
+      "line": 734,
       "name": "AssessmentService._real_asset_records"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 742,
+      "line": 743,
       "name": "AssessmentService._sync_ledger_assets_locked"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 749,
+      "line": 750,
       "name": "AssessmentService._reconcile_assets_with_ledger_locked"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 781,
+      "line": 782,
       "name": "AssessmentService._commit_grant_locked"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 791,
+      "line": 792,
       "name": "AssessmentService._authority_reduced_locked"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 801,
+      "line": 802,
       "name": "AssessmentService.system_status"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 808,
+      "line": 809,
       "name": "AssessmentService._note_unstopped_locked"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 823,
+      "line": 824,
       "name": "AssessmentService._session_on_record"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 826,
+      "line": 827,
       "name": "AssessmentService._retry_cleanup_locked"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 837,
+      "line": 838,
       "name": "AssessmentService._retry_cleanup_locked.run"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 864,
+      "line": 865,
       "name": "AssessmentService._note_deadline_survivor"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 870,
+      "line": 871,
       "name": "AssessmentService._note_leftover_session"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 884,
+      "line": 885,
       "name": "AssessmentService._raise_if_unstopped"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 892,
+      "line": 893,
       "name": "AssessmentService._unstopped_now_locked"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 936,
+      "line": 937,
       "name": "AssessmentService._external_entry"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 955,
+      "line": 956,
       "name": "AssessmentService._asset_record"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 963,
+      "line": 964,
       "name": "AssessmentService._revoke_real_service_locked"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 985,
+      "line": 986,
       "name": "AssessmentService._in_ownership_flow"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 998,
+      "line": 999,
       "name": "AssessmentService._resolve_host"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1035,
+      "line": 1036,
       "name": "AssessmentService._withdrawn_since_locked"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1042,
+      "line": 1043,
       "name": "AssessmentService._require_addresses_covered_by_proof"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1125,
+      "line": 1126,
       "name": "AssessmentService._ephemeral_worker_env"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1147,
+      "line": 1148,
       "name": "AssessmentService._worker_confinement"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1173,
+      "line": 1174,
       "name": "AssessmentService._late_launch_guard"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1180,
+      "line": 1181,
       "name": "AssessmentService._launch_guard"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1234,
+      "line": 1235,
       "name": "AssessmentService._scope_generation"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1241,
+      "line": 1242,
       "name": "AssessmentService._new_scan_usage_locked"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1263,
+      "line": 1264,
       "name": "AssessmentService._record_root_result_locked"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1293,
+      "line": 1294,
       "name": "AssessmentService._record_status_result_locked"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1317,
+      "line": 1318,
       "name": "AssessmentService._require_working_store"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1327,
+      "line": 1328,
       "name": "AssessmentService.l2_isolation_status"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1335,
+      "line": 1336,
       "name": "AssessmentService.has_scoped_real_site"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1341,
+      "line": 1342,
       "name": "AssessmentService._is_external_service_asset"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1347,
+      "line": 1348,
       "name": "AssessmentService._read_l2_profiles"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1352,
+      "line": 1353,
       "name": "AssessmentService._apply_profile_acceptance_locked"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1370,
+      "line": 1371,
       "name": "AssessmentService.l2_profiles_status"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1391,
+      "line": 1392,
       "name": "AssessmentService._describe_rule"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1392,
+      "line": 1393,
       "name": "AssessmentService._describe_rule.req"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1405,
+      "line": 1406,
       "name": "AssessmentService.accept_l2_profile"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1429,
+      "line": 1430,
       "name": "AssessmentService._l2_profile"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1434,
+      "line": 1435,
       "name": "AssessmentService._active_l2_check"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1442,
+      "line": 1443,
       "name": "AssessmentService._l2_result_fields"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1458,
+      "line": 1459,
       "name": "AssessmentService._public_l2_request"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1465,
+      "line": 1466,
       "name": "AssessmentService._l2_check_for_finding"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1471,
+      "line": 1472,
       "name": "AssessmentService._stored_overrides_allowed"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1489,
+      "line": 1490,
       "name": "AssessmentService._l2_block_reason"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1506,
+      "line": 1507,
       "name": "AssessmentService._l2_transport_ok"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1511,
+      "line": 1512,
       "name": "AssessmentService._ready_l2_checks"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1519,
+      "line": 1520,
       "name": "AssessmentService._l2_candidates"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1522,
+      "line": 1523,
       "name": "AssessmentService._save_state_locked"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1614,
+      "line": 1615,
       "name": "AssessmentService._sync_dir"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1618,
+      "line": 1619,
       "name": "AssessmentService._load_state_locked"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1753,
+      "line": 1754,
       "name": "AssessmentService.verify_planner_connections"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1777,
+      "line": 1778,
       "name": "AssessmentService._artex_targets_locked"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1781,
+      "line": 1782,
       "name": "AssessmentService._refuse_artex_on_real_service_locked"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1788,
+      "line": 1789,
       "name": "AssessmentService._root_probe_observed_locked"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1813,
+      "line": 1814,
       "name": "AssessmentService.plan_with_artex"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1848,
+      "line": 1849,
       "name": "AssessmentService._plan_with_artex"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2094,
+      "line": 2095,
       "name": "AssessmentService._planner_gateway"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2114,
+      "line": 2115,
       "name": "AssessmentService._planner_gateway.num"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2125,
+      "line": 2126,
       "name": "AssessmentService._planner_gateway.denied"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2139,
+      "line": 2140,
       "name": "AssessmentService._planner_gateway.send_scope"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2174,
+      "line": 2175,
       "name": "AssessmentService._previews_path"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2177,
+      "line": 2178,
       "name": "AssessmentService._load_previews_locked"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2183,
+      "line": 2184,
       "name": "AssessmentService._save_previews_locked"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2191,
+      "line": 2192,
       "name": "AssessmentService._take_preview_approval"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2222,
+      "line": 2223,
       "name": "AssessmentService._note_gateway_run"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2244,
+      "line": 2245,
       "name": "AssessmentService.artex_llm_preview"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2249,
+      "line": 2250,
       "name": "AssessmentService._close_planner_gateways_locked"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2256,
+      "line": 2257,
       "name": "AssessmentService.artex_plan_view"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2274,
+      "line": 2275,
       "name": "AssessmentService._artex_session_started"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2281,
+      "line": 2282,
       "name": "AssessmentService._artex_may_start_locked"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2291,
+      "line": 2292,
       "name": "AssessmentService._ensure_artex_authority_locked"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2310,
+      "line": 2311,
       "name": "AssessmentService._artex_may_start"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2314,
+      "line": 2315,
       "name": "AssessmentService._artex_session_finished"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2318,
+      "line": 2319,
       "name": "AssessmentService._kill_artex_planner_locked"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2347,
+      "line": 2348,
       "name": "AssessmentService._claim_artex_item_locked"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2364,
+      "line": 2365,
       "name": "AssessmentService.execute_artex_item"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2458,
+      "line": 2459,
       "name": "AssessmentService._sync_artex_item"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2468,
+      "line": 2469,
       "name": "AssessmentService._set_artex_item_status"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2478,
+      "line": 2479,
       "name": "AssessmentService._default_phases"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2487,
+      "line": 2488,
       "name": "AssessmentService._ensure_active_window_locked"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2515,
+      "line": 2516,
       "name": "AssessmentService._sync_scope_for_host"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2553,
+      "line": 2554,
       "name": "AssessmentService.assets"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2572,
+      "line": 2573,
       "name": "AssessmentService.register_asset"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2669,
+      "line": 2670,
       "name": "AssessmentService._activate_asset_locked"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2711,
+      "line": 2712,
       "name": "AssessmentService.select_asset"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2730,
+      "line": 2731,
       "name": "AssessmentService.asset_is_real_service"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2738,
+      "line": 2739,
       "name": "AssessmentService.real_service_has_authority"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2744,
+      "line": 2745,
       "name": "AssessmentService._refuse_after_stop_locked"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2750,
+      "line": 2751,
       "name": "AssessmentService._refuse_while_verifying_locked"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2754,
+      "line": 2755,
       "name": "AssessmentService._begin_operation"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2758,
+      "line": 2759,
       "name": "AssessmentService._end_operation"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2762,
+      "line": 2763,
       "name": "AssessmentService.delete_asset"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2822,
+      "line": 2823,
       "name": "AssessmentService._withdraw_deleted_locked"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2837,
+      "line": 2838,
       "name": "AssessmentService._covering_google_domain_proof_locked"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 2860,
+      "line": 2861,
       "name": "AssessmentService.issue_ownership_challenge"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3003,
+      "line": 3004,
       "name": "AssessmentService.verify_asset_ownership"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3157,
+      "line": 3158,
       "name": "AssessmentService.confirm_asset_scope"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3296,
+      "line": 3297,
       "name": "AssessmentService.configure_asset_secrets"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3341,
+      "line": 3342,
       "name": "AssessmentService.secrets_status"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3351,
+      "line": 3352,
       "name": "AssessmentService.remotion_export"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3364,
+      "line": 3365,
       "name": "AssessmentService._stop_flag"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3367,
+      "line": 3368,
       "name": "AssessmentService._reset_workspace_locked"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3407,
+      "line": 3408,
       "name": "AssessmentService.planner_status"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3435,
+      "line": 3436,
       "name": "AssessmentService._note_model_outcome_locked"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3444,
+      "line": 3445,
       "name": "AssessmentService.snapshot"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3513,
+      "line": 3514,
       "name": "AssessmentService.logs"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3518,
+      "line": 3519,
       "name": "AssessmentService.set_verify_seconds"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3521,
+      "line": 3522,
       "name": "AssessmentService.start"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3534,
+      "line": 3535,
       "name": "AssessmentService.restart"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3566,
+      "line": 3567,
       "name": "AssessmentService.pause"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3573,
+      "line": 3574,
       "name": "AssessmentService.resume"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3587,
+      "line": 3588,
       "name": "AssessmentService.emergency_stop"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3633,
+      "line": 3634,
       "name": "AssessmentService._refuse_read_only_real_locked"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3644,
+      "line": 3645,
       "name": "AssessmentService.decide_approval"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3654,
+      "line": 3655,
       "name": "AssessmentService._think"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3667,
+      "line": 3668,
       "name": "AssessmentService.request_l2_run"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3686,
+      "line": 3687,
       "name": "AssessmentService._take_l2_request"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3699,
+      "line": 3700,
       "name": "AssessmentService.finding_requires_human_l2_approval"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3707,
+      "line": 3708,
       "name": "AssessmentService.verify_finding"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3736,
+      "line": 3737,
       "name": "AssessmentService._verify_finding"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 4077,
+      "line": 4078,
       "name": "AssessmentService.verify_fix"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 4093,
+      "line": 4094,
       "name": "AssessmentService._reset_artex_db"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 4111,
+      "line": 4112,
       "name": "AssessmentService._verify_fix"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 4121,
+      "line": 4122,
       "name": "AssessmentService._verify_fix_body"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 4319,
+      "line": 4320,
       "name": "AssessmentService._plan"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 4336,
+      "line": 4337,
       "name": "AssessmentService._stale_runner"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 4341,
+      "line": 4342,
       "name": "AssessmentService._run"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 4350,
+      "line": 4351,
       "name": "AssessmentService._run_inner"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 4383,
+      "line": 4384,
       "name": "AssessmentService._run_inner._is_the_executed_probe"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 4701,
+      "line": 4702,
       "name": "AssessmentService._exec"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 4771,
+      "line": 4784,
       "name": "AssessmentService._analyze"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 4874,
+      "line": 4887,
       "name": "AssessmentService._request_approval"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 4892,
+      "line": 4905,
       "name": "AssessmentService._decide"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 4905,
+      "line": 4918,
       "name": "AssessmentService._publish_approval"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 4908,
+      "line": 4921,
       "name": "AssessmentService._checkpoint"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 4916,
+      "line": 4929,
       "name": "AssessmentService._phase"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 4926,
+      "line": 4939,
       "name": "AssessmentService._activity"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 4933,
+      "line": 4946,
       "name": "AssessmentService._set_state"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 4980,
+      "line": 4993,
       "name": "AssessmentService._worker_failure_text"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 4993,
+      "line": 5006,
       "name": "AssessmentService._worker_failure_detail"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 5020,
+      "line": 5033,
       "name": "AssessmentService._upsert_finding"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 5032,
+      "line": 5045,
       "name": "AssessmentService._mark_verifying"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 5037,
+      "line": 5050,
       "name": "AssessmentService._fail"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 5049,
+      "line": 5062,
       "name": "AssessmentService._real_findings"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 5052,
+      "line": 5065,
       "name": "AssessmentService._risk"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 5071,
+      "line": 5084,
       "name": "AssessmentService._on_audit"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 5076,
+      "line": 5089,
       "name": "AssessmentService._safe_real_ai_explanation"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 5223,
+      "line": 5236,
       "name": "AssessmentService.ask_chat"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 5303,
+      "line": 5316,
       "name": "AssessmentService.advise_findings"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 5336,
+      "line": 5349,
       "name": "AssessmentService._finding_touches_real_service"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 5353,
+      "line": 5366,
       "name": "AssessmentService._answer_question"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 5478,
+      "line": 5491,
       "name": "AssessmentService._history"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 5500,
+      "line": 5513,
       "name": "AssessmentService.report_markdown"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 5593,
+      "line": 5606,
       "name": "_asset_status"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 5598,
+      "line": 5611,
       "name": "_fixture_findings"
     },
     {
       "file": "aegis/audit.py",
-      "line": 21,
+      "line": 22,
       "name": "AuditLog.__init__"
     },
     {
       "file": "aegis/audit.py",
-      "line": 34,
+      "line": 35,
       "name": "AuditLog.record"
     },
     {
       "file": "aegis/audit.py",
-      "line": 42,
+      "line": 43,
       "name": "AuditLog._exclusive_file"
     },
     {
       "file": "aegis/audit.py",
-      "line": 55,
+      "line": 56,
       "name": "AuditLog._append_locked"
     },
     {
       "file": "aegis/audit.py",
-      "line": 80,
+      "line": 81,
       "name": "AuditLog.record_with_budget"
     },
     {
       "file": "aegis/audit.py",
-      "line": 117,
+      "line": 146,
       "name": "AuditLog.entries"
     },
     {
       "file": "aegis/audit.py",
-      "line": 122,
+      "line": 151,
       "name": "AuditLog._is_continuation"
     },
     {
       "file": "aegis/audit.py",
-      "line": 126,
+      "line": 155,
       "name": "AuditLog.verified_entries"
     },
     {
       "file": "aegis/audit.py",
-      "line": 137,
+      "line": 166,
       "name": "AuditLog.verify"
     },
     {
       "file": "aegis/audit.py",
-      "line": 141,
+      "line": 170,
       "name": "_canon"
     },
     {
@@ -1869,102 +1869,117 @@
     },
     {
       "file": "aegis/cve.py",
-      "line": 21,
+      "line": 25,
       "name": "parse_version"
     },
     {
       "file": "aegis/cve.py",
-      "line": 31,
+      "line": 35,
       "name": "_cmp"
     },
     {
       "file": "aegis/cve.py",
-      "line": 39,
+      "line": 43,
       "name": "version_in_range"
     },
     {
       "file": "aegis/cve.py",
-      "line": 66,
+      "line": 70,
       "name": "CVE.applies_to"
     },
     {
       "file": "aegis/cve.py",
-      "line": 121,
+      "line": 125,
       "name": "_nvd_severity"
     },
     {
       "file": "aegis/cve.py",
-      "line": 131,
+      "line": 135,
       "name": "_nvd_cwe"
     },
     {
       "file": "aegis/cve.py",
-      "line": 140,
+      "line": 144,
       "name": "_nvd_ranges"
     },
     {
       "file": "aegis/cve.py",
-      "line": 173,
+      "line": 177,
       "name": "load_nvd"
     },
     {
       "file": "aegis/cve.py",
-      "line": 196,
+      "line": 200,
       "name": "load_cisa_kev"
     },
     {
       "file": "aegis/cve.py",
-      "line": 216,
+      "line": 220,
       "name": "load_kev_feed"
     },
     {
       "file": "aegis/cve.py",
-      "line": 223,
+      "line": 227,
       "name": "match"
     },
     {
       "file": "aegis/cve.py",
-      "line": 229,
+      "line": 233,
       "name": "load_feed"
     },
     {
       "file": "aegis/cve.py",
-      "line": 236,
+      "line": 240,
       "name": "build_catalog"
     },
     {
       "file": "aegis/cve.py",
-      "line": 245,
+      "line": 249,
       "name": "detect_from_banner"
     },
     {
       "file": "aegis/cve.py",
-      "line": 266,
+      "line": 270,
       "name": "_default_fetcher"
     },
     {
       "file": "aegis/cve.py",
-      "line": 275,
+      "line": 276,
+      "name": "banner_has_version"
+    },
+    {
+      "file": "aegis/cve.py",
+      "line": 281,
+      "name": "_file_sha256"
+    },
+    {
+      "file": "aegis/cve.py",
+      "line": 288,
+      "name": "_json_sha256"
+    },
+    {
+      "file": "aegis/cve.py",
+      "line": 297,
       "name": "FeedMonitor.__init__"
     },
     {
       "file": "aegis/cve.py",
-      "line": 285,
+      "line": 311,
       "name": "FeedMonitor.ingest_payloads"
     },
     {
       "file": "aegis/cve.py",
-      "line": 301,
+      "line": 339,
       "name": "FeedMonitor.sync_from_urls"
     },
     {
       "file": "aegis/cve.py",
-      "line": 308,
+      "line": 366,
       "name": "FeedMonitor.correlate_assets"
     },
     {
       "file": "aegis/cve.py",
-      "line": 355,
+      "line": 413,
       "name": "FeedMonitor.status"
     },
     {
@@ -2004,22 +2019,22 @@
     },
     {
       "file": "aegis/evidence.py",
-      "line": 42,
+      "line": 68,
       "name": "evidence_status"
     },
     {
       "file": "aegis/evidence.py",
-      "line": 58,
+      "line": 84,
       "name": "evidence_summary"
     },
     {
       "file": "aegis/evidence.py",
-      "line": 81,
+      "line": 107,
       "name": "reproduction_verdict"
     },
     {
       "file": "aegis/evidence.py",
-      "line": 131,
+      "line": 157,
       "name": "reproduction_note"
     },
     {
@@ -2099,32 +2114,32 @@
     },
     {
       "file": "aegis/gateway.py",
-      "line": 388,
+      "line": 402,
       "name": "Gateway._try_audit"
     },
     {
       "file": "aegis/gateway.py",
-      "line": 396,
+      "line": 410,
       "name": "Gateway._unrecorded_survivors_alive"
     },
     {
       "file": "aegis/gateway.py",
-      "line": 410,
+      "line": 424,
       "name": "Gateway.pause"
     },
     {
       "file": "aegis/gateway.py",
-      "line": 416,
+      "line": 430,
       "name": "Gateway.resume"
     },
     {
       "file": "aegis/gateway.py",
-      "line": 425,
+      "line": 439,
       "name": "Gateway.emergency_stop"
     },
     {
       "file": "aegis/gateway.py",
-      "line": 457,
+      "line": 471,
       "name": "_safe"
     },
     {
@@ -3184,12 +3199,12 @@
     },
     {
       "file": "aegis/router.py",
-      "line": 661,
+      "line": 657,
       "name": "_safe_endpoint"
     },
     {
       "file": "aegis/router.py",
-      "line": 677,
+      "line": 673,
       "name": "redact_verification_report"
     },
     {
@@ -3389,297 +3404,307 @@
     },
     {
       "file": "aegis/server.py",
-      "line": 76,
+      "line": 77,
       "name": "optional_status_check_configured"
     },
     {
       "file": "aegis/server.py",
-      "line": 108,
+      "line": 109,
       "name": "make_handler"
     },
     {
       "file": "aegis/server.py",
-      "line": 133,
+      "line": 134,
       "name": "make_handler.room"
     },
     {
       "file": "aegis/server.py",
-      "line": 139,
+      "line": 140,
       "name": "make_handler.within"
     },
     {
       "file": "aegis/server.py",
-      "line": 148,
+      "line": 149,
       "name": "make_handler.self_registration_allowed"
     },
     {
       "file": "aegis/server.py",
-      "line": 176,
+      "line": 177,
       "name": "make_handler.approver_grant_recorded"
     },
     {
       "file": "aegis/server.py",
-      "line": 188,
+      "line": 189,
       "name": "make_handler.live_grant_roles"
     },
     {
       "file": "aegis/server.py",
-      "line": 208,
+      "line": 209,
       "name": "make_handler.live_request_allowed"
     },
     {
       "file": "aegis/server.py",
-      "line": 218,
+      "line": 219,
       "name": "make_handler.live_request_authority"
     },
     {
       "file": "aegis/server.py",
-      "line": 220,
+      "line": 221,
       "name": "make_handler.live_request_authority.allowed"
     },
     {
       "file": "aegis/server.py",
-      "line": 224,
+      "line": 225,
       "name": "make_handler.live_request_authority.lease"
     },
     {
       "file": "aegis/server.py",
-      "line": 241,
+      "line": 242,
       "name": "make_handler.H.log_message"
     },
     {
       "file": "aegis/server.py",
-      "line": 244,
+      "line": 245,
       "name": "make_handler.H.handle"
     },
     {
       "file": "aegis/server.py",
-      "line": 251,
+      "line": 252,
       "name": "make_handler.H._json"
     },
     {
       "file": "aegis/server.py",
-      "line": 262,
+      "line": 263,
       "name": "make_handler.H._session"
     },
     {
       "file": "aegis/server.py",
-      "line": 272,
+      "line": 273,
       "name": "make_handler.H._public_session"
     },
     {
       "file": "aegis/server.py",
-      "line": 277,
+      "line": 278,
       "name": "make_handler.H._touches_real_site"
     },
     {
       "file": "aegis/server.py",
-      "line": 296,
+      "line": 297,
       "name": "make_handler.H._real_site_refusal"
     },
     {
       "file": "aegis/server.py",
-      "line": 313,
+      "line": 314,
       "name": "make_handler.H._org_requested"
     },
     {
       "file": "aegis/server.py",
-      "line": 320,
+      "line": 321,
       "name": "make_handler.H._bind"
     },
     {
       "file": "aegis/server.py",
-      "line": 353,
+      "line": 356,
       "name": "make_handler.H._authorized_org_read"
     },
     {
       "file": "aegis/server.py",
-      "line": 369,
+      "line": 372,
+      "name": "make_handler.H._authorized_platform_read"
+    },
+    {
+      "file": "aegis/server.py",
+      "line": 387,
       "name": "make_handler.H._host_ok"
     },
     {
       "file": "aegis/server.py",
-      "line": 377,
+      "line": 395,
       "name": "make_handler.H._refuse"
     },
     {
       "file": "aegis/server.py",
-      "line": 384,
+      "line": 402,
       "name": "make_handler.H.do_GET"
     },
     {
       "file": "aegis/server.py",
-      "line": 566,
+      "line": 586,
       "name": "make_handler.H._get_org"
     },
     {
       "file": "aegis/server.py",
-      "line": 604,
+      "line": 624,
       "name": "make_handler.H._sse"
     },
     {
       "file": "aegis/server.py",
-      "line": 619,
+      "line": 639,
       "name": "make_handler.H._sse.event_permission"
     },
     {
       "file": "aegis/server.py",
-      "line": 644,
+      "line": 664,
       "name": "make_handler.H._sse_loop"
     },
     {
       "file": "aegis/server.py",
-      "line": 687,
+      "line": 707,
       "name": "make_handler.H.do_POST"
     },
     {
       "file": "aegis/server.py",
-      "line": 870,
+      "line": 893,
       "name": "make_handler.H._change_password"
     },
     {
       "file": "aegis/server.py",
-      "line": 881,
+      "line": 904,
       "name": "make_handler.H._totp_enroll"
     },
     {
       "file": "aegis/server.py",
-      "line": 891,
+      "line": 914,
       "name": "make_handler.H._totp_confirm"
     },
     {
       "file": "aegis/server.py",
-      "line": 899,
+      "line": 922,
       "name": "make_handler.H._totp_disable"
     },
     {
       "file": "aegis/server.py",
-      "line": 910,
+      "line": 933,
       "name": "make_handler.H._locked"
     },
     {
       "file": "aegis/server.py",
-      "line": 918,
+      "line": 941,
       "name": "make_handler.H._drain_recovery_events"
     },
     {
       "file": "aegis/server.py",
-      "line": 923,
+      "line": 946,
       "name": "make_handler.H._login"
     },
     {
       "file": "aegis/server.py",
-      "line": 944,
+      "line": 967,
       "name": "make_handler.H._register"
     },
     {
       "file": "aegis/server.py",
-      "line": 1028,
+      "line": 1051,
       "name": "make_handler.H._admin_failure"
     },
     {
       "file": "aegis/server.py",
-      "line": 1036,
+      "line": 1059,
       "name": "make_handler.H._self_failure"
     },
     {
       "file": "aegis/server.py",
-      "line": 1041,
+      "line": 1064,
       "name": "make_handler.H._set_roles"
     },
     {
       "file": "aegis/server.py",
-      "line": 1061,
+      "line": 1084,
       "name": "make_handler.H._admin_recovery"
     },
     {
       "file": "aegis/server.py",
-      "line": 1079,
+      "line": 1102,
       "name": "make_handler.H._org_for_management"
     },
     {
       "file": "aegis/server.py",
-      "line": 1088,
+      "line": 1111,
       "name": "make_handler.H._tenancy_get"
     },
     {
       "file": "aegis/server.py",
-      "line": 1113,
+      "line": 1136,
       "name": "make_handler.H._tenancy_post"
     },
     {
       "file": "aegis/server.py",
-      "line": 1155,
+      "line": 1178,
       "name": "make_handler.H._clear_cookie"
     },
     {
       "file": "aegis/server.py",
-      "line": 1158,
+      "line": 1181,
       "name": "make_handler.H._dispatch"
     },
     {
       "file": "aegis/server.py",
-      "line": 1498,
+      "line": 1573,
       "name": "_build_server"
     },
     {
       "file": "aegis/server.py",
-      "line": 1538,
+      "line": 1613,
       "name": "_load_env_local"
     },
     {
       "file": "aegis/server.py",
-      "line": 1580,
+      "line": 1655,
       "name": "main"
     },
     {
       "file": "aegis/server.py",
-      "line": 1625,
+      "line": 1700,
       "name": "main._stop"
     },
     {
       "file": "aegis/service_diag.py",
-      "line": 28,
+      "line": 23,
+      "name": "sanitize_http_probe_payload"
+    },
+    {
+      "file": "aegis/service_diag.py",
+      "line": 52,
       "name": "_auth_error_only"
     },
     {
       "file": "aegis/service_diag.py",
-      "line": 66,
+      "line": 90,
       "name": "analyze_status_marker_report"
     },
     {
       "file": "aegis/service_diag.py",
-      "line": 104,
+      "line": 128,
       "name": "compute_finding_risk_score"
     },
     {
       "file": "aegis/service_diag.py",
-      "line": 143,
+      "line": 167,
       "name": "clean_target_text"
     },
     {
       "file": "aegis/service_diag.py",
-      "line": 162,
+      "line": 186,
       "name": "_hsts_effective"
     },
     {
       "file": "aegis/service_diag.py",
-      "line": 167,
+      "line": 191,
       "name": "_enrich_ev"
     },
     {
       "file": "aegis/service_diag.py",
-      "line": 192,
+      "line": 216,
       "name": "_managed_edge_server"
     },
     {
       "file": "aegis/service_diag.py",
-      "line": 198,
+      "line": 222,
       "name": "analyze_l1_service_response"
     },
     {
       "file": "aegis/service_diag.py",
-      "line": 677,
+      "line": 713,
       "name": "build_l2_candidates"
     },
     {
@@ -3914,117 +3939,137 @@
     },
     {
       "file": "aegis/workers/http_probe.py",
-      "line": 49,
+      "line": 55,
+      "name": "_split_cookie_parts"
+    },
+    {
+      "file": "aegis/workers/http_probe.py",
+      "line": 83,
+      "name": "sanitize_set_cookie_header"
+    },
+    {
+      "file": "aegis/workers/http_probe.py",
+      "line": 142,
       "name": "_extract_tls_info"
     },
     {
       "file": "aegis/workers/http_probe.py",
-      "line": 92,
+      "line": 164,
+      "name": "_SafeSocketIO.close"
+    },
+    {
+      "file": "aegis/workers/http_probe.py",
+      "line": 177,
+      "name": "_Response.__init__"
+    },
+    {
+      "file": "aegis/workers/http_probe.py",
+      "line": 206,
       "name": "_Alarm.__init__"
     },
     {
       "file": "aegis/workers/http_probe.py",
-      "line": 96,
+      "line": 210,
       "name": "_Alarm.arm"
     },
     {
       "file": "aegis/workers/http_probe.py",
-      "line": 99,
+      "line": 213,
       "name": "_Alarm.__call__"
     },
     {
       "file": "aegis/workers/http_probe.py",
-      "line": 104,
+      "line": 218,
       "name": "_Alarm.disarm"
     },
     {
       "file": "aegis/workers/http_probe.py",
-      "line": 109,
+      "line": 223,
       "name": "StageError.__init__"
     },
     {
       "file": "aegis/workers/http_probe.py",
-      "line": 114,
+      "line": 228,
       "name": "_kind"
     },
     {
       "file": "aegis/workers/http_probe.py",
-      "line": 134,
+      "line": 248,
       "name": "_stop_alarm"
     },
     {
       "file": "aegis/workers/http_probe.py",
-      "line": 158,
+      "line": 272,
       "name": "probe"
     },
     {
       "file": "aegis/workers/http_probe.py",
-      "line": 166,
+      "line": 280,
       "name": "probe.budget"
     },
     {
       "file": "aegis/workers/http_probe.py",
-      "line": 172,
+      "line": 286,
       "name": "probe.stage"
     },
     {
       "file": "aegis/workers/http_probe.py",
-      "line": 191,
+      "line": 305,
       "name": "probe.error_result"
     },
     {
       "file": "aegis/workers/http_probe.py",
-      "line": 204,
+      "line": 318,
       "name": "probe.deadline_error"
     },
     {
       "file": "aegis/workers/http_probe.py",
-      "line": 209,
+      "line": 323,
       "name": "probe.run"
     },
     {
       "file": "aegis/workers/http_probe.py",
-      "line": 228,
+      "line": 342,
       "name": "probe.run.send"
     },
     {
       "file": "aegis/workers/http_probe.py",
-      "line": 237,
+      "line": 351,
       "name": "probe.run.first_byte"
     },
     {
       "file": "aegis/workers/http_probe.py",
-      "line": 242,
+      "line": 356,
       "name": "probe.run.body"
     },
     {
       "file": "aegis/workers/http_probe.py",
-      "line": 286,
+      "line": 409,
       "name": "probe.rearm"
     },
     {
       "file": "aegis/workers/http_probe.py",
-      "line": 311,
+      "line": 434,
       "name": "probe.swallowed"
     },
     {
       "file": "aegis/workers/http_probe.py",
-      "line": 364,
+      "line": 487,
       "name": "_progress"
     },
     {
       "file": "aegis/workers/http_probe.py",
-      "line": 377,
+      "line": 500,
       "name": "_hold"
     },
     {
       "file": "aegis/workers/http_probe.py",
-      "line": 382,
+      "line": 505,
       "name": "_seconds"
     },
     {
       "file": "aegis/workers/http_probe.py",
-      "line": 389,
+      "line": 512,
       "name": "main"
     },
     {
@@ -4082,7 +4127,7 @@
     {
       "method": "GET",
       "file": "aegis/server.py",
-      "line": 393,
+      "line": 411,
       "handler": "make_handler.H.do_GET",
       "condition": "p == '/api/auth/me'",
       "literals": [
@@ -4092,7 +4137,7 @@
     {
       "method": "GET",
       "file": "aegis/server.py",
-      "line": 419,
+      "line": 439,
       "handler": "make_handler.H.do_GET",
       "condition": "p == '/api/health'",
       "literals": [
@@ -4102,7 +4147,7 @@
     {
       "method": "GET",
       "file": "aegis/server.py",
-      "line": 423,
+      "line": 443,
       "handler": "make_handler.H.do_GET",
       "condition": "p == '/api/operators'",
       "literals": [
@@ -4112,7 +4157,7 @@
     {
       "method": "GET",
       "file": "aegis/server.py",
-      "line": 446,
+      "line": 466,
       "handler": "make_handler.H.do_GET",
       "condition": "p == '/api/system/status'",
       "literals": [
@@ -4122,7 +4167,7 @@
     {
       "method": "GET",
       "file": "aegis/server.py",
-      "line": 466,
+      "line": 486,
       "handler": "make_handler.H.do_GET",
       "condition": "tenancy is not None and p.startswith('/api/orgs')",
       "literals": [
@@ -4132,7 +4177,7 @@
     {
       "method": "GET",
       "file": "aegis/server.py",
-      "line": 473,
+      "line": 493,
       "handler": "make_handler.H.do_GET",
       "condition": "p.startswith(('/api/assets', '/api/assessments/'))",
       "literals": [
@@ -4143,7 +4188,7 @@
     {
       "method": "GET",
       "file": "aegis/server.py",
-      "line": 521,
+      "line": 541,
       "handler": "make_handler.H.do_GET",
       "condition": "p == '/api/router/status'",
       "literals": [
@@ -4153,7 +4198,7 @@
     {
       "method": "GET",
       "file": "aegis/server.py",
-      "line": 533,
+      "line": 553,
       "handler": "make_handler.H.do_GET",
       "condition": "p == '/api/l2-profiles'",
       "literals": [
@@ -4163,7 +4208,7 @@
     {
       "method": "GET",
       "file": "aegis/server.py",
-      "line": 548,
+      "line": 568,
       "handler": "make_handler.H.do_GET",
       "condition": "p in JOB_ROUTES",
       "literals": []
@@ -4171,7 +4216,7 @@
     {
       "method": "GET",
       "file": "aegis/server.py",
-      "line": 551,
+      "line": 571,
       "handler": "make_handler.H.do_GET",
       "condition": "p == '/api/cve/status'",
       "literals": [
@@ -4181,7 +4226,7 @@
     {
       "method": "GET",
       "file": "aegis/server.py",
-      "line": 480,
+      "line": 500,
       "handler": "make_handler.H.do_GET",
       "condition": "p.endswith('/events')",
       "literals": []
@@ -4189,7 +4234,7 @@
     {
       "method": "GET",
       "file": "aegis/server.py",
-      "line": 482,
+      "line": 502,
       "handler": "make_handler.H.do_GET",
       "condition": "p in {f'/api/assessments/{bound[0].a.id}', f'/api/assessments/{bound[0].a.id}/logs', f'/api/assessments/{bound[0].a.id}/report', f'/api/assessments/{bound[0].a.id}/remotion'}",
       "literals": [
@@ -4203,7 +4248,7 @@
     {
       "method": "GET",
       "file": "aegis/server.py",
-      "line": 499,
+      "line": 519,
       "handler": "make_handler.H.do_GET",
       "condition": "p == f'/api/assessments/{bound[0].a.id}'",
       "literals": [
@@ -4214,7 +4259,7 @@
     {
       "method": "GET",
       "file": "aegis/server.py",
-      "line": 501,
+      "line": 521,
       "handler": "make_handler.H.do_GET",
       "condition": "p.endswith('/logs')",
       "literals": []
@@ -4222,7 +4267,7 @@
     {
       "method": "GET",
       "file": "aegis/server.py",
-      "line": 503,
+      "line": 523,
       "handler": "make_handler.H.do_GET",
       "condition": "p.endswith('/report')",
       "literals": []
@@ -4230,7 +4275,7 @@
     {
       "method": "GET",
       "file": "aegis/server.py",
-      "line": 568,
+      "line": 588,
       "handler": "make_handler.H._get_org",
       "condition": "p == '/api/assets'",
       "literals": [
@@ -4240,7 +4285,7 @@
     {
       "method": "GET",
       "file": "aegis/server.py",
-      "line": 570,
+      "line": 590,
       "handler": "make_handler.H._get_org",
       "condition": "p == '/api/assets/secrets-status'",
       "literals": [
@@ -4250,7 +4295,7 @@
     {
       "method": "GET",
       "file": "aegis/server.py",
-      "line": 574,
+      "line": 594,
       "handler": "make_handler.H._get_org",
       "condition": "p == f'/api/assessments/{svc.a.id}'",
       "literals": [
@@ -4261,7 +4306,7 @@
     {
       "method": "GET",
       "file": "aegis/server.py",
-      "line": 576,
+      "line": 596,
       "handler": "make_handler.H._get_org",
       "condition": "p == f'/api/assessments/{svc.a.id}/logs'",
       "literals": [
@@ -4272,7 +4317,7 @@
     {
       "method": "GET",
       "file": "aegis/server.py",
-      "line": 578,
+      "line": 598,
       "handler": "make_handler.H._get_org",
       "condition": "p == f'/api/assessments/{svc.a.id}/artex/llm-preview'",
       "literals": [
@@ -4283,7 +4328,7 @@
     {
       "method": "GET",
       "file": "aegis/server.py",
-      "line": 583,
+      "line": 603,
       "handler": "make_handler.H._get_org",
       "condition": "p == f'/api/assessments/{svc.a.id}/report'",
       "literals": [
@@ -4294,7 +4339,7 @@
     {
       "method": "GET",
       "file": "aegis/server.py",
-      "line": 588,
+      "line": 608,
       "handler": "make_handler.H._get_org",
       "condition": "p == f'/api/assessments/{svc.a.id}/remotion'",
       "literals": [
@@ -4305,7 +4350,7 @@
     {
       "method": "GET",
       "file": "aegis/server.py",
-      "line": 597,
+      "line": 617,
       "handler": "make_handler.H._get_org",
       "condition": "p == f'/api/assessments/{svc.a.id}/events'",
       "literals": [
@@ -4316,7 +4361,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 714,
+      "line": 734,
       "handler": "make_handler.H.do_POST",
       "condition": "p == '/api/auth/login'",
       "literals": [
@@ -4326,7 +4371,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 716,
+      "line": 736,
       "handler": "make_handler.H.do_POST",
       "condition": "p == '/api/auth/register'",
       "literals": [
@@ -4336,7 +4381,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 718,
+      "line": 738,
       "handler": "make_handler.H.do_POST",
       "condition": "p == '/api/auth/logout'",
       "literals": [
@@ -4346,7 +4391,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 747,
+      "line": 767,
       "handler": "make_handler.H.do_POST",
       "condition": "p == '/api/auth/password'",
       "literals": [
@@ -4356,7 +4401,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 749,
+      "line": 769,
       "handler": "make_handler.H.do_POST",
       "condition": "p == '/api/auth/totp/enroll'",
       "literals": [
@@ -4366,7 +4411,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 751,
+      "line": 771,
       "handler": "make_handler.H.do_POST",
       "condition": "p == '/api/auth/totp/confirm'",
       "literals": [
@@ -4376,7 +4421,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 753,
+      "line": 773,
       "handler": "make_handler.H.do_POST",
       "condition": "p == '/api/auth/totp/disable'",
       "literals": [
@@ -4386,7 +4431,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 755,
+      "line": 775,
       "handler": "make_handler.H.do_POST",
       "condition": "p == '/api/operators/roles'",
       "literals": [
@@ -4396,7 +4441,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 757,
+      "line": 777,
       "handler": "make_handler.H.do_POST",
       "condition": "p in ('/api/operators/unlock', '/api/operators/reset-mfa')",
       "literals": [
@@ -4407,7 +4452,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 760,
+      "line": 780,
       "handler": "make_handler.H.do_POST",
       "condition": "p.startswith('/api/orgs') or p == '/api/invites/accept'",
       "literals": [
@@ -4418,7 +4463,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 770,
+      "line": 790,
       "handler": "make_handler.H.do_POST",
       "condition": "p.endswith('/lab-mode')",
       "literals": []
@@ -4426,7 +4471,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 775,
+      "line": 795,
       "handler": "make_handler.H.do_POST",
       "condition": "p not in PLATFORM_POST_ROUTES",
       "literals": []
@@ -4434,15 +4479,15 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 781,
+      "line": 804,
       "handler": "make_handler.H.do_POST",
-      "condition": "not REAL_SERVICE_DIAGNOSIS and self._touches_real_site(p, osvc)",
+      "condition": "(not REAL_SERVICE_DIAGNOSIS or tenancy is not None) and self._touches_real_site(p, osvc)",
       "literals": []
     },
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 791,
+      "line": 814,
       "handler": "make_handler.H.do_POST",
       "condition": "not {'operator', 'approver', 'admin'} & set(osess.roles) and (not p.endswith(('/emergency-stop', '/pause')))",
       "literals": []
@@ -4450,15 +4495,15 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 798,
+      "line": 821,
       "handler": "make_handler.H.do_POST",
-      "condition": "REAL_SITE_L1_ONLY and (not real_site_traffic) and (p.endswith(('/start', '/restart', '/resume')) or artex_item)",
+      "condition": "read_only_real and (not real_site_traffic) and (p.endswith(('/start', '/restart', '/resume')) or artex_item)",
       "literals": []
     },
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 825,
+      "line": 848,
       "handler": "make_handler.H.do_POST",
       "condition": "p.endswith('/chat')",
       "literals": []
@@ -4466,7 +4511,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 838,
+      "line": 861,
       "handler": "make_handler.H.do_POST",
       "condition": "p.endswith('/artex/plan')",
       "literals": []
@@ -4474,7 +4519,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 853,
+      "line": 876,
       "handler": "make_handler.H.do_POST",
       "condition": "p.endswith('/artex/plan') and mode != 'direct' and (mode != 'gateway-preview') and isinstance(body.get('llm_approval'), dict)",
       "literals": []
@@ -4482,7 +4527,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 807,
+      "line": 830,
       "handler": "make_handler.H.do_POST",
       "condition": "p == '/api/assets/verify-ownership'",
       "literals": [
@@ -4492,7 +4537,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 811,
+      "line": 834,
       "handler": "make_handler.H.do_POST",
       "condition": "p.endswith(('/start', '/restart', '/resume')) or artex_item",
       "literals": []
@@ -4500,7 +4545,7 @@
     {
       "method": "GET",
       "file": "aegis/server.py",
-      "line": 1094,
+      "line": 1117,
       "handler": "make_handler.H._tenancy_get",
       "condition": "p == '/api/orgs'",
       "literals": [
@@ -4510,7 +4555,7 @@
     {
       "method": "GET",
       "file": "aegis/server.py",
-      "line": 1104,
+      "line": 1127,
       "handler": "make_handler.H._tenancy_get",
       "condition": "p == '/api/orgs/members'",
       "literals": [
@@ -4520,7 +4565,7 @@
     {
       "method": "GET",
       "file": "aegis/server.py",
-      "line": 1107,
+      "line": 1130,
       "handler": "make_handler.H._tenancy_get",
       "condition": "p == '/api/orgs/invites'",
       "literals": [
@@ -4530,7 +4575,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1116,
+      "line": 1139,
       "handler": "make_handler.H._tenancy_post",
       "condition": "p == '/api/orgs'",
       "literals": [
@@ -4540,7 +4585,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1121,
+      "line": 1144,
       "handler": "make_handler.H._tenancy_post",
       "condition": "p == '/api/invites/accept'",
       "literals": [
@@ -4550,7 +4595,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1128,
+      "line": 1151,
       "handler": "make_handler.H._tenancy_post",
       "condition": "p == '/api/orgs/members/roles'",
       "literals": [
@@ -4560,7 +4605,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1134,
+      "line": 1157,
       "handler": "make_handler.H._tenancy_post",
       "condition": "p == '/api/orgs/members/remove'",
       "literals": [
@@ -4570,7 +4615,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1139,
+      "line": 1162,
       "handler": "make_handler.H._tenancy_post",
       "condition": "p == '/api/orgs/invites'",
       "literals": [
@@ -4580,7 +4625,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1147,
+      "line": 1170,
       "handler": "make_handler.H._tenancy_post",
       "condition": "p == '/api/orgs/invites/revoke'",
       "literals": [
@@ -4590,7 +4635,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1162,
+      "line": 1185,
       "handler": "make_handler.H._dispatch",
       "condition": "not p.endswith(('/emergency-stop', '/pause'))",
       "literals": []
@@ -4598,7 +4643,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1184,
+      "line": 1207,
       "handler": "make_handler.H._dispatch",
       "condition": "p == '/api/assets'",
       "literals": [
@@ -4608,7 +4653,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1195,
+      "line": 1221,
       "handler": "make_handler.H._dispatch",
       "condition": "p == '/api/assets/challenge'",
       "literals": [
@@ -4618,7 +4663,15 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1217,
+      "line": 1550,
+      "handler": "make_handler.H._dispatch",
+      "condition": "tenancy is not None and p in PLATFORM_POST_ROUTES",
+      "literals": []
+    },
+    {
+      "method": "POST",
+      "file": "aegis/server.py",
+      "line": 1243,
       "handler": "make_handler.H._dispatch",
       "condition": "p == '/api/assets/google/start'",
       "literals": [
@@ -4628,7 +4681,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1252,
+      "line": 1278,
       "handler": "make_handler.H._dispatch",
       "condition": "p == '/api/assets/google/finish'",
       "literals": [
@@ -4638,7 +4691,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1288,
+      "line": 1314,
       "handler": "make_handler.H._dispatch",
       "condition": "p == '/api/assets/verify-ownership'",
       "literals": [
@@ -4648,7 +4701,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1308,
+      "line": 1334,
       "handler": "make_handler.H._dispatch",
       "condition": "p == '/api/assets/confirm-scope'",
       "literals": [
@@ -4658,7 +4711,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1329,
+      "line": 1355,
       "handler": "make_handler.H._dispatch",
       "condition": "p == '/api/assets/secrets'",
       "literals": [
@@ -4668,7 +4721,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1345,
+      "line": 1374,
       "handler": "make_handler.H._dispatch",
       "condition": "p == '/api/assets/delete'",
       "literals": [
@@ -4678,7 +4731,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1351,
+      "line": 1384,
       "handler": "make_handler.H._dispatch",
       "condition": "p == '/api/assets/select'",
       "literals": [
@@ -4688,7 +4741,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1354,
+      "line": 1390,
       "handler": "make_handler.H._dispatch",
       "condition": "p == '/api/l2-profiles/accept'",
       "literals": [
@@ -4698,7 +4751,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1360,
+      "line": 1396,
       "handler": "make_handler.H._dispatch",
       "condition": "p in ('/api/router/verify', '/api/cve/sync') and (not {'approver', 'admin'} & set(sess.roles))",
       "literals": [
@@ -4709,7 +4762,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1364,
+      "line": 1400,
       "handler": "make_handler.H._dispatch",
       "condition": "p == '/api/router/verify'",
       "literals": [
@@ -4719,7 +4772,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1367,
+      "line": 1403,
       "handler": "make_handler.H._dispatch",
       "condition": "p in JOB_ROUTES",
       "literals": []
@@ -4727,7 +4780,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1372,
+      "line": 1408,
       "handler": "make_handler.H._dispatch",
       "condition": "p == '/api/system/verify-controls'",
       "literals": [
@@ -4737,7 +4790,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1379,
+      "line": 1415,
       "handler": "make_handler.H._dispatch",
       "condition": "p == '/api/cve/sync'",
       "literals": [
@@ -4747,7 +4800,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1391,
+      "line": 1427,
       "handler": "make_handler.H._dispatch",
       "condition": "p == base + '/start'",
       "literals": []
@@ -4755,7 +4808,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1395,
+      "line": 1431,
       "handler": "make_handler.H._dispatch",
       "condition": "p == base + '/restart'",
       "literals": []
@@ -4763,7 +4816,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1399,
+      "line": 1437,
       "handler": "make_handler.H._dispatch",
       "condition": "p == base + '/pause'",
       "literals": []
@@ -4771,7 +4824,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1409,
+      "line": 1447,
       "handler": "make_handler.H._dispatch",
       "condition": "p == base + '/resume'",
       "literals": []
@@ -4779,7 +4832,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1412,
+      "line": 1450,
       "handler": "make_handler.H._dispatch",
       "condition": "p == base + '/emergency-stop'",
       "literals": []
@@ -4787,7 +4840,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1419,
+      "line": 1457,
       "handler": "make_handler.H._dispatch",
       "condition": "p == base + '/verify-finding'",
       "literals": []
@@ -4795,7 +4848,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1430,
+      "line": 1472,
       "handler": "make_handler.H._dispatch",
       "condition": "p == base + '/artex/plan'",
       "literals": []
@@ -4803,7 +4856,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1439,
+      "line": 1485,
       "handler": "make_handler.H._dispatch",
       "condition": "(m := re.fullmatch(base + '/artex/items/([A-Za-z0-9_]{1,80})/execute', p))",
       "literals": []
@@ -4811,7 +4864,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1446,
+      "line": 1496,
       "handler": "make_handler.H._dispatch",
       "condition": "p == base + '/request-l2'",
       "literals": []
@@ -4819,7 +4872,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1455,
+      "line": 1508,
       "handler": "make_handler.H._dispatch",
       "condition": "p == base + '/lab-mode'",
       "literals": []
@@ -4827,7 +4880,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1460,
+      "line": 1513,
       "handler": "make_handler.H._dispatch",
       "condition": "p == base + '/verify-fix'",
       "literals": []
@@ -4835,7 +4888,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1464,
+      "line": 1520,
       "handler": "make_handler.H._dispatch",
       "condition": "p == base + '/chat'",
       "literals": []
@@ -4843,7 +4896,7 @@
     {
       "method": "POST",
       "file": "aegis/server.py",
-      "line": 1474,
+      "line": 1533,
       "handler": "make_handler.H._dispatch",
       "condition": "(m := re.fullmatch(base + '/approvals/(req_[0-9a-f]+)', p))",
       "literals": []
@@ -4888,13 +4941,13 @@
     },
     {
       "file": "aegis/assessment.py",
-      "line": 1083,
+      "line": 1084,
       "function": "AssessmentService._require_addresses_covered_by_proof",
       "call": "fetch"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 4102,
+      "line": 4103,
       "function": "AssessmentService._reset_artex_db",
       "call": "subprocess.run"
     },
@@ -4906,7 +4959,7 @@
     },
     {
       "file": "aegis/cve.py",
-      "line": 268,
+      "line": 272,
       "function": "_default_fetcher",
       "call": "urllib.request.urlopen"
     },
@@ -5044,19 +5097,19 @@
     },
     {
       "file": "aegis/workers/http_probe.py",
-      "line": 229,
+      "line": 343,
       "function": "probe",
       "call": "http.client.HTTPConnection"
     },
     {
       "file": "aegis/workers/http_probe.py",
-      "line": 233,
+      "line": 347,
       "function": "probe",
       "call": "conn.request"
     },
     {
       "file": "aegis/workers/http_probe.py",
-      "line": 210,
+      "line": 324,
       "function": "probe",
       "call": "socket.create_connection"
     },
@@ -5094,49 +5147,49 @@
     },
     {
       "file": "aegis/assessment.py",
-      "line": 489,
+      "line": 490,
       "function": "AssessmentService.__init__",
       "call": "threading.Thread(target=AssessmentService._expiry_watch, args=(weakref.ref(self),), daemon=True, name='scope-expiry').start"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 489,
+      "line": 490,
       "function": "AssessmentService.__init__",
       "call": "threading.Thread"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 859,
+      "line": 860,
       "function": "AssessmentService._retry_cleanup_locked",
       "call": "threading.Thread(target=run, daemon=True, name='cgroup-cleanup').start"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 859,
+      "line": 860,
       "function": "AssessmentService._retry_cleanup_locked",
       "call": "threading.Thread"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3530,
+      "line": 3531,
       "function": "AssessmentService.start",
       "call": "threading.Thread"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3532,
+      "line": 3533,
       "function": "AssessmentService.start",
       "call": "self._thread.start"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3560,
+      "line": 3561,
       "function": "AssessmentService.restart",
       "call": "threading.Thread"
     },
     {
       "file": "aegis/assessment.py",
-      "line": 3562,
+      "line": 3563,
       "function": "AssessmentService.restart",
       "call": "self._thread.start"
     },
@@ -5196,13 +5249,13 @@
     },
     {
       "file": "aegis/server.py",
-      "line": 1627,
+      "line": 1702,
       "function": "main",
       "call": "threading.Thread(target=srv.shutdown, daemon=True).start"
     },
     {
       "file": "aegis/server.py",
-      "line": 1627,
+      "line": 1702,
       "function": "main",
       "call": "threading.Thread"
     },
@@ -5320,7 +5373,7 @@
     },
     {
       "file": "web/src/app/findings/[id]/page.tsx",
-      "line": 33,
+      "line": 36,
       "source": "const updated = await postJSON<Snapshot>(`/api/assessments/${aid}/verify-finding`, {"
     },
     {
@@ -5425,12 +5478,12 @@
     },
     {
       "file": "web/src/components/assessment/RealServicePanel.tsx",
-      "line": 25,
+      "line": 27,
       "source": "const res = await postJSON<{ secrets_status: SecretsStatus; snapshot: Snapshot }>(\"/api/assets/secrets\", {"
     },
     {
       "file": "web/src/components/assessment/RealServicePanel.tsx",
-      "line": 45,
+      "line": 47,
       "source": "const data = await getJSON<unknown>(`/api/assessments/${snap.id}/remotion`);"
     },
     {
@@ -5445,12 +5498,12 @@
     },
     {
       "file": "web/src/components/layout/SessionProvider.tsx",
-      "line": 24,
+      "line": 33,
       "source": "const me = await getJSON<{ session: SessionInfo | null; orgs?: OrgInfo[]; multi_tenant?: boolean; self_registration?: boolean; google_ownership?: boolean; optional_status_check?: boolean }>(\"/api/auth/me\");"
     },
     {
       "file": "web/src/components/layout/SessionProvider.tsx",
-      "line": 45,
+      "line": 125,
       "source": "const res = await fetch(\"/api/auth/logout\", { method: \"POST\", headers: { \"X-Aegis-Request\": \"1\" } }).catch(() => null);"
     },
     {
@@ -5701,6 +5754,16 @@
       "name": "fmtTime"
     },
     {
+      "file": "web/src/lib/labels.ts",
+      "line": 71,
+      "name": "completedHeadline"
+    },
+    {
+      "file": "web/src/lib/labels.ts",
+      "line": 84,
+      "name": "threatFeedSummary"
+    },
+    {
       "file": "web/src/lib/learningHistory.ts",
       "line": 17,
       "name": "subscribeLearning"
@@ -5876,6 +5939,11 @@
       "name": "flushList"
     },
     {
+      "file": "web/src/lib/sessionResponse.ts",
+      "line": 2,
+      "name": "shouldApplySessionResponse"
+    },
+    {
       "file": "web/src/lib/statusNotices.ts",
       "line": 19,
       "name": "stoppedHeadline"
@@ -5992,17 +6060,17 @@
     },
     {
       "file": "web/src/app/findings/[id]/page.tsx",
-      "line": 18,
+      "line": 20,
       "name": "Detail"
     },
     {
       "file": "web/src/app/findings/[id]/page.tsx",
-      "line": 29,
+      "line": 32,
       "name": "runLiveVerify"
     },
     {
       "file": "web/src/app/findings/[id]/page.tsx",
-      "line": 118,
+      "line": 127,
       "name": "FindingPage"
     },
     {
@@ -6042,12 +6110,12 @@
     },
     {
       "file": "web/src/app/login/page.tsx",
-      "line": 283,
+      "line": 287,
       "name": "pendingInvite"
     },
     {
       "file": "web/src/app/login/page.tsx",
-      "line": 292,
+      "line": 296,
       "name": "afterLogin"
     },
     {
@@ -6252,22 +6320,22 @@
     },
     {
       "file": "web/src/components/assessment/RealServicePanel.tsx",
-      "line": 8,
+      "line": 9,
       "name": "RealServicePanel"
     },
     {
       "file": "web/src/components/assessment/RealServicePanel.tsx",
-      "line": 19,
+      "line": 21,
       "name": "save"
     },
     {
       "file": "web/src/components/assessment/RealServicePanel.tsx",
-      "line": 42,
+      "line": 44,
       "name": "exportVideoData"
     },
     {
       "file": "web/src/components/assessment/RealServicePanel.tsx",
-      "line": 63,
+      "line": 65,
       "name": "tokenLabel"
     },
     {
@@ -6362,8 +6430,18 @@
     },
     {
       "file": "web/src/components/layout/SessionProvider.tsx",
-      "line": 11,
+      "line": 14,
       "name": "SessionProvider"
+    },
+    {
+      "file": "web/src/components/layout/SessionProvider.tsx",
+      "line": 70,
+      "name": "onStorage"
+    },
+    {
+      "file": "web/src/components/layout/SessionProvider.tsx",
+      "line": 120,
+      "name": "notify"
     },
     {
       "file": "web/src/components/layout/Shell.tsx",
@@ -6372,7 +6450,7 @@
     },
     {
       "file": "web/src/components/layout/WorkspaceHeader.tsx",
-      "line": 19,
+      "line": 20,
       "name": "WorkspaceHeader"
     },
     {

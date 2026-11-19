@@ -156,6 +156,12 @@ export interface CveStatus {
   kev_count: number;
   last_synced_at: number;
   sync_source: string;
+  freshness?: "fresh" | "stale" | "unfetched";
+  stale?: boolean;
+  nvd_sha256?: string | null;
+  kev_sha256?: string | null;
+  last_sync_error?: string | null;
+  last_error_at?: number | null;
   cves: {
     id: string;
     product: string;

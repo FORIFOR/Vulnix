@@ -1,12 +1,22 @@
 # 処理系統監査と段階的な最適化
 
+## PR #85の追加境界（2026-11-19 JST）
+
+[現行フローP52〜P55](CURRENT_FLOW.md)に、外部AI解説の監査予算履歴（P52）、ログアウト後に届く古い認証応答（P53）、対象サイトが新規発行した `Set-Cookie` 秘密値の非保存（P54）、CVE照合の4条件分離と鮮度・完全性管理（P55）を追記した。P52は監査JSONLだけの有効な旧接頭辞への切り戻しを、別の累積予約額と照合して拒否する。両ファイル同時の切り戻しと安全停止後の自動復旧は未対応。P53はブラウザの`/api/auth/me`応答を要求順に適用し、ログアウト開始時に同一オリジンの別タブでも旧セッション表示を隠す。両幅の遅延200応答ブラウザ試験はローカル模擬で成功し、公開βやCookie到着順の証明ではない。P54は `http_probe` Worker・Gateway・`AssessmentService`・`enforce_verdict` の4境界で `Set-Cookie` の生値を除去し、Cookie名と保護属性のみを保持する。機械抽出はバックエンド関数824、API分岐82、通信/プロセス呼出し38、Web関数208件を記録した。
+
+`origin/main` からの変更ファイル名208件と[ファイル別台帳](PR85_FILE_REVIEW.md)の208件を機械照合し、欠落・余分な記載は各0件。台帳の確認済み185件（問題を修正・再検証36件、コードとテストを確認46件、対象経路を照合103件）と分類のみ23件は、正式GitHubレビュー（0件）の完了を意味しない。
+
 ## PR #85の動的経路・失効再監査（2026-11-19 JST）
 
 [API到達性表](PR85_API_REACHABILITY.md)で`server.py`の動的パス、組織・管理者・認証関連API、Webの利用元、CSRF、処理中失効の確認範囲を照合した。停止を許したまま応答を隠すP46、CVE状態の送信時にセッションを再確認するP47、所有確認保存後の応答を再検査するP48を追加した。`/pause`と`/emergency-stop`では`_bind`後の失効で停止情報を200で返す競合を赤テストで再現し、401/403へ修正した。所有確認中、レポート生成中、ログアウト、組織除名、SSE再接続は[390px/1280pxの模擬ブラウザ記録](PR85_REVOKE_BROWSER_QA.md)へ分けて記す。全動的分岐と実行時外部送信先の完全網羅は未証明。
 
-最新の開発コードとP01〜P48の対応表は[CURRENT_FLOW.md](CURRENT_FLOW.md)を参照。以下は監査時点の履歴を含む。後続DraftではP15のSSEへ通し番号付き心拍を追加し、正常な接続での静穏時再取得を削減した。390px幅・独立ラボ・Next.js本番ビルドの24秒待機でAPI要求12→6回、SSE遮断時にはsnapshotと監査ログの代替取得が続いた。[測定値](STATUS_EXPOSURE_INTEGRATION.md)は各1回であり、Cloudflare経由の遅延や失効通知の遅れは未測定。
+最新の開発コードとP01〜P53の対応表は[CURRENT_FLOW.md](CURRENT_FLOW.md)を参照。以下は監査時点の履歴を含む。後続DraftではP15のSSEへ通し番号付き心拍を追加し、正常な接続での静穏時再取得を削減した。390px幅・独立ラボ・Next.js本番ビルドの24秒待機でAPI要求12→6回、SSE遮断時にはsnapshotと監査ログの代替取得が続いた。[測定値](STATUS_EXPOSURE_INTEGRATION.md)は各1回であり、Cloudflare経由の遅延や失効通知の遅れは未測定。
 
 対象: `codex/flow-audit-gates`（基礎監査は`codex/process-chain-optimization`）。起点は [REQUEST_FLOW.md](REQUEST_FLOW.md)。実コードの機械抽出結果は [PROCESS_INVENTORY.json](PROCESS_INVENTORY.json)、再生成は `python3 scripts/flow_inventory.py > docs/PROCESS_INVENTORY.json`。この抽出は**ソースの条件式・定義・呼び出し箇所の一覧**であり、動的に構成するパスと環境変数の実行先をすべて解決した呼び出しグラフではない。以下の手動追跡と組み合わせて読む。
+
+PR #85の送信時権限監査後、`_authorized_platform_read`と共通POSTの分岐を含む現作業ツリーで再抽出した。関数818・API分岐82・通信/プロセス呼出し38件。共通プラットフォームPOSTの失効応答を[現行フローP51](CURRENT_FLOW.md)と[API到達性表](PR85_API_REACHABILITY.md)に対応させた。これらは静的抽出とループバックの模擬結果であり、共通ジョブの実行時送信先や全経路の到達性を保証しない。
+
+接続確認では`AssessmentService.verify_planner_connections`から`router.verify_planner_connections()`を呼ぶ。旧実装はURL引数がない場合に`AbliterationBackend.from_env()`を参照し、設定済み外部先へ提案・解説を送信し得た。現実装はURLを明示しない通常API経路で`127.0.0.1`の模擬サーバーを起動し、`endpoint_mode=local_openai_server`を返す。これはモデルアダプタの疎通であり、実Abliteration AIの接続・判断・費用の検証ではない。Pythonから明示URLを渡す別経路の許可・費用境界を自動的に保証するものでもない。
 
 ## PR #85統合候補での機械抽出更新（2026-11-18）
 

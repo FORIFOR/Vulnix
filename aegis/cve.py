@@ -9,6 +9,7 @@ It embodies the project's first principle — separate detection from proof:
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import time
@@ -16,6 +17,9 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
+
+STALE_SECONDS = 7 * 86400
+
 
 
 def parse_version(v: str) -> tuple[int, ...]:
@@ -269,6 +273,24 @@ def _default_fetcher(url: str) -> bytes:
         return r.read()
 
 
+def banner_has_version(banner: str) -> bool:
+    """True when at least one 'Product/x.y.z' version pair is present in the banner."""
+    return _BANNER.search(str(banner or "")[:MAX_BANNER_CHARS]) is not None
+
+
+def _file_sha256(path: Path) -> str | None:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def _json_sha256(obj: object) -> str:
+    return hashlib.sha256(
+        json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
 class FeedMonitor:
     """Continuous CVE & CISA KEV feed monitor and asset vulnerability correlator."""
 
@@ -281,9 +303,21 @@ class FeedMonitor:
         self.last_synced_at: float = time.time()
         self.sync_source: str = "bundled_nvd_and_cisa_kev"
         self.sync_count: int = 0
+        self.nvd_sha256: str | None = _file_sha256(FEED_PATH) if catalog is None else None
+        self.kev_sha256: str | None = _file_sha256(KEV_PATH) if kev is None else None
+        self.last_sync_error: str | None = None
+        self.last_error_at: float | None = None
 
     def ingest_payloads(self, *, nvd_obj: dict | None = None, kev_obj: dict | None = None,
                         source: str = "manual_ingest") -> dict:
+        if nvd_obj is not None and not isinstance(nvd_obj, dict):
+            self.last_sync_error = "invalid_nvd_payload"
+            self.last_error_at = time.time()
+            return self.status()
+        if kev_obj is not None and not isinstance(kev_obj, dict):
+            self.last_sync_error = "invalid_kev_payload"
+            self.last_error_at = time.time()
+            return self.status()
         if nvd_obj is not None:
             parsed = load_nvd(nvd_obj)
             if parsed:
@@ -291,19 +325,43 @@ class FeedMonitor:
                 for c in parsed:
                     by_id[c.id] = c
                 self.catalog = tuple(by_id.values())
+                self.nvd_sha256 = _json_sha256(nvd_obj)
         if kev_obj is not None:
             self.kev.update(load_cisa_kev(kev_obj))
+            self.kev_sha256 = _json_sha256(kev_obj)
         self.last_synced_at = time.time()
         self.sync_source = source
         self.sync_count += 1
+        self.last_sync_error = None
+        self.last_error_at = None
         return self.status()
 
     def sync_from_urls(self, *, nvd_url: str | None = None, kev_url: str | None = None,
                        fetcher: Callable[[str], bytes] | None = None) -> dict:
         fn = fetcher or self._fetcher
-        nvd_obj = json.loads(fn(nvd_url)) if nvd_url else None
-        kev_obj = json.loads(fn(kev_url)) if kev_url else None
-        return self.ingest_payloads(nvd_obj=nvd_obj, kev_obj=kev_obj, source="remote_feed_sync")
+        try:
+            nvd_raw = fn(nvd_url) if nvd_url else None
+            kev_raw = fn(kev_url) if kev_url else None
+            nvd_obj = json.loads(nvd_raw) if nvd_raw is not None else None
+            kev_obj = json.loads(kev_raw) if kev_raw is not None else None
+            if (nvd_obj is not None and not isinstance(nvd_obj, dict)) or (
+                kev_obj is not None and not isinstance(kev_obj, dict)
+            ):
+                raise ValueError("feed payload is not a JSON object")
+        except Exception as e:  # noqa: BLE001 - preserve previous catalog and record sync failure
+            self.last_sync_error = f"{type(e).__name__}: {str(e)[:120]}"
+            self.last_error_at = time.time()
+            return self.status()
+        out = self.ingest_payloads(nvd_obj=nvd_obj, kev_obj=kev_obj, source="remote_feed_sync")
+        if nvd_raw is not None:
+            self.nvd_sha256 = hashlib.sha256(
+                nvd_raw if isinstance(nvd_raw, bytes) else str(nvd_raw).encode("utf-8")
+            ).hexdigest()
+        if kev_raw is not None:
+            self.kev_sha256 = hashlib.sha256(
+                kev_raw if isinstance(kev_raw, bytes) else str(kev_raw).encode("utf-8")
+            ).hexdigest()
+        return self.status() if (nvd_raw is not None or kev_raw is not None) else out
 
     def correlate_assets(self, asset_banners: dict[str, str] | list[dict]) -> dict[str, list[dict]] | list[dict]:
         """Match asset banners against the active CVE + KEV catalogs."""
@@ -352,13 +410,27 @@ class FeedMonitor:
             })
         return results
 
-    def status(self) -> dict:
+    def status(self, *, now: float | None = None) -> dict:
+        cur = time.time() if now is None else now
+        age_s = max(0.0, cur - self.last_synced_at) if self.last_synced_at else None
+        is_stale = age_s is None or age_s > STALE_SECONDS
+        freshness = (
+            "unfetched" if not self.last_synced_at or (len(self.catalog) == 0 and len(self.kev) == 0)
+            else "stale" if is_stale
+            else "fresh"
+        )
         return {
             "cve_count": len(self.catalog),
             "kev_count": len(self.kev),
             "last_synced_at": self.last_synced_at,
             "sync_source": self.sync_source,
             "sync_count": self.sync_count,
+            "freshness": freshness,
+            "stale": is_stale,
+            "nvd_sha256": self.nvd_sha256,
+            "kev_sha256": self.kev_sha256,
+            "last_sync_error": self.last_sync_error,
+            "last_error_at": self.last_error_at,
             "cves": [
                 {
                     "id": c.id,
