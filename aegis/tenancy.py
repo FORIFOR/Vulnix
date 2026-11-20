@@ -34,6 +34,7 @@ import time
 from pathlib import Path
 from typing import Callable, Iterable
 
+from .grant_lease import GrantLease
 from .audit import AuditLog
 
 ORG_ROLES = ("owner", "admin", "runner", "approver", "viewer")
@@ -89,6 +90,8 @@ class OrgStore:
                  clock: Callable[[], float] = time.time, max_orgs: int | None = None):
         self.path = Path(path)
         self._lock = threading.RLock()
+        # deliveries share it; a membership change is exclusive (aegis/grant_lease.py)
+        self._grant = GrantLease()
         self._clock = clock
         self._max_orgs = MAX_ORGS if max_orgs is None else max_orgs
         if self.path.exists():
@@ -102,8 +105,9 @@ class OrgStore:
     # ---- persistence ---------------------------------------------------------
     @contextlib.contextmanager
     def _tx(self):
-        """A write either reaches the disk or changes nothing (memory included)."""
-        with self._lock:
+        """A write either reaches the disk or changes nothing (memory included). A change
+        to who belongs where waits for in-flight deliveries (aegis/grant_lease.py)."""
+        with self._grant.exclusive(), self._lock:
             before = copy.deepcopy(self._data)
             try:
                 yield
@@ -129,8 +133,9 @@ class OrgStore:
 
     @contextlib.contextmanager
     def locked_roles_in(self, org_id: str, account: str):
-        """Hold membership changes until one short authority grant is saved."""
-        with self._lock:
+        """Hold membership changes until one grant is used. Only the shared delivery
+        lease is held while the caller works, never the store's lock."""
+        with self._grant.shared():
             yield self.roles_in(org_id, account)
 
     def orgs_of(self, account: str) -> list[dict]:
