@@ -67,6 +67,8 @@ class DiagnosisState:
         self._hyp: dict[str, dict] = {}
         self.generation = 1
         self.history: list[dict] = []
+        self._recorded = 0            # observations ever recorded: ids and order never reuse a number
+        self.binding: tuple | None = None   # (workspace run generation, root URL) it was measured on
 
     # ---- observations -----------------------------------------------------------
     def observe(self, *, kind: str, target_ref: str, attrs: dict, source: str,
@@ -77,7 +79,7 @@ class DiagnosisState:
         if source not in SOURCES:
             raise StateError(f"unknown observation source: {source!r}")
         if evidence_id is None:
-            evidence_id = f"E{len(self._obs) + 1}"
+            evidence_id = f"E{self._recorded + 1}"
         if not isinstance(evidence_id, str) or not _REF.fullmatch(evidence_id):
             raise StateError("an observation needs an evidence id")
         if evidence_id in self._obs:
@@ -99,15 +101,25 @@ class DiagnosisState:
         self._obs[evidence_id] = {"evidence_id": evidence_id, "kind": kind, "target_ref": target_ref,
                                   "source": source, "attrs": dict(attrs), "generation": self.generation,
                                   "audit_hash": audit_hash, "step_id": step_id, "catalog_id": catalog_id,
-                                  "at": self._clock()}
+                                  "at": self._clock(), "seq": self._recorded}
+        self._recorded += 1
         return evidence_id
 
     def seq(self, evidence_id: str) -> int:
-        """The order in which this observation was recorded (0-based)."""
-        return list(self._obs).index(evidence_id)
+        """The order in which this observation was recorded (0-based, never reused)."""
+        return self._obs[evidence_id]["seq"]
 
     def count(self) -> int:
-        return len(self._obs)
+        """How many observations were ever recorded (a watermark; discards do not lower it)."""
+        return self._recorded
+
+    def bind(self, binding: tuple) -> None:
+        """Tie the state to the workspace and target it was measured on. Once bound, a
+        state is never used for another run generation or another root."""
+        if self.binding is None:
+            self.binding = binding
+        elif self.binding != binding:
+            raise StateError("this diagnosis state belongs to another run or target")
 
     def discard_unjudged(self, evidence_id: str) -> None:
         """Drop a check observation whose judgement could not be audited or applied.
@@ -134,6 +146,15 @@ class DiagnosisState:
         self.generation += 1
         self.history.append({"generation": self.generation, "at": self._clock()})
         return self.generation
+
+    def abandon_generation(self) -> None:
+        """Undo begin_generation when nothing was recorded in the new generation (the
+        re-observation failed): earlier hypotheses do not become stale for nothing."""
+        if self.generation == 1 or any(o["generation"] == self.generation for o in self._obs.values()) \
+                or any(h["generation"] == self.generation for h in self._hyp.values()):
+            raise StateError("the generation already holds observations")
+        self.generation -= 1
+        self.history.append({"generation": self.generation, "at": self._clock(), "abandoned": True})
 
     # ---- hypotheses -------------------------------------------------------------
     def _check_evidence(self, ids, *, target_ref: str | None = None) -> list[str]:

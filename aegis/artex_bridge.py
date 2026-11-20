@@ -704,7 +704,9 @@ def reconstruct_contract(intents: list[dict], targets: list[dict], run_id: str, 
             rejected_all.append({"intent_id": iid, "reason": "unmapped_asset"})
             continue
         accepted, rejected = parse_steps([step], state, targets=set(by_ref),
-                                         allowed_levels=allowed_levels, executed=executed)
+                                         allowed_levels=allowed_levels, executed=executed,
+                                         target_checks={r: t["checks"] for r, t in by_ref.items()
+                                                        if t.get("checks") is not None})
         if not accepted:
             why = rejected[0]["reason"] if rejected else "rejected"
             out.advisories.append(Advisory(iid, summary, f"計画の契約を満たさないため実行しません（{why}）"))

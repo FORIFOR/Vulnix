@@ -1796,7 +1796,9 @@ class AssessmentService:
                 and getattr(self, "_lab_account_resource_gen", None) == (self._run_generation, root)):
             # measured by Vulnix in THIS workspace, on THIS root
             out.append({"asset_id": 2, "target_id": "T2", "engagement_target": "lab",
-                        "url": root.rstrip("/") + LAB_ACCOUNT_RESOURCE_PATH})
+                        "url": root.rstrip("/") + LAB_ACCOUNT_RESOURCE_PATH,
+                        # the checks that act on the account resource itself
+                        "checks": ("l1_http_probe", "l2_idor")})
         return out
 
     def diagnosis_targets(self) -> list[dict]:
@@ -1920,7 +1922,12 @@ class AssessmentService:
             elif diagnosis is not None:
                 targets = self._diagnosis_targets_locked()
                 request = {"goal": "未解決の仮説ごとに、許可された検査カタログから次の検査を ID だけで選ぶ",
-                           "targets": [{k: t[k] for k in ("asset_id", "target_id", "url")} for t in targets],
+                           # ids only: the planner never sees the lab URL or the resource path.
+                           # ARTEX seeds one asset per target URL, so each ref gets a name under
+                           # the reserved .invalid TLD (RFC 6761: never resolves, never sent).
+                           "targets": [{"asset_id": t["asset_id"], "target_id": t["target_id"],
+                                        "url": f"http://{t['target_id'].lower()}.target.invalid/"}
+                                       for t in targets],
                            "observations": diagnosis_observations(diagnosis[0].planner_view(), targets,
                                                                   frozenset({"L1", "L2"})),
                            "max_turns": 6}

@@ -81,8 +81,11 @@ def _repeats(state: DiagnosisState, cid: str, tref: str, refs, executed) -> bool
 
 
 def parse_steps(raw, state: DiagnosisState, *, targets, allowed_levels,
-                executed=frozenset()) -> tuple[list[dict], list[dict]]:
+                executed=frozenset(), target_checks=None) -> tuple[list[dict], list[dict]]:
     """(accepted steps, rejected [{index, reason}]). Never raises on a bad reply.
+
+    `target_checks`: {target_ref: checks that act on it}; a target listed there takes
+    no other check (check_not_for_target).
 
     `executed`: {(catalog_id, target_ref, frozenset(evidence_refs)[, watermark])} already
     run. A step repeats one of them unless it cites evidence recorded after that run
@@ -130,6 +133,8 @@ def parse_steps(raw, state: DiagnosisState, *, targets, allowed_levels,
             _reject(rejected, i, "unknown_target")
         elif tref != hyp["target_ref"]:
             _reject(rejected, i, "target_mismatch")
+        elif target_checks and tref in target_checks and cid not in target_checks[tref]:
+            _reject(rejected, i, "check_not_for_target")
         elif not refs or len(refs) > MAX_EVIDENCE_REFS:
             _reject(rejected, i, "no_evidence" if not refs else "too_much_evidence")
         elif len(set(refs)) != len(refs):

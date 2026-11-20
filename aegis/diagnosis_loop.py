@@ -38,6 +38,7 @@ def observe_lab_root(svc, state: DiagnosisState, *, request_authorized=None) -> 
             svc._ensure_active_window_locked()
             gen = svc._tls.gen = svc._run_generation
             url = svc.a.target_url
+            state.bind((gen, url))             # a state never mixes runs or targets
         res, ev = svc._exec("http_probe", "read_only_probe", {"url": url, "method": "GET"},
                             approval_actor="policy:auto-L1")
         if res is None or not ev:
@@ -71,11 +72,16 @@ def record_owner_spec(state: DiagnosisState, target_ref: str, requirement: str) 
                          attrs={"requirement": requirement})
 
 
-def begin_fix_check(svc, state: DiagnosisState, owner_specs: dict[str, str]) -> list[str]:
+def begin_fix_check(svc, state: DiagnosisState, owner_specs: dict[str, str], *,
+                    request_authorized=None) -> list[str]:
     """Start the after-fix re-check. Returns the new confirm_fix hypothesis ids."""
     supported = [h for h in state.hypotheses() if h["state"] == "supported" and h["purpose"] == "diagnose"]
     state.begin_generation()
-    observe_lab_root(svc, state)
+    try:
+        observe_lab_root(svc, state, request_authorized=request_authorized)
+    except Exception:
+        state.abandon_generation()             # nothing measured: keep the earlier generation usable
+        raise
     for ref, req in owner_specs.items():
         record_owner_spec(state, ref, req)
     made = []

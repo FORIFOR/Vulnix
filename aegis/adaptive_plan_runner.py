@@ -38,6 +38,10 @@ from .adaptive_plan_state import AdaptivePlan, IllegalTransition, PlanLimits, Pl
 from .gateway import State
 
 
+class _Aborted(Exception):
+    pass
+
+
 class AdaptivePlanRunner:
     def __init__(self, svc, *, actor: str, roles=("operator",), request_authorized=None,
                  approve=None, limits: PlanLimits | None = None, clock=time.monotonic,
@@ -192,7 +196,22 @@ class AdaptivePlanRunner:
             return f"audit_failed: {type(e).__name__}"
         judged_hash = entry["hash"]
         try:
-            changed = state.apply(verdict)
+            abort = self._abort_reason(plan)   # revocation / deadline (may call out: not under the lock)
+            if abort:
+                raise _Aborted(abort[1])
+            with self.svc._lock:             # a stop or reset (taken under this lock) wins over the judgement
+                if (self.svc._run_generation != plan.assessment_generation
+                        or self.svc.gateway.state in (State.STOPPED, State.PAUSED)):
+                    raise _Aborted("stopped_or_reset")
+                changed = state.apply(verdict)
+        except _Aborted as e:
+            state.discard_unjudged(eid)
+            try:
+                self.svc.audit.record("diagnosis.judgement_not_applied", plan_id=plan.plan_id,
+                                      step_id=step_id, judged=judged_hash, reason=str(e))
+            except Exception:  # noqa: BLE001
+                pass
+            return f"aborted: {e}"
         except Exception as e:  # noqa: BLE001
             state.discard_unjudged(eid)
             try:
@@ -216,6 +235,12 @@ class AdaptivePlanRunner:
         plan = AdaptivePlan(self.svc._run_generation, self._authority_generation(), self.limits)
         if not self._move(plan, PlanState.OBSERVED, reason="initial observation"):
             return plan
+        if diag:
+            with self.svc._lock:
+                here = (self.svc._run_generation, self.svc.a.target_url)
+            if self.diagnosis.binding != here:
+                # observations of another run or target never decide anything here
+                return self._finish(plan, PlanState.FAILED, "state_from_another_run")
         executed_ids: set[str] = set()
         while True:
             abort = self._abort_reason(plan)
@@ -313,15 +338,19 @@ class AdaptivePlanRunner:
                     failure = f"judge_failed: {type(e).__name__}"
                 if failure:
                     return self._finish(plan, PlanState.FAILED, failure)
-            if not self._move(plan, PlanState.EVIDENCE_RECORDED, evidence_ids=evidence_ids, **ids):
+            abort = self._abort_reason(plan)
+            if abort or not self._move(plan, PlanState.EVIDENCE_RECORDED, evidence_ids=evidence_ids, **ids):
                 if diag and self._pending:
-                    # the step's evidence is not recorded: its judgement never takes effect
+                    # stopped meanwhile, or the evidence is not recorded: the judgement never takes effect
                     self.diagnosis.discard_unjudged(self._pending[1])
                     self._pending = None
-                return plan
+                return self._finish(plan, *abort) if abort else plan
             if diag:
                 failure = self._apply_judgement(plan, item, ids["step_id"])
                 if failure:
+                    abort = self._abort_reason(plan)
+                    if abort:
+                        return self._finish(plan, *abort)
                     return self._finish(plan, PlanState.FAILED, failure)
                 judgement = self._last_judgement
             executed_ids.add(item["catalog_id"])

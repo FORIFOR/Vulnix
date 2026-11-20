@@ -260,8 +260,10 @@ class TestDiagnosisLoopEndToEnd(LoopBase):
 
     def test_the_planner_payload_carries_no_lab_label_secret_or_url(self):
         self.runner().run()
-        payload = json.dumps([r["observations"] for r in self.requests])
-        for raw in (self.mode, "VULNIX_LAB_IDOR_PROVEN", "acct_", "/api/accounts", "lab.test", H[:12]):
+        payload = json.dumps(self.requests)                 # the whole request ARTEX receives
+        port = str(self.lab.server_port)
+        for raw in (self.mode, "VULNIX_LAB_IDOR_PROVEN", "acct_", "/api/accounts", "lab.test", H[:12],
+                    "127.0.0.1", ":" + port):
             self.assertNotIn(raw, payload)
         for e in self.audit("result"):
             self.assertNotIn(e["hash"], payload)
@@ -459,7 +461,8 @@ class TestLoopStopsAndRevocation(LoopBase):
                              "evidence_refs": ["E2"], "reason": "test_hypothesis"})
         self.reply = lambda request: [{"summary": status, "asset_ids": [1], "priority": 5}]
         plan = self.runner().run()
-        self.assertEqual(plan.state, PlanState.FAILED)
+        # refused by the contract (check_not_for_target) before anything is claimed or run
+        self.assertEqual((plan.state, plan.reason, plan.rejected_steps), (PlanState.COMPLETED, "no_progress", 1))
         self.assertEqual(self.workers, 0)
 
     def test_evidence_that_is_not_the_steps_own_result_fails_the_plan(self):
@@ -482,6 +485,70 @@ class TestLoopStopsAndRevocation(LoopBase):
         with patch.object(self.svc, "execute_artex_item", side_effect=reset_after):
             plan = self.runner().run()
         self.assertEqual((plan.state, plan.reason), (PlanState.CANCELLED, "stopped_or_reset"))
+
+
+class TestReviewFindings(LoopBase):
+    """Independent review of PR #97 (2026-11-21): each test fails on 23a95da."""
+
+    def test_a_state_from_another_run_or_target_decides_nothing(self):
+        with self.svc._lock:
+            self.svc._reset_workspace_locked()          # a new run generation
+        observe_lab_root(self.svc, DiagnosisState())      # the workspace measures its root again
+        plan = self.runner().run()                        # ... but the old state is reused
+        self.assertEqual((plan.state, plan.reason), (PlanState.FAILED, "state_from_another_run"))
+        self.assertEqual(self.workers, 0)
+        with self.assertRaises(ValueError):
+            observe_lab_root(self.svc, self.state)        # nor can it take new observations
+
+    def test_a_check_that_does_not_act_on_the_target_is_rejected_by_the_contract(self):
+        hid = None
+
+        def reply(request):
+            nonlocal hid
+            view = view_from_text(_titles(request))
+            hid = next(h["id"] for h in view["hypotheses"] if h["claim"] == "other_account_read")
+            bad = [{"hypothesis_id": hid, "catalog_id": c, "target_ref": "T2", "evidence_refs": ["E2"],
+                    "reason": "test_hypothesis"} for c in ("l1_apache_mod_status", "l2_sqli")]
+            return [{"summary": json.dumps(s), "asset_ids": [1], "priority": 5} for s in bad]
+        self.reply = reply
+        plan = self.runner().run()
+        self.assertEqual((plan.state, plan.reason), (PlanState.COMPLETED, "no_progress"))
+        self.assertEqual(plan.rejected_steps, 2)
+        self.assertEqual(self.workers, 0)
+        self.assertEqual(self.approvals, [])
+
+    def test_a_stop_after_the_worker_returns_adopts_no_judgement(self):
+        from aegis import diagnosis_judge
+        original = diagnosis_judge.judge
+
+        def stop_while_judging(*a, **kw):
+            v = original(*a, **kw)
+            self.svc.emergency_stop("op")
+            return v
+        with patch.object(diagnosis_judge, "judge", side_effect=stop_while_judging):
+            plan = self.runner().run()
+        self.assertEqual((plan.state, plan.reason), (PlanState.CANCELLED, "stopped_or_reset"))
+        self.assertEqual(plan.executed, [])
+        self.assertEqual({h["state"] for h in self.state.hypotheses()}, {"open"})
+        self.assertEqual([o for o in self.state.observations() if o["source"] == "check"], [])
+
+    def test_evidence_ids_are_never_reused_after_a_discard(self):
+        s = DiagnosisState()
+        e1 = s.observe(kind="x", target_ref="T1", attrs={}, source="l1")
+        e2 = s.observe(kind="check_result", target_ref="T1", attrs={}, source="check", audit_hash=H,
+                       step_id="S1", catalog_id="l2_idor")
+        s.discard_unjudged(e2)
+        e3 = s.observe(kind="x", target_ref="T1", attrs={}, source="l1")
+        self.assertEqual((e1, e2, e3), ("E1", "E2", "E3"))
+        self.assertEqual((s.seq(e3), s.count()), (2, 3))
+
+    def test_a_failed_fix_reobservation_keeps_the_earlier_generation(self):
+        self.runner().run()
+        self.assertEqual(self.hyp("other_account_read")["state"], "supported")
+        with self.assertRaises(ValueError):
+            begin_fix_check(self.svc, self.state, {"T2": self.spec}, request_authorized=lambda: False)
+        self.assertEqual(self.state.generation, 1)
+        self.assertEqual(self.audit("diagnosis.judged")[-1]["fields"]["step_id"], "S2")
 
 
 class TestRealSitesAreRefused(LoopBase):
