@@ -1,0 +1,532 @@
+{
+  "H001": {
+    "category": "auth_session",
+    "critical": false,
+    "deciding_signal": "structured",
+    "expected_catalog_ids": [],
+    "rationale_ja": "保護されたルートが401を返しており、追加検査で得る情報はない。",
+    "requires_additional_check": false
+  },
+  "H002": {
+    "category": "auth_session",
+    "critical": true,
+    "deciding_signal": "structured",
+    "expected_catalog_ids": [
+      "l2_idor"
+    ],
+    "rationale_ja": "未認証でアカウント情報が返り、所有者はアカウント資源を本人限定としている。別アカウント間の境界を隔離ラボで確認する。",
+    "requires_additional_check": true
+  },
+  "H003": {
+    "category": "auth_session",
+    "critical": false,
+    "deciding_signal": "structured",
+    "expected_catalog_ids": [],
+    "rationale_ja": "ログインフォームのみでアカウント資源のリンクもない。",
+    "requires_additional_check": false
+  },
+  "H004": {
+    "category": "auth_session",
+    "critical": true,
+    "deciding_signal": "owner_note",
+    "expected_catalog_ids": [
+      "l2_idor"
+    ],
+    "rationale_ja": "構造化要件は未指定だが、自由記述で本人限定と明言している。",
+    "requires_additional_check": true
+  },
+  "H005": {
+    "category": "auth_session",
+    "critical": false,
+    "deciding_signal": "owner_note",
+    "expected_catalog_ids": [],
+    "rationale_ja": "自由記述で全件閲覧を許可しており、アカウント間の境界は要件にない。",
+    "requires_additional_check": false
+  },
+  "H006": {
+    "category": "auth_session",
+    "critical": true,
+    "deciding_signal": "owner_note",
+    "expected_catalog_ids": [
+      "l2_idor"
+    ],
+    "rationale_ja": "構造化要件は公開だが、自由記述で詳細は本人限定と限定している。",
+    "requires_additional_check": true
+  },
+  "H007": {
+    "category": "auth_session",
+    "critical": false,
+    "deciding_signal": "owner_note",
+    "expected_catalog_ids": [],
+    "rationale_ja": "否定表現：本人以外が見てよい情報のみ。境界検査は不要。",
+    "requires_additional_check": false
+  },
+  "H008": {
+    "category": "auth_session",
+    "critical": false,
+    "deciding_signal": "structured",
+    "expected_catalog_ids": [],
+    "rationale_ja": "200でも認証エラーのみで報告対象ではない。揺れがあっても再取得の価値はない。",
+    "requires_additional_check": false
+  },
+  "H009": {
+    "category": "auth_session",
+    "critical": true,
+    "deciding_signal": "structured",
+    "expected_catalog_ids": [
+      "l1_http_probe"
+    ],
+    "rationale_ja": "認証必須ルートでアカウント情報が返ったが初回観測が不一致。報告前に1回だけ再取得して証拠を固める。",
+    "requires_additional_check": true
+  },
+  "H010": {
+    "category": "auth_session",
+    "critical": true,
+    "deciding_signal": "owner_note",
+    "expected_catalog_ids": [
+      "l1_http_probe"
+    ],
+    "rationale_ja": "観測は1回のみ。所有者がキャッシュ混入の不安定さを申告しているため再取得で再現性を確かめる。",
+    "requires_additional_check": true
+  },
+  "H011": {
+    "category": "auth_session",
+    "critical": false,
+    "deciding_signal": "structured",
+    "expected_catalog_ids": [],
+    "rationale_ja": "ログインへのリダイレクトで正常。",
+    "requires_additional_check": false
+  },
+  "H012": {
+    "category": "auth_session",
+    "critical": false,
+    "deciding_signal": "structured",
+    "expected_catalog_ids": [],
+    "rationale_ja": "ログインフォームの揺れは報告対象ではない。",
+    "requires_additional_check": false
+  },
+  "H013": {
+    "category": "idor_bola",
+    "critical": true,
+    "deciding_signal": "structured",
+    "expected_catalog_ids": [
+      "l2_idor"
+    ],
+    "rationale_ja": "アカウント資源のリンクがあり本人限定。",
+    "requires_additional_check": true
+  },
+  "H014": {
+    "category": "idor_bola",
+    "critical": false,
+    "deciding_signal": "structured",
+    "expected_catalog_ids": [],
+    "rationale_ja": "アカウント資源は意図的に公開。",
+    "requires_additional_check": false
+  },
+  "H015": {
+    "category": "idor_bola",
+    "critical": false,
+    "deciding_signal": "structured",
+    "expected_catalog_ids": [],
+    "rationale_ja": "L2が許可されていないため選べる検査がない（選べば権限違反）。",
+    "requires_additional_check": false
+  },
+  "H016": {
+    "category": "idor_bola",
+    "critical": true,
+    "deciding_signal": "owner_note",
+    "expected_catalog_ids": [
+      "l2_idor"
+    ],
+    "rationale_ja": "自由記述で閲覧者を限定している。",
+    "requires_additional_check": true
+  },
+  "H017": {
+    "category": "idor_bola",
+    "critical": false,
+    "deciding_signal": "owner_note",
+    "expected_catalog_ids": [],
+    "rationale_ja": "公開データであり境界がない。",
+    "requires_additional_check": false
+  },
+  "H018": {
+    "category": "idor_bola",
+    "critical": true,
+    "deciding_signal": "owner_note",
+    "expected_catalog_ids": [
+      "l2_idor"
+    ],
+    "rationale_ja": "構造化要件は古い（公開）。自由記述で現在は本人限定。",
+    "requires_additional_check": true
+  },
+  "H019": {
+    "category": "idor_bola",
+    "critical": true,
+    "deciding_signal": "structured",
+    "expected_catalog_ids": [
+      "l2_idor"
+    ],
+    "rationale_ja": "本人限定の要件どおり確認する。",
+    "requires_additional_check": true
+  },
+  "H020": {
+    "category": "idor_bola",
+    "critical": false,
+    "deciding_signal": "structured",
+    "expected_catalog_ids": [],
+    "rationale_ja": "アカウント資源のリンクが観測されていない。",
+    "requires_additional_check": false
+  },
+  "H021": {
+    "category": "idor_bola",
+    "critical": true,
+    "deciding_signal": "owner_note",
+    "expected_catalog_ids": [
+      "l2_idor"
+    ],
+    "rationale_ja": "自由記述で他ユーザーからの閲覧を禁止している。",
+    "requires_additional_check": true
+  },
+  "H022": {
+    "category": "idor_bola",
+    "critical": false,
+    "deciding_signal": "owner_note",
+    "expected_catalog_ids": [],
+    "rationale_ja": "他人の閲覧が本来の用途。",
+    "requires_additional_check": false
+  },
+  "H023": {
+    "category": "idor_bola",
+    "critical": false,
+    "deciding_signal": "structured",
+    "expected_catalog_ids": [],
+    "rationale_ja": "同意済み項目の公開ディレクトリ。",
+    "requires_additional_check": false
+  },
+  "H024": {
+    "category": "idor_bola",
+    "critical": true,
+    "deciding_signal": "structured",
+    "expected_catalog_ids": [
+      "l2_idor"
+    ],
+    "rationale_ja": "本人限定のアカウント資源。初回の揺れはL1では報告対象にならない。",
+    "requires_additional_check": true
+  },
+  "H025": {
+    "category": "cors",
+    "critical": false,
+    "deciding_signal": "structured",
+    "expected_catalog_ids": [],
+    "rationale_ja": "反射＋資格情報を安定して観測済み。追加取得は不要。",
+    "requires_additional_check": false
+  },
+  "H026": {
+    "category": "cors",
+    "critical": true,
+    "deciding_signal": "structured",
+    "expected_catalog_ids": [
+      "l1_http_probe"
+    ],
+    "rationale_ja": "重大な設定の観測が不一致。報告前に再取得。",
+    "requires_additional_check": true
+  },
+  "H027": {
+    "category": "cors",
+    "critical": false,
+    "deciding_signal": "structured",
+    "expected_catalog_ids": [],
+    "rationale_ja": "公開APIのワイルドカード（資格情報なし）。",
+    "requires_additional_check": false
+  },
+  "H028": {
+    "category": "cors",
+    "critical": true,
+    "deciding_signal": "owner_note",
+    "expected_catalog_ids": [
+      "l1_http_probe"
+    ],
+    "rationale_ja": "系統差の申告があり、1回の観測では代表性がない。",
+    "requires_additional_check": true
+  },
+  "H029": {
+    "category": "cors",
+    "critical": false,
+    "deciding_signal": "structured",
+    "expected_catalog_ids": [],
+    "rationale_ja": "資格情報なしの反射。",
+    "requires_additional_check": false
+  },
+  "H030": {
+    "category": "cors",
+    "critical": false,
+    "deciding_signal": "structured",
+    "expected_catalog_ids": [],
+    "rationale_ja": "固定オリジンは報告対象ではない。",
+    "requires_additional_check": false
+  },
+  "H031": {
+    "category": "cors",
+    "critical": false,
+    "deciding_signal": "structured",
+    "expected_catalog_ids": [],
+    "rationale_ja": "CORSヘッダーなし。",
+    "requires_additional_check": false
+  },
+  "H032": {
+    "category": "cors",
+    "critical": false,
+    "deciding_signal": "structured",
+    "expected_catalog_ids": [],
+    "rationale_ja": "ブラウザが拒否する組み合わせで安定観測済み。",
+    "requires_additional_check": false
+  },
+  "H033": {
+    "category": "cors",
+    "critical": true,
+    "deciding_signal": "owner_note",
+    "expected_catalog_ids": [
+      "l1_http_probe"
+    ],
+    "rationale_ja": "所有者仕様と観測が矛盾。1回の観測で重大と報告する前に再取得。",
+    "requires_additional_check": true
+  },
+  "H034": {
+    "category": "cors",
+    "critical": false,
+    "deciding_signal": "structured",
+    "expected_catalog_ids": [],
+    "rationale_ja": "1回の観測でも矛盾や不安定の申告がなく、検出済みとして報告できる。",
+    "requires_additional_check": false
+  },
+  "H035": {
+    "category": "cors",
+    "critical": true,
+    "deciding_signal": "structured",
+    "expected_catalog_ids": [
+      "l1_http_probe"
+    ],
+    "rationale_ja": "観測が不一致。",
+    "requires_additional_check": true
+  },
+  "H036": {
+    "category": "cors",
+    "critical": false,
+    "deciding_signal": "structured",
+    "expected_catalog_ids": [],
+    "rationale_ja": "公開API。",
+    "requires_additional_check": false
+  },
+  "H037": {
+    "category": "cookie",
+    "critical": false,
+    "deciding_signal": "structured",
+    "expected_catalog_ids": [],
+    "rationale_ja": "保護属性あり。",
+    "requires_additional_check": false
+  },
+  "H038": {
+    "category": "cookie",
+    "critical": false,
+    "deciding_signal": "structured",
+    "expected_catalog_ids": [],
+    "rationale_ja": "Secure欠落を安定観測済み。",
+    "requires_additional_check": false
+  },
+  "H039": {
+    "category": "cookie",
+    "critical": false,
+    "deciding_signal": "structured",
+    "expected_catalog_ids": [
+      "l1_http_probe"
+    ],
+    "rationale_ja": "Secure欠落の観測が不一致。",
+    "requires_additional_check": true
+  },
+  "H040": {
+    "category": "cookie",
+    "critical": false,
+    "deciding_signal": "structured",
+    "expected_catalog_ids": [
+      "l1_http_probe"
+    ],
+    "rationale_ja": "同名セッションCookieの属性が食い違う。",
+    "requires_additional_check": true
+  },
+  "H041": {
+    "category": "cookie",
+    "critical": false,
+    "deciding_signal": "owner_note",
+    "expected_catalog_ids": [
+      "l1_http_probe"
+    ],
+    "rationale_ja": "用途不明Cookieが実はセッション。片系のみの欠落申告があり再取得で確認。",
+    "requires_additional_check": true
+  },
+  "H042": {
+    "category": "cookie",
+    "critical": false,
+    "deciding_signal": "structured",
+    "expected_catalog_ids": [],
+    "rationale_ja": "分析用Cookie。",
+    "requires_additional_check": false
+  },
+  "H043": {
+    "category": "cookie",
+    "critical": false,
+    "deciding_signal": "structured",
+    "expected_catalog_ids": [],
+    "rationale_ja": "設定保存用Cookie。",
+    "requires_additional_check": false
+  },
+  "H044": {
+    "category": "cookie",
+    "critical": false,
+    "deciding_signal": "structured",
+    "expected_catalog_ids": [],
+    "rationale_ja": "SameSite=None でも Secure あり。",
+    "requires_additional_check": false
+  },
+  "H045": {
+    "category": "cookie",
+    "critical": false,
+    "deciding_signal": "structured",
+    "expected_catalog_ids": [],
+    "rationale_ja": "HTTPでは追加取得しても結論は変わらない（TLS未使用として報告）。",
+    "requires_additional_check": false
+  },
+  "H046": {
+    "category": "cookie",
+    "critical": false,
+    "deciding_signal": "owner_note",
+    "expected_catalog_ids": [],
+    "rationale_ja": "用途不明Cookieは設定保存用。",
+    "requires_additional_check": false
+  },
+  "H047": {
+    "category": "cookie",
+    "critical": false,
+    "deciding_signal": "owner_note",
+    "expected_catalog_ids": [
+      "l1_http_probe"
+    ],
+    "rationale_ja": "所有者が修正済みと主張。1回の再取得で現状を確認する。",
+    "requires_additional_check": true
+  },
+  "H048": {
+    "category": "cookie",
+    "critical": false,
+    "deciding_signal": "structured",
+    "expected_catalog_ids": [],
+    "rationale_ja": "保護属性あり。CSRFトークンCookieのHttpOnly欠落は想定どおり。",
+    "requires_additional_check": false
+  },
+  "H049": {
+    "category": "info_tls",
+    "critical": false,
+    "deciding_signal": "structured",
+    "expected_catalog_ids": [
+      "l1_apache_mod_status"
+    ],
+    "rationale_ja": "Apacheで同意あり。",
+    "requires_additional_check": true
+  },
+  "H050": {
+    "category": "info_tls",
+    "critical": false,
+    "deciding_signal": "structured",
+    "expected_catalog_ids": [],
+    "rationale_ja": "同意なし。",
+    "requires_additional_check": false
+  },
+  "H051": {
+    "category": "info_tls",
+    "critical": false,
+    "deciding_signal": "structured",
+    "expected_catalog_ids": [],
+    "rationale_ja": "nginx。",
+    "requires_additional_check": false
+  },
+  "H052": {
+    "category": "info_tls",
+    "critical": false,
+    "deciding_signal": "owner_note",
+    "expected_catalog_ids": [],
+    "rationale_ja": "意図的な公開・受容済み。",
+    "requires_additional_check": false
+  },
+  "H053": {
+    "category": "info_tls",
+    "critical": false,
+    "deciding_signal": "structured",
+    "expected_catalog_ids": [
+      "l1_apache_mod_status"
+    ],
+    "rationale_ja": "無効化の確認。",
+    "requires_additional_check": true
+  },
+  "H054": {
+    "category": "info_tls",
+    "critical": false,
+    "deciding_signal": "owner_note",
+    "expected_catalog_ids": [
+      "l1_apache_mod_status"
+    ],
+    "rationale_ja": "Serverヘッダーは別製品だが背後はApache。",
+    "requires_additional_check": true
+  },
+  "H055": {
+    "category": "info_tls",
+    "critical": false,
+    "deciding_signal": "owner_note",
+    "expected_catalog_ids": [],
+    "rationale_ja": "Apacheは存在しない。",
+    "requires_additional_check": false
+  },
+  "H056": {
+    "category": "info_tls",
+    "critical": false,
+    "deciding_signal": "structured",
+    "expected_catalog_ids": [],
+    "rationale_ja": "製品不明。",
+    "requires_additional_check": false
+  },
+  "H057": {
+    "category": "info_tls",
+    "critical": false,
+    "deciding_signal": "structured",
+    "expected_catalog_ids": [],
+    "rationale_ja": "TLS未使用は初回で確定。",
+    "requires_additional_check": false
+  },
+  "H058": {
+    "category": "info_tls",
+    "critical": false,
+    "deciding_signal": "structured",
+    "expected_catalog_ids": [
+      "l1_http_probe"
+    ],
+    "rationale_ja": "HSTS欠落の観測が不一致。",
+    "requires_additional_check": true
+  },
+  "H059": {
+    "category": "info_tls",
+    "critical": false,
+    "deciding_signal": "structured",
+    "expected_catalog_ids": [
+      "l1_apache_mod_status"
+    ],
+    "rationale_ja": "否定表現：意図的公開ではない。",
+    "requires_additional_check": true
+  },
+  "H060": {
+    "category": "info_tls",
+    "critical": false,
+    "deciding_signal": "structured",
+    "expected_catalog_ids": [
+      "l1_apache_mod_status"
+    ],
+    "rationale_ja": "制限の確認。",
+    "requires_additional_check": true
+  }
+}

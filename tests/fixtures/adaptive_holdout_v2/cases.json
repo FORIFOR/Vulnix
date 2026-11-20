@@ -1,0 +1,2004 @@
+[
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l2_idor"
+    ],
+    "case_id": "H001",
+    "category": "auth_session",
+    "evidence_required": [
+      "owner_spec",
+      "status",
+      "body_shape",
+      "initial_gets_consistent"
+    ],
+    "observation": {
+      "account_resource_link_observed": false,
+      "body_shape": "auth_error",
+      "content_type": "application/json",
+      "cookies": [],
+      "cors": {
+        "acao": "none",
+        "credentials": false,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": null,
+      "scheme": "https",
+      "server_family": "nginx",
+      "status": 401,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l2_idor"
+    ],
+    "case_id": "H002",
+    "category": "auth_session",
+    "evidence_required": [
+      "owner_spec",
+      "status",
+      "body_shape",
+      "initial_gets_consistent"
+    ],
+    "observation": {
+      "account_resource_link_observed": true,
+      "body_shape": "account_fields",
+      "content_type": "application/json",
+      "cookies": [],
+      "cors": {
+        "acao": "none",
+        "credentials": false,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": true,
+      "scheme": "https",
+      "server_family": "nginx",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l2_idor"
+    ],
+    "case_id": "H003",
+    "category": "auth_session",
+    "evidence_required": [
+      "owner_spec",
+      "status",
+      "body_shape",
+      "initial_gets_consistent"
+    ],
+    "observation": {
+      "account_resource_link_observed": false,
+      "body_shape": "login_form",
+      "content_type": "text/html",
+      "cookies": [],
+      "cors": {
+        "acao": "none",
+        "credentials": false,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": null,
+      "scheme": "https",
+      "server_family": "nginx",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l2_idor"
+    ],
+    "case_id": "H004",
+    "category": "auth_session",
+    "evidence_required": [
+      "owner_spec",
+      "status",
+      "body_shape",
+      "initial_gets_consistent"
+    ],
+    "observation": {
+      "account_resource_link_observed": true,
+      "body_shape": "account_fields",
+      "content_type": "application/json",
+      "cookies": [],
+      "cors": {
+        "acao": "none",
+        "credentials": false,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": null,
+      "scheme": "https",
+      "server_family": "nginx",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l2_idor"
+    ],
+    "case_id": "H005",
+    "category": "auth_session",
+    "evidence_required": [
+      "owner_spec",
+      "status",
+      "body_shape",
+      "initial_gets_consistent"
+    ],
+    "observation": {
+      "account_resource_link_observed": true,
+      "body_shape": "account_fields",
+      "content_type": "application/json",
+      "cookies": [],
+      "cors": {
+        "acao": "none",
+        "credentials": false,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": null,
+      "scheme": "https",
+      "server_family": "nginx",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l2_idor"
+    ],
+    "case_id": "H006",
+    "category": "auth_session",
+    "evidence_required": [
+      "owner_spec",
+      "status",
+      "body_shape",
+      "initial_gets_consistent"
+    ],
+    "observation": {
+      "account_resource_link_observed": true,
+      "body_shape": "account_fields",
+      "content_type": "application/json",
+      "cookies": [],
+      "cors": {
+        "acao": "none",
+        "credentials": false,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": null,
+      "scheme": "https",
+      "server_family": "nginx",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l2_idor"
+    ],
+    "case_id": "H007",
+    "category": "auth_session",
+    "evidence_required": [
+      "owner_spec",
+      "status",
+      "body_shape",
+      "initial_gets_consistent"
+    ],
+    "observation": {
+      "account_resource_link_observed": true,
+      "body_shape": "account_fields",
+      "content_type": "application/json",
+      "cookies": [],
+      "cors": {
+        "acao": "none",
+        "credentials": false,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": null,
+      "scheme": "https",
+      "server_family": "nginx",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l2_idor"
+    ],
+    "case_id": "H008",
+    "category": "auth_session",
+    "evidence_required": [
+      "owner_spec",
+      "status",
+      "body_shape",
+      "initial_gets_consistent"
+    ],
+    "observation": {
+      "account_resource_link_observed": false,
+      "body_shape": "auth_error",
+      "content_type": "application/json",
+      "cookies": [],
+      "cors": {
+        "acao": "none",
+        "credentials": false,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": false,
+      "scheme": "https",
+      "server_family": "nginx",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l2_idor"
+    ],
+    "case_id": "H009",
+    "category": "auth_session",
+    "evidence_required": [
+      "owner_spec",
+      "status",
+      "body_shape",
+      "initial_gets_consistent"
+    ],
+    "observation": {
+      "account_resource_link_observed": false,
+      "body_shape": "account_fields",
+      "content_type": "application/json",
+      "cookies": [],
+      "cors": {
+        "acao": "none",
+        "credentials": false,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": false,
+      "scheme": "https",
+      "server_family": "nginx",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l2_idor"
+    ],
+    "case_id": "H010",
+    "category": "auth_session",
+    "evidence_required": [
+      "owner_spec",
+      "status",
+      "body_shape",
+      "initial_gets_consistent"
+    ],
+    "observation": {
+      "account_resource_link_observed": false,
+      "body_shape": "account_fields",
+      "content_type": "application/json",
+      "cookies": [],
+      "cors": {
+        "acao": "none",
+        "credentials": false,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": null,
+      "scheme": "https",
+      "server_family": "nginx",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l2_idor"
+    ],
+    "case_id": "H011",
+    "category": "auth_session",
+    "evidence_required": [
+      "owner_spec",
+      "status",
+      "body_shape",
+      "initial_gets_consistent"
+    ],
+    "observation": {
+      "account_resource_link_observed": false,
+      "body_shape": "empty",
+      "content_type": "other",
+      "cookies": [],
+      "cors": {
+        "acao": "none",
+        "credentials": false,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": null,
+      "scheme": "https",
+      "server_family": "nginx",
+      "status": 302,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l2_idor"
+    ],
+    "case_id": "H012",
+    "category": "auth_session",
+    "evidence_required": [
+      "owner_spec",
+      "status",
+      "body_shape",
+      "initial_gets_consistent"
+    ],
+    "observation": {
+      "account_resource_link_observed": false,
+      "body_shape": "login_form",
+      "content_type": "text/html",
+      "cookies": [],
+      "cors": {
+        "acao": "none",
+        "credentials": false,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": false,
+      "scheme": "https",
+      "server_family": "nginx",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l2_idor"
+    ],
+    "case_id": "H013",
+    "category": "idor_bola",
+    "evidence_required": [
+      "owner_spec",
+      "account_resource_link_observed"
+    ],
+    "observation": {
+      "account_resource_link_observed": true,
+      "body_shape": "public_content",
+      "content_type": "application/json",
+      "cookies": [],
+      "cors": {
+        "acao": "none",
+        "credentials": false,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": null,
+      "scheme": "https",
+      "server_family": "nginx",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l2_idor"
+    ],
+    "case_id": "H014",
+    "category": "idor_bola",
+    "evidence_required": [
+      "owner_spec",
+      "account_resource_link_observed"
+    ],
+    "observation": {
+      "account_resource_link_observed": true,
+      "body_shape": "public_content",
+      "content_type": "application/json",
+      "cookies": [],
+      "cors": {
+        "acao": "none",
+        "credentials": false,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": null,
+      "scheme": "https",
+      "server_family": "nginx",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe"
+    ],
+    "case_id": "H015",
+    "category": "idor_bola",
+    "evidence_required": [
+      "owner_spec",
+      "account_resource_link_observed"
+    ],
+    "observation": {
+      "account_resource_link_observed": true,
+      "body_shape": "public_content",
+      "content_type": "application/json",
+      "cookies": [],
+      "cors": {
+        "acao": "none",
+        "credentials": false,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": null,
+      "scheme": "https",
+      "server_family": "nginx",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l2_idor"
+    ],
+    "case_id": "H016",
+    "category": "idor_bola",
+    "evidence_required": [
+      "owner_spec",
+      "account_resource_link_observed"
+    ],
+    "observation": {
+      "account_resource_link_observed": true,
+      "body_shape": "public_content",
+      "content_type": "application/json",
+      "cookies": [],
+      "cors": {
+        "acao": "none",
+        "credentials": false,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": null,
+      "scheme": "https",
+      "server_family": "nginx",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l2_idor"
+    ],
+    "case_id": "H017",
+    "category": "idor_bola",
+    "evidence_required": [
+      "owner_spec",
+      "account_resource_link_observed"
+    ],
+    "observation": {
+      "account_resource_link_observed": true,
+      "body_shape": "public_content",
+      "content_type": "application/json",
+      "cookies": [],
+      "cors": {
+        "acao": "none",
+        "credentials": false,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": null,
+      "scheme": "https",
+      "server_family": "nginx",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l2_idor"
+    ],
+    "case_id": "H018",
+    "category": "idor_bola",
+    "evidence_required": [
+      "owner_spec",
+      "account_resource_link_observed"
+    ],
+    "observation": {
+      "account_resource_link_observed": true,
+      "body_shape": "public_content",
+      "content_type": "application/json",
+      "cookies": [],
+      "cors": {
+        "acao": "none",
+        "credentials": false,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": null,
+      "scheme": "https",
+      "server_family": "nginx",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l2_idor"
+    ],
+    "case_id": "H019",
+    "category": "idor_bola",
+    "evidence_required": [
+      "owner_spec",
+      "account_resource_link_observed"
+    ],
+    "observation": {
+      "account_resource_link_observed": true,
+      "body_shape": "public_content",
+      "content_type": "application/json",
+      "cookies": [],
+      "cors": {
+        "acao": "none",
+        "credentials": false,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": null,
+      "scheme": "https",
+      "server_family": "nginx",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l2_idor"
+    ],
+    "case_id": "H020",
+    "category": "idor_bola",
+    "evidence_required": [
+      "owner_spec",
+      "account_resource_link_observed"
+    ],
+    "observation": {
+      "account_resource_link_observed": false,
+      "body_shape": "public_content",
+      "content_type": "application/json",
+      "cookies": [],
+      "cors": {
+        "acao": "none",
+        "credentials": false,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": null,
+      "scheme": "https",
+      "server_family": "nginx",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l2_idor"
+    ],
+    "case_id": "H021",
+    "category": "idor_bola",
+    "evidence_required": [
+      "owner_spec",
+      "account_resource_link_observed"
+    ],
+    "observation": {
+      "account_resource_link_observed": true,
+      "body_shape": "public_content",
+      "content_type": "application/json",
+      "cookies": [],
+      "cors": {
+        "acao": "none",
+        "credentials": false,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": null,
+      "scheme": "https",
+      "server_family": "nginx",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l2_idor"
+    ],
+    "case_id": "H022",
+    "category": "idor_bola",
+    "evidence_required": [
+      "owner_spec",
+      "account_resource_link_observed"
+    ],
+    "observation": {
+      "account_resource_link_observed": true,
+      "body_shape": "public_content",
+      "content_type": "application/json",
+      "cookies": [],
+      "cors": {
+        "acao": "none",
+        "credentials": false,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": null,
+      "scheme": "https",
+      "server_family": "nginx",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l2_idor"
+    ],
+    "case_id": "H023",
+    "category": "idor_bola",
+    "evidence_required": [
+      "owner_spec",
+      "account_resource_link_observed"
+    ],
+    "observation": {
+      "account_resource_link_observed": true,
+      "body_shape": "public_content",
+      "content_type": "application/json",
+      "cookies": [],
+      "cors": {
+        "acao": "none",
+        "credentials": false,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": null,
+      "scheme": "https",
+      "server_family": "nginx",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l2_idor"
+    ],
+    "case_id": "H024",
+    "category": "idor_bola",
+    "evidence_required": [
+      "owner_spec",
+      "account_resource_link_observed"
+    ],
+    "observation": {
+      "account_resource_link_observed": true,
+      "body_shape": "public_content",
+      "content_type": "application/json",
+      "cookies": [],
+      "cors": {
+        "acao": "none",
+        "credentials": false,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": false,
+      "scheme": "https",
+      "server_family": "nginx",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l2_idor"
+    ],
+    "case_id": "H025",
+    "category": "cors",
+    "evidence_required": [
+      "owner_spec",
+      "cors",
+      "initial_gets_consistent"
+    ],
+    "observation": {
+      "account_resource_link_observed": false,
+      "body_shape": "public_content",
+      "content_type": "application/json",
+      "cookies": [],
+      "cors": {
+        "acao": "reflected",
+        "credentials": true,
+        "vary_origin": true
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": true,
+      "scheme": "https",
+      "server_family": "nginx",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l2_idor"
+    ],
+    "case_id": "H026",
+    "category": "cors",
+    "evidence_required": [
+      "owner_spec",
+      "cors",
+      "initial_gets_consistent"
+    ],
+    "observation": {
+      "account_resource_link_observed": false,
+      "body_shape": "public_content",
+      "content_type": "application/json",
+      "cookies": [],
+      "cors": {
+        "acao": "reflected",
+        "credentials": true,
+        "vary_origin": true
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": false,
+      "scheme": "https",
+      "server_family": "nginx",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l2_idor"
+    ],
+    "case_id": "H027",
+    "category": "cors",
+    "evidence_required": [
+      "owner_spec",
+      "cors",
+      "initial_gets_consistent"
+    ],
+    "observation": {
+      "account_resource_link_observed": false,
+      "body_shape": "public_content",
+      "content_type": "application/json",
+      "cookies": [],
+      "cors": {
+        "acao": "wildcard",
+        "credentials": false,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": null,
+      "scheme": "https",
+      "server_family": "nginx",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l2_idor"
+    ],
+    "case_id": "H028",
+    "category": "cors",
+    "evidence_required": [
+      "owner_spec",
+      "cors",
+      "initial_gets_consistent"
+    ],
+    "observation": {
+      "account_resource_link_observed": false,
+      "body_shape": "public_content",
+      "content_type": "application/json",
+      "cookies": [],
+      "cors": {
+        "acao": "reflected",
+        "credentials": true,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": null,
+      "scheme": "https",
+      "server_family": "nginx",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l2_idor"
+    ],
+    "case_id": "H029",
+    "category": "cors",
+    "evidence_required": [
+      "owner_spec",
+      "cors",
+      "initial_gets_consistent"
+    ],
+    "observation": {
+      "account_resource_link_observed": false,
+      "body_shape": "public_content",
+      "content_type": "application/json",
+      "cookies": [],
+      "cors": {
+        "acao": "reflected",
+        "credentials": false,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": true,
+      "scheme": "https",
+      "server_family": "nginx",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l2_idor"
+    ],
+    "case_id": "H030",
+    "category": "cors",
+    "evidence_required": [
+      "owner_spec",
+      "cors",
+      "initial_gets_consistent"
+    ],
+    "observation": {
+      "account_resource_link_observed": false,
+      "body_shape": "public_content",
+      "content_type": "application/json",
+      "cookies": [],
+      "cors": {
+        "acao": "fixed_origin",
+        "credentials": true,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": false,
+      "scheme": "https",
+      "server_family": "nginx",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l2_idor"
+    ],
+    "case_id": "H031",
+    "category": "cors",
+    "evidence_required": [
+      "owner_spec",
+      "cors",
+      "initial_gets_consistent"
+    ],
+    "observation": {
+      "account_resource_link_observed": false,
+      "body_shape": "public_content",
+      "content_type": "application/json",
+      "cookies": [],
+      "cors": {
+        "acao": "none",
+        "credentials": false,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": null,
+      "scheme": "https",
+      "server_family": "nginx",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l2_idor"
+    ],
+    "case_id": "H032",
+    "category": "cors",
+    "evidence_required": [
+      "owner_spec",
+      "cors",
+      "initial_gets_consistent"
+    ],
+    "observation": {
+      "account_resource_link_observed": false,
+      "body_shape": "public_content",
+      "content_type": "application/json",
+      "cookies": [],
+      "cors": {
+        "acao": "wildcard",
+        "credentials": true,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": true,
+      "scheme": "https",
+      "server_family": "nginx",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l2_idor"
+    ],
+    "case_id": "H033",
+    "category": "cors",
+    "evidence_required": [
+      "owner_spec",
+      "cors",
+      "initial_gets_consistent"
+    ],
+    "observation": {
+      "account_resource_link_observed": false,
+      "body_shape": "public_content",
+      "content_type": "application/json",
+      "cookies": [],
+      "cors": {
+        "acao": "reflected",
+        "credentials": true,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": null,
+      "scheme": "https",
+      "server_family": "nginx",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l2_idor"
+    ],
+    "case_id": "H034",
+    "category": "cors",
+    "evidence_required": [
+      "owner_spec",
+      "cors",
+      "initial_gets_consistent"
+    ],
+    "observation": {
+      "account_resource_link_observed": false,
+      "body_shape": "public_content",
+      "content_type": "application/json",
+      "cookies": [],
+      "cors": {
+        "acao": "reflected",
+        "credentials": true,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": null,
+      "scheme": "https",
+      "server_family": "nginx",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l2_idor"
+    ],
+    "case_id": "H035",
+    "category": "cors",
+    "evidence_required": [
+      "owner_spec",
+      "cors",
+      "initial_gets_consistent"
+    ],
+    "observation": {
+      "account_resource_link_observed": false,
+      "body_shape": "public_content",
+      "content_type": "application/json",
+      "cookies": [],
+      "cors": {
+        "acao": "reflected",
+        "credentials": true,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": false,
+      "scheme": "https",
+      "server_family": "nginx",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l2_idor"
+    ],
+    "case_id": "H036",
+    "category": "cors",
+    "evidence_required": [
+      "owner_spec",
+      "cors",
+      "initial_gets_consistent"
+    ],
+    "observation": {
+      "account_resource_link_observed": false,
+      "body_shape": "public_content",
+      "content_type": "application/json",
+      "cookies": [],
+      "cors": {
+        "acao": "wildcard",
+        "credentials": false,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": null,
+      "scheme": "https",
+      "server_family": "nginx",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l2_idor"
+    ],
+    "case_id": "H037",
+    "category": "cookie",
+    "evidence_required": [
+      "owner_spec",
+      "cookies",
+      "initial_gets_consistent"
+    ],
+    "observation": {
+      "account_resource_link_observed": false,
+      "body_shape": "public_content",
+      "content_type": "application/json",
+      "cookies": [
+        {
+          "duplicate_conflicting": false,
+          "httponly": true,
+          "purpose": "session",
+          "samesite": "lax",
+          "secure": true
+        }
+      ],
+      "cors": {
+        "acao": "none",
+        "credentials": false,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": null,
+      "scheme": "https",
+      "server_family": "nginx",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l2_idor"
+    ],
+    "case_id": "H038",
+    "category": "cookie",
+    "evidence_required": [
+      "owner_spec",
+      "cookies",
+      "initial_gets_consistent"
+    ],
+    "observation": {
+      "account_resource_link_observed": false,
+      "body_shape": "public_content",
+      "content_type": "application/json",
+      "cookies": [
+        {
+          "duplicate_conflicting": false,
+          "httponly": true,
+          "purpose": "session",
+          "samesite": "lax",
+          "secure": false
+        }
+      ],
+      "cors": {
+        "acao": "none",
+        "credentials": false,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": true,
+      "scheme": "https",
+      "server_family": "nginx",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l2_idor"
+    ],
+    "case_id": "H039",
+    "category": "cookie",
+    "evidence_required": [
+      "owner_spec",
+      "cookies",
+      "initial_gets_consistent"
+    ],
+    "observation": {
+      "account_resource_link_observed": false,
+      "body_shape": "public_content",
+      "content_type": "application/json",
+      "cookies": [
+        {
+          "duplicate_conflicting": false,
+          "httponly": true,
+          "purpose": "session",
+          "samesite": "lax",
+          "secure": false
+        }
+      ],
+      "cors": {
+        "acao": "none",
+        "credentials": false,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": false,
+      "scheme": "https",
+      "server_family": "nginx",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l2_idor"
+    ],
+    "case_id": "H040",
+    "category": "cookie",
+    "evidence_required": [
+      "owner_spec",
+      "cookies",
+      "initial_gets_consistent"
+    ],
+    "observation": {
+      "account_resource_link_observed": false,
+      "body_shape": "public_content",
+      "content_type": "application/json",
+      "cookies": [
+        {
+          "duplicate_conflicting": true,
+          "httponly": true,
+          "purpose": "session",
+          "samesite": "lax",
+          "secure": true
+        },
+        {
+          "duplicate_conflicting": false,
+          "httponly": false,
+          "purpose": "analytics",
+          "samesite": "lax",
+          "secure": false
+        }
+      ],
+      "cors": {
+        "acao": "none",
+        "credentials": false,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": null,
+      "scheme": "https",
+      "server_family": "nginx",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l2_idor"
+    ],
+    "case_id": "H041",
+    "category": "cookie",
+    "evidence_required": [
+      "owner_spec",
+      "cookies",
+      "initial_gets_consistent"
+    ],
+    "observation": {
+      "account_resource_link_observed": false,
+      "body_shape": "public_content",
+      "content_type": "application/json",
+      "cookies": [
+        {
+          "duplicate_conflicting": false,
+          "httponly": false,
+          "purpose": "unknown",
+          "samesite": "lax",
+          "secure": false
+        }
+      ],
+      "cors": {
+        "acao": "none",
+        "credentials": false,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": null,
+      "scheme": "https",
+      "server_family": "nginx",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l2_idor"
+    ],
+    "case_id": "H042",
+    "category": "cookie",
+    "evidence_required": [
+      "owner_spec",
+      "cookies",
+      "initial_gets_consistent"
+    ],
+    "observation": {
+      "account_resource_link_observed": false,
+      "body_shape": "public_content",
+      "content_type": "application/json",
+      "cookies": [
+        {
+          "duplicate_conflicting": false,
+          "httponly": false,
+          "purpose": "analytics",
+          "samesite": "lax",
+          "secure": false
+        }
+      ],
+      "cors": {
+        "acao": "none",
+        "credentials": false,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": null,
+      "scheme": "https",
+      "server_family": "nginx",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l2_idor"
+    ],
+    "case_id": "H043",
+    "category": "cookie",
+    "evidence_required": [
+      "owner_spec",
+      "cookies",
+      "initial_gets_consistent"
+    ],
+    "observation": {
+      "account_resource_link_observed": false,
+      "body_shape": "public_content",
+      "content_type": "application/json",
+      "cookies": [
+        {
+          "duplicate_conflicting": false,
+          "httponly": false,
+          "purpose": "preference",
+          "samesite": "none",
+          "secure": false
+        }
+      ],
+      "cors": {
+        "acao": "none",
+        "credentials": false,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": null,
+      "scheme": "https",
+      "server_family": "nginx",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l2_idor"
+    ],
+    "case_id": "H044",
+    "category": "cookie",
+    "evidence_required": [
+      "owner_spec",
+      "cookies",
+      "initial_gets_consistent"
+    ],
+    "observation": {
+      "account_resource_link_observed": false,
+      "body_shape": "public_content",
+      "content_type": "application/json",
+      "cookies": [
+        {
+          "duplicate_conflicting": false,
+          "httponly": true,
+          "purpose": "session",
+          "samesite": "none",
+          "secure": true
+        }
+      ],
+      "cors": {
+        "acao": "none",
+        "credentials": false,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": null,
+      "scheme": "https",
+      "server_family": "nginx",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l2_idor"
+    ],
+    "case_id": "H045",
+    "category": "cookie",
+    "evidence_required": [
+      "owner_spec",
+      "cookies",
+      "initial_gets_consistent"
+    ],
+    "observation": {
+      "account_resource_link_observed": false,
+      "body_shape": "public_content",
+      "content_type": "application/json",
+      "cookies": [
+        {
+          "duplicate_conflicting": false,
+          "httponly": true,
+          "purpose": "session",
+          "samesite": "lax",
+          "secure": false
+        }
+      ],
+      "cors": {
+        "acao": "none",
+        "credentials": false,
+        "vary_origin": false
+      },
+      "hsts_present": false,
+      "initial_gets_consistent": null,
+      "scheme": "http",
+      "server_family": "nginx",
+      "status": 200,
+      "tls_verified": false,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l2_idor"
+    ],
+    "case_id": "H046",
+    "category": "cookie",
+    "evidence_required": [
+      "owner_spec",
+      "cookies",
+      "initial_gets_consistent"
+    ],
+    "observation": {
+      "account_resource_link_observed": false,
+      "body_shape": "public_content",
+      "content_type": "application/json",
+      "cookies": [
+        {
+          "duplicate_conflicting": false,
+          "httponly": false,
+          "purpose": "unknown",
+          "samesite": "lax",
+          "secure": true
+        }
+      ],
+      "cors": {
+        "acao": "none",
+        "credentials": false,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": null,
+      "scheme": "https",
+      "server_family": "nginx",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l2_idor"
+    ],
+    "case_id": "H047",
+    "category": "cookie",
+    "evidence_required": [
+      "owner_spec",
+      "cookies",
+      "initial_gets_consistent"
+    ],
+    "observation": {
+      "account_resource_link_observed": false,
+      "body_shape": "public_content",
+      "content_type": "application/json",
+      "cookies": [
+        {
+          "duplicate_conflicting": false,
+          "httponly": true,
+          "purpose": "session",
+          "samesite": "lax",
+          "secure": false
+        }
+      ],
+      "cors": {
+        "acao": "none",
+        "credentials": false,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": true,
+      "scheme": "https",
+      "server_family": "nginx",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l2_idor"
+    ],
+    "case_id": "H048",
+    "category": "cookie",
+    "evidence_required": [
+      "owner_spec",
+      "cookies",
+      "initial_gets_consistent"
+    ],
+    "observation": {
+      "account_resource_link_observed": false,
+      "body_shape": "public_content",
+      "content_type": "application/json",
+      "cookies": [
+        {
+          "duplicate_conflicting": false,
+          "httponly": true,
+          "purpose": "session",
+          "samesite": "lax",
+          "secure": true
+        },
+        {
+          "duplicate_conflicting": false,
+          "httponly": false,
+          "purpose": "csrf",
+          "samesite": "strict",
+          "secure": true
+        }
+      ],
+      "cors": {
+        "acao": "none",
+        "credentials": false,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": null,
+      "scheme": "https",
+      "server_family": "nginx",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l1_apache_mod_status",
+      "l2_idor"
+    ],
+    "case_id": "H049",
+    "category": "info_tls",
+    "evidence_required": [
+      "owner_spec",
+      "server_family",
+      "scheme",
+      "hsts_present",
+      "version_disclosed"
+    ],
+    "observation": {
+      "account_resource_link_observed": false,
+      "body_shape": "public_content",
+      "content_type": "application/json",
+      "cookies": [],
+      "cors": {
+        "acao": "none",
+        "credentials": false,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": null,
+      "scheme": "https",
+      "server_family": "apache",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": true
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l2_idor"
+    ],
+    "case_id": "H050",
+    "category": "info_tls",
+    "evidence_required": [
+      "owner_spec",
+      "server_family",
+      "scheme",
+      "hsts_present",
+      "version_disclosed"
+    ],
+    "observation": {
+      "account_resource_link_observed": false,
+      "body_shape": "public_content",
+      "content_type": "application/json",
+      "cookies": [],
+      "cors": {
+        "acao": "none",
+        "credentials": false,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": null,
+      "scheme": "https",
+      "server_family": "apache",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l1_apache_mod_status",
+      "l2_idor"
+    ],
+    "case_id": "H051",
+    "category": "info_tls",
+    "evidence_required": [
+      "owner_spec",
+      "server_family",
+      "scheme",
+      "hsts_present",
+      "version_disclosed"
+    ],
+    "observation": {
+      "account_resource_link_observed": false,
+      "body_shape": "public_content",
+      "content_type": "application/json",
+      "cookies": [],
+      "cors": {
+        "acao": "none",
+        "credentials": false,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": null,
+      "scheme": "https",
+      "server_family": "nginx",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l1_apache_mod_status",
+      "l2_idor"
+    ],
+    "case_id": "H052",
+    "category": "info_tls",
+    "evidence_required": [
+      "owner_spec",
+      "server_family",
+      "scheme",
+      "hsts_present",
+      "version_disclosed"
+    ],
+    "observation": {
+      "account_resource_link_observed": false,
+      "body_shape": "public_content",
+      "content_type": "application/json",
+      "cookies": [],
+      "cors": {
+        "acao": "none",
+        "credentials": false,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": null,
+      "scheme": "https",
+      "server_family": "apache",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l1_apache_mod_status",
+      "l2_idor"
+    ],
+    "case_id": "H053",
+    "category": "info_tls",
+    "evidence_required": [
+      "owner_spec",
+      "server_family",
+      "scheme",
+      "hsts_present",
+      "version_disclosed"
+    ],
+    "observation": {
+      "account_resource_link_observed": false,
+      "body_shape": "public_content",
+      "content_type": "application/json",
+      "cookies": [],
+      "cors": {
+        "acao": "none",
+        "credentials": false,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": null,
+      "scheme": "https",
+      "server_family": "apache",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l1_apache_mod_status",
+      "l2_idor"
+    ],
+    "case_id": "H054",
+    "category": "info_tls",
+    "evidence_required": [
+      "owner_spec",
+      "server_family",
+      "scheme",
+      "hsts_present",
+      "version_disclosed"
+    ],
+    "observation": {
+      "account_resource_link_observed": false,
+      "body_shape": "public_content",
+      "content_type": "application/json",
+      "cookies": [],
+      "cors": {
+        "acao": "none",
+        "credentials": false,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": null,
+      "scheme": "https",
+      "server_family": "other",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l1_apache_mod_status",
+      "l2_idor"
+    ],
+    "case_id": "H055",
+    "category": "info_tls",
+    "evidence_required": [
+      "owner_spec",
+      "server_family",
+      "scheme",
+      "hsts_present",
+      "version_disclosed"
+    ],
+    "observation": {
+      "account_resource_link_observed": false,
+      "body_shape": "public_content",
+      "content_type": "application/json",
+      "cookies": [],
+      "cors": {
+        "acao": "none",
+        "credentials": false,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": null,
+      "scheme": "https",
+      "server_family": "nginx",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l1_apache_mod_status",
+      "l2_idor"
+    ],
+    "case_id": "H056",
+    "category": "info_tls",
+    "evidence_required": [
+      "owner_spec",
+      "server_family",
+      "scheme",
+      "hsts_present",
+      "version_disclosed"
+    ],
+    "observation": {
+      "account_resource_link_observed": false,
+      "body_shape": "public_content",
+      "content_type": "application/json",
+      "cookies": [],
+      "cors": {
+        "acao": "none",
+        "credentials": false,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": null,
+      "scheme": "https",
+      "server_family": "unknown",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l2_idor"
+    ],
+    "case_id": "H057",
+    "category": "info_tls",
+    "evidence_required": [
+      "owner_spec",
+      "server_family",
+      "scheme",
+      "hsts_present",
+      "version_disclosed"
+    ],
+    "observation": {
+      "account_resource_link_observed": false,
+      "body_shape": "login_form",
+      "content_type": "text/html",
+      "cookies": [],
+      "cors": {
+        "acao": "none",
+        "credentials": false,
+        "vary_origin": false
+      },
+      "hsts_present": false,
+      "initial_gets_consistent": null,
+      "scheme": "http",
+      "server_family": "nginx",
+      "status": 200,
+      "tls_verified": false,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l2_idor"
+    ],
+    "case_id": "H058",
+    "category": "info_tls",
+    "evidence_required": [
+      "owner_spec",
+      "server_family",
+      "scheme",
+      "hsts_present",
+      "version_disclosed"
+    ],
+    "observation": {
+      "account_resource_link_observed": false,
+      "body_shape": "public_content",
+      "content_type": "application/json",
+      "cookies": [],
+      "cors": {
+        "acao": "none",
+        "credentials": false,
+        "vary_origin": false
+      },
+      "hsts_present": false,
+      "initial_gets_consistent": false,
+      "scheme": "https",
+      "server_family": "nginx",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l1_apache_mod_status",
+      "l2_idor"
+    ],
+    "case_id": "H059",
+    "category": "info_tls",
+    "evidence_required": [
+      "owner_spec",
+      "server_family",
+      "scheme",
+      "hsts_present",
+      "version_disclosed"
+    ],
+    "observation": {
+      "account_resource_link_observed": false,
+      "body_shape": "public_content",
+      "content_type": "application/json",
+      "cookies": [],
+      "cors": {
+        "acao": "none",
+        "credentials": false,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": null,
+      "scheme": "https",
+      "server_family": "apache",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  },
+  {
+    "allowed_catalog_ids": [
+      "l1_http_probe",
+      "l1_apache_mod_status",
+      "l2_idor"
+    ],
+    "case_id": "H060",
+    "category": "info_tls",
+    "evidence_required": [
+      "owner_spec",
+      "server_family",
+      "scheme",
+      "hsts_present",
+      "version_disclosed"
+    ],
+    "observation": {
+      "account_resource_link_observed": false,
+      "body_shape": "public_content",
+      "content_type": "application/json",
+      "cookies": [],
+      "cors": {
+        "acao": "none",
+        "credentials": false,
+        "vary_origin": false
+      },
+      "hsts_present": true,
+      "initial_gets_consistent": null,
+      "scheme": "https",
+      "server_family": "apache",
+      "status": 200,
+      "tls_verified": true,
+      "version_disclosed": false
+    }
+  }
+]

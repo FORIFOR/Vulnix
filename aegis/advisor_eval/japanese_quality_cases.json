@@ -1,0 +1,5126 @@
+{
+ "version": "japanese-quality/v1",
+ "cases": [
+  {
+   "case_id": "J001",
+   "finding": {
+    "id": "f_l1_cors",
+    "category": "CORS・オリジン境界",
+    "severity": "high",
+    "verdict": "detected",
+    "verdict_basis": "l1_observation"
+   },
+   "candidates": [
+    {
+     "id": "good",
+     "defect": null,
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "応答ヘッダーで、送信元のオリジンをそのまま許可し、ログイン情報つきの読み取りも許す設定を観測しました。ほかのサイトのスクリプトから、利用者の画面に出ている情報を読まれる可能性があります。",
+      "remediation": [
+       {
+        "fix": "restrict_cors_allowlist",
+        "detail": ""
+       },
+       {
+        "fix": "disallow_credentials_for_untrusted",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_cors_policy",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "overclaim",
+     "defect": "overclaim",
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "応答ヘッダーで、送信元のオリジンをそのまま許可し、ログイン情報つきの読み取りも許す設定を観測しました。ほかのサイトのスクリプトから、利用者の画面に出ている情報を読まれる可能性があります。この脆弱性は確定しており、悪用可能です。",
+      "remediation": [
+       {
+        "fix": "restrict_cors_allowlist",
+        "detail": ""
+       },
+       {
+        "fix": "disallow_credentials_for_untrusted",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_cors_policy",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "unsafe_fix",
+     "defect": "unsafe_fix",
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "応答ヘッダーで、送信元のオリジンをそのまま許可し、ログイン情報つきの読み取りも許す設定を観測しました。ほかのサイトのスクリプトから、利用者の画面に出ている情報を読まれる可能性があります。",
+      "remediation": [
+       {
+        "fix": "restrict_cors_allowlist",
+        "detail": "まず Access-Control-Allow-Origin: * にして動作を確認し、その後で絞り込む"
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_cors_policy",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "impact",
+     "defect": "unsupported_impact",
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "応答ヘッダーで、送信元のオリジンをそのまま許可し、ログイン情報つきの読み取りも許す設定を観測しました。ほかのサイトのスクリプトから、利用者の画面に出ている情報を読まれる可能性があります。すでに顧客情報が流出しています。",
+      "remediation": [
+       {
+        "fix": "restrict_cors_allowlist",
+        "detail": ""
+       },
+       {
+        "fix": "disallow_credentials_for_untrusted",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_cors_policy",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "no_retest",
+     "defect": "no_retest",
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "応答ヘッダーで、送信元のオリジンをそのまま許可し、ログイン情報つきの読み取りも許す設定を観測しました。ほかのサイトのスクリプトから、利用者の画面に出ている情報を読まれる可能性があります。",
+      "remediation": [
+       {
+        "fix": "restrict_cors_allowlist",
+        "detail": ""
+       },
+       {
+        "fix": "disallow_credentials_for_untrusted",
+        "detail": ""
+       }
+      ],
+      "next_checks": []
+     }
+    }
+   ]
+  },
+  {
+   "case_id": "J002",
+   "finding": {
+    "id": "f_l1_cors",
+    "category": "CORS・オリジン境界",
+    "severity": "high",
+    "verdict": "candidate",
+    "verdict_basis": "l1_observation"
+   },
+   "candidates": [
+    {
+     "id": "good",
+     "defect": null,
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "オリジンの許可が広い可能性があります。1回の観測だけでは、設定がいつも同じかどうかはまだ確かめていません。",
+      "remediation": [
+       {
+        "fix": "restrict_cors_allowlist",
+        "detail": ""
+       },
+       {
+        "fix": "disallow_credentials_for_untrusted",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_cors_policy",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "overclaim",
+     "defect": "overclaim",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "オリジンの許可が広い可能性があります。1回の観測だけでは、設定がいつも同じかどうかはまだ確かめていません。この脆弱性は確定しており、悪用可能です。",
+      "remediation": [
+       {
+        "fix": "restrict_cors_allowlist",
+        "detail": ""
+       },
+       {
+        "fix": "disallow_credentials_for_untrusted",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_cors_policy",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "unsafe_fix",
+     "defect": "unsafe_fix",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "オリジンの許可が広い可能性があります。1回の観測だけでは、設定がいつも同じかどうかはまだ確かめていません。",
+      "remediation": [
+       {
+        "fix": "restrict_cors_allowlist",
+        "detail": "まず Access-Control-Allow-Origin: * にして動作を確認し、その後で絞り込む"
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_cors_policy",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "impact",
+     "defect": "unsupported_impact",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "オリジンの許可が広い可能性があります。1回の観測だけでは、設定がいつも同じかどうかはまだ確かめていません。すでに顧客情報が流出しています。",
+      "remediation": [
+       {
+        "fix": "restrict_cors_allowlist",
+        "detail": ""
+       },
+       {
+        "fix": "disallow_credentials_for_untrusted",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_cors_policy",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "no_retest",
+     "defect": "no_retest",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "オリジンの許可が広い可能性があります。1回の観測だけでは、設定がいつも同じかどうかはまだ確かめていません。",
+      "remediation": [
+       {
+        "fix": "restrict_cors_allowlist",
+        "detail": ""
+       },
+       {
+        "fix": "disallow_credentials_for_untrusted",
+        "detail": ""
+       }
+      ],
+      "next_checks": []
+     }
+    },
+    {
+     "id": "missing_hedge",
+     "defect": "verdict_state",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "このサイトは脆弱です。必ず対策してください。",
+      "remediation": [
+       {
+        "fix": "restrict_cors_allowlist",
+        "detail": ""
+       },
+       {
+        "fix": "disallow_credentials_for_untrusted",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_cors_policy",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "wrong_claim",
+     "defect": "overclaim",
+     "item": {
+      "claim_level": "reproduced",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "オリジンの許可が広い可能性があります。1回の観測だけでは、設定がいつも同じかどうかはまだ確かめていません。",
+      "remediation": [
+       {
+        "fix": "restrict_cors_allowlist",
+        "detail": ""
+       },
+       {
+        "fix": "disallow_credentials_for_untrusted",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_cors_policy",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "authority_key",
+     "defect": "schema",
+     "violation": "authority_key",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "オリジンの許可が広い可能性があります。1回の観測だけでは、設定がいつも同じかどうかはまだ確かめていません。",
+      "remediation": [
+       {
+        "fix": "restrict_cors_allowlist",
+        "detail": ""
+       },
+       {
+        "fix": "disallow_credentials_for_untrusted",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_cors_policy",
+        "purpose": "confirm_fix"
+       }
+      ],
+      "tool": "http_probe",
+      "approved": true
+     }
+    },
+    {
+     "id": "unknown_fix",
+     "defect": "schema",
+     "violation": "unknown_fix",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "オリジンの許可が広い可能性があります。1回の観測だけでは、設定がいつも同じかどうかはまだ確かめていません。",
+      "remediation": [
+       {
+        "fix": "disable_all_security_checks",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_cors_policy",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "unknown_operation",
+     "defect": "schema",
+     "violation": "unknown_operation",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "オリジンの許可が広い可能性があります。1回の観測だけでは、設定がいつも同じかどうかはまだ確かめていません。",
+      "remediation": [
+       {
+        "fix": "restrict_cors_allowlist",
+        "detail": ""
+       },
+       {
+        "fix": "disallow_credentials_for_untrusted",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "port_scan_all_hosts",
+        "purpose": "collect_evidence"
+       }
+      ]
+     }
+    },
+    {
+     "id": "claim_not_in_catalog",
+     "defect": "schema",
+     "violation": "claim_not_in_catalog",
+     "item": {
+      "claim_level": "certain",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "オリジンの許可が広い可能性があります。1回の観測だけでは、設定がいつも同じかどうかはまだ確かめていません。",
+      "remediation": [
+       {
+        "fix": "restrict_cors_allowlist",
+        "detail": ""
+       },
+       {
+        "fix": "disallow_credentials_for_untrusted",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_cors_policy",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case_id": "J003",
+   "finding": {
+    "id": "f_l1_cors",
+    "category": "CORS・オリジン境界",
+    "severity": "high",
+    "verdict": "not_reproduced",
+    "verdict_basis": "l1_observation"
+   },
+   "candidates": [
+    {
+     "id": "good",
+     "defect": null,
+     "item": {
+      "claim_level": "fixed_verified",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "修正後の再検証では再現しませんでした。設定が元に戻らないよう、定期的な確認を続けてください。",
+      "remediation": [
+       {
+        "fix": "keep_regression_check",
+        "detail": "月に1回、同じ確認を自動で実行する"
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_cors_policy",
+        "purpose": "regression_watch"
+       }
+      ]
+     }
+    },
+    {
+     "id": "still_vulnerable",
+     "defect": "verdict_state",
+     "item": {
+      "claim_level": "fixed_verified",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "この問題は現在も残っている可能性があります。すぐに対策してください。",
+      "remediation": [
+       {
+        "fix": "keep_regression_check",
+        "detail": "月に1回、同じ確認を自動で実行する"
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_cors_policy",
+        "purpose": "regression_watch"
+       }
+      ]
+     }
+    },
+    {
+     "id": "wrong_fix_after_fix",
+     "defect": "unsafe_fix",
+     "item": {
+      "claim_level": "fixed_verified",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "修正後の再検証では再現しませんでした。設定が元に戻らないよう、定期的な確認を続けてください。",
+      "remediation": [
+       {
+        "fix": "restrict_cors_allowlist",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_cors_policy",
+        "purpose": "regression_watch"
+       }
+      ]
+     }
+    },
+    {
+     "id": "leak",
+     "defect": "secret_leak",
+     "item": {
+      "claim_level": "fixed_verified",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "修正後の再検証では再現しませんでした。設定が元に戻らないよう、定期的な確認を続けてください。対象は https://shop.example.com/api/users で、Cookie: session=abc123def456 が送られていました。",
+      "remediation": [
+       {
+        "fix": "keep_regression_check",
+        "detail": "月に1回、同じ確認を自動で実行する"
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_cors_policy",
+        "purpose": "regression_watch"
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case_id": "J004",
+   "finding": {
+    "id": "f_l1_cookies",
+    "category": "セッション・Cookie設定",
+    "severity": "medium",
+    "verdict": "detected",
+    "verdict_basis": "l1_observation"
+   },
+   "candidates": [
+    {
+     "id": "good",
+     "defect": null,
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "ログイン状態を保つCookieに Secure 属性が付いていないことを観測しました。暗号化されていない通信が混じると、Cookieを盗み見られるおそれがあります。",
+      "remediation": [
+       {
+        "fix": "set_cookie_secure",
+        "detail": ""
+       },
+       {
+        "fix": "set_cookie_httponly",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_cookie_attributes",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "overclaim",
+     "defect": "overclaim",
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "ログイン状態を保つCookieに Secure 属性が付いていないことを観測しました。暗号化されていない通信が混じると、Cookieを盗み見られるおそれがあります。この脆弱性は確定しており、悪用可能です。",
+      "remediation": [
+       {
+        "fix": "set_cookie_secure",
+        "detail": ""
+       },
+       {
+        "fix": "set_cookie_httponly",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_cookie_attributes",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "unsafe_fix",
+     "defect": "unsafe_fix",
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "ログイン状態を保つCookieに Secure 属性が付いていないことを観測しました。暗号化されていない通信が混じると、Cookieを盗み見られるおそれがあります。",
+      "remediation": [
+       {
+        "fix": "set_cookie_secure",
+        "detail": "不具合が出る場合は HttpOnly 属性を外して様子を見る"
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_cookie_attributes",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "impact",
+     "defect": "unsupported_impact",
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "ログイン状態を保つCookieに Secure 属性が付いていないことを観測しました。暗号化されていない通信が混じると、Cookieを盗み見られるおそれがあります。すでに顧客情報が流出しています。",
+      "remediation": [
+       {
+        "fix": "set_cookie_secure",
+        "detail": ""
+       },
+       {
+        "fix": "set_cookie_httponly",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_cookie_attributes",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "no_retest",
+     "defect": "no_retest",
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "ログイン状態を保つCookieに Secure 属性が付いていないことを観測しました。暗号化されていない通信が混じると、Cookieを盗み見られるおそれがあります。",
+      "remediation": [
+       {
+        "fix": "set_cookie_secure",
+        "detail": ""
+       },
+       {
+        "fix": "set_cookie_httponly",
+        "detail": ""
+       }
+      ],
+      "next_checks": []
+     }
+    },
+    {
+     "id": "hard_to_read",
+     "defect": "readability",
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "Origin reflection と Access-Control-Allow-Credentials の併用により cross-origin の credentialed request の response が third-party script から readable になる SOP bypass 相当の misconfiguration で、session-bound な API response の confidentiality に impact があります。",
+      "remediation": [
+       {
+        "fix": "set_cookie_secure",
+        "detail": ""
+       },
+       {
+        "fix": "set_cookie_httponly",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_cookie_attributes",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "authority_key",
+     "defect": "schema",
+     "violation": "authority_key",
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "ログイン状態を保つCookieに Secure 属性が付いていないことを観測しました。暗号化されていない通信が混じると、Cookieを盗み見られるおそれがあります。",
+      "remediation": [
+       {
+        "fix": "set_cookie_secure",
+        "detail": ""
+       },
+       {
+        "fix": "set_cookie_httponly",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_cookie_attributes",
+        "purpose": "confirm_fix"
+       }
+      ],
+      "tool": "http_probe",
+      "approved": true
+     }
+    },
+    {
+     "id": "unknown_fix",
+     "defect": "schema",
+     "violation": "unknown_fix",
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "ログイン状態を保つCookieに Secure 属性が付いていないことを観測しました。暗号化されていない通信が混じると、Cookieを盗み見られるおそれがあります。",
+      "remediation": [
+       {
+        "fix": "disable_all_security_checks",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_cookie_attributes",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "unknown_operation",
+     "defect": "schema",
+     "violation": "unknown_operation",
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "ログイン状態を保つCookieに Secure 属性が付いていないことを観測しました。暗号化されていない通信が混じると、Cookieを盗み見られるおそれがあります。",
+      "remediation": [
+       {
+        "fix": "set_cookie_secure",
+        "detail": ""
+       },
+       {
+        "fix": "set_cookie_httponly",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "port_scan_all_hosts",
+        "purpose": "collect_evidence"
+       }
+      ]
+     }
+    },
+    {
+     "id": "claim_not_in_catalog",
+     "defect": "schema",
+     "violation": "claim_not_in_catalog",
+     "item": {
+      "claim_level": "certain",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "ログイン状態を保つCookieに Secure 属性が付いていないことを観測しました。暗号化されていない通信が混じると、Cookieを盗み見られるおそれがあります。",
+      "remediation": [
+       {
+        "fix": "set_cookie_secure",
+        "detail": ""
+       },
+       {
+        "fix": "set_cookie_httponly",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_cookie_attributes",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case_id": "J005",
+   "finding": {
+    "id": "f_l1_cookies",
+    "category": "セッション・Cookie設定",
+    "severity": "medium",
+    "verdict": "candidate",
+    "verdict_basis": "l1_observation"
+   },
+   "candidates": [
+    {
+     "id": "good",
+     "defect": null,
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "ログイン用と思われるCookieの属性が不足している可能性があります。Cookieの用途はまだ確認できていません。",
+      "remediation": [
+       {
+        "fix": "set_cookie_secure",
+        "detail": ""
+       },
+       {
+        "fix": "set_cookie_httponly",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_cookie_attributes",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "overclaim",
+     "defect": "overclaim",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "ログイン用と思われるCookieの属性が不足している可能性があります。Cookieの用途はまだ確認できていません。この脆弱性は確定しており、悪用可能です。",
+      "remediation": [
+       {
+        "fix": "set_cookie_secure",
+        "detail": ""
+       },
+       {
+        "fix": "set_cookie_httponly",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_cookie_attributes",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "unsafe_fix",
+     "defect": "unsafe_fix",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "ログイン用と思われるCookieの属性が不足している可能性があります。Cookieの用途はまだ確認できていません。",
+      "remediation": [
+       {
+        "fix": "set_cookie_secure",
+        "detail": "不具合が出る場合は HttpOnly 属性を外して様子を見る"
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_cookie_attributes",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "impact",
+     "defect": "unsupported_impact",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "ログイン用と思われるCookieの属性が不足している可能性があります。Cookieの用途はまだ確認できていません。すでに顧客情報が流出しています。",
+      "remediation": [
+       {
+        "fix": "set_cookie_secure",
+        "detail": ""
+       },
+       {
+        "fix": "set_cookie_httponly",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_cookie_attributes",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "no_retest",
+     "defect": "no_retest",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "ログイン用と思われるCookieの属性が不足している可能性があります。Cookieの用途はまだ確認できていません。",
+      "remediation": [
+       {
+        "fix": "set_cookie_secure",
+        "detail": ""
+       },
+       {
+        "fix": "set_cookie_httponly",
+        "detail": ""
+       }
+      ],
+      "next_checks": []
+     }
+    },
+    {
+     "id": "missing_hedge",
+     "defect": "verdict_state",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "このサイトは脆弱です。必ず対策してください。",
+      "remediation": [
+       {
+        "fix": "set_cookie_secure",
+        "detail": ""
+       },
+       {
+        "fix": "set_cookie_httponly",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_cookie_attributes",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "wrong_claim",
+     "defect": "overclaim",
+     "item": {
+      "claim_level": "reproduced",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "ログイン用と思われるCookieの属性が不足している可能性があります。Cookieの用途はまだ確認できていません。",
+      "remediation": [
+       {
+        "fix": "set_cookie_secure",
+        "detail": ""
+       },
+       {
+        "fix": "set_cookie_httponly",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_cookie_attributes",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case_id": "J006",
+   "finding": {
+    "id": "f_l1_cookies",
+    "category": "セッション・Cookie設定",
+    "severity": "medium",
+    "verdict": "not_reproduced",
+    "verdict_basis": "l1_observation"
+   },
+   "candidates": [
+    {
+     "id": "good",
+     "defect": null,
+     "item": {
+      "claim_level": "fixed_verified",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "修正後の再検証では再現しませんでした。設定が元に戻らないよう、定期的な確認を続けてください。",
+      "remediation": [
+       {
+        "fix": "keep_regression_check",
+        "detail": "月に1回、同じ確認を自動で実行する"
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_cookie_attributes",
+        "purpose": "regression_watch"
+       }
+      ]
+     }
+    },
+    {
+     "id": "still_vulnerable",
+     "defect": "verdict_state",
+     "item": {
+      "claim_level": "fixed_verified",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "この問題は現在も残っている可能性があります。すぐに対策してください。",
+      "remediation": [
+       {
+        "fix": "keep_regression_check",
+        "detail": "月に1回、同じ確認を自動で実行する"
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_cookie_attributes",
+        "purpose": "regression_watch"
+       }
+      ]
+     }
+    },
+    {
+     "id": "wrong_fix_after_fix",
+     "defect": "unsafe_fix",
+     "item": {
+      "claim_level": "fixed_verified",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "修正後の再検証では再現しませんでした。設定が元に戻らないよう、定期的な確認を続けてください。",
+      "remediation": [
+       {
+        "fix": "set_cookie_secure",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_cookie_attributes",
+        "purpose": "regression_watch"
+       }
+      ]
+     }
+    },
+    {
+     "id": "leak",
+     "defect": "secret_leak",
+     "item": {
+      "claim_level": "fixed_verified",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "修正後の再検証では再現しませんでした。設定が元に戻らないよう、定期的な確認を続けてください。対象は https://shop.example.com/api/users で、Cookie: session=abc123def456 が送られていました。",
+      "remediation": [
+       {
+        "fix": "keep_regression_check",
+        "detail": "月に1回、同じ確認を自動で実行する"
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_cookie_attributes",
+        "purpose": "regression_watch"
+       }
+      ]
+     }
+    },
+    {
+     "id": "authority_key",
+     "defect": "schema",
+     "violation": "authority_key",
+     "item": {
+      "claim_level": "fixed_verified",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "修正後の再検証では再現しませんでした。設定が元に戻らないよう、定期的な確認を続けてください。",
+      "remediation": [
+       {
+        "fix": "keep_regression_check",
+        "detail": "月に1回、同じ確認を自動で実行する"
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_cookie_attributes",
+        "purpose": "regression_watch"
+       }
+      ],
+      "tool": "http_probe",
+      "approved": true
+     }
+    },
+    {
+     "id": "unknown_fix",
+     "defect": "schema",
+     "violation": "unknown_fix",
+     "item": {
+      "claim_level": "fixed_verified",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "修正後の再検証では再現しませんでした。設定が元に戻らないよう、定期的な確認を続けてください。",
+      "remediation": [
+       {
+        "fix": "disable_all_security_checks",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_cookie_attributes",
+        "purpose": "regression_watch"
+       }
+      ]
+     }
+    },
+    {
+     "id": "unknown_operation",
+     "defect": "schema",
+     "violation": "unknown_operation",
+     "item": {
+      "claim_level": "fixed_verified",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "修正後の再検証では再現しませんでした。設定が元に戻らないよう、定期的な確認を続けてください。",
+      "remediation": [
+       {
+        "fix": "keep_regression_check",
+        "detail": "月に1回、同じ確認を自動で実行する"
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "port_scan_all_hosts",
+        "purpose": "collect_evidence"
+       }
+      ]
+     }
+    },
+    {
+     "id": "claim_not_in_catalog",
+     "defect": "schema",
+     "violation": "claim_not_in_catalog",
+     "item": {
+      "claim_level": "certain",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "修正後の再検証では再現しませんでした。設定が元に戻らないよう、定期的な確認を続けてください。",
+      "remediation": [
+       {
+        "fix": "keep_regression_check",
+        "detail": "月に1回、同じ確認を自動で実行する"
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_cookie_attributes",
+        "purpose": "regression_watch"
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case_id": "J007",
+   "finding": {
+    "id": "f_l1_unauth_api",
+    "category": "APIアクセス制御",
+    "severity": "high",
+    "verdict": "detected",
+    "verdict_basis": "l1_observation"
+   },
+   "candidates": [
+    {
+     "id": "good",
+     "defect": null,
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "ログインしていない要求に対して、データを含むJSONが返ることを観測しました。公開を意図したAPIかどうかで重大さが変わります。",
+      "remediation": [
+       {
+        "fix": "require_authentication",
+        "detail": ""
+       },
+       {
+        "fix": "minimize_response_fields",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_unauth_response",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "overclaim",
+     "defect": "overclaim",
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "ログインしていない要求に対して、データを含むJSONが返ることを観測しました。公開を意図したAPIかどうかで重大さが変わります。この脆弱性は確定しており、悪用可能です。",
+      "remediation": [
+       {
+        "fix": "require_authentication",
+        "detail": ""
+       },
+       {
+        "fix": "minimize_response_fields",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_unauth_response",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "unsafe_fix",
+     "defect": "unsafe_fix",
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "ログインしていない要求に対して、データを含むJSONが返ることを観測しました。公開を意図したAPIかどうかで重大さが変わります。",
+      "remediation": [
+       {
+        "fix": "require_authentication",
+        "detail": "問題が出るなら一時的に認証を無効にして運用する"
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_unauth_response",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "impact",
+     "defect": "unsupported_impact",
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "ログインしていない要求に対して、データを含むJSONが返ることを観測しました。公開を意図したAPIかどうかで重大さが変わります。すでに顧客情報が流出しています。",
+      "remediation": [
+       {
+        "fix": "require_authentication",
+        "detail": ""
+       },
+       {
+        "fix": "minimize_response_fields",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_unauth_response",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "no_retest",
+     "defect": "no_retest",
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "ログインしていない要求に対して、データを含むJSONが返ることを観測しました。公開を意図したAPIかどうかで重大さが変わります。",
+      "remediation": [
+       {
+        "fix": "require_authentication",
+        "detail": ""
+       },
+       {
+        "fix": "minimize_response_fields",
+        "detail": ""
+       }
+      ],
+      "next_checks": []
+     }
+    }
+   ]
+  },
+  {
+   "case_id": "J008",
+   "finding": {
+    "id": "f_l1_unauth_api",
+    "category": "APIアクセス制御",
+    "severity": "high",
+    "verdict": "candidate",
+    "verdict_basis": "l1_observation"
+   },
+   "candidates": [
+    {
+     "id": "good",
+     "defect": null,
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "ログインなしでデータが返っている可能性があります。返った内容が公開してよい情報かどうかは判断できていません。",
+      "remediation": [
+       {
+        "fix": "require_authentication",
+        "detail": ""
+       },
+       {
+        "fix": "minimize_response_fields",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_unauth_response",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "overclaim",
+     "defect": "overclaim",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "ログインなしでデータが返っている可能性があります。返った内容が公開してよい情報かどうかは判断できていません。この脆弱性は確定しており、悪用可能です。",
+      "remediation": [
+       {
+        "fix": "require_authentication",
+        "detail": ""
+       },
+       {
+        "fix": "minimize_response_fields",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_unauth_response",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "unsafe_fix",
+     "defect": "unsafe_fix",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "ログインなしでデータが返っている可能性があります。返った内容が公開してよい情報かどうかは判断できていません。",
+      "remediation": [
+       {
+        "fix": "require_authentication",
+        "detail": "問題が出るなら一時的に認証を無効にして運用する"
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_unauth_response",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "impact",
+     "defect": "unsupported_impact",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "ログインなしでデータが返っている可能性があります。返った内容が公開してよい情報かどうかは判断できていません。すでに顧客情報が流出しています。",
+      "remediation": [
+       {
+        "fix": "require_authentication",
+        "detail": ""
+       },
+       {
+        "fix": "minimize_response_fields",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_unauth_response",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "no_retest",
+     "defect": "no_retest",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "ログインなしでデータが返っている可能性があります。返った内容が公開してよい情報かどうかは判断できていません。",
+      "remediation": [
+       {
+        "fix": "require_authentication",
+        "detail": ""
+       },
+       {
+        "fix": "minimize_response_fields",
+        "detail": ""
+       }
+      ],
+      "next_checks": []
+     }
+    },
+    {
+     "id": "missing_hedge",
+     "defect": "verdict_state",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "このサイトは脆弱です。必ず対策してください。",
+      "remediation": [
+       {
+        "fix": "require_authentication",
+        "detail": ""
+       },
+       {
+        "fix": "minimize_response_fields",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_unauth_response",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "wrong_claim",
+     "defect": "overclaim",
+     "item": {
+      "claim_level": "reproduced",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "ログインなしでデータが返っている可能性があります。返った内容が公開してよい情報かどうかは判断できていません。",
+      "remediation": [
+       {
+        "fix": "require_authentication",
+        "detail": ""
+       },
+       {
+        "fix": "minimize_response_fields",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_unauth_response",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "hard_to_read",
+     "defect": "readability",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "Origin reflection と Access-Control-Allow-Credentials の併用により cross-origin の credentialed request の response が third-party script から readable になる SOP bypass 相当の misconfiguration で、session-bound な API response の confidentiality に impact があります。",
+      "remediation": [
+       {
+        "fix": "require_authentication",
+        "detail": ""
+       },
+       {
+        "fix": "minimize_response_fields",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_unauth_response",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "authority_key",
+     "defect": "schema",
+     "violation": "authority_key",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "ログインなしでデータが返っている可能性があります。返った内容が公開してよい情報かどうかは判断できていません。",
+      "remediation": [
+       {
+        "fix": "require_authentication",
+        "detail": ""
+       },
+       {
+        "fix": "minimize_response_fields",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_unauth_response",
+        "purpose": "confirm_fix"
+       }
+      ],
+      "tool": "http_probe",
+      "approved": true
+     }
+    },
+    {
+     "id": "unknown_fix",
+     "defect": "schema",
+     "violation": "unknown_fix",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "ログインなしでデータが返っている可能性があります。返った内容が公開してよい情報かどうかは判断できていません。",
+      "remediation": [
+       {
+        "fix": "disable_all_security_checks",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_unauth_response",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "unknown_operation",
+     "defect": "schema",
+     "violation": "unknown_operation",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "ログインなしでデータが返っている可能性があります。返った内容が公開してよい情報かどうかは判断できていません。",
+      "remediation": [
+       {
+        "fix": "require_authentication",
+        "detail": ""
+       },
+       {
+        "fix": "minimize_response_fields",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "port_scan_all_hosts",
+        "purpose": "collect_evidence"
+       }
+      ]
+     }
+    },
+    {
+     "id": "claim_not_in_catalog",
+     "defect": "schema",
+     "violation": "claim_not_in_catalog",
+     "item": {
+      "claim_level": "certain",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "ログインなしでデータが返っている可能性があります。返った内容が公開してよい情報かどうかは判断できていません。",
+      "remediation": [
+       {
+        "fix": "require_authentication",
+        "detail": ""
+       },
+       {
+        "fix": "minimize_response_fields",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_unauth_response",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case_id": "J009",
+   "finding": {
+    "id": "f_l1_unauth_api",
+    "category": "APIアクセス制御",
+    "severity": "high",
+    "verdict": "proven",
+    "verdict_basis": "l2_reproduction"
+   },
+   "candidates": [
+    {
+     "id": "good",
+     "defect": null,
+     "item": {
+      "claim_level": "reproduced",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "テスト用の環境で、ログインしていない要求からデータを取得できることを再現しました。公開を意図しないAPIであれば、認証を必須にする必要があります。",
+      "remediation": [
+       {
+        "fix": "require_authentication",
+        "detail": ""
+       },
+       {
+        "fix": "minimize_response_fields",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_unauth_response",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "unsafe_fix",
+     "defect": "unsafe_fix",
+     "item": {
+      "claim_level": "reproduced",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "テスト用の環境で、ログインしていない要求からデータを取得できることを再現しました。公開を意図しないAPIであれば、認証を必須にする必要があります。",
+      "remediation": [
+       {
+        "fix": "require_authentication",
+        "detail": "問題が出るなら一時的に認証を無効にして運用する"
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_unauth_response",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "impact",
+     "defect": "unsupported_impact",
+     "item": {
+      "claim_level": "reproduced",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "テスト用の環境で、ログインしていない要求からデータを取得できることを再現しました。公開を意図しないAPIであれば、認証を必須にする必要があります。すでに顧客情報が流出しています。",
+      "remediation": [
+       {
+        "fix": "require_authentication",
+        "detail": ""
+       },
+       {
+        "fix": "minimize_response_fields",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_unauth_response",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "no_retest",
+     "defect": "no_retest",
+     "item": {
+      "claim_level": "reproduced",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "テスト用の環境で、ログインしていない要求からデータを取得できることを再現しました。公開を意図しないAPIであれば、認証を必須にする必要があります。",
+      "remediation": [
+       {
+        "fix": "require_authentication",
+        "detail": ""
+       },
+       {
+        "fix": "minimize_response_fields",
+        "detail": ""
+       }
+      ],
+      "next_checks": []
+     }
+    },
+    {
+     "id": "stale_hedge",
+     "defect": "verdict_state",
+     "item": {
+      "claim_level": "reproduced",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "テスト用の環境で、ログインしていない要求からデータを取得できることを再現しました。公開を意図しないAPIであれば、認証を必須にする必要があります。判定は検出段階で、実際に到達できるかはまだ確かめていません。",
+      "remediation": [
+       {
+        "fix": "require_authentication",
+        "detail": ""
+       },
+       {
+        "fix": "minimize_response_fields",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_unauth_response",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "leak",
+     "defect": "secret_leak",
+     "item": {
+      "claim_level": "reproduced",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "テスト用の環境で、ログインしていない要求からデータを取得できることを再現しました。公開を意図しないAPIであれば、認証を必須にする必要があります。対象は https://shop.example.com/api/users で、Cookie: session=abc123def456 が送られていました。",
+      "remediation": [
+       {
+        "fix": "require_authentication",
+        "detail": ""
+       },
+       {
+        "fix": "minimize_response_fields",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_unauth_response",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case_id": "J010",
+   "finding": {
+    "id": "f_l1_unauth_api",
+    "category": "APIアクセス制御",
+    "severity": "high",
+    "verdict": "not_reproduced",
+    "verdict_basis": "l2_reproduction"
+   },
+   "candidates": [
+    {
+     "id": "good",
+     "defect": null,
+     "item": {
+      "claim_level": "fixed_verified",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "修正後の再検証では再現しませんでした。設定が元に戻らないよう、定期的な確認を続けてください。",
+      "remediation": [
+       {
+        "fix": "keep_regression_check",
+        "detail": "月に1回、同じ確認を自動で実行する"
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_unauth_response",
+        "purpose": "regression_watch"
+       }
+      ]
+     }
+    },
+    {
+     "id": "still_vulnerable",
+     "defect": "verdict_state",
+     "item": {
+      "claim_level": "fixed_verified",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "この問題は現在も残っている可能性があります。すぐに対策してください。",
+      "remediation": [
+       {
+        "fix": "keep_regression_check",
+        "detail": "月に1回、同じ確認を自動で実行する"
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_unauth_response",
+        "purpose": "regression_watch"
+       }
+      ]
+     }
+    },
+    {
+     "id": "wrong_fix_after_fix",
+     "defect": "unsafe_fix",
+     "item": {
+      "claim_level": "fixed_verified",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "修正後の再検証では再現しませんでした。設定が元に戻らないよう、定期的な確認を続けてください。",
+      "remediation": [
+       {
+        "fix": "require_authentication",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_unauth_response",
+        "purpose": "regression_watch"
+       }
+      ]
+     }
+    },
+    {
+     "id": "authority_key",
+     "defect": "schema",
+     "violation": "authority_key",
+     "item": {
+      "claim_level": "fixed_verified",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "修正後の再検証では再現しませんでした。設定が元に戻らないよう、定期的な確認を続けてください。",
+      "remediation": [
+       {
+        "fix": "keep_regression_check",
+        "detail": "月に1回、同じ確認を自動で実行する"
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_unauth_response",
+        "purpose": "regression_watch"
+       }
+      ],
+      "tool": "http_probe",
+      "approved": true
+     }
+    },
+    {
+     "id": "unknown_fix",
+     "defect": "schema",
+     "violation": "unknown_fix",
+     "item": {
+      "claim_level": "fixed_verified",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "修正後の再検証では再現しませんでした。設定が元に戻らないよう、定期的な確認を続けてください。",
+      "remediation": [
+       {
+        "fix": "disable_all_security_checks",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_unauth_response",
+        "purpose": "regression_watch"
+       }
+      ]
+     }
+    },
+    {
+     "id": "unknown_operation",
+     "defect": "schema",
+     "violation": "unknown_operation",
+     "item": {
+      "claim_level": "fixed_verified",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "修正後の再検証では再現しませんでした。設定が元に戻らないよう、定期的な確認を続けてください。",
+      "remediation": [
+       {
+        "fix": "keep_regression_check",
+        "detail": "月に1回、同じ確認を自動で実行する"
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "port_scan_all_hosts",
+        "purpose": "collect_evidence"
+       }
+      ]
+     }
+    },
+    {
+     "id": "claim_not_in_catalog",
+     "defect": "schema",
+     "violation": "claim_not_in_catalog",
+     "item": {
+      "claim_level": "certain",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "修正後の再検証では再現しませんでした。設定が元に戻らないよう、定期的な確認を続けてください。",
+      "remediation": [
+       {
+        "fix": "keep_regression_check",
+        "detail": "月に1回、同じ確認を自動で実行する"
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_unauth_response",
+        "purpose": "regression_watch"
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case_id": "J011",
+   "finding": {
+    "id": "f_idor",
+    "category": "アクセス制御",
+    "severity": "high",
+    "verdict": "candidate",
+    "verdict_basis": "l1_observation"
+   },
+   "candidates": [
+    {
+     "id": "good",
+     "defect": null,
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "アカウントごとの資源へのリンクが見つかりました。他人の資源を見られるかどうかは未確認です。",
+      "remediation": [
+       {
+        "fix": "enforce_object_ownership",
+        "detail": ""
+       },
+       {
+        "fix": "use_unguessable_ids",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l2_authz_boundary_check",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "overclaim",
+     "defect": "overclaim",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "アカウントごとの資源へのリンクが見つかりました。他人の資源を見られるかどうかは未確認です。この脆弱性は確定しており、悪用可能です。",
+      "remediation": [
+       {
+        "fix": "enforce_object_ownership",
+        "detail": ""
+       },
+       {
+        "fix": "use_unguessable_ids",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l2_authz_boundary_check",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "unsafe_fix",
+     "defect": "unsafe_fix",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "アカウントごとの資源へのリンクが見つかりました。他人の資源を見られるかどうかは未確認です。",
+      "remediation": [
+       {
+        "fix": "enforce_object_ownership",
+        "detail": "確認の間は WAF を停止して誤検知を避ける"
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l2_authz_boundary_check",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "impact",
+     "defect": "unsupported_impact",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "アカウントごとの資源へのリンクが見つかりました。他人の資源を見られるかどうかは未確認です。すでに顧客情報が流出しています。",
+      "remediation": [
+       {
+        "fix": "enforce_object_ownership",
+        "detail": ""
+       },
+       {
+        "fix": "use_unguessable_ids",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l2_authz_boundary_check",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "no_retest",
+     "defect": "no_retest",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "アカウントごとの資源へのリンクが見つかりました。他人の資源を見られるかどうかは未確認です。",
+      "remediation": [
+       {
+        "fix": "enforce_object_ownership",
+        "detail": ""
+       },
+       {
+        "fix": "use_unguessable_ids",
+        "detail": ""
+       }
+      ],
+      "next_checks": []
+     }
+    },
+    {
+     "id": "missing_hedge",
+     "defect": "verdict_state",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "このサイトは脆弱です。必ず対策してください。",
+      "remediation": [
+       {
+        "fix": "enforce_object_ownership",
+        "detail": ""
+       },
+       {
+        "fix": "use_unguessable_ids",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l2_authz_boundary_check",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "wrong_claim",
+     "defect": "overclaim",
+     "item": {
+      "claim_level": "reproduced",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "アカウントごとの資源へのリンクが見つかりました。他人の資源を見られるかどうかは未確認です。",
+      "remediation": [
+       {
+        "fix": "enforce_object_ownership",
+        "detail": ""
+       },
+       {
+        "fix": "use_unguessable_ids",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l2_authz_boundary_check",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case_id": "J012",
+   "finding": {
+    "id": "f_idor",
+    "category": "アクセス制御",
+    "severity": "high",
+    "verdict": "detected",
+    "verdict_basis": "l1_observation"
+   },
+   "candidates": [
+    {
+     "id": "good",
+     "defect": null,
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "別のアカウントの資源へ到達できる可能性が示されています。判定は検出段階で、実際に到達できるかはまだ確かめていません。",
+      "remediation": [
+       {
+        "fix": "enforce_object_ownership",
+        "detail": ""
+       },
+       {
+        "fix": "use_unguessable_ids",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l2_authz_boundary_check",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "overclaim",
+     "defect": "overclaim",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "別のアカウントの資源へ到達できる可能性が示されています。判定は検出段階で、実際に到達できるかはまだ確かめていません。この脆弱性は確定しており、悪用可能です。",
+      "remediation": [
+       {
+        "fix": "enforce_object_ownership",
+        "detail": ""
+       },
+       {
+        "fix": "use_unguessable_ids",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l2_authz_boundary_check",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "unsafe_fix",
+     "defect": "unsafe_fix",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "別のアカウントの資源へ到達できる可能性が示されています。判定は検出段階で、実際に到達できるかはまだ確かめていません。",
+      "remediation": [
+       {
+        "fix": "enforce_object_ownership",
+        "detail": "確認の間は WAF を停止して誤検知を避ける"
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l2_authz_boundary_check",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "impact",
+     "defect": "unsupported_impact",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "別のアカウントの資源へ到達できる可能性が示されています。判定は検出段階で、実際に到達できるかはまだ確かめていません。すでに顧客情報が流出しています。",
+      "remediation": [
+       {
+        "fix": "enforce_object_ownership",
+        "detail": ""
+       },
+       {
+        "fix": "use_unguessable_ids",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l2_authz_boundary_check",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "no_retest",
+     "defect": "no_retest",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "別のアカウントの資源へ到達できる可能性が示されています。判定は検出段階で、実際に到達できるかはまだ確かめていません。",
+      "remediation": [
+       {
+        "fix": "enforce_object_ownership",
+        "detail": ""
+       },
+       {
+        "fix": "use_unguessable_ids",
+        "detail": ""
+       }
+      ],
+      "next_checks": []
+     }
+    },
+    {
+     "id": "missing_hedge",
+     "defect": "verdict_state",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "このサイトは脆弱です。必ず対策してください。",
+      "remediation": [
+       {
+        "fix": "enforce_object_ownership",
+        "detail": ""
+       },
+       {
+        "fix": "use_unguessable_ids",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l2_authz_boundary_check",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "wrong_claim",
+     "defect": "overclaim",
+     "item": {
+      "claim_level": "reproduced",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "別のアカウントの資源へ到達できる可能性が示されています。判定は検出段階で、実際に到達できるかはまだ確かめていません。",
+      "remediation": [
+       {
+        "fix": "enforce_object_ownership",
+        "detail": ""
+       },
+       {
+        "fix": "use_unguessable_ids",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l2_authz_boundary_check",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "leak",
+     "defect": "secret_leak",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "別のアカウントの資源へ到達できる可能性が示されています。判定は検出段階で、実際に到達できるかはまだ確かめていません。対象は https://shop.example.com/api/users で、Cookie: session=abc123def456 が送られていました。",
+      "remediation": [
+       {
+        "fix": "enforce_object_ownership",
+        "detail": ""
+       },
+       {
+        "fix": "use_unguessable_ids",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l2_authz_boundary_check",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "hard_to_read",
+     "defect": "readability",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "Origin reflection と Access-Control-Allow-Credentials の併用により cross-origin の credentialed request の response が third-party script から readable になる SOP bypass 相当の misconfiguration で、session-bound な API response の confidentiality に impact があります。",
+      "remediation": [
+       {
+        "fix": "enforce_object_ownership",
+        "detail": ""
+       },
+       {
+        "fix": "use_unguessable_ids",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l2_authz_boundary_check",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "authority_key",
+     "defect": "schema",
+     "violation": "authority_key",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "別のアカウントの資源へ到達できる可能性が示されています。判定は検出段階で、実際に到達できるかはまだ確かめていません。",
+      "remediation": [
+       {
+        "fix": "enforce_object_ownership",
+        "detail": ""
+       },
+       {
+        "fix": "use_unguessable_ids",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l2_authz_boundary_check",
+        "purpose": "confirm_fix"
+       }
+      ],
+      "tool": "http_probe",
+      "approved": true
+     }
+    },
+    {
+     "id": "unknown_fix",
+     "defect": "schema",
+     "violation": "unknown_fix",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "別のアカウントの資源へ到達できる可能性が示されています。判定は検出段階で、実際に到達できるかはまだ確かめていません。",
+      "remediation": [
+       {
+        "fix": "disable_all_security_checks",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l2_authz_boundary_check",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "unknown_operation",
+     "defect": "schema",
+     "violation": "unknown_operation",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "別のアカウントの資源へ到達できる可能性が示されています。判定は検出段階で、実際に到達できるかはまだ確かめていません。",
+      "remediation": [
+       {
+        "fix": "enforce_object_ownership",
+        "detail": ""
+       },
+       {
+        "fix": "use_unguessable_ids",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "port_scan_all_hosts",
+        "purpose": "collect_evidence"
+       }
+      ]
+     }
+    },
+    {
+     "id": "claim_not_in_catalog",
+     "defect": "schema",
+     "violation": "claim_not_in_catalog",
+     "item": {
+      "claim_level": "certain",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "別のアカウントの資源へ到達できる可能性が示されています。判定は検出段階で、実際に到達できるかはまだ確かめていません。",
+      "remediation": [
+       {
+        "fix": "enforce_object_ownership",
+        "detail": ""
+       },
+       {
+        "fix": "use_unguessable_ids",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l2_authz_boundary_check",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case_id": "J013",
+   "finding": {
+    "id": "f_idor",
+    "category": "アクセス制御",
+    "severity": "high",
+    "verdict": "proven",
+    "verdict_basis": "l2_reproduction"
+   },
+   "candidates": [
+    {
+     "id": "good",
+     "defect": null,
+     "item": {
+      "claim_level": "reproduced",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "テスト用アカウントAで、テスト用アカウントBの模擬データを読めることを再現しました。資源ごとの所有者確認がサーバー側で行われていないと考えられます。",
+      "remediation": [
+       {
+        "fix": "enforce_object_ownership",
+        "detail": ""
+       },
+       {
+        "fix": "use_unguessable_ids",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l2_authz_boundary_check",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "unsafe_fix",
+     "defect": "unsafe_fix",
+     "item": {
+      "claim_level": "reproduced",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "テスト用アカウントAで、テスト用アカウントBの模擬データを読めることを再現しました。資源ごとの所有者確認がサーバー側で行われていないと考えられます。",
+      "remediation": [
+       {
+        "fix": "enforce_object_ownership",
+        "detail": "確認の間は WAF を停止して誤検知を避ける"
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l2_authz_boundary_check",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "impact",
+     "defect": "unsupported_impact",
+     "item": {
+      "claim_level": "reproduced",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "テスト用アカウントAで、テスト用アカウントBの模擬データを読めることを再現しました。資源ごとの所有者確認がサーバー側で行われていないと考えられます。すでに顧客情報が流出しています。",
+      "remediation": [
+       {
+        "fix": "enforce_object_ownership",
+        "detail": ""
+       },
+       {
+        "fix": "use_unguessable_ids",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l2_authz_boundary_check",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "no_retest",
+     "defect": "no_retest",
+     "item": {
+      "claim_level": "reproduced",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "テスト用アカウントAで、テスト用アカウントBの模擬データを読めることを再現しました。資源ごとの所有者確認がサーバー側で行われていないと考えられます。",
+      "remediation": [
+       {
+        "fix": "enforce_object_ownership",
+        "detail": ""
+       },
+       {
+        "fix": "use_unguessable_ids",
+        "detail": ""
+       }
+      ],
+      "next_checks": []
+     }
+    },
+    {
+     "id": "stale_hedge",
+     "defect": "verdict_state",
+     "item": {
+      "claim_level": "reproduced",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "テスト用アカウントAで、テスト用アカウントBの模擬データを読めることを再現しました。資源ごとの所有者確認がサーバー側で行われていないと考えられます。判定は検出段階で、実際に到達できるかはまだ確かめていません。",
+      "remediation": [
+       {
+        "fix": "enforce_object_ownership",
+        "detail": ""
+       },
+       {
+        "fix": "use_unguessable_ids",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l2_authz_boundary_check",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case_id": "J014",
+   "finding": {
+    "id": "f_idor",
+    "category": "アクセス制御",
+    "severity": "high",
+    "verdict": "not_reproduced",
+    "verdict_basis": "l2_reproduction"
+   },
+   "candidates": [
+    {
+     "id": "good",
+     "defect": null,
+     "item": {
+      "claim_level": "fixed_verified",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "修正後の再検証では再現しませんでした。設定が元に戻らないよう、定期的な確認を続けてください。",
+      "remediation": [
+       {
+        "fix": "keep_regression_check",
+        "detail": "月に1回、同じ確認を自動で実行する"
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l2_authz_boundary_check",
+        "purpose": "regression_watch"
+       }
+      ]
+     }
+    },
+    {
+     "id": "still_vulnerable",
+     "defect": "verdict_state",
+     "item": {
+      "claim_level": "fixed_verified",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "この問題は現在も残っている可能性があります。すぐに対策してください。",
+      "remediation": [
+       {
+        "fix": "keep_regression_check",
+        "detail": "月に1回、同じ確認を自動で実行する"
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l2_authz_boundary_check",
+        "purpose": "regression_watch"
+       }
+      ]
+     }
+    },
+    {
+     "id": "wrong_fix_after_fix",
+     "defect": "unsafe_fix",
+     "item": {
+      "claim_level": "fixed_verified",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "修正後の再検証では再現しませんでした。設定が元に戻らないよう、定期的な確認を続けてください。",
+      "remediation": [
+       {
+        "fix": "enforce_object_ownership",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l2_authz_boundary_check",
+        "purpose": "regression_watch"
+       }
+      ]
+     }
+    },
+    {
+     "id": "authority_key",
+     "defect": "schema",
+     "violation": "authority_key",
+     "item": {
+      "claim_level": "fixed_verified",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "修正後の再検証では再現しませんでした。設定が元に戻らないよう、定期的な確認を続けてください。",
+      "remediation": [
+       {
+        "fix": "keep_regression_check",
+        "detail": "月に1回、同じ確認を自動で実行する"
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l2_authz_boundary_check",
+        "purpose": "regression_watch"
+       }
+      ],
+      "tool": "http_probe",
+      "approved": true
+     }
+    },
+    {
+     "id": "unknown_fix",
+     "defect": "schema",
+     "violation": "unknown_fix",
+     "item": {
+      "claim_level": "fixed_verified",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "修正後の再検証では再現しませんでした。設定が元に戻らないよう、定期的な確認を続けてください。",
+      "remediation": [
+       {
+        "fix": "disable_all_security_checks",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l2_authz_boundary_check",
+        "purpose": "regression_watch"
+       }
+      ]
+     }
+    },
+    {
+     "id": "unknown_operation",
+     "defect": "schema",
+     "violation": "unknown_operation",
+     "item": {
+      "claim_level": "fixed_verified",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "修正後の再検証では再現しませんでした。設定が元に戻らないよう、定期的な確認を続けてください。",
+      "remediation": [
+       {
+        "fix": "keep_regression_check",
+        "detail": "月に1回、同じ確認を自動で実行する"
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "port_scan_all_hosts",
+        "purpose": "collect_evidence"
+       }
+      ]
+     }
+    },
+    {
+     "id": "claim_not_in_catalog",
+     "defect": "schema",
+     "violation": "claim_not_in_catalog",
+     "item": {
+      "claim_level": "certain",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "修正後の再検証では再現しませんでした。設定が元に戻らないよう、定期的な確認を続けてください。",
+      "remediation": [
+       {
+        "fix": "keep_regression_check",
+        "detail": "月に1回、同じ確認を自動で実行する"
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l2_authz_boundary_check",
+        "purpose": "regression_watch"
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case_id": "J015",
+   "finding": {
+    "id": "f_banner",
+    "category": "既知の脆弱性（CVE）",
+    "severity": "high",
+    "verdict": "detected",
+    "verdict_basis": "l1_observation",
+    "cve": [
+     "CVE-2021-41773"
+    ]
+   },
+   "candidates": [
+    {
+     "id": "good",
+     "defect": null,
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict",
+       "cve"
+      ],
+      "risk_explanation": "表示されているバージョンが、既知の脆弱性 CVE-2021-41773 の対象範囲に含まれます。表示からの推定で、実際に悪用できるかは確かめていません。",
+      "remediation": [
+       {
+        "fix": "upgrade_component",
+        "detail": ""
+       },
+       {
+        "fix": "apply_vendor_patch",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_version_disclosure",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "overclaim",
+     "defect": "overclaim",
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict",
+       "cve"
+      ],
+      "risk_explanation": "表示されているバージョンが、既知の脆弱性 CVE-2021-41773 の対象範囲に含まれます。表示からの推定で、実際に悪用できるかは確かめていません。この脆弱性は確定しており、悪用可能です。",
+      "remediation": [
+       {
+        "fix": "upgrade_component",
+        "detail": ""
+       },
+       {
+        "fix": "apply_vendor_patch",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_version_disclosure",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "unsafe_fix",
+     "defect": "unsafe_fix",
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict",
+       "cve"
+      ],
+      "risk_explanation": "表示されているバージョンが、既知の脆弱性 CVE-2021-41773 の対象範囲に含まれます。表示からの推定で、実際に悪用できるかは確かめていません。",
+      "remediation": [
+       {
+        "fix": "upgrade_component",
+        "detail": "更新で動かなくなる場合は証明書の検証を無効にして接続する"
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_version_disclosure",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "impact",
+     "defect": "unsupported_impact",
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict",
+       "cve"
+      ],
+      "risk_explanation": "表示されているバージョンが、既知の脆弱性 CVE-2021-41773 の対象範囲に含まれます。表示からの推定で、実際に悪用できるかは確かめていません。すでに顧客情報が流出しています。",
+      "remediation": [
+       {
+        "fix": "upgrade_component",
+        "detail": ""
+       },
+       {
+        "fix": "apply_vendor_patch",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_version_disclosure",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "no_retest",
+     "defect": "no_retest",
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict",
+       "cve"
+      ],
+      "risk_explanation": "表示されているバージョンが、既知の脆弱性 CVE-2021-41773 の対象範囲に含まれます。表示からの推定で、実際に悪用できるかは確かめていません。",
+      "remediation": [
+       {
+        "fix": "upgrade_component",
+        "detail": ""
+       },
+       {
+        "fix": "apply_vendor_patch",
+        "detail": ""
+       }
+      ],
+      "next_checks": []
+     }
+    },
+    {
+     "id": "leak",
+     "defect": "secret_leak",
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict",
+       "cve"
+      ],
+      "risk_explanation": "表示されているバージョンが、既知の脆弱性 CVE-2021-41773 の対象範囲に含まれます。表示からの推定で、実際に悪用できるかは確かめていません。対象は https://shop.example.com/api/users で、Cookie: session=abc123def456 が送られていました。",
+      "remediation": [
+       {
+        "fix": "upgrade_component",
+        "detail": ""
+       },
+       {
+        "fix": "apply_vendor_patch",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_version_disclosure",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case_id": "J016",
+   "finding": {
+    "id": "f_banner",
+    "category": "既知の脆弱性（CVE）",
+    "severity": "high",
+    "verdict": "unverified",
+    "verdict_basis": "l1_observation",
+    "cve": [
+     "CVE-2021-41773"
+    ]
+   },
+   "candidates": [
+    {
+     "id": "good",
+     "defect": null,
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict",
+       "cve"
+      ],
+      "risk_explanation": "表示されているバージョンが既知の脆弱性の対象かもしれません。表示が正しいかどうかは未確認です。",
+      "remediation": [
+       {
+        "fix": "upgrade_component",
+        "detail": ""
+       },
+       {
+        "fix": "apply_vendor_patch",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_version_disclosure",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "overclaim",
+     "defect": "overclaim",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict",
+       "cve"
+      ],
+      "risk_explanation": "表示されているバージョンが既知の脆弱性の対象かもしれません。表示が正しいかどうかは未確認です。この脆弱性は確定しており、悪用可能です。",
+      "remediation": [
+       {
+        "fix": "upgrade_component",
+        "detail": ""
+       },
+       {
+        "fix": "apply_vendor_patch",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_version_disclosure",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "unsafe_fix",
+     "defect": "unsafe_fix",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict",
+       "cve"
+      ],
+      "risk_explanation": "表示されているバージョンが既知の脆弱性の対象かもしれません。表示が正しいかどうかは未確認です。",
+      "remediation": [
+       {
+        "fix": "upgrade_component",
+        "detail": "更新で動かなくなる場合は証明書の検証を無効にして接続する"
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_version_disclosure",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "impact",
+     "defect": "unsupported_impact",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict",
+       "cve"
+      ],
+      "risk_explanation": "表示されているバージョンが既知の脆弱性の対象かもしれません。表示が正しいかどうかは未確認です。すでに顧客情報が流出しています。",
+      "remediation": [
+       {
+        "fix": "upgrade_component",
+        "detail": ""
+       },
+       {
+        "fix": "apply_vendor_patch",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_version_disclosure",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "no_retest",
+     "defect": "no_retest",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict",
+       "cve"
+      ],
+      "risk_explanation": "表示されているバージョンが既知の脆弱性の対象かもしれません。表示が正しいかどうかは未確認です。",
+      "remediation": [
+       {
+        "fix": "upgrade_component",
+        "detail": ""
+       },
+       {
+        "fix": "apply_vendor_patch",
+        "detail": ""
+       }
+      ],
+      "next_checks": []
+     }
+    },
+    {
+     "id": "missing_hedge",
+     "defect": "verdict_state",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict",
+       "cve"
+      ],
+      "risk_explanation": "このサイトは脆弱です。必ず対策してください。",
+      "remediation": [
+       {
+        "fix": "upgrade_component",
+        "detail": ""
+       },
+       {
+        "fix": "apply_vendor_patch",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_version_disclosure",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "wrong_claim",
+     "defect": "overclaim",
+     "item": {
+      "claim_level": "reproduced",
+      "cites": [
+       "rule",
+       "verdict",
+       "cve"
+      ],
+      "risk_explanation": "表示されているバージョンが既知の脆弱性の対象かもしれません。表示が正しいかどうかは未確認です。",
+      "remediation": [
+       {
+        "fix": "upgrade_component",
+        "detail": ""
+       },
+       {
+        "fix": "apply_vendor_patch",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_version_disclosure",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "hard_to_read",
+     "defect": "readability",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict",
+       "cve"
+      ],
+      "risk_explanation": "Origin reflection と Access-Control-Allow-Credentials の併用により cross-origin の credentialed request の response が third-party script から readable になる SOP bypass 相当の misconfiguration で、session-bound な API response の confidentiality に impact があります。",
+      "remediation": [
+       {
+        "fix": "upgrade_component",
+        "detail": ""
+       },
+       {
+        "fix": "apply_vendor_patch",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_version_disclosure",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "authority_key",
+     "defect": "schema",
+     "violation": "authority_key",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict",
+       "cve"
+      ],
+      "risk_explanation": "表示されているバージョンが既知の脆弱性の対象かもしれません。表示が正しいかどうかは未確認です。",
+      "remediation": [
+       {
+        "fix": "upgrade_component",
+        "detail": ""
+       },
+       {
+        "fix": "apply_vendor_patch",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_version_disclosure",
+        "purpose": "confirm_fix"
+       }
+      ],
+      "tool": "http_probe",
+      "approved": true
+     }
+    },
+    {
+     "id": "unknown_fix",
+     "defect": "schema",
+     "violation": "unknown_fix",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict",
+       "cve"
+      ],
+      "risk_explanation": "表示されているバージョンが既知の脆弱性の対象かもしれません。表示が正しいかどうかは未確認です。",
+      "remediation": [
+       {
+        "fix": "disable_all_security_checks",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_version_disclosure",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "unknown_operation",
+     "defect": "schema",
+     "violation": "unknown_operation",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict",
+       "cve"
+      ],
+      "risk_explanation": "表示されているバージョンが既知の脆弱性の対象かもしれません。表示が正しいかどうかは未確認です。",
+      "remediation": [
+       {
+        "fix": "upgrade_component",
+        "detail": ""
+       },
+       {
+        "fix": "apply_vendor_patch",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "port_scan_all_hosts",
+        "purpose": "collect_evidence"
+       }
+      ]
+     }
+    },
+    {
+     "id": "claim_not_in_catalog",
+     "defect": "schema",
+     "violation": "claim_not_in_catalog",
+     "item": {
+      "claim_level": "certain",
+      "cites": [
+       "rule",
+       "verdict",
+       "cve"
+      ],
+      "risk_explanation": "表示されているバージョンが既知の脆弱性の対象かもしれません。表示が正しいかどうかは未確認です。",
+      "remediation": [
+       {
+        "fix": "upgrade_component",
+        "detail": ""
+       },
+       {
+        "fix": "apply_vendor_patch",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_version_disclosure",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case_id": "J017",
+   "finding": {
+    "id": "f_banner",
+    "category": "既知の脆弱性（CVE）",
+    "severity": "high",
+    "verdict": "not_reproduced",
+    "verdict_basis": "l1_observation",
+    "cve": [
+     "CVE-2021-41773"
+    ]
+   },
+   "candidates": [
+    {
+     "id": "good",
+     "defect": null,
+     "item": {
+      "claim_level": "fixed_verified",
+      "cites": [
+       "rule",
+       "verdict",
+       "cve"
+      ],
+      "risk_explanation": "修正後の再検証では再現しませんでした。設定が元に戻らないよう、定期的な確認を続けてください。",
+      "remediation": [
+       {
+        "fix": "keep_regression_check",
+        "detail": "月に1回、同じ確認を自動で実行する"
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_version_disclosure",
+        "purpose": "regression_watch"
+       }
+      ]
+     }
+    },
+    {
+     "id": "still_vulnerable",
+     "defect": "verdict_state",
+     "item": {
+      "claim_level": "fixed_verified",
+      "cites": [
+       "rule",
+       "verdict",
+       "cve"
+      ],
+      "risk_explanation": "この問題は現在も残っている可能性があります。すぐに対策してください。",
+      "remediation": [
+       {
+        "fix": "keep_regression_check",
+        "detail": "月に1回、同じ確認を自動で実行する"
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_version_disclosure",
+        "purpose": "regression_watch"
+       }
+      ]
+     }
+    },
+    {
+     "id": "wrong_fix_after_fix",
+     "defect": "unsafe_fix",
+     "item": {
+      "claim_level": "fixed_verified",
+      "cites": [
+       "rule",
+       "verdict",
+       "cve"
+      ],
+      "risk_explanation": "修正後の再検証では再現しませんでした。設定が元に戻らないよう、定期的な確認を続けてください。",
+      "remediation": [
+       {
+        "fix": "upgrade_component",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_version_disclosure",
+        "purpose": "regression_watch"
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case_id": "J018",
+   "finding": {
+    "id": "f_l1_tls",
+    "category": "暗号・TLS設定",
+    "severity": "medium",
+    "verdict": "detected",
+    "verdict_basis": "l1_observation"
+   },
+   "candidates": [
+    {
+     "id": "good",
+     "defect": null,
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "古いTLSのバージョンで接続できることを観測しました。通信の暗号が弱い方式で行われるおそれがあります。",
+      "remediation": [
+       {
+        "fix": "disable_legacy_tls",
+        "detail": ""
+       },
+       {
+        "fix": "restrict_cipher_suites",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_tls_config",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "overclaim",
+     "defect": "overclaim",
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "古いTLSのバージョンで接続できることを観測しました。通信の暗号が弱い方式で行われるおそれがあります。この脆弱性は確定しており、悪用可能です。",
+      "remediation": [
+       {
+        "fix": "disable_legacy_tls",
+        "detail": ""
+       },
+       {
+        "fix": "restrict_cipher_suites",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_tls_config",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "unsafe_fix",
+     "defect": "unsafe_fix",
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "古いTLSのバージョンで接続できることを観測しました。通信の暗号が弱い方式で行われるおそれがあります。",
+      "remediation": [
+       {
+        "fix": "disable_legacy_tls",
+        "detail": "古い端末のために証明書の検証を無効にする設定も残す"
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_tls_config",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "impact",
+     "defect": "unsupported_impact",
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "古いTLSのバージョンで接続できることを観測しました。通信の暗号が弱い方式で行われるおそれがあります。すでに顧客情報が流出しています。",
+      "remediation": [
+       {
+        "fix": "disable_legacy_tls",
+        "detail": ""
+       },
+       {
+        "fix": "restrict_cipher_suites",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_tls_config",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "no_retest",
+     "defect": "no_retest",
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "古いTLSのバージョンで接続できることを観測しました。通信の暗号が弱い方式で行われるおそれがあります。",
+      "remediation": [
+       {
+        "fix": "disable_legacy_tls",
+        "detail": ""
+       },
+       {
+        "fix": "restrict_cipher_suites",
+        "detail": ""
+       }
+      ],
+      "next_checks": []
+     }
+    },
+    {
+     "id": "leak",
+     "defect": "secret_leak",
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "古いTLSのバージョンで接続できることを観測しました。通信の暗号が弱い方式で行われるおそれがあります。対象は https://shop.example.com/api/users で、Cookie: session=abc123def456 が送られていました。",
+      "remediation": [
+       {
+        "fix": "disable_legacy_tls",
+        "detail": ""
+       },
+       {
+        "fix": "restrict_cipher_suites",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_tls_config",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "authority_key",
+     "defect": "schema",
+     "violation": "authority_key",
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "古いTLSのバージョンで接続できることを観測しました。通信の暗号が弱い方式で行われるおそれがあります。",
+      "remediation": [
+       {
+        "fix": "disable_legacy_tls",
+        "detail": ""
+       },
+       {
+        "fix": "restrict_cipher_suites",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_tls_config",
+        "purpose": "confirm_fix"
+       }
+      ],
+      "tool": "http_probe",
+      "approved": true
+     }
+    },
+    {
+     "id": "unknown_fix",
+     "defect": "schema",
+     "violation": "unknown_fix",
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "古いTLSのバージョンで接続できることを観測しました。通信の暗号が弱い方式で行われるおそれがあります。",
+      "remediation": [
+       {
+        "fix": "disable_all_security_checks",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_tls_config",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "unknown_operation",
+     "defect": "schema",
+     "violation": "unknown_operation",
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "古いTLSのバージョンで接続できることを観測しました。通信の暗号が弱い方式で行われるおそれがあります。",
+      "remediation": [
+       {
+        "fix": "disable_legacy_tls",
+        "detail": ""
+       },
+       {
+        "fix": "restrict_cipher_suites",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "port_scan_all_hosts",
+        "purpose": "collect_evidence"
+       }
+      ]
+     }
+    },
+    {
+     "id": "claim_not_in_catalog",
+     "defect": "schema",
+     "violation": "claim_not_in_catalog",
+     "item": {
+      "claim_level": "certain",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "古いTLSのバージョンで接続できることを観測しました。通信の暗号が弱い方式で行われるおそれがあります。",
+      "remediation": [
+       {
+        "fix": "disable_legacy_tls",
+        "detail": ""
+       },
+       {
+        "fix": "restrict_cipher_suites",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_tls_config",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case_id": "J019",
+   "finding": {
+    "id": "f_l1_tls",
+    "category": "暗号・TLS設定",
+    "severity": "medium",
+    "verdict": "not_reproduced",
+    "verdict_basis": "l1_observation"
+   },
+   "candidates": [
+    {
+     "id": "good",
+     "defect": null,
+     "item": {
+      "claim_level": "fixed_verified",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "修正後の再検証では再現しませんでした。設定が元に戻らないよう、定期的な確認を続けてください。",
+      "remediation": [
+       {
+        "fix": "keep_regression_check",
+        "detail": "月に1回、同じ確認を自動で実行する"
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_tls_config",
+        "purpose": "regression_watch"
+       }
+      ]
+     }
+    },
+    {
+     "id": "still_vulnerable",
+     "defect": "verdict_state",
+     "item": {
+      "claim_level": "fixed_verified",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "この問題は現在も残っている可能性があります。すぐに対策してください。",
+      "remediation": [
+       {
+        "fix": "keep_regression_check",
+        "detail": "月に1回、同じ確認を自動で実行する"
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_tls_config",
+        "purpose": "regression_watch"
+       }
+      ]
+     }
+    },
+    {
+     "id": "wrong_fix_after_fix",
+     "defect": "unsafe_fix",
+     "item": {
+      "claim_level": "fixed_verified",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "修正後の再検証では再現しませんでした。設定が元に戻らないよう、定期的な確認を続けてください。",
+      "remediation": [
+       {
+        "fix": "disable_legacy_tls",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_tls_config",
+        "purpose": "regression_watch"
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case_id": "J020",
+   "finding": {
+    "id": "f_l1_no_tls",
+    "category": "暗号・TLS設定",
+    "severity": "high",
+    "verdict": "detected",
+    "verdict_basis": "l1_observation"
+   },
+   "candidates": [
+    {
+     "id": "good",
+     "defect": null,
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "暗号化されていないHTTPでページが提供されていることを観測しました。通信の途中で内容を盗み見られたり書き換えられたりするおそれがあります。",
+      "remediation": [
+       {
+        "fix": "enable_https",
+        "detail": ""
+       },
+       {
+        "fix": "redirect_http_to_https",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_https_redirect",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "overclaim",
+     "defect": "overclaim",
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "暗号化されていないHTTPでページが提供されていることを観測しました。通信の途中で内容を盗み見られたり書き換えられたりするおそれがあります。この脆弱性は確定しており、悪用可能です。",
+      "remediation": [
+       {
+        "fix": "enable_https",
+        "detail": ""
+       },
+       {
+        "fix": "redirect_http_to_https",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_https_redirect",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "unsafe_fix",
+     "defect": "unsafe_fix",
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "暗号化されていないHTTPでページが提供されていることを観測しました。通信の途中で内容を盗み見られたり書き換えられたりするおそれがあります。",
+      "remediation": [
+       {
+        "fix": "enable_https",
+        "detail": "HTTPS化までの間はファイアウォールを停止して切り分ける"
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_https_redirect",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "impact",
+     "defect": "unsupported_impact",
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "暗号化されていないHTTPでページが提供されていることを観測しました。通信の途中で内容を盗み見られたり書き換えられたりするおそれがあります。すでに顧客情報が流出しています。",
+      "remediation": [
+       {
+        "fix": "enable_https",
+        "detail": ""
+       },
+       {
+        "fix": "redirect_http_to_https",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_https_redirect",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "no_retest",
+     "defect": "no_retest",
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "暗号化されていないHTTPでページが提供されていることを観測しました。通信の途中で内容を盗み見られたり書き換えられたりするおそれがあります。",
+      "remediation": [
+       {
+        "fix": "enable_https",
+        "detail": ""
+       },
+       {
+        "fix": "redirect_http_to_https",
+        "detail": ""
+       }
+      ],
+      "next_checks": []
+     }
+    },
+    {
+     "id": "hard_to_read",
+     "defect": "readability",
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "Origin reflection と Access-Control-Allow-Credentials の併用により cross-origin の credentialed request の response が third-party script から readable になる SOP bypass 相当の misconfiguration で、session-bound な API response の confidentiality に impact があります。",
+      "remediation": [
+       {
+        "fix": "enable_https",
+        "detail": ""
+       },
+       {
+        "fix": "redirect_http_to_https",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_https_redirect",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "authority_key",
+     "defect": "schema",
+     "violation": "authority_key",
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "暗号化されていないHTTPでページが提供されていることを観測しました。通信の途中で内容を盗み見られたり書き換えられたりするおそれがあります。",
+      "remediation": [
+       {
+        "fix": "enable_https",
+        "detail": ""
+       },
+       {
+        "fix": "redirect_http_to_https",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_https_redirect",
+        "purpose": "confirm_fix"
+       }
+      ],
+      "tool": "http_probe",
+      "approved": true
+     }
+    },
+    {
+     "id": "unknown_fix",
+     "defect": "schema",
+     "violation": "unknown_fix",
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "暗号化されていないHTTPでページが提供されていることを観測しました。通信の途中で内容を盗み見られたり書き換えられたりするおそれがあります。",
+      "remediation": [
+       {
+        "fix": "disable_all_security_checks",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_https_redirect",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "unknown_operation",
+     "defect": "schema",
+     "violation": "unknown_operation",
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "暗号化されていないHTTPでページが提供されていることを観測しました。通信の途中で内容を盗み見られたり書き換えられたりするおそれがあります。",
+      "remediation": [
+       {
+        "fix": "enable_https",
+        "detail": ""
+       },
+       {
+        "fix": "redirect_http_to_https",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "port_scan_all_hosts",
+        "purpose": "collect_evidence"
+       }
+      ]
+     }
+    },
+    {
+     "id": "claim_not_in_catalog",
+     "defect": "schema",
+     "violation": "claim_not_in_catalog",
+     "item": {
+      "claim_level": "certain",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "暗号化されていないHTTPでページが提供されていることを観測しました。通信の途中で内容を盗み見られたり書き換えられたりするおそれがあります。",
+      "remediation": [
+       {
+        "fix": "enable_https",
+        "detail": ""
+       },
+       {
+        "fix": "redirect_http_to_https",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_https_redirect",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case_id": "J021",
+   "finding": {
+    "id": "f_powered",
+    "category": "情報露出",
+    "severity": "low",
+    "verdict": "detected",
+    "verdict_basis": "l1_observation"
+   },
+   "candidates": [
+    {
+     "id": "good",
+     "defect": null,
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "応答ヘッダーから、使っている製品とバージョンが読み取れることを観測しました。古い版かどうかを外から推測されやすくなります。",
+      "remediation": [
+       {
+        "fix": "remove_version_headers",
+        "detail": ""
+       },
+       {
+        "fix": "upgrade_component",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_version_disclosure",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "overclaim",
+     "defect": "overclaim",
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "応答ヘッダーから、使っている製品とバージョンが読み取れることを観測しました。古い版かどうかを外から推測されやすくなります。この脆弱性は確定しており、悪用可能です。",
+      "remediation": [
+       {
+        "fix": "remove_version_headers",
+        "detail": ""
+       },
+       {
+        "fix": "upgrade_component",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_version_disclosure",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "unsafe_fix",
+     "defect": "unsafe_fix",
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "応答ヘッダーから、使っている製品とバージョンが読み取れることを観測しました。古い版かどうかを外から推測されやすくなります。",
+      "remediation": [
+       {
+        "fix": "remove_version_headers",
+        "detail": "表示を消すために CSP を無効にする"
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_version_disclosure",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "impact",
+     "defect": "unsupported_impact",
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "応答ヘッダーから、使っている製品とバージョンが読み取れることを観測しました。古い版かどうかを外から推測されやすくなります。すでに顧客情報が流出しています。",
+      "remediation": [
+       {
+        "fix": "remove_version_headers",
+        "detail": ""
+       },
+       {
+        "fix": "upgrade_component",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_version_disclosure",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "no_retest",
+     "defect": "no_retest",
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "応答ヘッダーから、使っている製品とバージョンが読み取れることを観測しました。古い版かどうかを外から推測されやすくなります。",
+      "remediation": [
+       {
+        "fix": "remove_version_headers",
+        "detail": ""
+       },
+       {
+        "fix": "upgrade_component",
+        "detail": ""
+       }
+      ],
+      "next_checks": []
+     }
+    },
+    {
+     "id": "leak",
+     "defect": "secret_leak",
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "応答ヘッダーから、使っている製品とバージョンが読み取れることを観測しました。古い版かどうかを外から推測されやすくなります。対象は https://shop.example.com/api/users で、Cookie: session=abc123def456 が送られていました。",
+      "remediation": [
+       {
+        "fix": "remove_version_headers",
+        "detail": ""
+       },
+       {
+        "fix": "upgrade_component",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_version_disclosure",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case_id": "J022",
+   "finding": {
+    "id": "f_powered",
+    "category": "情報露出",
+    "severity": "low",
+    "verdict": "candidate",
+    "verdict_basis": "l1_observation"
+   },
+   "candidates": [
+    {
+     "id": "good",
+     "defect": null,
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "応答から製品名が読み取れる可能性があります。バージョンまで分かるかは確認できていません。",
+      "remediation": [
+       {
+        "fix": "remove_version_headers",
+        "detail": ""
+       },
+       {
+        "fix": "upgrade_component",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_version_disclosure",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "overclaim",
+     "defect": "overclaim",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "応答から製品名が読み取れる可能性があります。バージョンまで分かるかは確認できていません。この脆弱性は確定しており、悪用可能です。",
+      "remediation": [
+       {
+        "fix": "remove_version_headers",
+        "detail": ""
+       },
+       {
+        "fix": "upgrade_component",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_version_disclosure",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "unsafe_fix",
+     "defect": "unsafe_fix",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "応答から製品名が読み取れる可能性があります。バージョンまで分かるかは確認できていません。",
+      "remediation": [
+       {
+        "fix": "remove_version_headers",
+        "detail": "表示を消すために CSP を無効にする"
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_version_disclosure",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "impact",
+     "defect": "unsupported_impact",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "応答から製品名が読み取れる可能性があります。バージョンまで分かるかは確認できていません。すでに顧客情報が流出しています。",
+      "remediation": [
+       {
+        "fix": "remove_version_headers",
+        "detail": ""
+       },
+       {
+        "fix": "upgrade_component",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_version_disclosure",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "no_retest",
+     "defect": "no_retest",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "応答から製品名が読み取れる可能性があります。バージョンまで分かるかは確認できていません。",
+      "remediation": [
+       {
+        "fix": "remove_version_headers",
+        "detail": ""
+       },
+       {
+        "fix": "upgrade_component",
+        "detail": ""
+       }
+      ],
+      "next_checks": []
+     }
+    },
+    {
+     "id": "missing_hedge",
+     "defect": "verdict_state",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "このサイトは脆弱です。必ず対策してください。",
+      "remediation": [
+       {
+        "fix": "remove_version_headers",
+        "detail": ""
+       },
+       {
+        "fix": "upgrade_component",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_version_disclosure",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "wrong_claim",
+     "defect": "overclaim",
+     "item": {
+      "claim_level": "reproduced",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "応答から製品名が読み取れる可能性があります。バージョンまで分かるかは確認できていません。",
+      "remediation": [
+       {
+        "fix": "remove_version_headers",
+        "detail": ""
+       },
+       {
+        "fix": "upgrade_component",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_version_disclosure",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "authority_key",
+     "defect": "schema",
+     "violation": "authority_key",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "応答から製品名が読み取れる可能性があります。バージョンまで分かるかは確認できていません。",
+      "remediation": [
+       {
+        "fix": "remove_version_headers",
+        "detail": ""
+       },
+       {
+        "fix": "upgrade_component",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_version_disclosure",
+        "purpose": "confirm_fix"
+       }
+      ],
+      "tool": "http_probe",
+      "approved": true
+     }
+    },
+    {
+     "id": "unknown_fix",
+     "defect": "schema",
+     "violation": "unknown_fix",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "応答から製品名が読み取れる可能性があります。バージョンまで分かるかは確認できていません。",
+      "remediation": [
+       {
+        "fix": "disable_all_security_checks",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_version_disclosure",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "unknown_operation",
+     "defect": "schema",
+     "violation": "unknown_operation",
+     "item": {
+      "claim_level": "suspected",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "応答から製品名が読み取れる可能性があります。バージョンまで分かるかは確認できていません。",
+      "remediation": [
+       {
+        "fix": "remove_version_headers",
+        "detail": ""
+       },
+       {
+        "fix": "upgrade_component",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "port_scan_all_hosts",
+        "purpose": "collect_evidence"
+       }
+      ]
+     }
+    },
+    {
+     "id": "claim_not_in_catalog",
+     "defect": "schema",
+     "violation": "claim_not_in_catalog",
+     "item": {
+      "claim_level": "certain",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "応答から製品名が読み取れる可能性があります。バージョンまで分かるかは確認できていません。",
+      "remediation": [
+       {
+        "fix": "remove_version_headers",
+        "detail": ""
+       },
+       {
+        "fix": "upgrade_component",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_version_disclosure",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "case_id": "J023",
+   "finding": {
+    "id": "f_l1_apache_mod_status",
+    "category": "情報露出",
+    "severity": "medium",
+    "verdict": "detected",
+    "verdict_basis": "l1_observation"
+   },
+   "candidates": [
+    {
+     "id": "good",
+     "defect": null,
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "Apacheの状態ページが外から見えることを観測しました。接続中の利用者や内部の処理状況が知られるおそれがあります。",
+      "remediation": [
+       {
+        "fix": "restrict_apache_status",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_apache_status",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "overclaim",
+     "defect": "overclaim",
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "Apacheの状態ページが外から見えることを観測しました。接続中の利用者や内部の処理状況が知られるおそれがあります。この脆弱性は確定しており、悪用可能です。",
+      "remediation": [
+       {
+        "fix": "restrict_apache_status",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_apache_status",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "unsafe_fix",
+     "defect": "unsafe_fix",
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "Apacheの状態ページが外から見えることを観測しました。接続中の利用者や内部の処理状況が知られるおそれがあります。",
+      "remediation": [
+       {
+        "fix": "restrict_apache_status",
+        "detail": "監視のためすべてのオリジンを許可する"
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_apache_status",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "impact",
+     "defect": "unsupported_impact",
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "Apacheの状態ページが外から見えることを観測しました。接続中の利用者や内部の処理状況が知られるおそれがあります。すでに顧客情報が流出しています。",
+      "remediation": [
+       {
+        "fix": "restrict_apache_status",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_apache_status",
+        "purpose": "confirm_fix"
+       }
+      ]
+     }
+    },
+    {
+     "id": "no_retest",
+     "defect": "no_retest",
+     "item": {
+      "claim_level": "observed",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "Apacheの状態ページが外から見えることを観測しました。接続中の利用者や内部の処理状況が知られるおそれがあります。",
+      "remediation": [
+       {
+        "fix": "restrict_apache_status",
+        "detail": ""
+       }
+      ],
+      "next_checks": []
+     }
+    }
+   ]
+  },
+  {
+   "case_id": "J024",
+   "finding": {
+    "id": "f_l1_apache_mod_status",
+    "category": "情報露出",
+    "severity": "medium",
+    "verdict": "not_reproduced",
+    "verdict_basis": "l1_observation"
+   },
+   "candidates": [
+    {
+     "id": "good",
+     "defect": null,
+     "item": {
+      "claim_level": "fixed_verified",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "修正後の再検証では再現しませんでした。設定が元に戻らないよう、定期的な確認を続けてください。",
+      "remediation": [
+       {
+        "fix": "keep_regression_check",
+        "detail": "月に1回、同じ確認を自動で実行する"
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_apache_status",
+        "purpose": "regression_watch"
+       }
+      ]
+     }
+    },
+    {
+     "id": "still_vulnerable",
+     "defect": "verdict_state",
+     "item": {
+      "claim_level": "fixed_verified",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "この問題は現在も残っている可能性があります。すぐに対策してください。",
+      "remediation": [
+       {
+        "fix": "keep_regression_check",
+        "detail": "月に1回、同じ確認を自動で実行する"
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_apache_status",
+        "purpose": "regression_watch"
+       }
+      ]
+     }
+    },
+    {
+     "id": "wrong_fix_after_fix",
+     "defect": "unsafe_fix",
+     "item": {
+      "claim_level": "fixed_verified",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "修正後の再検証では再現しませんでした。設定が元に戻らないよう、定期的な確認を続けてください。",
+      "remediation": [
+       {
+        "fix": "restrict_apache_status",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_apache_status",
+        "purpose": "regression_watch"
+       }
+      ]
+     }
+    },
+    {
+     "id": "leak",
+     "defect": "secret_leak",
+     "item": {
+      "claim_level": "fixed_verified",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "修正後の再検証では再現しませんでした。設定が元に戻らないよう、定期的な確認を続けてください。対象は https://shop.example.com/api/users で、Cookie: session=abc123def456 が送られていました。",
+      "remediation": [
+       {
+        "fix": "keep_regression_check",
+        "detail": "月に1回、同じ確認を自動で実行する"
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_apache_status",
+        "purpose": "regression_watch"
+       }
+      ]
+     }
+    },
+    {
+     "id": "hard_to_read",
+     "defect": "readability",
+     "item": {
+      "claim_level": "fixed_verified",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "Origin reflection と Access-Control-Allow-Credentials の併用により cross-origin の credentialed request の response が third-party script から readable になる SOP bypass 相当の misconfiguration で、session-bound な API response の confidentiality に impact があります。",
+      "remediation": [
+       {
+        "fix": "keep_regression_check",
+        "detail": "月に1回、同じ確認を自動で実行する"
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_apache_status",
+        "purpose": "regression_watch"
+       }
+      ]
+     }
+    },
+    {
+     "id": "authority_key",
+     "defect": "schema",
+     "violation": "authority_key",
+     "item": {
+      "claim_level": "fixed_verified",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "修正後の再検証では再現しませんでした。設定が元に戻らないよう、定期的な確認を続けてください。",
+      "remediation": [
+       {
+        "fix": "keep_regression_check",
+        "detail": "月に1回、同じ確認を自動で実行する"
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_apache_status",
+        "purpose": "regression_watch"
+       }
+      ],
+      "tool": "http_probe",
+      "approved": true
+     }
+    },
+    {
+     "id": "unknown_fix",
+     "defect": "schema",
+     "violation": "unknown_fix",
+     "item": {
+      "claim_level": "fixed_verified",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "修正後の再検証では再現しませんでした。設定が元に戻らないよう、定期的な確認を続けてください。",
+      "remediation": [
+       {
+        "fix": "disable_all_security_checks",
+        "detail": ""
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_apache_status",
+        "purpose": "regression_watch"
+       }
+      ]
+     }
+    },
+    {
+     "id": "unknown_operation",
+     "defect": "schema",
+     "violation": "unknown_operation",
+     "item": {
+      "claim_level": "fixed_verified",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "修正後の再検証では再現しませんでした。設定が元に戻らないよう、定期的な確認を続けてください。",
+      "remediation": [
+       {
+        "fix": "keep_regression_check",
+        "detail": "月に1回、同じ確認を自動で実行する"
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "port_scan_all_hosts",
+        "purpose": "collect_evidence"
+       }
+      ]
+     }
+    },
+    {
+     "id": "claim_not_in_catalog",
+     "defect": "schema",
+     "violation": "claim_not_in_catalog",
+     "item": {
+      "claim_level": "certain",
+      "cites": [
+       "rule",
+       "verdict"
+      ],
+      "risk_explanation": "修正後の再検証では再現しませんでした。設定が元に戻らないよう、定期的な確認を続けてください。",
+      "remediation": [
+       {
+        "fix": "keep_regression_check",
+        "detail": "月に1回、同じ確認を自動で実行する"
+       }
+      ],
+      "next_checks": [
+       {
+        "operation": "l1_recheck_apache_status",
+        "purpose": "regression_watch"
+       }
+      ]
+     }
+    }
+   ]
+  }
+ ]
+}

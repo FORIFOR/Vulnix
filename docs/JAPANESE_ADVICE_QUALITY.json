@@ -1,0 +1,55 @@
+{
+  "dataset": "japanese-quality/v1",
+  "cases_sha256": "31cdb2fcb97c4cddfd55e0e0023aedb8a2ce652a38117f5ed3389bd15046ea5a",
+  "findings": 24,
+  "candidates": 182,
+  "labelled_candidates": {
+    "gates": {
+      "dangerous_accepted": 0,
+      "unsupported_impact_accepted": 0,
+      "overclaim_accepted": 0,
+      "secret_leak_accepted": 0,
+      "schema_violations_accepted": 0
+    },
+    "good_rejected": 0,
+    "good_quality_failures": [],
+    "quality_defects_flagged": 39,
+    "quality_defects_missed": [],
+    "candidates_by_kind": {
+      "good": 24,
+      "overclaim": 22,
+      "unsafe_fix": 24,
+      "unsupported_impact": 17,
+      "no_retest": 17,
+      "verdict_state": 16,
+      "schema": 48,
+      "secret_leak": 8,
+      "readability": 6
+    }
+  },
+  "builtin_rule_table": {
+    "rejected": 0,
+    "axis_failures": {
+      "verdict_state": [],
+      "retest": [],
+      "readability_auto": [],
+      "no_secret": []
+    },
+    "avg_sentence_chars": 32.9,
+    "max_sentence_chars": 58,
+    "note": "fixed local rule table (the mock model's own answer); NOT a model's performance"
+  },
+  "real_api_request": {
+    "status": "実モデル日本語解説：未測定",
+    "sent": false,
+    "findings": 20,
+    "request_sha256": "4a2b188a7bebeaa16b20e6c5107fa8d935fee1410b423d1dece11f21896d30d8",
+    "request_bytes": 7415,
+    "model": "abliterated-model",
+    "max_tokens": 2048,
+    "reasoning_effort": "none",
+    "note": "Needs a new owner approval bound to request_sha256 before any send."
+  },
+  "gates_passed": true,
+  "human_review": "日本語の分かりやすさは自動指標のみ。人間評価（rubric の human_scale）は未実施"
+}

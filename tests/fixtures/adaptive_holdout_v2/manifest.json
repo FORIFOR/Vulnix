@@ -1,0 +1,31 @@
+{
+  "dataset_id": "adaptive_holdout_v2",
+  "version": "2.0.0",
+  "total_cases": 60,
+  "categories": {
+    "auth_session": 12,
+    "idor_bola": 12,
+    "cors": 12,
+    "cookie": 12,
+    "info_tls": 12
+  },
+  "independent_of": [
+    "tests/fixtures/access_control_owner_specs.json",
+    "tests/fixtures/access_control_truth.json"
+  ],
+  "protocol": [
+    "1. scripts/adaptive_baselines.py (non-AI rules A/B/B2/E) written and hashed first (2026-11-19T07:59:31Z).",
+    "2. Labels hand-assigned per case and hashed second (2026-11-19T08:08:22Z), before any strategy was scored.",
+    "3. truth.json is read only by the scorer; it never enters a planner request, a mock model or a model prompt.",
+    "4. Any change to labels or rules after scoring changes these hashes and fails tests/test_adaptive_holdout.py.",
+    "Order is self-attested by the author (the same agent wrote rules and labels); see docs/ADAPTIVE_HOLDOUT_V2.md limits."
+  ],
+  "files_sha256": {
+    "cases.json": "288eee7c83ae8004a9d5a8331d57484a2c0be34376c724678b2348ba2ab77e32",
+    "owner_specs.json": "8aad30a96f2752d2923f8a308e53438f4b66080cbb7702c860619a2e8e54f590",
+    "truth.json": "36cda80d79de5442232bed64bbfca3ace73a0780650276aa9513b0242cfcae2f"
+  },
+  "baseline_rules_sha256": {
+    "scripts/adaptive_baselines.py": "9c67fea76dafbdf35afd8d5fa7bfc5c4dbfd3ec32c219e3c1182a0326f0da931"
+  }
+}

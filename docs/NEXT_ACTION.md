@@ -1,5 +1,104 @@
 # 次の作業と再開手順
 
+## 最新（2026-11-19 深夜、Claude、この節を最優先）
+
+### 作業の状態
+
+- ブランチ `claude/ai-value-eval` の変更は、すべて未コミットで、pushもしていません。
+- バックアップ（最新）：`$TMPDIR/opencode/backup-ai-value-eval-20261119212804/`。それより前のもの（`…20261119202814`）も残しています。
+
+### 今回行ったこと
+
+| 作業 | 内容 |
+| --- | --- |
+| 独立判定の資料 | 判定基準、項目の意味、判断不能（`unsure`）の扱いを追加しました。実施する人向けの手順書は [ADAPTIVE_HOLDOUT_V2_RELABEL_PROTOCOL.md](ADAPTIVE_HOLDOUT_V2_RELABEL_PROTOCOL.md) です |
+| 集計ツール | `audit_adaptive_holdout` に `adjudicate`（判定者2人以上の結果の統合、裁定、ラベルの確定とSHAの記録）を追加しました |
+| 実AIへの送信経路 | `run_approved` を2つ実装しました。ローカルの模擬テスト14件と変異試験で確認しています（[AI_EVAL_APPROVAL_REQUEST.md](AI_EVAL_APPROVAL_REQUEST.md)） |
+| 回帰テスト | ログアウトの修正前後をもう一度比較しました。macOSで全1,996件が成功しました。Linux VMでは、全件・実ARTEX・`--check` を実行しました（[ARTEX_MULTISTEP_E2E.md](ARTEX_MULTISTEP_E2E.md) §7） |
+
+### CIの見積もり
+
+- **Pythonジョブ**：上限は42分（2,520秒）です。前回のテスト実行は2,033秒で、追加したテストは約8秒（ローカル）です。余裕はおよそ470秒あります。
+- **実ARTEXジョブ**：時間の上限は設定されていません（GitHubの既定は360分）。前回は443秒で、追加した処理はVMで合計約40秒（評価33秒＋多段階約5秒）でした。
+- 新しいテストの最大メモリは、VMで1モジュールあたり45MB以下でした。
+- Ruffは、CIで固定している0.6.9でも成功しました。
+
+### 既存の問題（今回の変更とは無関係）
+
+4GiBのVMで全件を1つのプロセスで実行すると、`test_artex_bridge` の後に `TestPasswordGuessing` を実行した時点で、メモリ不足で強制終了されます。PR #85の HEAD でも同じように再現しました。原因は未特定です。
+
+### 次にやること（すべて承認が必要）
+
+1. コミット・push・Draft PR の作成。その後、Linux CIの3つのジョブと、追加した2つのステップを確認します。
+2. 判定者と裁定者を決め、独立判定を行います。
+3. 実AIへの送信を承認するかどうか。各1回、SHAは [AI_EVAL_APPROVAL_REQUEST.md](AI_EVAL_APPROVAL_REQUEST.md) に記載しています。
+
+
+## 最新（2026-11-19 夜、Claude、この節を最優先）
+
+### 作業の状態
+
+- ブランチ `claude/ai-value-eval` の変更は、すべて未コミットで、pushもしていません。
+- 着手する前に、差分のバックアップを取りました：`$TMPDIR/opencode/backup-ai-value-eval-20261119202814/`（`tracked.diff`、`untracked.tgz`）。
+
+### 今回行ったこと
+
+| 作業 | 内容 |
+| --- | --- |
+| 評価データの信頼性の確認 | [ADAPTIVE_HOLDOUT_V2_AUDIT.md](ADAPTIVE_HOLDOUT_V2_AUDIT.md)。正解ラベルの漏えいは0件。固定ルールは2つの独立した集計で一致。偏りの要因を5点記録。作成者自身による確認であり、独立監査ではない |
+| 独立再判定のための資料 | `docs/adaptive_holdout_v2_relabel/`（全60件版と、40件の重点版） |
+| Codex版との比較 | [CODEX_HOLDOUT_COMPARISON.md](CODEX_HOLDOUT_COMPARISON.md)。Codex版は観測値の名前に判定が入っており、AIを使わない規則でF1 1.0になる |
+| 実AI評価の承認申請 | [AI_EVAL_APPROVAL_REQUEST.md](AI_EVAL_APPROVAL_REQUEST.md) |
+| ログアウト後の結果破棄 | 修正前・最初の修正・現在の修正の3つで再確認（[ARTEX_MULTISTEP_E2E.md](ARTEX_MULTISTEP_E2E.md) §6）。既存のHTTP仕様テストに、証拠が増えないことの確認を追加 |
+| A2Bのテスト用データ | 実在するサービスの鍵の形式に一致する偽の値を、リポジトリに直接置かず、テストの実行時に組み立てるように変更。gitleaks で0件を確認 |
+
+### 次にやること
+
+所有者の判断が必要な作業です。
+
+1. コミット・push・Draft PR を承認するか決める。
+2. 独立再判定をしてもらう人を決める。
+3. 実AIへの送信を承認するか決める。承認された場合は、送信の前に `run_approved` と同じ仕組みを実装し、テストする。
+
+
+## 最新の再開地点（2026-11-19 JST、Claude、この節を優先）
+
+### 作業場所
+
+- 作業ツリーは `/Users/shuhei/Projects/Vulnix`、ブランチは `claude/ai-value-eval` です。
+  - `origin/codex/goal-integration-readiness`（`fb676e0`、PR #85）から分岐しました。
+  - 上流（upstream）の設定は外しています。
+  - 変更は未コミットで、pushもしていません。
+- PR #85の作業ツリー `/Users/shuhei/Projects/Vulnix-integration-readiness` には、Codexが作った未追跡の `scripts/eval_adaptive_holdout.py` と `tests/fixtures/adaptive_holdout_v2/` があります。これらには手を付けていません。
+  - パスの名前は、こちらのブランチと衝突します。統合するときは、どちらを残すか判断が必要です。
+  - Codex版は、観測値の `response_classification` に正解相当の値が入っています。
+
+### 実施したこと
+
+- Phase 1〜4を実装し、テストしました。Phase 5の資料を作りました。各Phaseの詳細は次の資料にあります。
+  - [ADAPTIVE_HOLDOUT_V2.md](ADAPTIVE_HOLDOUT_V2.md)
+  - [ARTEX_MULTISTEP_E2E.md](ARTEX_MULTISTEP_E2E.md)
+  - [JAPANESE_ADVICE_QUALITY.md](JAPANESE_ADVICE_QUALITY.md)
+  - [A2B_DIAGNOSTIC_DESIGN.md](A2B_DIAGNOSTIC_DESIGN.md)
+  - [REVIEW_PACKET_AND_REAL_SITE_E2E.md](REVIEW_PACKET_AND_REAL_SITE_E2E.md)
+- 実ARTEXは、Colima VM `vulnix-artex` 内で現行のoverlayから `GOPROXY=off` でビルドしました（`/tmp/artex-ah2-bin`、ハッシュは `e15e7526…`）。
+
+### 次にやること
+
+1. 所有者がコミットとpushを判断し、Linux CIの3ジョブを確認する。追加したCIステップは次の2つです。
+   - `eval_adaptive_holdout --check`
+   - `test_adaptive_plan_runner` と、その証拠ファイル
+2. 人間による評価を行う。
+   - holdoutのラベルを、独立した人が再判定する。
+   - 日本語の分かりやすさを評価する。
+3. 承認を得たうえで、方式D（SHA `e8eb6ecb…`）と日本語解説（SHA `4a2b188a…`）を1回ずつ送る。
+4. 多段階ランナーとA2BをAPI・UIにつなぐ。その際、組織分離のテストを追加する。
+
+### 実行しないこと（承認がないため）
+
+有料API、実サイトへの通信、DNSの変更、mainへのマージ、本番への公開は行っていません。
+
+
 ## 最新の未完了作業（2026-11-19 JST、これを先に確認）
 
 ### 現在の検証・統合準備状態

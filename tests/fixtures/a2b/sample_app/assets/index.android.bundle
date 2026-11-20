@@ -1,0 +1,5 @@
+// synthetic React Native bundle fragment
+const api = axios.create({baseURL: "https://api.shop-a2b.test/v1"});
+api.get("/v1/me/profile");
+api.delete("/v1/users/123/sessions");
+fetch("https://legacy.shop-a2b.test/api/coupons/redeem", { method: "POST" });

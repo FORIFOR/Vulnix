@@ -1,0 +1,360 @@
+{
+  "dataset_sha256": {
+    "cases.json": "288eee7c83ae8004a9d5a8331d57484a2c0be34376c724678b2348ba2ab77e32",
+    "owner_specs.json": "8aad30a96f2752d2923f8a308e53438f4b66080cbb7702c860619a2e8e54f590",
+    "truth.json": "36cda80d79de5442232bed64bbfca3ace73a0780650276aa9513b0242cfcae2f"
+  },
+  "focus_sets": {
+    "E_errors": [
+      "H005",
+      "H007",
+      "H017",
+      "H022",
+      "H023",
+      "H028",
+      "H033",
+      "H041",
+      "H055",
+      "H059"
+    ],
+    "critical": [
+      "H002",
+      "H004",
+      "H006",
+      "H009",
+      "H010",
+      "H013",
+      "H016",
+      "H018",
+      "H019",
+      "H021",
+      "H024",
+      "H026",
+      "H028",
+      "H033",
+      "H035"
+    ],
+    "note_ambiguous_cases": [
+      "H004",
+      "H005",
+      "H007",
+      "H014",
+      "H016",
+      "H017",
+      "H018",
+      "H021",
+      "H022",
+      "H023",
+      "H028",
+      "H033",
+      "H034",
+      "H038",
+      "H047",
+      "H052",
+      "H053",
+      "H059",
+      "H060"
+    ],
+    "note_ambiguous_groups": [
+      [
+        "H004",
+        "H005",
+        "H007"
+      ],
+      [
+        "H014",
+        "H018",
+        "H023"
+      ],
+      [
+        "H016",
+        "H017",
+        "H021",
+        "H022"
+      ],
+      [
+        "H028",
+        "H033",
+        "H034"
+      ],
+      [
+        "H038",
+        "H047"
+      ],
+      [
+        "H052",
+        "H053",
+        "H059",
+        "H060"
+      ]
+    ],
+    "note_unreachable_minimum": 7,
+    "union": [
+      "H002",
+      "H004",
+      "H005",
+      "H006",
+      "H007",
+      "H009",
+      "H010",
+      "H013",
+      "H014",
+      "H016",
+      "H017",
+      "H018",
+      "H019",
+      "H021",
+      "H022",
+      "H023",
+      "H024",
+      "H026",
+      "H028",
+      "H033",
+      "H034",
+      "H035",
+      "H038",
+      "H041",
+      "H047",
+      "H052",
+      "H053",
+      "H055",
+      "H059",
+      "H060"
+    ]
+  },
+  "leakage": {
+    "issues": [],
+    "majority_baseline_correct": 35,
+    "note_presence_vs_label": {
+      "with_note": "16/28 need a check",
+      "without_note": "9/32 need a check"
+    },
+    "notes_requesting_a_check": [
+      "H053"
+    ],
+    "real_model_order_monotonic_pairs_ratio": 0.508,
+    "single_feature_lookup": [
+      {
+        "distinct_values": 4,
+        "feature": "observation.server_family",
+        "lookup_correct": 38
+      },
+      {
+        "distinct_values": 2,
+        "feature": "observation.account_resource_link_observed",
+        "lookup_correct": 37
+      },
+      {
+        "distinct_values": 3,
+        "feature": "observation.initial_gets_consistent",
+        "lookup_correct": 37
+      },
+      {
+        "distinct_values": 4,
+        "feature": "owner_spec.account_resource_requirement",
+        "lookup_correct": 37
+      },
+      {
+        "distinct_values": 5,
+        "feature": "observation.body_shape",
+        "lookup_correct": 36
+      },
+      {
+        "distinct_values": 4,
+        "feature": "observation.cors.acao",
+        "lookup_correct": 36
+      },
+      {
+        "distinct_values": 2,
+        "feature": "observation.version_disclosed",
+        "lookup_correct": 36
+      },
+      {
+        "distinct_values": 2,
+        "feature": "owner_spec.status_probe_consent",
+        "lookup_correct": 36
+      },
+      {
+        "distinct_values": 3,
+        "feature": "allowed_catalog_ids",
+        "lookup_correct": 36
+      },
+      {
+        "distinct_values": 4,
+        "feature": "meta.note_len_bucket",
+        "lookup_correct": 36
+      },
+      {
+        "distinct_values": 5,
+        "feature": "category",
+        "lookup_correct": 35
+      },
+      {
+        "distinct_values": 3,
+        "feature": "observation.content_type",
+        "lookup_correct": 35
+      }
+    ],
+    "truth_free_inputs": true
+  },
+  "matches_eval_score": {
+    "A_fixed_l1": true,
+    "B2_strong_rule": true,
+    "B_fixed_rule": true,
+    "E_keyword_rule": true
+  },
+  "nature": "author's automated consistency check - NOT an independent audit",
+  "recomputed": {
+    "A_fixed_l1": {
+      "case_errors": [
+        "H002",
+        "H004",
+        "H006",
+        "H009",
+        "H010",
+        "H013",
+        "H016",
+        "H018",
+        "H019",
+        "H021",
+        "H024",
+        "H026",
+        "H028",
+        "H033",
+        "H035",
+        "H039",
+        "H040",
+        "H041",
+        "H047",
+        "H049",
+        "H053",
+        "H054",
+        "H058",
+        "H059",
+        "H060"
+      ],
+      "critical_missed": [
+        "H002",
+        "H004",
+        "H006",
+        "H009",
+        "H010",
+        "H013",
+        "H016",
+        "H018",
+        "H019",
+        "H021",
+        "H024",
+        "H026",
+        "H028",
+        "H033",
+        "H035"
+      ],
+      "critical_missed_count": 15,
+      "f1": 0.0,
+      "fn": 25,
+      "fp": 0,
+      "precision": null,
+      "recall": 0.0,
+      "tp": 0
+    },
+    "B2_strong_rule": {
+      "case_errors": [
+        "H005",
+        "H006",
+        "H007",
+        "H010",
+        "H017",
+        "H018",
+        "H022",
+        "H028",
+        "H033",
+        "H041",
+        "H047",
+        "H052",
+        "H054"
+      ],
+      "critical_missed": [
+        "H006",
+        "H010",
+        "H018",
+        "H028",
+        "H033"
+      ],
+      "critical_missed_count": 5,
+      "f1": 0.7234,
+      "fn": 8,
+      "fp": 5,
+      "precision": 0.7727,
+      "recall": 0.68,
+      "tp": 17
+    },
+    "B_fixed_rule": {
+      "case_errors": [
+        "H004",
+        "H006",
+        "H009",
+        "H010",
+        "H016",
+        "H018",
+        "H021",
+        "H026",
+        "H028",
+        "H033",
+        "H035",
+        "H039",
+        "H040",
+        "H041",
+        "H047",
+        "H052",
+        "H054",
+        "H058"
+      ],
+      "critical_missed": [
+        "H004",
+        "H006",
+        "H009",
+        "H010",
+        "H016",
+        "H018",
+        "H021",
+        "H026",
+        "H028",
+        "H033",
+        "H035"
+      ],
+      "critical_missed_count": 11,
+      "f1": 0.4706,
+      "fn": 17,
+      "fp": 1,
+      "precision": 0.8889,
+      "recall": 0.32,
+      "tp": 8
+    },
+    "E_keyword_rule": {
+      "case_errors": [
+        "H005",
+        "H007",
+        "H017",
+        "H022",
+        "H023",
+        "H028",
+        "H033",
+        "H041",
+        "H055",
+        "H059"
+      ],
+      "critical_missed": [
+        "H028",
+        "H033"
+      ],
+      "critical_missed_count": 2,
+      "f1": 0.7925,
+      "fn": 4,
+      "fp": 7,
+      "precision": 0.75,
+      "recall": 0.84,
+      "tp": 21
+    }
+  }
+}

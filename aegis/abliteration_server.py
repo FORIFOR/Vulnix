@@ -10,6 +10,7 @@ even in offline or CI environments when an external GPU server is not attached.
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -108,6 +109,13 @@ _GENERIC_ADVICE = ("この所見の影響は、提供の形態と運用によっ
                    [("修正後に同じ L1 プローブで状態を再確認する", "L1", "修正の反映を確かめるため")])
 
 
+_PROVEN_ADVICE = {
+    "f_idor": "テスト用アカウントの間で、別のアカウントの模擬データに到達できることを確かめました。資源ごとの所有者の照合がサーバー側で行われていないと考えられます。",
+    "f_sqli": "模擬データの環境で、入力の扱いの不備が再現しました。本番のデータに影響があったかどうかは、この記録からは分かりません。",
+    "f_l1_unauth_api": "テスト用の環境で、認証なしの要求からデータを取得できることを確かめました。公開を意図しない API であれば認証が必要です。",
+}
+_HEDGED = re.compile(r"可能性|おそれ|未確認|確かめていません|判断できません|推定")
+_CANDIDATE_NOTE = "ただし、この所見は候補の段階で、実際の状態はまだ確かめていません。"
 _CLAIM_PREFERENCE = ("observed", "reproduced", "fixed_verified", "suspected", "inconclusive")
 
 
@@ -128,8 +136,13 @@ def _build_advice_content(user_content: str) -> str:
         allowed = cat.CLAIMS_BY_VERDICT.get(verdict, frozenset({"inconclusive"}))
         claim = next((c for c in _CLAIM_PREFERENCE if c in allowed
                       and cat.claim_problem(c, rule, verdict, f.get("verdict_basis", "")) is None), "inconclusive")
-        if claim == "reproduced":
-            expl = "L2 の再現記録がある所見です。" + expl
+        if verdict == "proven":
+            # the detection-stage wording ("まだ確かめていません") would contradict the record
+            expl = _PROVEN_ADVICE.get(rule, expl)
+            if claim == "reproduced":
+                expl = "L2 の再現記録がある所見です。" + expl
+        elif verdict in ("candidate", "unverified") and not _HEDGED.search(expl):
+            expl = expl + _CANDIDATE_NOTE
         elif claim == "fixed_verified":
             expl = "修正後の再検証では再現しませんでした。再発しないよう確認を続けてください。"
         fixed = verdict in ("fixed", "not_reproduced")

@@ -1,5 +1,30 @@
 # 公開β判定
 
+**2026-11-19 追記（ブランチ `claude/ai-value-eval`、未コミット・未push）**
+
+- **2026-11-19 夜の追記**
+  - **評価の数値は暫定値です。** 60条件で計算した F1 などの値は、作成者が付けたラベルによるもので、独立判定はまだです。独立判定の資料と手順は完成しています（[RELABEL_PROTOCOL](ADAPTIVE_HOLDOUT_V2_RELABEL_PROTOCOL.md)）。
+  - **実AIへ送る経路を実装しました。** 安全ゲート（SHAの照合、1回限りの消費、予算の予約、監査、再送禁止）は、ローカルの模擬環境だけで検証しています（[AI_EVAL_APPROVAL_REQUEST.md](AI_EVAL_APPROVAL_REQUEST.md)）。実際の送信は0回です。
+  - **ローカルとVMの回帰テストは成功しました。** 結果は [ARTEX_MULTISTEP_E2E.md](ARTEX_MULTISTEP_E2E.md) の§7にあります。Linux CIでは、まだ実行していません。
+  - 公開判定は「公開不可」のまま変わりません。
+
+- **Gate C（AI診断品質）**：引き続き限定PASSで、範囲は広げていません。
+  - 未知の60条件では、最も強い非AI規則Eで F1 0.793、重大な見逃し2/15でした。
+  - 実AIは未測定です（[ADAPTIVE_HOLDOUT_V2.md](ADAPTIVE_HOLDOUT_V2.md)）。AIを採用するには、Eを上回ることを条件にします。
+- **AI解説の安全ゲートを強化しました**：証拠のない被害の断定と、防御を弱める修正を拒否します（[JAPANESE_ADVICE_QUALITY.md](JAPANESE_ADVICE_QUALITY.md)）。
+- **多段階ARTEXを実装しました**（[ARTEX_MULTISTEP_E2E.md](ARTEX_MULTISTEP_E2E.md)）。あわせて、失効後に戻った結果を採用しないよう `_exec` を強化しました。
+- **A2B静的診断の初期版を実装しました**（[A2B_DIAGNOSTIC_DESIGN.md](A2B_DIAGNOSTIC_DESIGN.md)）。
+- **公開判定は「公開不可」のまま変わりません。** Gate D、E、F、Hは未完了です。実環境E2Eの実行条件は [REVIEW_PACKET_AND_REAL_SITE_E2E.md](REVIEW_PACKET_AND_REAL_SITE_E2E.md) にまとめました。
+- **新たな承認申請（未承認なので実行していません）**：
+
+  | 対象 | 要求SHA-256 | 費用の上限 |
+  | --- | --- | --- |
+  | 方式D：選択の評価（60条件） | `e8eb6ecbcc82df53c8fdc997622d7152b4dfffb14df5bc618a017f96733eab87` | US$0.06以下 |
+  | 日本語解説（20所見） | `4a2b188a7bebeaa16b20e6c5107fa8d935fee1410b423d1dece11f21896d30d8` | US$0.02以下 |
+
+  どちらもHTTPS POSTを1回だけ送ります。
+
+
 最新の開発ブランチ追記（2026-11-19 JST）:
 - **実Abliteration AI 固定14条件の1回限定承認済み評価（候補B）成功と製品改善**: 過去2回とも内部推論トークンが出力枠（384/1,024トークン）を100%消費して `length` 終了した原因を公式ドキュメント（`https://docs.abliteration.ai/capabilities/thinking.md`、`compatibility-matrix.md`）で特定し、`abliterated-model` で推論を停止する `reasoning_effort: "none"` + `response_format: {"type":"json_object"}`（`max_tokens=960`、SHA-256 `7a527a487a309962867f7d02096e527259946f2b62fdbf802a450d386e3803e5`）を唯一の実送信候補として選定。21条件のローカル異常系テストと12項目の送信直前ゲート確認後に `PlannerLLMGateway` から1回だけ実送信し、**HTTP 200、`finish_reason="stop"`、入力610 / 出力44 / 推論0 / 総654トークン、応答時間1.022秒、usage概算US$0.000742、JSON採用 1/1（通算1/3）、独立正解14条件に対する検査選択 `TP=8, FP=0, FN=0, TN=6`（Precision 1.000, Recall 1.000, F1 1.000、不要検査率 0.000、見逃し率 0.000）** を達成した（[ABLITERATION_SELECTION_REAL_RESULT.md](ABLITERATION_SELECTION_REAL_RESULT.md)）。この実測に基づき、日本語解説アダプタ `ExternalAbliterationAdvisor`（`aegis/ai_advisor.py`）にも `reasoning_effort: "none"` と `length`/`content_filter` 拒否を反映した。
 - **P2候補（対象サイトが新規発行した `Set-Cookie` 秘密値の漏えい）の解消**: `http_probe` Worker・Gateway・`AssessmentService`・`enforce_verdict` の4境界で `Set-Cookie` 生値を除去し、Cookie名と保護属性のみを保持するよう修正。ローカルHTTPS模擬サイト（CANARY秘密値および引用符付き値）で修正前の赤テスト（`evidence[].content` 等への残存）を再現し、修正後は snapshot・report・監査ログ・`state.json`・Remotionエクスポートのいずれにも残らないことを確認した（[COOKIE_PURPOSE_LAB.md](COOKIE_PURPOSE_LAB.md)）。

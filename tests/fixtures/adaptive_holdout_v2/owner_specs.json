@@ -1,0 +1,422 @@
+{
+  "H001": {
+    "account_resource_requirement": "none",
+    "lab_l2_allowed": true,
+    "note_ja": "",
+    "root_access_requirement": "authentication_required",
+    "status_probe_consent": false
+  },
+  "H002": {
+    "account_resource_requirement": "authentication_required",
+    "lab_l2_allowed": true,
+    "note_ja": "",
+    "root_access_requirement": "authentication_required",
+    "status_probe_consent": false
+  },
+  "H003": {
+    "account_resource_requirement": "unspecified",
+    "lab_l2_allowed": true,
+    "note_ja": "管理画面はログイン必須。トップはログインフォームを返すだけ。",
+    "root_access_requirement": "unspecified",
+    "status_probe_consent": false
+  },
+  "H004": {
+    "account_resource_requirement": "unspecified",
+    "lab_l2_allowed": true,
+    "note_ja": "/api/me と /api/orders は本人のアカウントでのみ参照できる設計です。",
+    "root_access_requirement": "unspecified",
+    "status_probe_consent": false
+  },
+  "H005": {
+    "account_resource_requirement": "unspecified",
+    "lab_l2_allowed": true,
+    "note_ja": "会員一覧は社内向けデモで、すべて架空データ。誰でも全件閲覧してよい。",
+    "root_access_requirement": "unspecified",
+    "status_probe_consent": false
+  },
+  "H006": {
+    "account_resource_requirement": "public",
+    "lab_l2_allowed": true,
+    "note_ja": "公開プロフィールは表示名だけを公開。メールアドレスと住所を含む詳細は本人のみ。",
+    "root_access_requirement": "public",
+    "status_probe_consent": false
+  },
+  "H007": {
+    "account_resource_requirement": "unspecified",
+    "lab_l2_allowed": true,
+    "note_ja": "本人以外が閲覧しても問題のないランキング情報のみを返す。",
+    "root_access_requirement": "unspecified",
+    "status_probe_consent": false
+  },
+  "H008": {
+    "account_resource_requirement": "none",
+    "lab_l2_allowed": true,
+    "note_ja": "",
+    "root_access_requirement": "authentication_required",
+    "status_probe_consent": false
+  },
+  "H009": {
+    "account_resource_requirement": "none",
+    "lab_l2_allowed": true,
+    "note_ja": "",
+    "root_access_requirement": "authentication_required",
+    "status_probe_consent": false
+  },
+  "H010": {
+    "account_resource_requirement": "none",
+    "lab_l2_allowed": true,
+    "note_ja": "先週からCDNのキャッシュ設定を切り替え中で、ログイン前に他人のキャッシュが返る報告がある。",
+    "root_access_requirement": "authentication_required",
+    "status_probe_consent": false
+  },
+  "H011": {
+    "account_resource_requirement": "none",
+    "lab_l2_allowed": true,
+    "note_ja": "",
+    "root_access_requirement": "authentication_required",
+    "status_probe_consent": false
+  },
+  "H012": {
+    "account_resource_requirement": "none",
+    "lab_l2_allowed": true,
+    "note_ja": "ログインページはA/Bテスト中でデザインが2種類ある。",
+    "root_access_requirement": "authentication_required",
+    "status_probe_consent": false
+  },
+  "H013": {
+    "account_resource_requirement": "authentication_required",
+    "lab_l2_allowed": true,
+    "note_ja": "",
+    "root_access_requirement": "public",
+    "status_probe_consent": false
+  },
+  "H014": {
+    "account_resource_requirement": "public",
+    "lab_l2_allowed": true,
+    "note_ja": "",
+    "root_access_requirement": "public",
+    "status_probe_consent": false
+  },
+  "H015": {
+    "account_resource_requirement": "authentication_required",
+    "lab_l2_allowed": false,
+    "note_ja": "",
+    "root_access_requirement": "public",
+    "status_probe_consent": false
+  },
+  "H016": {
+    "account_resource_requirement": "unspecified",
+    "lab_l2_allowed": true,
+    "note_ja": "注文詳細は購入者本人と店舗スタッフだけが見られる。",
+    "root_access_requirement": "public",
+    "status_probe_consent": false
+  },
+  "H017": {
+    "account_resource_requirement": "unspecified",
+    "lab_l2_allowed": true,
+    "note_ja": "これはオープンデータAPIで、利用者IDは公開の投稿者IDです。",
+    "root_access_requirement": "public",
+    "status_probe_consent": false
+  },
+  "H018": {
+    "account_resource_requirement": "public",
+    "lab_l2_allowed": true,
+    "note_ja": "以前は公開していたが、2026年9月から各ユーザーの請求書は本人だけが見られるよう変更した。",
+    "root_access_requirement": "public",
+    "status_probe_consent": false
+  },
+  "H019": {
+    "account_resource_requirement": "authentication_required",
+    "lab_l2_allowed": true,
+    "note_ja": "本人以外のデータは返さない設計だが、管理者ロールは全件見られる。",
+    "root_access_requirement": "public",
+    "status_probe_consent": false
+  },
+  "H020": {
+    "account_resource_requirement": "authentication_required",
+    "lab_l2_allowed": true,
+    "note_ja": "",
+    "root_access_requirement": "public",
+    "status_probe_consent": false
+  },
+  "H021": {
+    "account_resource_requirement": "unspecified",
+    "lab_l2_allowed": true,
+    "note_ja": "マイページの各ユーザー設定（通知先メールなど）は他のユーザーから見えてはならない。",
+    "root_access_requirement": "public",
+    "status_probe_consent": false
+  },
+  "H022": {
+    "account_resource_requirement": "unspecified",
+    "lab_l2_allowed": true,
+    "note_ja": "ユーザーIDは公開URLに含まれるが、表示されるのは誰でも見てよい公開ギャラリーのみ。他人の作品を閲覧するのが本来の使い方。",
+    "root_access_requirement": "public",
+    "status_probe_consent": false
+  },
+  "H023": {
+    "account_resource_requirement": "public",
+    "lab_l2_allowed": true,
+    "note_ja": "公開ディレクトリ。掲載内容は本人が公開に同意した項目のみ。",
+    "root_access_requirement": "public",
+    "status_probe_consent": false
+  },
+  "H024": {
+    "account_resource_requirement": "authentication_required",
+    "lab_l2_allowed": true,
+    "note_ja": "",
+    "root_access_requirement": "public",
+    "status_probe_consent": false
+  },
+  "H025": {
+    "account_resource_requirement": "none",
+    "lab_l2_allowed": true,
+    "note_ja": "",
+    "root_access_requirement": "authentication_required",
+    "status_probe_consent": false
+  },
+  "H026": {
+    "account_resource_requirement": "none",
+    "lab_l2_allowed": true,
+    "note_ja": "",
+    "root_access_requirement": "authentication_required",
+    "status_probe_consent": false
+  },
+  "H027": {
+    "account_resource_requirement": "none",
+    "lab_l2_allowed": true,
+    "note_ja": "",
+    "root_access_requirement": "public",
+    "status_probe_consent": false
+  },
+  "H028": {
+    "account_resource_requirement": "none",
+    "lab_l2_allowed": true,
+    "note_ja": "CORS設定はロードバランサーごとに異なり、一部の系統だけ古い設定が残っている。",
+    "root_access_requirement": "authentication_required",
+    "status_probe_consent": false
+  },
+  "H029": {
+    "account_resource_requirement": "none",
+    "lab_l2_allowed": true,
+    "note_ja": "",
+    "root_access_requirement": "public",
+    "status_probe_consent": false
+  },
+  "H030": {
+    "account_resource_requirement": "none",
+    "lab_l2_allowed": true,
+    "note_ja": "",
+    "root_access_requirement": "authentication_required",
+    "status_probe_consent": false
+  },
+  "H031": {
+    "account_resource_requirement": "none",
+    "lab_l2_allowed": true,
+    "note_ja": "CORSは使っていない。",
+    "root_access_requirement": "public",
+    "status_probe_consent": false
+  },
+  "H032": {
+    "account_resource_requirement": "none",
+    "lab_l2_allowed": true,
+    "note_ja": "",
+    "root_access_requirement": "public",
+    "status_probe_consent": false
+  },
+  "H033": {
+    "account_resource_requirement": "none",
+    "lab_l2_allowed": true,
+    "note_ja": "CORSの許可オリジンは固定リストで、反射はしていないはず。",
+    "root_access_requirement": "authentication_required",
+    "status_probe_consent": false
+  },
+  "H034": {
+    "account_resource_requirement": "none",
+    "lab_l2_allowed": true,
+    "note_ja": "",
+    "root_access_requirement": "authentication_required",
+    "status_probe_consent": false
+  },
+  "H035": {
+    "account_resource_requirement": "none",
+    "lab_l2_allowed": true,
+    "note_ja": "先月の設定変更以降、反射は止まっているはず。",
+    "root_access_requirement": "authentication_required",
+    "status_probe_consent": false
+  },
+  "H036": {
+    "account_resource_requirement": "none",
+    "lab_l2_allowed": true,
+    "note_ja": "公開の天気データAPI。どのサイトから使われても構わない。",
+    "root_access_requirement": "public",
+    "status_probe_consent": false
+  },
+  "H037": {
+    "account_resource_requirement": "none",
+    "lab_l2_allowed": true,
+    "note_ja": "",
+    "root_access_requirement": "authentication_required",
+    "status_probe_consent": false
+  },
+  "H038": {
+    "account_resource_requirement": "none",
+    "lab_l2_allowed": true,
+    "note_ja": "",
+    "root_access_requirement": "authentication_required",
+    "status_probe_consent": false
+  },
+  "H039": {
+    "account_resource_requirement": "none",
+    "lab_l2_allowed": true,
+    "note_ja": "",
+    "root_access_requirement": "authentication_required",
+    "status_probe_consent": false
+  },
+  "H040": {
+    "account_resource_requirement": "none",
+    "lab_l2_allowed": true,
+    "note_ja": "",
+    "root_access_requirement": "authentication_required",
+    "status_probe_consent": false
+  },
+  "H041": {
+    "account_resource_requirement": "none",
+    "lab_l2_allowed": true,
+    "note_ja": "vx_t はログイン用トークン。ロードバランサーの片系だけ Secure 属性を付け忘れている可能性がある。",
+    "root_access_requirement": "authentication_required",
+    "status_probe_consent": false
+  },
+  "H042": {
+    "account_resource_requirement": "none",
+    "lab_l2_allowed": true,
+    "note_ja": "",
+    "root_access_requirement": "public",
+    "status_probe_consent": false
+  },
+  "H043": {
+    "account_resource_requirement": "none",
+    "lab_l2_allowed": true,
+    "note_ja": "",
+    "root_access_requirement": "public",
+    "status_probe_consent": false
+  },
+  "H044": {
+    "account_resource_requirement": "none",
+    "lab_l2_allowed": true,
+    "note_ja": "",
+    "root_access_requirement": "authentication_required",
+    "status_probe_consent": false
+  },
+  "H045": {
+    "account_resource_requirement": "none",
+    "lab_l2_allowed": true,
+    "note_ja": "",
+    "root_access_requirement": "authentication_required",
+    "status_probe_consent": false
+  },
+  "H046": {
+    "account_resource_requirement": "none",
+    "lab_l2_allowed": true,
+    "note_ja": "このクッキーはテーマ設定（ダーク／ライト）を覚えるだけ。",
+    "root_access_requirement": "public",
+    "status_probe_consent": false
+  },
+  "H047": {
+    "account_resource_requirement": "none",
+    "lab_l2_allowed": true,
+    "note_ja": "本番は先週 Secure を付けて修正済み。検査結果が古いのでは？",
+    "root_access_requirement": "authentication_required",
+    "status_probe_consent": false
+  },
+  "H048": {
+    "account_resource_requirement": "none",
+    "lab_l2_allowed": true,
+    "note_ja": "",
+    "root_access_requirement": "authentication_required",
+    "status_probe_consent": false
+  },
+  "H049": {
+    "account_resource_requirement": "none",
+    "lab_l2_allowed": true,
+    "note_ja": "",
+    "root_access_requirement": "public",
+    "status_probe_consent": true
+  },
+  "H050": {
+    "account_resource_requirement": "none",
+    "lab_l2_allowed": true,
+    "note_ja": "",
+    "root_access_requirement": "public",
+    "status_probe_consent": false
+  },
+  "H051": {
+    "account_resource_requirement": "none",
+    "lab_l2_allowed": true,
+    "note_ja": "",
+    "root_access_requirement": "public",
+    "status_probe_consent": true
+  },
+  "H052": {
+    "account_resource_requirement": "none",
+    "lab_l2_allowed": true,
+    "note_ja": "server-status は監視チームのために意図的に公開しており、リスク受容済み。",
+    "root_access_requirement": "public",
+    "status_probe_consent": true
+  },
+  "H053": {
+    "account_resource_requirement": "none",
+    "lab_l2_allowed": true,
+    "note_ja": "mod_status は先月無効化した。本当に無効になっているか確認したい。",
+    "root_access_requirement": "public",
+    "status_probe_consent": true
+  },
+  "H054": {
+    "account_resource_requirement": "none",
+    "lab_l2_allowed": true,
+    "note_ja": "Apache を nginx の裏で動かしている（リバースプロキシ構成）。",
+    "root_access_requirement": "public",
+    "status_probe_consent": true
+  },
+  "H055": {
+    "account_resource_requirement": "none",
+    "lab_l2_allowed": true,
+    "note_ja": "Apache から nginx へ完全移行済みで、Apache は停止している。",
+    "root_access_requirement": "public",
+    "status_probe_consent": true
+  },
+  "H056": {
+    "account_resource_requirement": "none",
+    "lab_l2_allowed": true,
+    "note_ja": "",
+    "root_access_requirement": "public",
+    "status_probe_consent": true
+  },
+  "H057": {
+    "account_resource_requirement": "none",
+    "lab_l2_allowed": true,
+    "note_ja": "",
+    "root_access_requirement": "authentication_required",
+    "status_probe_consent": false
+  },
+  "H058": {
+    "account_resource_requirement": "none",
+    "lab_l2_allowed": true,
+    "note_ja": "",
+    "root_access_requirement": "public",
+    "status_probe_consent": false
+  },
+  "H059": {
+    "account_resource_requirement": "none",
+    "lab_l2_allowed": true,
+    "note_ja": "公開しているのは静的ファイルだけ。server-status を含むモジュールの設定はホスティング事業者が管理していて把握していない。",
+    "root_access_requirement": "public",
+    "status_probe_consent": true
+  },
+  "H060": {
+    "account_resource_requirement": "none",
+    "lab_l2_allowed": true,
+    "note_ja": "server-status は社内IPからのみ許可しているはず。",
+    "root_access_requirement": "public",
+    "status_probe_consent": true
+  }
+}

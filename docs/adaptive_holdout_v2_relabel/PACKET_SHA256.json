@@ -1,0 +1,9 @@
+{
+ "KEY_DO_NOT_SHARE_WITH_REVIEWERS.json": "ec5f68fc657f5398a4946b859d894c7138e7fe1e6ca0783bd82ab19f3125b0f3",
+ "focus/INSTRUCTIONS.md": "437f74e1a03be15d70a01df70f563762b17d9cfbcd7ff2034179804fffe72ef4",
+ "focus/answers_template.csv": "03cb95722c6698030882ef063e6a62bffd6ccc24366d25a35f235a77d558ae36",
+ "focus/cases.json": "005d2c1b70319eda1a6f1d9f93855adeb1ac926902a2023797e893974c97c209",
+ "full/INSTRUCTIONS.md": "437f74e1a03be15d70a01df70f563762b17d9cfbcd7ff2034179804fffe72ef4",
+ "full/answers_template.csv": "087039c66015aaa725c4e2725623d34f1b45a0d51f2f524ef79c7503bb672e35",
+ "full/cases.json": "0449066716ef61b63ae1348b40d7d4c4e15ef7c9b9cdab5be5f678244ae70fa5"
+}
