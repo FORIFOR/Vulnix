@@ -23,6 +23,7 @@ discarded); if it closed the output first, it can outlive the run unnoticed.
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import resource
@@ -106,38 +107,50 @@ class WorkerPool:
         self._closed = False
 
     def run(self, argv: list[str], timeout_s: float, *, extra_env: dict[str, str] | None = None,
-            session=None, permit=None, progress: bool = False) -> WorkerResult:
+            session=None, permit=None, prelaunch=None, progress: bool = False) -> WorkerResult:
         """`session` is a kernel confinement session (confinement.py): the worker is
         started inside it, and killing the worker kills everything in it.
         `progress`: record the stage markers the worker writes on stderr."""
         if not self._sem.acquire(blocking=False):
             raise RuntimeLimitError("concurrency limit reached")
         try:
-            with self._lock:
-                if self._closed:
-                    raise RuntimeLimitError("worker pool closed")
-                cpu = self._cpu
-                proc_env = {"PATH": "/usr/bin:/bin"}
-                if extra_env:
-                    proc_env.update({str(k): str(v) for k, v in extra_env.items() if v is not None})
-                if session is not None:
-                    argv = session.wrap(argv, env_keys=tuple(proc_env), cpu_seconds=cpu)
-                if permit is not None:
-                    # Checked under the same lock that registers the process: whoever
-                    # withdraws the permission afterwards finds this worker in the
-                    # table and kills it; whoever did so before, stops it here.
-                    permit()
-                proc = subprocess.Popen(
-                    argv, stdin=subprocess.DEVNULL,       # never the control plane's terminal or socket
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,   # bytes: decoded once, at the end
-                    start_new_session=True, close_fds=True, env=proc_env,
-                    preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu)),
-                )
-                t0 = self._clock()
-                deadline = t0 + timeout_s               # fixed at start, on the monotonic clock
-                self._procs[proc.pid] = proc
-                if session is not None:
-                    self._sessions[proc.pid] = session
+            cpu = self._cpu
+            proc_env = {"PATH": "/usr/bin:/bin"}
+            if extra_env:
+                proc_env.update({str(k): str(v) for k, v in extra_env.items() if v is not None})
+            if session is not None:
+                argv = session.wrap(argv, env_keys=tuple(proc_env), cpu_seconds=cpu)
+                # Wrapping can stage code and take time. A rule removed during
+                # that preparation must stop the process before any traffic.
+                if not session.still_enforced():
+                    raise RuntimeLimitError("kernel confinement lost before worker launch")
+            # The request's session/organization may be revoked while wrapping a
+            # confined command. Check it without holding the pool lock: the check
+            # can acquire account locks, while an emergency stop acquires the pool.
+            lease = prelaunch() if prelaunch is not None else None
+            with lease if lease is not None else contextlib.nullcontext():
+                # A request-bound authority lease can remain held until Popen is
+                # registered. It is acquired before the pool lock, avoiding a
+                # pool -> account lock inversion with emergency stop.
+                with self._lock:
+                    if self._closed:
+                        raise RuntimeLimitError("worker pool closed")
+                    if permit is not None:
+                        # Checked under the same lock that registers the process: whoever
+                        # withdraws the permission afterwards finds this worker in the
+                        # table and kills it; whoever did so before, stops it here.
+                        permit()
+                    proc = subprocess.Popen(
+                        argv, stdin=subprocess.DEVNULL,       # never the control plane's terminal or socket
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,   # bytes: decoded once, at the end
+                        start_new_session=True, close_fds=True, env=proc_env,
+                        preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu)),
+                    )
+                    t0 = self._clock()
+                    deadline = t0 + timeout_s               # fixed at start, on the monotonic clock
+                    self._procs[proc.pid] = proc
+                    if session is not None:
+                        self._sessions[proc.pid] = session
             out, err = _Capture(), _Capture()
             stages: list = []
             readers = [threading.Thread(target=_drain, args=(proc.stdout, out, None), daemon=True,

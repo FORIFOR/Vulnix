@@ -1,0 +1,53 @@
+{
+  "viewport_width": 390,
+  "web_mode": "production",
+  "actions_from_site_open_to_result": 8,
+  "action_names": [
+    "open_wizard",
+    "enter_url",
+    "issue_challenge",
+    "verify_ownership",
+    "confirm_scope",
+    "consent_to_extra_get",
+    "start",
+    "open_findings"
+  ],
+  "browser_api_requests": 17,
+  "api_paths": [
+    "auth/me",
+    "auth/login",
+    "auth/me",
+    "system/status",
+    "assets",
+    "assets/challenge",
+    "assets/verify-ownership",
+    "assets/confirm-scope",
+    "assessments/scan_001/start",
+    "assessments/scan_001",
+    "assessments/scan_001/logs",
+    "assessments/scan_001/events",
+    "auth/me",
+    "system/status",
+    "assessments/scan_001",
+    "assessments/scan_001/logs",
+    "assessments/scan_001/events"
+  ],
+  "elapsed_start_to_visible_finding_s": 0.918,
+  "idle_seconds": 0,
+  "idle_api_requests": 5,
+  "sse_blocked": false,
+  "silent_change_recovered_s": null,
+  "revocation_hidden_s": null,
+  "target_paths": [
+    "/",
+    "/server-status?auto"
+  ],
+  "local_model_calls": 0,
+  "engine_kind": "unverified",
+  "model_input_excludes_host": null,
+  "engine_and_model_visible": null,
+  "cors_observation_and_limit_visible": true,
+  "cors_detail_visible": true,
+  "status_finding": "detected",
+  "page_errors": 0
+}

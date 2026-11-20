@@ -88,6 +88,10 @@ class CatalogEntry:
     def args_for(self, url: str) -> dict:
         if self.tool == "http_probe":
             return {"url": url, "method": "GET"}
+        if self.tool == "status_marker":
+            target = urllib.parse.urlsplit(url)
+            return {"url": urllib.parse.urlunsplit(
+                (target.scheme, target.netloc, "/server-status", "auto", ""))}
         return {"url": url, "check": self.check}
 
 
@@ -109,8 +113,104 @@ CATALOG: tuple[CatalogEntry, ...] = (
                  "公開設定・応答ヘッダーの非破壊GET（1回）",
                  ("header", "headers", "响应头", "ヘッダー", "banner", "バナー", "fingerprint", "指纹", "フィンガープリント",
                   "server version", "服务器版本", "信息收集", "recon", "偵察", "公開設定", "security header")),
+    CatalogEntry("l1_apache_mod_status", "status_marker", "read_only_probe", "L1",
+                 "Apache mod_status の固定マーカー確認（追加GET 1回）",
+                 ("mod_status", "mod-status", "server-status?auto", "server status module")),
 )
 CATALOG_BY_ID = {c.id: c for c in CATALOG}
+
+# Each extra L1 entry needs an explicit real-site eligibility and execution
+# review. A new catalog item must not silently inherit the Apache-only skip
+# decision or become executable merely because it is labelled L1.
+INITIAL_REAL_SITE_EXTRA_RULES = frozenset({"l1_apache_mod_status"})
+
+
+def reviewed_real_site_l1(catalog_id: str) -> bool:
+    entry = CATALOG_BY_ID.get(catalog_id)
+    return bool(entry and entry.level == "L1" and
+                (catalog_id == "l1_http_probe" or catalog_id in INITIAL_REAL_SITE_EXTRA_RULES))
+
+
+def initial_real_site_extra_checks(fingerprint: dict, *, status_consent: bool,
+                                   root_observed: bool) -> set[str]:
+    extra_ids = {entry.id for entry in CATALOG
+                 if entry.level == "L1" and entry.id != "l1_http_probe"}
+    if extra_ids != INITIAL_REAL_SITE_EXTRA_RULES:
+        raise ValueError("unreviewed extra L1 catalog")
+    if (root_observed and status_consent
+            and fingerprint.get("server_family") == "apache"):
+        return {"l1_apache_mod_status"}
+    return set()
+
+
+_FINGERPRINT_KEYS = frozenset({"scheme", "status_class", "server_family", "tls_present",
+                               "hsts_present", "csp_present"})
+
+
+def safe_public_fingerprint(response: dict, *, scheme: str) -> dict:
+    """Map a measured root response to enums and booleans; never copy target text."""
+    if scheme not in ("http", "https"):
+        raise ValueError("unsupported fingerprint scheme")
+    headers = response.get("headers") or {}
+    if not isinstance(headers, dict):
+        headers = {}
+    normalized = {str(k).lower(): v for k, v in headers.items()}
+    server = normalized.get("server")
+    server = server.lower() if isinstance(server, str) else ""
+    family = ("apache" if server == "apache" or server.startswith("apache/") else
+              "nginx" if server == "nginx" or server.startswith("nginx/") else
+              "other" if server else "unknown")
+    status = response.get("status")
+    status_class = f"{status // 100}xx" if type(status) is int and 100 <= status <= 599 else "unknown"
+    tls = response.get("tls")
+    return {"scheme": scheme, "status_class": status_class,
+            "server_family": family,
+            "tls_present": scheme == "https" and isinstance(tls, dict) and tls.get("verified") is True,
+            "hsts_present": "strict-transport-security" in normalized,
+            "csp_present": "content-security-policy" in normalized}
+
+
+def anonymous_real_site_request(findings: list[dict], *, fingerprint: dict | None = None) -> dict:
+    """Give ARTEX only a synthetic target and code-defined measured finding fields.
+
+    The ARTEX overlay records each observation as an observed fact. Candidate and
+    demo findings therefore cannot be observations here. The real URL is supplied
+    later by Vulnix when it reconstructs a proposal; it never enters this request.
+    """
+    from .ai_advisor import finding_to_payload_item
+    from .evidence import enforce_verdict, evidence_status
+
+    observations = []
+    if fingerprint is not None:
+        if (not isinstance(fingerprint, dict) or set(fingerprint) != _FINGERPRINT_KEYS
+                or fingerprint["scheme"] not in ("http", "https")
+                or fingerprint["status_class"] not in ("1xx", "2xx", "3xx", "4xx", "5xx", "unknown")
+                or fingerprint["server_family"] not in ("apache", "nginx", "other", "unknown")
+                or any(type(fingerprint[k]) is not bool for k in ("tls_present", "hsts_present", "csp_present"))):
+            raise ValueError("real-site fingerprint is not allowlisted")
+        safe_fact = json.dumps(fingerprint, ensure_ascii=False, sort_keys=True)
+        observations.append({"title": f"Measured root fingerprint: {safe_fact}", "detail": safe_fact})
+    for finding in findings[:20]:
+        if not isinstance(finding, dict):
+            continue
+        if evidence_status(finding) not in ("detected", "proven"):
+            continue
+        item = finding_to_payload_item(f"F{len(observations) + 1}", enforce_verdict(finding))
+        if (item["rule"] == "other" or item["verdict"] not in ("detected", "proven")
+                or item["verdict_basis"] == "demo_fixture"):
+            continue
+        safe_fact = json.dumps(item, ensure_ascii=False, sort_keys=True)
+        # ARTEX puts fact summaries in the planner's first prompt; the detail is
+        # available only if the model later calls node_detail. Both use the same
+        # fixed fields so the initial plan can respond to the measured finding.
+        observations.append({"title": f"Measured finding {item['ref']}: {safe_fact}",
+                             "detail": safe_fact})
+    return {
+        "goal": "匿名化された実サイトの実測所見を基に、低負荷・読み取り専用の確認だけを計画する。未確認の候補を検出済みと扱わない。",
+        "targets": [{"asset_id": 1, "target_id": "site", "url": "http://lab.test/"}],
+        "observations": observations,
+        "max_turns": 6,
+    }
 
 
 class ArtexBridgeError(RuntimeError):
@@ -485,12 +585,15 @@ def classify(summary: str) -> tuple[CatalogEntry | None, str]:
     if l2:
         return l2[0], ""
     l1 = [c for c in CATALOG if c.level == "L1" and any(k in text for k in c.keywords)]
+    if len(l1) > 1:
+        return None, "複数の検証項目に該当し一意に決められないため実行しません"
     if l1:
         return l1[0], ""
     return None, "許可済みの検証カタログに該当しないため実行しません"
 
 
-def reconstruct(intents: list[dict], targets: list[dict], run_id: str) -> Reconstruction:
+def reconstruct(intents: list[dict], targets: list[dict], run_id: str,
+                *, allowed_levels: frozenset[str] = frozenset({"L1", "L2"})) -> Reconstruction:
     """`targets`: Vulnix's registered, in-scope targets as handed to ARTEX
     ({asset_id, target_id, url}). Only these can ever be a target."""
     by_asset = {t["asset_id"]: t for t in targets}
@@ -501,6 +604,9 @@ def reconstruct(intents: list[dict], targets: list[dict], run_id: str) -> Recons
         entry, why = classify(summary)
         if entry is None:
             out.advisories.append(Advisory(iid, summary, why))
+            continue
+        if entry.level not in allowed_levels:
+            out.advisories.append(Advisory(iid, summary, "この対象では許可されていない検証のため実行しません"))
             continue
         if it.get("unmapped"):
             out.advisories.append(Advisory(iid, summary, "登録されていない対象を含むため実行しません"))

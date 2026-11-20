@@ -12,6 +12,7 @@ Run:  python3 -m aegis.server  [--port 8787] [--lab-port 18081]
 from __future__ import annotations
 
 import argparse
+import contextlib
 import dataclasses
 import http.cookies
 import hashlib
@@ -33,6 +34,7 @@ from .control_verification import run_live_control_verification
 from .lab import set_lab_mode, start_lab
 from .operators import AuthError, LockedOut, MFAChallenge, OperatorStore
 from .ownership import parse_service_target
+from .policy import PolicyError
 from .real_software_cve import run_real_software_cve_comparison
 from .tenancy import (DEFAULT_ORG, OrgStore, TenancyError, TenantRegistry, default_members_from,
                       service_roles, valid_org_id)
@@ -62,13 +64,28 @@ CHAT_PER_ORG_PER_HOUR = 30       # AI explanation questions per organization
 CHAT_PLATFORM_PER_HOUR = 300     # AI explanation questions, whole platform (one API key)
 CHAT_PLATFORM_PER_DAY = int(os.environ.get("VULNIX_CHAT_PER_DAY", "1000") or 1000)
 # Traffic to real (non-lab) sites: ownership checks over the network and diagnoses.
-#   1 (default)  everything the service allows (L1, approved L2, ARTEX on the lab only)
+#   1            legacy single-service mode (L1, approved L2, ARTEX on the lab only);
+#                multi-tenant mode still enforces read-only real-site checks
 #   l1           public beta: ownership checks and the read-only (L1) diagnosis of a
 #                site whose ownership this organization proved; nothing beyond that
 #   0            no traffic to real sites at all
-_REAL_SITE_MODE = (os.environ.get("VULNIX_REAL_SERVICE_DIAGNOSIS", "1") or "1").strip().lower()
-REAL_SERVICE_DIAGNOSIS = _REAL_SITE_MODE not in ("0", "l1")
+_REAL_SITE_MODE = (os.environ.get("VULNIX_REAL_SERVICE_DIAGNOSIS", "l1") or "l1").strip().lower()
+REAL_SERVICE_DIAGNOSIS = _REAL_SITE_MODE == "1"
 REAL_SITE_L1_ONLY = _REAL_SITE_MODE == "l1"
+
+
+def optional_status_check_configured() -> bool:
+    """Expose the extra read-only choice only for the local planner path."""
+    if (not REAL_SITE_L1_ONLY
+            or os.environ.get("VULNIX_REAL_SITE_LOCAL_ARTEX") != "1"
+            or os.environ.get("VULNIX_REAL_SITE_INITIAL_ARTEX") != "1"
+            or os.environ.get("VULNIX_ARTEX_LLM_MODE", "").strip() != "gateway-forward"
+            or not os.environ.get("VULNIX_ARTEX_REAL_CMD", "").strip()):
+        return False
+    try:
+        return urlsplit(os.environ.get("VULNIX_ARTEX_LLM_UPSTREAM_URL", "")).hostname in ("127.0.0.1", "::1")
+    except ValueError:
+        return False
 OWNERSHIP_CHECKS_PER_ORG_PER_HOUR = 20   # DNS / .well-known lookups a single organization may trigger
 OWNERSHIP_CHECKS_PLATFORM_PER_HOUR = 300
 REAL_SITE_RUNS_PER_ORG_PER_HOUR = 10     # read-only runs on proven real sites
@@ -168,6 +185,57 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 latest = e["fields"]
         return bool(latest and "approver" in (latest.get("after") or []))
 
+    @contextlib.contextmanager
+    def live_grant_roles(sess, org_id: str, *, approver: bool = False, reader: bool = False):
+        """Serialize a signed ownership/scope grant with logout and role removal.
+
+        External ownership lookups happen before this guard is acquired. The short
+        ledger commit holds the live session and membership locks in that order.
+        """
+        with ops.locked_session(sess.token) as current:
+            if current is None or current.operator != sess.operator:
+                raise AuthError("ログインの有効期限が切れました。もう一度ログインしてください")
+            membership = (tenancy.store.locked_roles_in(org_id, current.operator)
+                          if tenancy is not None else contextlib.nullcontext(current.roles))
+            with membership as org_roles:
+                roles = service_roles(org_roles) if tenancy is not None else tuple(org_roles)
+                if (reader and not org_roles) or (not reader and not (
+                        {"operator", "approver", "admin"} & set(roles))):
+                    raise ApproverRequired("この組織で所有確認を行う権限がありません")
+                if approver and "approver" not in roles:
+                    raise ApproverRequired("診断範囲の確定には承認責任者の権限が必要です")
+                yield roles
+
+    def live_request_allowed(sess, org_id: str, *, approver: bool = False) -> bool:
+        # Used between turns of a long planner or just before a foreground
+        # Worker launch. Never retain the account/organization locks while
+        # waiting for the model or Worker to finish.
+        try:
+            with live_grant_roles(sess, org_id, approver=approver):
+                return True
+        except Exception:  # noqa: BLE001 - cannot confirm live authority: refuse
+            return False
+
+    def live_request_authority(sess, org_id: str, *, approver: bool = False):
+        """A short check plus a launch lease for foreground Worker requests."""
+        def allowed() -> bool:
+            return live_request_allowed(sess, org_id, approver=approver)
+
+        @contextlib.contextmanager
+        def lease():
+            guard = live_grant_roles(sess, org_id, approver=approver)
+            try:
+                guard.__enter__()
+            except Exception:  # noqa: BLE001 - no live grant means no process start
+                raise PolicyError("要求者の権限が失効したため、新しいWorkerは起動しません") from None
+            try:
+                yield
+            finally:
+                guard.__exit__(None, None, None)
+
+        allowed.lease = lease
+        return allowed
+
     class H(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -235,6 +303,11 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 return ""
             if p.endswith(_L1_ONLY_ROUTES):
                 return ""
+            base = f"/api/assessments/{osvc.a.id}"
+            if getattr(osvc, "_real_site_local_artex", False) and (
+                    p == base + "/artex/plan"
+                    or re.fullmatch(base + r"/artex/items/[A-Za-z0-9_]{1,80}/execute", p)):
+                return ""
             return ("実在するサイトに対しては、読み取り専用の診断（ページを1回取得して設定を調べる）だけを行います。"
                     "この操作は実在するサイトでは使えません")
 
@@ -250,7 +323,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             account's roles IN that organization). Answers 401/403/404 itself and returns
             None when there is none. Without tenancy: the single service, unchanged."""
             if tenancy is None:
-                default_svc.real_site_read_only = REAL_SITE_L1_ONLY and not REAL_SERVICE_DIAGNOSIS
+                default_svc.real_site_read_only = not REAL_SERVICE_DIAGNOSIS
                 return default_svc, sess
             if not sess:
                 self._json(401, {"error": "ログインが必要です"})
@@ -275,8 +348,41 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 return None
             self._bound_org = wanted
             # enforced again inside the service, under its lock (an asset switch cannot race it)
-            osvc.real_site_read_only = REAL_SITE_L1_ONLY and not REAL_SERVICE_DIAGNOSIS
+            # The legacy broad switch is only for the single-service mode. A tenant
+            # must never inherit real-site L2 from a process-wide environment value.
+            osvc.real_site_read_only = True
             return osvc, dataclasses.replace(sess, roles=service_roles(roles))
+
+        def _authorized_org_read(self, sess, org, action, *, reader=True, approver=False):
+            """Keep a protected response within the current account/member grant."""
+            try:
+                with live_grant_roles(sess, org, reader=reader, approver=approver) as current_roles:
+                    current_sess = dataclasses.replace(sess, roles=tuple(current_roles))
+                    previous_timeout = self.connection.gettimeout()
+                    self.connection.settimeout(2.0)
+                    try:
+                        return action(current_sess)
+                    finally:
+                        self.connection.settimeout(previous_timeout)
+            except AuthError:
+                return self._json(401, {"error": "ログインの有効期限が切れました。もう一度ログインしてください"})
+            except ApproverRequired:
+                return self._json(403, {"error": "この組織のメンバーではありません"})
+
+        def _authorized_platform_read(self, sess, action, *, admin=False):
+            """Do not deliver a shared-platform job result after its grant expires."""
+            with ops.locked_session(sess.token) as current:
+                if current is None or current.operator != sess.operator:
+                    return self._json(401, {"error": "ログインの有効期限が切れました。もう一度ログインしてください"})
+                required = {"admin"} if admin else {"approver", "admin"}
+                if not required.intersection(current.roles):
+                    return self._json(403, {"error": "この操作を行う権限がありません"})
+                previous_timeout = self.connection.gettimeout()
+                self.connection.settimeout(2.0)
+                try:
+                    return action()
+                finally:
+                    self.connection.settimeout(previous_timeout)
 
         def _host_ok(self) -> bool:
             """The control plane answers only when addressed as loopback. A request
@@ -304,14 +410,32 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             sess = self._session()
             if p == "/api/auth/me":
                 me = {"session": self._public_session(sess), "self_registration": self_registration_allowed()}
+                # This reports the process configuration so the public launcher can
+                # still reject a broad setting, even though tenants stay read-only.
                 me["real_service_diagnosis"] = REAL_SERVICE_DIAGNOSIS
-                me["real_site_read_only"] = REAL_SITE_L1_ONLY
+                me["real_site_read_only"] = REAL_SITE_L1_ONLY or tenancy is not None
                 me["google_ownership"] = google_ownership.config() is not None
+                me["optional_status_check"] = optional_status_check_configured()
                 me["development"] = development_mode()
                 if tenancy is not None:
                     me["multi_tenant"] = True
-                    me["orgs"] = tenancy.store.orgs_of(sess.operator) if sess else []
-                return self._json(200, me)
+                    me["orgs"] = []
+                if sess is None:
+                    return self._json(200, me)
+                with ops.locked_session(sess.token) as current:
+                    if current is None or current.operator != sess.operator:
+                        me["session"] = None
+                    else:
+                        me["session"]["roles"] = list(current.roles)
+                        me["session"]["expires"] = current.expires
+                        if tenancy is not None:
+                            me["orgs"] = tenancy.store.orgs_of(current.operator)
+                    previous_timeout = self.connection.gettimeout()
+                    self.connection.settimeout(2.0)
+                    try:
+                        return self._json(200, me)
+                    finally:
+                        self.connection.settimeout(previous_timeout)
             if p == "/api/health":
                 return self._json(200, {"ok": True})
             if enforce_read_auth and not sess:
@@ -321,39 +445,142 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 if not sess or "admin" not in sess.roles:
                     return self._json(403, {"error": "アカウント一覧の参照には管理者の権限が必要です"})
                 locked = ops.locked_accounts()
-                return self._json(200, {"operators": [
+                accounts = {"operators": [
                     {"name": o.name, "display": o.display, "roles": list(o.roles),
                      "mfa_enabled": bool(o.totp_secret),
                      "locked_for": int(locked.get(o.name, 0)),
                      # approver without an admin's grant on record -> needs review
                      "needs_role_review": "approver" in o.roles and not approver_grant_recorded(o.name)}
-                    for o in ops.operators()]})
+                    for o in ops.operators()]}
+                with ops.locked_session(sess.token) as current:
+                    if current is None or current.operator != sess.operator:
+                        return self._json(401, {"error": "ログインの有効期限が切れました。もう一度ログインしてください"})
+                    if "admin" not in current.roles:
+                        return self._json(403, {"error": "管理者の権限が失効しました"})
+                    previous_timeout = self.connection.gettimeout()
+                    self.connection.settimeout(2.0)
+                    try:
+                        return self._json(200, accounts)
+                    finally:
+                        self.connection.settimeout(previous_timeout)
             if p == "/api/system/status":
                 if tenancy is not None:
                     # each tenant sees its own conditions (stuck workers, notices name hosts)
                     bound = self._bind(sess)
                     if bound is None:
                         return None
-                    return self._json(200, bound[0].system_status())
-                return self._json(200, svc.system_status())
+                    org, status_svc = self._bound_org, bound[0]
+                elif enforce_read_auth:
+                    org, status_svc = DEFAULT_ORG, svc
+                else:
+                    return self._json(200, svc.system_status())
+                try:
+                    with live_grant_roles(sess, org, reader=True):
+                        pass
+                except AuthError:
+                    return self._json(401, {"error": "ログインの有効期限が切れました。もう一度ログインしてください"})
+                except ApproverRequired:
+                    return self._json(403, {"error": "この組織のメンバーではありません"})
+                status_payload = status_svc.system_status()
+                return self._authorized_org_read(sess, org, lambda _: self._json(200, status_payload))
             if tenancy is not None and p.startswith("/api/orgs"):
-                return self._tenancy_get(p, u, sess)
+                previous_timeout = self.connection.gettimeout()
+                self.connection.settimeout(2.0)
+                try:
+                    return self._tenancy_get(p, u, sess)
+                finally:
+                    self.connection.settimeout(previous_timeout)
             if p.startswith(("/api/assets", "/api/assessments/")):
                 bound = self._bind(sess, (parse_qs(u.query).get("org") or [None])[0])
                 if bound is None:
                     return None
-                return self._get_org(p, u, *bound)
+                if tenancy is None and not enforce_read_auth:
+                    return self._get_org(p, u, *bound)
+                org = self._bound_org if tenancy is not None else DEFAULT_ORG
+                if p.endswith("/events"):
+                    return self._get_org(p, u, *bound)  # long stream: per-batch lease below
+                if p in {f"/api/assessments/{bound[0].a.id}",
+                         f"/api/assessments/{bound[0].a.id}/logs",
+                         f"/api/assessments/{bound[0].a.id}/report",
+                         f"/api/assessments/{bound[0].a.id}/remotion"}:
+                    # Large audit reads and report formatting must not hold the
+                    # global account lock. Check before work and again for delivery.
+                    try:
+                        with live_grant_roles(sess, org, reader=True) as roles:
+                            identified = p.endswith("/remotion") and \
+                                (parse_qs(u.query).get("anonymize") or ["1"])[0] == "0"
+                            allowed_identified = not identified or bool({"approver", "admin"} & set(roles))
+                    except AuthError:
+                        return self._json(401, {"error": "ログインの有効期限が切れました。もう一度ログインしてください"})
+                    except ApproverRequired:
+                        return self._json(403, {"error": "この組織のメンバーではありません"})
+                    if not allowed_identified:
+                        return self._json(403, {"error": "匿名化なしの出力には承認責任者または管理者の権限が必要です"})
+                    if p == f"/api/assessments/{bound[0].a.id}":
+                        payload = bound[0].snapshot()
+                    elif p.endswith("/logs"):
+                        payload = bound[0].logs()
+                    elif p.endswith("/report"):
+                        payload = {"markdown": bound[0].report_markdown(),
+                                   "filename": f"vulnix-report-{bound[0].a.id}.md"}
+                    else:
+                        anon = (parse_qs(u.query).get("anonymize") or ["1"])[0] != "0"
+                        payload = bound[0].remotion_export(anonymize=anon)
+
+                        def deliver_remotion(current):
+                            if not anon:
+                                if not ({"approver", "admin"} & set(current.roles)):
+                                    return self._json(403, {"error": "匿名化なしの出力には承認責任者または管理者の権限が必要です"})
+                                bound[0].audit.record("export.remotion_identified", actor=current.operator)
+                            return self._json(200, payload)
+
+                        return self._authorized_org_read(sess, org, deliver_remotion)
+                    return self._authorized_org_read(sess, org, lambda _: self._json(200, payload))
+                return self._authorized_org_read(
+                    sess, org, lambda current: self._get_org(p, u, bound[0], current))
             if p == "/api/router/status":
+                if tenancy is not None:
+                    bound = self._bind(sess, (parse_qs(u.query).get("org") or [None])[0])
+                    if bound is None:
+                        return None
+                    return self._authorized_org_read(
+                        sess, self._bound_org,
+                        lambda _: self._json(200, bound[0].planner_status()))
+                if enforce_read_auth:
+                    return self._authorized_org_read(
+                        sess, DEFAULT_ORG, lambda _: self._json(200, svc.planner_status()))
                 return self._json(200, svc.planner_status())
             if p == "/api/l2-profiles":
                 if not sess or not ({"admin", "approver"} & set(sess.roles)):
                     return self._json(403, {"error": "プロファイルの参照には管理者または承認責任者の権限が必要です"})
-                return self._json(200, svc.l2_profiles_status())
+                profiles = svc.l2_profiles_status()
+                with ops.locked_session(sess.token) as current:
+                    if current is None or current.operator != sess.operator:
+                        return self._json(401, {"error": "ログインの有効期限が切れました。もう一度ログインしてください"})
+                    if not ({"admin", "approver"} & set(current.roles)):
+                        return self._json(403, {"error": "参照権限が失効しました"})
+                    previous_timeout = self.connection.gettimeout()
+                    self.connection.settimeout(2.0)
+                    try:
+                        return self._json(200, profiles)
+                    finally:
+                        self.connection.settimeout(previous_timeout)
             if p in JOB_ROUTES:
                 # these START a verification job: POST only (CSRF-checked, role-checked, audited)
                 return self._json(405, {"error": "この操作は POST で実行してください"}, [("Allow", "POST")])
             if p == "/api/cve/status":
-                return self._json(200, svc.cve_monitor.status())
+                status_payload = svc.cve_monitor.status()
+                if enforce_read_auth:
+                    with ops.locked_session(sess.token) as current:
+                        if current is None or current.operator != sess.operator:
+                            return self._json(401, {"error": "ログインの有効期限が切れました。もう一度ログインしてください"})
+                        previous_timeout = self.connection.gettimeout()
+                        self.connection.settimeout(2.0)
+                        try:
+                            return self._json(200, status_payload)
+                        finally:
+                            self.connection.settimeout(previous_timeout)
+                return self._json(200, status_payload)
             return self._json(404, {"error": "not found"})
 
         def _get_org(self, p, u, svc, sess):
@@ -408,53 +635,72 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             org = getattr(self, "_bound_org", None)
             token = sess.token if sess else None
 
-            def still_allowed() -> bool:
-                """A stream ends when its session ends, or when the account leaves the organization."""
+            @contextlib.contextmanager
+            def event_permission():
+                """Serialize each event write with session and membership revocation."""
                 if token is None:
-                    return True
-                now = ops.resolve(token)
-                if now is None:
-                    return False
-                return tenancy is None or org is None or bool(tenancy.store.roles_in(org, now.operator))
+                    yield 0
+                    return
+                grant = live_grant_roles(sess, org or DEFAULT_ORG, reader=True)
+                try:
+                    grant.__enter__()
+                except AuthError:
+                    yield 401
+                    return
+                except ApproverRequired:
+                    yield 403
+                    return
+                try:
+                    yield 0
+                finally:
+                    grant.__exit__(None, None, None)
             try:
-                return self._sse_loop(after, svc, still_allowed)
+                return self._sse_loop(after, svc, event_permission)
             finally:
                 if key:
                     with limits_lock:
                         sse_open[key] -= 1
 
-        def _sse_loop(self, after: int, svc, still_allowed) -> None:
+        def _sse_loop(self, after: int, svc, event_permission) -> None:
             self.close_connection = True   # never reuse a socket after a stream ends
-            self.send_response(200)
-            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-            self.send_header("Cache-Control", "no-cache, no-transform")
-            self.send_header("X-Accel-Buffering", "no")
-            self.send_header("Connection", "keep-alive")
-            self.end_headers()
-            # send_header("Connection", "keep-alive") turns close_connection back off: set
-            # it again, so a stream that ends here closes its socket instead of waiting
-            # for another request on it
-            self.close_connection = True
+            self.connection.settimeout(2.0)  # a stalled reader must not hold revocation indefinitely
             seq = after
             last_ping = time.monotonic()
             try:
-                self.wfile.write(b"retry: 2000\n\n")
-                self.wfile.flush()
+                with event_permission() as denied:
+                    if denied:
+                        return self._json(denied, {"error": "更新の受信権限が失効しました"})
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                    self.send_header("Cache-Control", "no-cache, no-transform")
+                    self.send_header("X-Accel-Buffering", "no")
+                    self.send_header("Connection", "keep-alive")
+                    self.end_headers()
+                    # send_header("Connection", "keep-alive") turns close_connection back off
+                    self.close_connection = True
+                    self.wfile.write(b"retry: 2000\n\n")
+                    self.wfile.flush()
                 while True:
                     events = svc.bus.wait(seq, timeout=5)
-                    # checked after waiting and before writing: nothing that happened after
-                    # a removal, logout or expiry reaches the stream
-                    if not still_allowed():
-                        return
                     for ev in events:
-                        data = json.dumps(ev, ensure_ascii=False)
-                        self.wfile.write(f"id: {ev['event_id']}\ndata: {data}\n\n".encode())
-                        seq = ev["seq"]
-                    if time.monotonic() - last_ping > 10:
-                        self.wfile.write(b": ping\n\n")
-                        last_ping = time.monotonic()
-                    self.wfile.flush()
-            except (BrokenPipeError, ConnectionResetError):
+                        # One event per lease lets logout and member removal enter
+                        # between backlog entries, even if the client is slow.
+                        with event_permission() as denied:
+                            if denied:
+                                return
+                            data = json.dumps(ev, ensure_ascii=False)
+                            self.wfile.write(f"id: {ev['event_id']}\ndata: {data}\n\n".encode())
+                            seq = ev["seq"]
+                            self.wfile.flush()
+                    with event_permission() as denied:
+                        if denied:
+                            return
+                        if time.monotonic() - last_ping > 4:
+                            # Heartbeat seq lets the browser detect a missing event.
+                            self.wfile.write(f"event: heartbeat\ndata: {{\"seq\":{seq}}}\n\n".encode())
+                            last_ping = time.monotonic()
+                        self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, TimeoutError):
                 return
 
         # ---- POST -----------------------------------------------------------
@@ -532,19 +778,31 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 return self._admin_recovery(p, body, sess)
             if tenancy is not None:
                 if p.startswith("/api/orgs") or p == "/api/invites/accept":
-                    return self._tenancy_post(p, body, sess)
-                if p.endswith("/lab-mode") and "admin" not in sess.roles:
-                    # the mock lab is one process-wide service shared by every organization
+                    with ops.locked_session(sess.token) as current:
+                        if current is None or current.operator != sess.operator:
+                            return self._json(401, {"error": "ログインの有効期限が切れました。もう一度ログインしてください"})
+                        previous_timeout = self.connection.gettimeout()
+                        self.connection.settimeout(2.0)
+                        try:
+                            return self._tenancy_post(p, body, current)
+                        finally:
+                            self.connection.settimeout(previous_timeout)
+                if p.endswith("/lab-mode"):
+                    # the mock lab is shared even with the default organization;
+                    # a platform admin could change another tenant's run mid-probe
                     paudit.record("tenancy.lab_mode_denied", actor=sess.operator)
-                    return self._json(403, {"error": "模擬ラボの設定は全組織で共有のため、プラットフォーム管理者だけが変更できます"})
+                    return self._json(403, {"error": "模擬ラボは全組織で共有されているため、公開版では設定を変更できません"})
                 if p not in PLATFORM_POST_ROUTES:
                     bound = self._bind(sess)
                     if bound is None:
                         return None
                     osvc, osess = bound
                     self._select_target = str(body.get("id", "")) if p == "/api/assets/select" else ""
-                    if not REAL_SERVICE_DIAGNOSIS and self._touches_real_site(p, osvc):
-                        refusal = self._real_site_refusal(p, osvc) if REAL_SITE_L1_ONLY else \
+                    # Mode 0 always disables real-site traffic. Only the legacy
+                    # broad switch is narrowed to L1 when tenants are present.
+                    read_only_real = REAL_SITE_L1_ONLY or (tenancy is not None and REAL_SERVICE_DIAGNOSIS)
+                    if (not REAL_SERVICE_DIAGNOSIS or tenancy is not None) and self._touches_real_site(p, osvc):
+                        refusal = self._real_site_refusal(p, osvc) if read_only_real else \
                             "このβ版では、実サイトへの通信（所有確認の実行・診断）はまだ有効になっていません。模擬ラボで機能をお試しください"
                         if refusal:
                             paudit.record("tenancy.real_site_refused", actor=sess.operator, route=p[-60:])
@@ -558,19 +816,22 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         return self._json(403, {"error": "閲覧者の権限では操作できません"})
                     # L1-only mode: traffic to real sites is bounded per organization and platform-wide
                     limited = None
-                    if REAL_SITE_L1_ONLY and not real_site_traffic and p.endswith(("/start", "/restart", "/resume")):
+                    artex_item = bool(re.fullmatch(
+                        f"/api/assessments/{osvc.a.id}" + r"/artex/items/[A-Za-z0-9_]{1,80}/execute", p))
+                    if read_only_real and not real_site_traffic and (
+                            p.endswith(("/start", "/restart", "/resume")) or artex_item):
                         # the workspace can be switched onto a proven site between this check and
                         # the run: every run of an organization holding one is counted
                         try:
                             real_site_traffic = osvc.has_scoped_real_site()
                         except Exception:   # noqa: BLE001 - when in doubt, count it
                             real_site_traffic = True
-                    if real_site_traffic and REAL_SITE_L1_ONLY:
+                    if real_site_traffic and read_only_real:
                         if p == "/api/assets/verify-ownership":
                             limited = (verify_times, verify_all, OWNERSHIP_CHECKS_PER_ORG_PER_HOUR,
                                        OWNERSHIP_CHECKS_PLATFORM_PER_HOUR,
                                        "所有確認は1時間あたりの上限に達しました。DNS の設定が反映されるまで少し待ってからお試しください")
-                        elif p.endswith(("/start", "/restart", "/resume")):
+                        elif p.endswith(("/start", "/restart", "/resume")) or artex_item:
                             limited = (real_run_times, real_run_all, REAL_SITE_RUNS_PER_ORG_PER_HOUR,
                                        REAL_SITE_RUNS_PLATFORM_PER_HOUR,
                                        "このサイトの診断は1時間あたりの上限に達しました。時間をおいてお試しください")
@@ -636,15 +897,15 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             except LockedOut as e:
                 return self._locked(e, sess.operator)
             except AuthError as e:
-                return self._json(400, {"error": str(e)})
+                return self._self_failure(sess, e)
             paudit.record("auth.password_changed", actor=sess.operator)
             return self._json(200, {"ok": True})
 
         def _totp_enroll(self, sess):
             try:
-                secret, uri = ops.begin_totp_enroll(sess.operator)
+                secret, uri = ops.begin_totp_enroll(sess.operator, session_token=sess.token)
             except AuthError as e:
-                return self._json(400, {"error": str(e)})
+                return self._self_failure(sess, e)
             # The secret/URI are shown once to the operator to add to their
             # authenticator; they are not recorded in the audit log.
             paudit.record("auth.mfa_enroll_started", actor=sess.operator)
@@ -652,19 +913,20 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
 
         def _totp_confirm(self, body, sess):
             try:
-                ops.confirm_totp(sess.operator, str(body.get("code", "")))
+                ops.confirm_totp(sess.operator, str(body.get("code", "")), session_token=sess.token)
             except AuthError as e:
-                return self._json(400, {"error": str(e)})
+                return self._self_failure(sess, e)
             paudit.record("auth.mfa_enabled", actor=sess.operator)
             return self._json(200, {"ok": True, "mfa_enabled": True})
 
         def _totp_disable(self, body, sess):
             try:
-                ops.disable_totp(sess.operator, str(body.get("current", "")), str(body.get("code", "")) or None)
+                ops.disable_totp(sess.operator, str(body.get("current", "")), str(body.get("code", "")) or None,
+                                 session_token=sess.token)
             except LockedOut as e:
                 return self._locked(e, sess.operator)
             except AuthError as e:
-                return self._json(400, {"error": str(e)})
+                return self._self_failure(sess, e)
             paudit.record("auth.mfa_disabled", actor=sess.operator)
             return self._json(200, {"ok": True, "mfa_enabled": False})
 
@@ -712,9 +974,10 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             if caller and "admin" in caller.roles:
                 # an admin creates the account for someone else; the admin stays logged in
                 try:
-                    op = ops.create_account(name, password, display=display, actor=caller.operator)
+                    op = ops.create_account(name, password, display=display, actor=caller.operator,
+                                            session_token=caller.token)
                 except AuthError as e:
-                    return self._json(400, {"error": str(e)})
+                    return self._admin_failure(caller, e, 400)
                 paudit.record("operator.created", actor=caller.operator, target=op.name, roles=list(op.roles),
                                  requested_roles_ignored=[r for r in asked if r not in op.roles])
                 return self._json(200, {"created": {"name": op.name, "display": op.display, "roles": list(op.roles)}})
@@ -785,6 +1048,19 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     out["warning"] = tenancy_warning
             return self._json(200, out, [("Set-Cookie", cookie)])
 
+        def _admin_failure(self, sess, error, ordinary_status: int):
+            current = ops.resolve(sess.token)
+            if current is None or current.operator != sess.operator:
+                return self._json(401, {"error": "ログインの有効期限が切れました。もう一度ログインしてください"})
+            if "admin" not in current.roles:
+                return self._json(403, {"error": "管理者の権限が失効しました"})
+            return self._json(ordinary_status, {"error": str(error)})
+
+        def _self_failure(self, sess, error):
+            if ops.resolve(sess.token) is None:
+                return self._json(401, {"error": "ログインの有効期限が切れました。もう一度ログインしてください"})
+            return self._json(400, {"error": str(error)})
+
         def _set_roles(self, body, sess):
             if "admin" not in sess.roles:
                 paudit.record("operator.roles_change_denied", actor=sess.operator,
@@ -794,11 +1070,12 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             roles = [str(r) for r in raw] if isinstance(raw, list) else []
             target = str(body.get("name", "")).strip()
             try:
-                before, after = ops.set_roles(target, roles, actor=sess.operator)
+                before, after = ops.set_roles(target, roles, actor=sess.operator,
+                                              session_token=sess.token)
             except AuthError as e:
                 paudit.record("operator.roles_change_failed", actor=sess.operator, target=target[:64],
                                  requested=roles[:8], error=str(e)[:200])
-                return self._json(409, {"error": str(e)})
+                return self._admin_failure(sess, e, 409)
             paudit.record("operator.roles_changed", actor=sess.operator, target=target,
                              before=list(before), after=list(after),
                              attested_unchanged=set(before) == set(after))
@@ -812,13 +1089,13 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 return self._json(403, {"error": "この操作には管理者の権限が必要です"})
             try:
                 if p == "/api/operators/unlock":
-                    changed = ops.unlock(target, actor=sess.operator)
+                    changed = ops.unlock(target, actor=sess.operator, session_token=sess.token)
                     paudit.record("operator.unlocked", actor=sess.operator, target=target[:64], was_locked=changed)
                 else:
-                    changed = ops.reset_totp(target, actor=sess.operator)
+                    changed = ops.reset_totp(target, actor=sess.operator, session_token=sess.token)
                     paudit.record("operator.mfa_reset", actor=sess.operator, target=target[:64], had_mfa=changed)
             except AuthError as e:
-                return self._json(409, {"error": str(e)})
+                return self._admin_failure(sess, e, 409)
             return self._json(200, {"name": target, "changed": changed})
 
         # ---- organizations (tenancy) --------------------------------------------
@@ -834,21 +1111,27 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
         def _tenancy_get(self, p, u, sess):
             if not sess:
                 return self._json(401, {"error": "ログインが必要です"})
-            if p == "/api/orgs":
-                return self._json(200, {"orgs": tenancy.store.orgs_of(sess.operator)})
-            try:
-                org_id = self._org_for_management(sess, {"org": (parse_qs(u.query).get("org") or [""])[0]})
-            except TenancyError as e:
-                return self._json(403, {"error": str(e)})
-            mine = set(tenancy.store.roles_in(org_id, sess.operator))
-            if p == "/api/orgs/members":
-                return self._json(200, {"org": {"id": org_id, "name": tenancy.store.org_name(org_id)},
-                                        "my_roles": sorted(mine), "members": tenancy.store.members(org_id)})
-            if p == "/api/orgs/invites":
-                if not mine & {"owner", "admin"}:
-                    return self._json(403, {"error": "招待の一覧はオーナーまたは管理者だけが見られます"})
-                return self._json(200, {"invites": tenancy.store.invites(org_id)})
-            return self._json(404, {"error": "not found"})
+            with ops.locked_session(sess.token) as current:
+                if current is None or current.operator != sess.operator:
+                    return self._json(401, {"error": "ログインの有効期限が切れました。もう一度ログインしてください"})
+                if p == "/api/orgs":
+                    return self._json(200, {"orgs": tenancy.store.orgs_of(current.operator)})
+                try:
+                    org_id = self._org_for_management(current, {"org": (parse_qs(u.query).get("org") or [""])[0]})
+                except TenancyError as e:
+                    return self._json(403, {"error": str(e)})
+                with tenancy.store.locked_roles_in(org_id, current.operator) as roles:
+                    mine = set(roles)
+                    if not mine:
+                        return self._json(403, {"error": "この組織のメンバーではありません"})
+                    if p == "/api/orgs/members":
+                        return self._json(200, {"org": {"id": org_id, "name": tenancy.store.org_name(org_id)},
+                                                "my_roles": sorted(mine), "members": tenancy.store.members(org_id)})
+                    if p == "/api/orgs/invites":
+                        if not mine & {"owner", "admin"}:
+                            return self._json(403, {"error": "招待の一覧はオーナーまたは管理者だけが見られます"})
+                        return self._json(200, {"invites": tenancy.store.invites(org_id)})
+                    return self._json(404, {"error": "not found"})
 
         def _tenancy_post(self, p, body, sess):
             st = tenancy.store
@@ -896,6 +1179,27 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             return [("Set-Cookie", f"{COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0")]
 
         def _dispatch(self, p, body, sess, svc=None):
+            # Binding can wait on target checks and rate limits. A logout or
+            # membership change during that time must not use the old snapshot.
+            live_error = None
+            if not p.endswith(("/emergency-stop", "/pause")):
+                # A failed auth-state save must never prevent reducing power.
+                with ops.locked_session(sess.token) as current:
+                    if current is None or current.operator != sess.operator:
+                        live_error = (401, "ログインの有効期限が切れました。もう一度ログインしてください")
+                    elif tenancy is not None and svc is not None:
+                        with tenancy.store.locked_roles_in(self._bound_org, current.operator) as org_roles:
+                            if not org_roles:
+                                live_error = (403, "この組織のメンバーではありません")
+                            else:
+                                roles = service_roles(org_roles)
+                                if not ({"operator", "approver", "admin"} & set(roles)):
+                                    live_error = (403, "閲覧者の権限では操作できません")
+                                sess = dataclasses.replace(current, roles=roles)
+                    else:
+                        sess = current
+            if live_error:
+                return self._json(live_error[0], {"error": live_error[1]})
             svc = svc or default_svc
             base = f"/api/assessments/{svc.a.id}"
             actor = sess.operator
@@ -910,7 +1214,10 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         activate_workspace=bool(body.get("activate_workspace", False)),
                         actor=actor,
                     )
-                    return self._json(200, {"asset": asset, "assets": svc.assets()})
+                    payload = {"asset": asset, "assets": svc.assets()}
+                    return self._authorized_org_read(
+                        sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                        lambda _: self._json(200, payload), reader=False)
                 elif p == "/api/assets/challenge":
                     target_host = ""
                     try:
@@ -927,8 +1234,12 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         approver=actor,
                         kind=str(body.get("kind", "Webアプリケーション")),
                         environment=str(body.get("environment", "ステージング環境")),
+                        grant_guard=lambda: live_grant_roles(sess, getattr(self, "_bound_org", DEFAULT_ORG)),
                     )
-                    return self._json(200, {**res, "assets": svc.assets()})
+                    payload = {**res, "assets": svc.assets()}
+                    return self._authorized_org_read(
+                        sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                        lambda _: self._json(200, payload), reader=False)
                 elif p == "/api/assets/google/start":
                     # Step 2 through Google: a one-time, short-lived state bound to this
                     # account, organization and host; the browser goes to Google with it
@@ -960,7 +1271,10 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                                                 "host": g_host, "verifier": verifier,
                                                 "scheme": str(g_asset.get("scheme") or "https"),
                                                 "port": int(g_asset.get("port") or 443)}
-                    return self._json(200, {"url": google_ownership.authorization_url(cfg, state, challenge)})
+                    auth_url = google_ownership.authorization_url(cfg, state, challenge)
+                    return self._authorized_org_read(
+                        sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                        lambda _: self._json(200, {"url": auth_url}), reader=False)
                 elif p == "/api/assets/google/finish":
                     cfg = google_ownership.config()
                     if cfg is None:
@@ -985,10 +1299,18 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     # checked against the scheme / port registered when the check started;
                     # the service refuses (under its lock) if the registration changed since
                     prop = google_ownership.covering_property(sites, g_host, st["scheme"], st["port"])
-                    res = svc.verify_asset_ownership(url_or_host=g_host, method=google_ownership.METHOD,
-                                                     actor=actor, roles=tuple(sess.roles), google_property=prop,
-                                                     google_endpoint=(st["scheme"], st["port"]))
-                    return self._json(200, {**res, "assets": svc.assets()})
+                    # Google's HTTP lookup is over. Keep the short grant commit
+                    # and its response in one live lease so logout cannot split them.
+                    # The outer lease supplies current roles; do not nest its
+                    # non-reentrant account lock through grant_guard.
+                    def finish_google(current):
+                        res = svc.verify_asset_ownership(url_or_host=g_host, method=google_ownership.METHOD,
+                                                         actor=actor, roles=tuple(current.roles), google_property=prop,
+                                                         google_endpoint=(st["scheme"], st["port"]))
+                        return self._json(200, {**res, "assets": svc.assets()})
+
+                    return self._authorized_org_read(
+                        sess, getattr(self, "_bound_org", DEFAULT_ORG), finish_google, reader=False)
                 elif p == "/api/assets/verify-ownership":
                     v_host = ""
                     try:
@@ -1003,19 +1325,33 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         method=str(body.get("method", "dns_txt")),
                         actor=actor,
                         roles=tuple(sess.roles),     # re-checked inside, when the result is applied
+                        grant_guard=lambda: live_grant_roles(sess, getattr(self, "_bound_org", DEFAULT_ORG)),
                     )
-                    return self._json(200, {**res, "assets": svc.assets()})
+                    payload = {**res, "assets": svc.assets()}
+                    return self._authorized_org_read(
+                        sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                        lambda _: self._json(200, payload), reader=False)
                 elif p == "/api/assets/confirm-scope":
                     if "approver" not in sess.roles:
                         return self._json(403, {"error": "診断範囲の確定には承認責任者の権限が必要です"})
+                    extra_check = body.get("allow_status_probe") is True
+                    if extra_check and (not optional_status_check_configured()
+                                        or not svc._real_site_local_artex or not svc._artex_real_cmd):
+                        return self._json(409, {"error": "追加の読み取り確認は現在利用できません"})
                     res = svc.confirm_asset_scope(
                         url_or_host=str(body.get("url") or body.get("host") or ""),
                         confirmed_prohibited=body.get("confirmed_prohibited") is True,   # must be stated explicitly
                         approver=actor,
                         sow_id=str(body.get("sow_id", "")),
                         activate_workspace=bool(body.get("activate_workspace", False)),
+                        allow_status_probe=extra_check,
+                        grant_guard=lambda: live_grant_roles(sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                                                             approver=True),
                     )
-                    return self._json(200, {**res, "assets": svc.assets(), "snapshot": svc.snapshot()})
+                    payload = {**res, "assets": svc.assets(), "snapshot": svc.snapshot()}
+                    return self._authorized_org_read(
+                        sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                        lambda _: self._json(200, payload), reader=False, approver=True)
                 elif p == "/api/assets/secrets":
                     if "approver" not in sess.roles:
                         return self._json(403, {"error": "検証用アカウントの設定には承認責任者の権限が必要です"})
@@ -1031,29 +1367,39 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         mock_paths=raw_paths if isinstance(raw_paths, dict) else None,
                         actor=actor,
                     )
-                    return self._json(200, {"secrets_status": res, "snapshot": svc.snapshot()})
+                    payload = {"secrets_status": res, "snapshot": svc.snapshot()}
+                    return self._authorized_org_read(
+                        sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                        lambda _: self._json(200, payload), reader=False, approver=True)
                 elif p == "/api/assets/delete":
-                    if svc.asset_is_real_service(asset_id=str(body.get("id", ""))) and "approver" not in sess.roles:
+                    real_asset = svc.asset_is_real_service(asset_id=str(body.get("id", "")))
+                    if real_asset and "approver" not in sess.roles:
                         # deleting a real service revokes its scope and stored test accounts
                         return self._json(403, {"error": "実サービスの削除には承認責任者の権限が必要です"})
                     assets = svc.delete_asset(str(body.get("id", "")), actor=actor)
-                    return self._json(200, {"assets": assets, "snapshot": svc.snapshot()})
+                    payload = {"assets": assets, "snapshot": svc.snapshot()}
+                    return self._authorized_org_read(
+                        sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                        lambda _: self._json(200, payload), reader=False, approver=real_asset)
                 elif p == "/api/assets/select":
                     snap = svc.select_asset(str(body.get("id", "")), actor=actor)
-                    return self._json(200, {"assets": svc.assets(), "snapshot": snap})
+                    payload = {"assets": svc.assets(), "snapshot": snap}
+                    return self._authorized_org_read(
+                        sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                        lambda _: self._json(200, payload), reader=False)
                 elif p == "/api/l2-profiles/accept":
                     if "admin" not in sess.roles:
                         paudit.record("l2.profile_accept_denied", actor=actor, profile=str(body.get("id", ""))[:64])
                         return self._json(403, {"error": "プロファイルの承認には管理者の権限が必要です"})
-                    return self._json(200, svc.accept_l2_profile(
-                        str(body.get("id", "")), str(body.get("sha256", "")), actor))
+                    result = svc.accept_l2_profile(str(body.get("id", "")), str(body.get("sha256", "")), actor)
+                    return self._authorized_platform_read(sess, lambda: self._json(200, result), admin=True)
                 elif p in ("/api/router/verify", "/api/cve/sync") and not ({"approver", "admin"} & set(sess.roles)):
                     # one spawns the planner CLI and an outbound model call, the other replaces feed data
                     paudit.record("system.job_denied", actor=actor, job=p)
                     return self._json(403, {"error": "この操作には承認責任者または管理者の権限が必要です"})
                 elif p == "/api/router/verify":
                     rep = svc.verify_planner_connections(actor)
-                    return self._json(200, rep)
+                    return self._authorized_platform_read(sess, lambda: self._json(200, rep))
                 elif p in JOB_ROUTES:
                     if not ({"approver", "admin"} & set(sess.roles)):
                         paudit.record("system.job_denied", actor=actor, job=p)
@@ -1065,7 +1411,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     else:
                         rep = run_real_software_cve_comparison()
                         paudit.record("cve.real_software_verified", actor=actor, all_passed=rep["all_passed"])
-                    return self._json(200, rep)
+                    return self._authorized_platform_read(sess, lambda: self._json(200, rep))
                 elif p == "/api/cve/sync":
                     st = svc.cve_monitor.ingest_payloads(
                         nvd_obj=body.get("nvd") if isinstance(body.get("nvd"), dict) else None,
@@ -1077,34 +1423,76 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                                      payload_sha256=hashlib.sha256(
                                          json.dumps({"nvd": body.get("nvd"), "kev": body.get("kev")},
                                                     sort_keys=True, default=str).encode()).hexdigest())
-                    return self._json(200, st)
+                    return self._authorized_platform_read(sess, lambda: self._json(200, st))
                 elif p == base + "/start":
-                    svc.start()
+                    with live_grant_roles(sess, getattr(self, "_bound_org", DEFAULT_ORG)):
+                        svc.start()
                     svc.audit.record("assessment.start_requested", actor=actor)
                 elif p == base + "/restart":
-                    return self._json(200, svc.restart(actor))
+                    with live_grant_roles(sess, getattr(self, "_bound_org", DEFAULT_ORG)):
+                        result = svc.restart(actor)
+                    return self._authorized_org_read(
+                        sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                        lambda _: self._json(200, result), reader=False)
                 elif p == base + "/pause":
                     svc.pause(actor)
+                    if not ops.trusted():
+                        # A failed auth-state save must not disable a safety stop,
+                        # but its snapshot cannot be sent without a live grant.
+                        return self._json(200, {"stopped": True, "details_unavailable": True})
+                    paused_snapshot = svc.snapshot()
+                    return self._authorized_org_read(
+                        sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                        lambda _: self._json(200, paused_snapshot))
                 elif p == base + "/resume":
-                    svc.resume(actor)
+                    with live_grant_roles(sess, getattr(self, "_bound_org", DEFAULT_ORG)):
+                        svc.resume(actor)
                 elif p == base + "/emergency-stop":
-                    return self._json(200, {"stop_report": svc.emergency_stop(actor)})
+                    stop_report = svc.emergency_stop(actor)
+                    if not ops.trusted():
+                        return self._json(200, {"stopped": True, "details_unavailable": True})
+                    return self._authorized_org_read(
+                        sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                        lambda _: self._json(200, {"stop_report": stop_report}))
                 elif p == base + "/verify-finding":
                     fid = str(body.get("finding_id", "")).strip()
                     if not fid:
                         return self._json(400, {"error": "finding_id is required"})
                     # the service decides whether this needs an approver, under its own
                     # lock (a check here could be invalidated by a concurrent switch)
-                    return self._json(200, svc.verify_finding(fid, actor, roles=tuple(sess.roles)))
+                    result = svc.verify_finding(
+                        fid, actor, roles=tuple(sess.roles),
+                        request_authorized=live_request_authority(
+                            sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                            approver="approver" in sess.roles))
+                    return self._authorized_org_read(
+                        sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                        lambda _: self._json(200, result), reader=False,
+                        approver="approver" in sess.roles)
                 elif p == base + "/artex/plan":
                     # the REAL ARTEX planner (planner-only overlay) proposes; Vulnix rebuilds
                     approval = body.get("llm_approval") if isinstance(body.get("llm_approval"), dict) else None
                     llm_mode = body.get("llm_mode") if isinstance(body.get("llm_mode"), str) else None
-                    return self._json(200, svc.plan_with_artex(actor, llm_approval=approval,
-                                                               roles=tuple(sess.roles), llm_mode=llm_mode))
+                    result = svc.plan_with_artex(actor, llm_approval=approval,
+                                                 roles=tuple(sess.roles), llm_mode=llm_mode,
+                                                 request_authorized=live_request_authority(
+                                                     sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                                                     approver=approval is not None))
+                    return self._authorized_org_read(
+                        sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                        lambda _: self._json(200, result), reader=False,
+                        approver=approval is not None)
                 elif m := re.fullmatch(base + r"/artex/items/([A-Za-z0-9_]{1,80})/execute", p):
                     # L2 needs an approver: decided by the service, with the caller's roles
-                    return self._json(200, svc.execute_artex_item(m.group(1), actor, roles=tuple(sess.roles)))
+                    result = svc.execute_artex_item(
+                        m.group(1), actor, roles=tuple(sess.roles),
+                        request_authorized=live_request_authority(
+                            sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                            approver="approver" in sess.roles))
+                    return self._authorized_org_read(
+                        sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                        lambda _: self._json(200, result), reader=False,
+                        approver="approver" in sess.roles)
                 elif p == base + "/request-l2":
                     fid = str(body.get("finding_id", "")).strip()
                     if not fid:
@@ -1113,7 +1501,10 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         # a second identity anyone can mint is not a second person
                         return self._json(403, {"error": "自己登録のアカウントはL2検証を依頼できません。"
                                                          "管理者が作成したアカウントで依頼してください"})
-                    return self._json(200, svc.request_l2_run(fid, actor))
+                    result = svc.request_l2_run(fid, actor)
+                    return self._authorized_org_read(
+                        sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                        lambda _: self._json(200, result), reader=False)
                 elif p == base + "/lab-mode":
                     mode = str(body.get("mode", "vulnerable")).strip()
                     set_lab_mode(mode)
@@ -1122,14 +1513,23 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 elif p == base + "/verify-fix":
                     if "approver" not in sess.roles:
                         return self._json(403, {"error": "修正後の再検証には承認責任者の権限が必要です"})
-                    return self._json(200, svc.verify_fix(actor))
+                    result = svc.verify_fix(actor)
+                    return self._authorized_org_read(
+                        sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                        lambda _: self._json(200, result), reader=False, approver=True)
                 elif p == base + "/chat":
                     q = str(body.get("question", "")).strip()
                     if not q:
                         return self._json(400, {"error": "質問を入力してください"})
                     term = str(body.get("term") or "") or None
                     finding_id = str(body.get("finding_id") or "") or None
-                    return self._json(200, svc.ask_chat(q, actor, term=term, finding_id=finding_id))
+                    result = svc.ask_chat(q, actor, term=term, finding_id=finding_id,
+                                          safe_advice=body.get("safe_advice") is True,
+                                          request_authorized=live_request_authority(
+                                              sess, getattr(self, "_bound_org", DEFAULT_ORG)))
+                    return self._authorized_org_read(
+                        sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                        lambda _: self._json(200, result), reader=False)
                 elif m := re.fullmatch(base + r"/approvals/(req_[0-9a-f]+)", p):
                     decision = body.get("decision")
                     if decision not in ("approve", "reject"):
@@ -1139,14 +1539,32 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     svc.decide_approval(m.group(1), decision, actor)
                 else:
                     return self._json(404, {"error": "not found"})
+            except AuthError as e:
+                return self._json(401, {"error": str(e)})
             except ApproverRequired as e:
                 return self._json(403, {"error": str(e)})
             except StopNotConfirmed as e:
                 # the withdrawal stands, but it is not reported as completed
                 return self._json(500, {"error": str(e), "stop_confirmed": False})
             except Exception as e:
-                return self._json(409, {"error": str(e)})
-            return self._json(200, svc.snapshot())
+                if tenancy is not None and p in PLATFORM_POST_ROUTES:
+                    # Platform jobs have no tenant grant to bind. Their exception
+                    # text can contain operational details, so return a fixed error.
+                    return self._authorized_platform_read(
+                        sess, lambda: self._json(409, {"error": "操作を完了できませんでした"}),
+                        admin=p == "/api/l2-profiles/accept")
+                if tenancy is not None and not getattr(self, "_bound_org", None):
+                    return self._json(409, {"error": "操作を完了できませんでした"})
+                error = str(e)
+                return self._authorized_org_read(
+                    sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                    lambda _: self._json(409, {"error": error}),
+                    reader=p.endswith(("/pause", "/emergency-stop")))
+            snapshot = svc.snapshot()
+            return self._authorized_org_read(
+                sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                lambda _: self._json(200, snapshot), reader=False,
+                approver=bool(re.fullmatch(base + r"/approvals/req_[0-9a-f]+", p)))
 
     return H
 

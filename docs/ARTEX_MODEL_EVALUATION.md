@@ -1,0 +1,27 @@
+# ARTEX・モデル評価の分離
+
+2026-11-17。実ARTEXバイナリとAbliteration AIの実モデルを区別する。実ARTEXの成功は、外部モデルの判断性能を証明しない。
+
+| 評価 | 実行器 | モデル | 実測 | 限界 |
+| --- | --- | --- | --- | --- |
+| 所有済み模擬サイトの一連の診断 | 実ARTEX、Gateway、隔離Worker | ローカル模擬モデル | 計画から証拠付き結果まで通過 | 公開βの実DNS・実サイト通信ではない |
+| 5分類17条件の横断比較 | ARTEX互換プロセス | 固定応答のローカル模擬モデル | 検査選択9/1/0/7（TP/FP/FN/TN）、Precision 0.900、Recall 1.00 | AIの未知サイト理解ではない |
+| 初回事実の再利用 #82 | 実ARTEX | ローカル模擬モデル | 代表3条件で要求8→5、推定トークン30,478→18,622 | 実請求額ではない |
+| Apache初回事実の再利用 #84 | 実ARTEX | ローカル模擬モデル | 代表2条件で要求3→2、推定トークン13,072→8,158 | 小標本、他分類への一般化不可 |
+| 固定14条件の選択評価 #68（試行1・2） | Gateway経由で別々に承認された2回 | 実 `abliterated-model`（推論制御なし） | JSON採用0/2。出力384/1,024トークンともすべて推論、本文なし、`length`終了 | 推論トークンが出力枠を100%消費 |
+| **固定14条件の選択評価（試行3・候補B）** | **Gateway経由で1回限定承認された1回** | **実 `abliterated-model`（`response_format: {"type":"json_object"}`, `reasoning_effort: "none"`）** | **JSON採用1/1（累計1/3）。`finish_reason="stop"`, 入力610 / 出力44 / 推論0 / 総654トークン、1.022秒。検査選択 `TP=8, FP=0, FN=0, TN=6`（Precision 1.000, Recall 1.000, F1 1.000、不要検査率 0.000、見逃し率 0.000）** | **14条件の小標本（`n=14`）。単発1回の成功を多段階ARTEXループや実モデル日本語解説品質へ一般化しない** |
+
+固定14条件の有料評価は所有者が最初の要求（384トークン）を1回、出力上限だけを変えた要求（1,024トークン）を別に1回、さらに公式ドキュメント（`https://docs.abliteration.ai/capabilities/thinking.md`）で推論停止が確認された `reasoning_effort: "none"` + `response_format: {"type":"json_object"}`（960トークン、SHA-256 `7a527a487a309962867f7d02096e527259946f2b62fdbf802a450d386e3803e5`）を別に1回承認した。元ツリーの保護された設定から鍵をアプリの既存ローダーで利用し、値は表示していない。各実行前にモデル名、匿名入力、別々のSHA-256、Gatewayの1回・2,000トークン・US$0.01上限、監査記録、未使用の承認消費記録を照合した。3承認とも消費済みで再送しない。
+
+実モデルのJSON採用率は候補B（試行3）で **1/1**（推論制御なしの試行1・2を含めた累計 **1/3**）、検査選択精度は14条件小標本で **TP 8 / FP 0 / FN 0 / TN 6（Precision 1.000 / Recall 1.000 / F1 1.000、おとり条件 `C10: public_account_directory` を含む全14条件で独立正解と一致）** となった。推論・総トークンと時間は[3回の実測](ABLITERATION_SELECTION_REAL_RESULT.md)に記録した。事業者の確定請求額と実モデルによる日本語解説品質は**未測定**。固定入力は[送信前プレビュー](ABLITERATION_SELECTION_PREVIEW.md)を参照。
+
+## 2026-11-19 更新：分類別の検査選択効果・安全境界・AI失敗時フォールバック
+
+1. **分類別の検査選択と比較（固定L1 vs 一律提案 vs 観測選択）**:
+   - **CORS（3条件）・Cookie（2条件）**: 初回GETのヘッダー観測だけで確定判定が可能。`initial_real_site_extra_checks()` により不要な追加計画・モデル呼び出しを省略し（TP0/FP0/FN0/TN5）、一律提案で発生していた不要な計画起動15回・提案15件を0に削減した（[INITIAL_EXTRA_SELECTION.md](INITIAL_EXTRA_SELECTION.md)）。
+   - **Apache `mod_status`（4条件）**: 固定L1はルート `/` のみを見るため TP0/FP0/FN1/TN3（Recall 0%）。ARTEXの観測選択は `server_family=apache` かつ所有者の追加GET同意（`allow_status_probe=true`）がある場合のみ `/server-status?auto` の固定マーカーWorkerを1回選択し、TP1/FP0/FN0/TN3（Precision 100%, Recall 100%）を達成した（[STATUS_SELECTION_HOLDOUT.md](STATUS_SELECTION_HOLDOUT.md)）。
+   - **認証必須JSON・IDOR（14条件＋保留8条件＋Link 7条件＋新規4条件）**: 観測選択はルート応答や `Link` ヘッダーで保護リソースが確認された場合のみ検査を提案し、HTTP 200認証拒否JSONでは誤提案しない（[FIVE_CLASS_HOLDOUT.md](FIVE_CLASS_HOLDOUT.md), [ACCESS_LINK_HOLDOUT.md](ACCESS_LINK_HOLDOUT.md), [ACCESS_FRESH_HOLDOUT.md](ACCESS_FRESH_HOLDOUT.md)）。
+2. **ARTEXの権限隔離とAI失敗時の証拠保持**:
+   - ARTEX overlay は `Bash` / `WebFetch` / `Read` / `Write` 等の実行・通信ツールを一切持たず、Linux `nftables` でループバックの `PlannerLLMGateway` 以外への通信をカーネルレベルで遮断する（Linux CI #44419117701 `artex-real-planner` ジョブで実証済み）。
+   - カタログ外の意図（RCE、アップロード、総当たり、ポートスキャン等）は `Advisory`（実行不能な助言）に落とされ、Gatewayの固定カタログ（`CATALOG`）に一致する操作しか再構成されない。
+   - モデルがタイムアウト、`length` 打切り、不正JSON、過大usage等で失敗した場合、`AssessmentService._run_inner` は `artex.initial_fallback` を監査記録し、**初回に測定済みの固定L1所見と監査ハッシュをそのまま保持**して診断を完了させる（`tests/test_real_service.py` で検証済み）。

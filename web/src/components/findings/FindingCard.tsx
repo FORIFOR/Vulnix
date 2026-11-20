@@ -3,21 +3,25 @@
 import Link from "next/link";
 import { useState } from "react";
 import { postJSON } from "@/lib/api";
+import { findingReason } from "@/lib/findingReason";
 import type { Finding, Snapshot } from "@/lib/types";
 import { canApprove, useSession } from "@/lib/useSession";
 import { HelpPopover } from "../learning/HelpPopover";
+import { CookieCheckList } from "./CookieCheckList";
 import { Card, FixtureBadge, Pill, SeverityBadge, VerdictBadge } from "../ui";
 
 export function FindingCard({
   f,
   assessmentId,
   labEndpoint,
+  readOnly = false,
   onUpdate,
   onBusyChange,
 }: {
   f: Finding;
   assessmentId: string;
   labEndpoint: string;
+  readOnly?: boolean;
   onUpdate?: (s: Snapshot) => void;
   onBusyChange?: (busy: boolean) => void;
 }) {
@@ -25,6 +29,7 @@ export function FindingCard({
   const [showLog, setShowLog] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const latestEv = f.evidence.at(-1);
+  const reason = findingReason(f);
   // L2 on a real service: an explicit, per-item approval by an approver.
   const needsApproval = Boolean(f.requires_l2_approval);
   // A rule that is not confirmed against the target API can never run (the server refuses it too).
@@ -62,19 +67,17 @@ export function FindingCard({
     <Card className="flex min-w-0 flex-col justify-between">
       <div>
         <div className="flex flex-wrap items-center gap-2">
-          <SeverityBadge s={f.severity} />
+          {f.evidence_status !== "candidate" && <SeverityBadge s={f.severity} />}
           {f.evidence_status === "candidate" ? <Pill className="border border-zinc-400">未計測の候補</Pill> : <VerdictBadge v={f.verdict} />}
-          {(f._in_verification || busy) && <Pill className="bg-blue-600 text-white">実機Worker検証中</Pill>}
+          {(f._in_verification || busy) && <Pill className="bg-blue-600 text-white">検証中</Pill>}
           {f.demo_fixture && <FixtureBadge />}
-          <span className="ml-auto font-mono text-[11px] text-zinc-500">
-            Worker: {f.executor.tool}
-          </span>
         </div>
         <h3 className="mt-2 flex items-center font-semibold">
           {f.title}
           {f.help_term && <HelpPopover term={f.help_term} context={f.why_detected} findingId={f.id} />}
         </h3>
         <p className="mt-1 text-sm text-zinc-700 dark:text-zinc-300">{f.what_was_established ?? f.summary}</p>
+        {f.cookie_checks && f.cookie_checks.length > 0 && <CookieCheckList checks={f.cookie_checks} />}
         {f.verdict_note && (
           <p className="mt-1.5 rounded bg-zinc-100 px-2 py-1 text-xs text-zinc-700 dark:bg-zinc-800/80 dark:text-zinc-300">
             {f.verdict_note}
@@ -99,8 +102,8 @@ export function FindingCard({
                 )}
                 <span>
                   {busy
-                    ? `計画・Worker実行中（${f.executor.tool} → ${labEndpoint}）…`
-                    : `計画・Worker実行ログ（最新証拠 ${latestEv?.evidence_id}）`}
+                    ? "検証中…"
+                    : "検証の記録"}
                 </span>
               </span>
               <span className="text-[11px] text-zinc-500">{showLog ? "閉じる ▴" : "表示 ▾"}</span>
@@ -108,10 +111,12 @@ export function FindingCard({
             {(showLog || busy) && (
               <div className="space-y-1.5 border-t border-zinc-200/80 px-3 py-2 dark:border-zinc-800">
                 <ol className="space-y-1 border-l-2 border-zinc-300 pl-2.5 text-[11px] text-zinc-600 dark:border-zinc-700 dark:text-zinc-300">
-                  <li>1. 仮説形成：{f.why_detected}</li>
-                  <li>2. Gateway検査：単一使用トークン発行・EgressGuard ({labEndpoint}) 固定・egress_sentinel 隔離起動</li>
+                  <li>1. {reason.heading}：{reason.text}</li>
+                  {readOnly
+                    ? <li>2. 診断方法：許可済みの読み取り専用HTTP検査</li>
+                    : <li>2. Gateway検査：単一使用トークン発行・EgressGuard ({labEndpoint}) 固定・egress_sentinel 隔離起動</li>}
                   <li>
-                    3. Worker結果：
+                    {readOnly ? "3. 観測結果：" : "3. Worker結果："}
                     {busy ? " 応答待機中…" : ` 今回の判定=${f.last_run_verdict ?? f.verdict} / 監査ハッシュ #${latestEv?.audit_hash?.slice(0, 12) ?? "—"}`}
                   </li>
                 </ol>
@@ -129,7 +134,7 @@ export function FindingCard({
       <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-zinc-100 pt-2.5 text-xs text-zinc-500 dark:border-zinc-800">
         <span>{f.category}・実測証拠 {f.evidence.length} 件</span>
         <div className="flex items-center gap-2">
-          <button
+          {!readOnly && <button
             type="button"
             disabled={busy || blocked || waitingForOther}
             title={unaccepted
@@ -141,7 +146,7 @@ export function FindingCard({
             className="rounded-lg bg-zinc-900 px-2.5 py-1 text-xs font-semibold text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-white dark:text-zinc-900"
           >
             {busy
-              ? "Worker実行中…"
+              ? "再検証中…"
               : unaccepted
                 ? "実行不可（プロファイル未承認）"
               : unconfirmed
@@ -156,8 +161,8 @@ export function FindingCard({
                 ? `✓ 承認してL2検証を実行（依頼: ${request?.requested_by}）`
                 : needsApproval
                   ? "✓ 承認してL2検証を実行"
-                  : "▶ 実機Workerで今すぐ検証"}
-          </button>
+                  : "再検証する"}
+          </button>}
           <Link href={`/findings/${f.id}?a=${assessmentId}`} className="font-semibold text-zinc-900 underline-offset-2 hover:underline dark:text-zinc-100">
             詳しく見る →
           </Link>

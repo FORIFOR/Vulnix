@@ -20,6 +20,7 @@ import math
 import os
 import re
 import urllib.parse
+import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from functools import partial
@@ -140,8 +141,8 @@ def _require_safe_model_url(url: str) -> None:
 
 
 def _open_model_url(req, *, timeout):
-    """The API key never follows a redirect."""
-    return urllib.request.build_opener(_NoRedirect).open(req, timeout=timeout)
+    """The API key never follows a redirect or an ambient process proxy."""
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect).open(req, timeout=timeout)
 
 
 def _http_transport(url: str, headers: dict, body: bytes, *,
@@ -221,7 +222,9 @@ class HttpModelBackend:
         try:
             raw = self._transport(self._url, self._headers(), body)
             data = json.loads(raw)
-        except Exception:
+        except Exception as e:
+            if isinstance(e, urllib.error.HTTPError):
+                e.close()
             return []
         return extract_proposals_from_payload(data)
 
@@ -299,7 +302,10 @@ class AbliterationBackend(HttpModelBackend):
                 if isinstance(content, str) and content.strip():
                     return content.strip(), None
         except Exception as e:   # noqa: BLE001 - any failure falls back to the built-in answer
-            return None, _error_kind(e)
+            kind = _error_kind(e)
+            if isinstance(e, urllib.error.HTTPError):
+                e.close()
+            return None, kind
         return None, "empty_response"
 
 
@@ -386,11 +392,11 @@ class ArtexTask:
 
 
 class ArtexplannerBackend:
-    """Built-in deterministic ARTEX task planner that proposes phased diagnostic
-    and reproduction actions based on current observations. Like any LLM backend,
+    """Built-in deterministic task planner that proposes phased diagnostic
+    and reproduction actions based on current observations. Like any backend,
     it is untrusted and routed through ProposalRouter."""
 
-    name = "artex-planner"
+    name = "vulnix-builtin"
 
     def propose(self, context: dict) -> list[dict]:
         phase = context.get("phase", "config")
@@ -402,7 +408,7 @@ class ArtexplannerBackend:
                 "target_id": target_id,
                 "action": "read_only_probe",
                 "args": {"url": target_url, "method": "GET"},
-                "rationale": "ARTEX Step 1: 公開HTTPヘッダーとバナー情報を非破壊GETで収集",
+                "rationale": "内蔵手順 1: 公開HTTPヘッダーとバナー情報を非破壊GETで収集",
             }]
         if phase == "verification":
             proposals = [
@@ -411,7 +417,7 @@ class ArtexplannerBackend:
                     "target_id": target_id,
                     "action": "safe_reproduction",
                     "args": {"url": target_url, "check": "idor"},
-                    "rationale": "ARTEX Step 2: テストアカウント acct_A から acct_B リソースへの認可境界（IDOR）を実証検証",
+                    "rationale": "内蔵手順 2: テストアカウント acct_A から acct_B リソースへの認可境界（IDOR）を実証検証",
                 },
             ]
             if context.get("has_cve_2021_41773"):
@@ -420,7 +426,7 @@ class ArtexplannerBackend:
                     "target_id": target_id,
                     "action": "safe_reproduction",
                     "args": {"url": target_url, "check": "cve_2021_41773"},
-                    "rationale": "ARTEX Step 3: 検出された CVE-2021-41773 パス正規化不備が隔離ラボマーカーで成立するか実証検証",
+                    "rationale": "内蔵手順 3: 検出された CVE-2021-41773 パス正規化不備が隔離ラボマーカーで成立するか実証検証",
                 })
             return proposals
         return []
@@ -561,10 +567,12 @@ class ArtexEngine:
 def verify_planner_connections(*, abliteration_url: str | None = None,
                                api_key: str | None = None,
                                model: str = "abliteration-sec-1") -> dict:
-    """Execute a live end-to-end verification of both:
+    """Execute an end-to-end adapter verification of both:
       1. External ARTEX CLI process (`ArtexSubprocessBackend`)
-      2. OpenAI-compatible Abliteration AI API (`AbliterationBackend.propose` + `.chat`)
-    over real subprocess pipes and real HTTP sockets, returning a cryptographic proof."""
+      2. OpenAI-compatible adapter (`AbliterationBackend.propose` + `.chat`)
+    over real subprocess pipes and HTTP sockets. With no explicit URL, the model
+    endpoint is a loopback mock; a configured paid endpoint is never discovered
+    by this diagnostic path."""
     import hashlib
     import time
     from .abliteration_server import start_abliteration_server
@@ -585,17 +593,11 @@ def verify_planner_connections(*, abliteration_url: str | None = None,
     # 2. Verify live OpenAI-compatible Abliteration API round-trip
     temp_srv = None
     target_url = abliteration_url
-    endpoint_mode = "external"
+    endpoint_mode = "external" if target_url else "local_openai_server"
     if not target_url:
-        env_backend = AbliterationBackend.from_env()
-        if env_backend is not None:
-            target_url = env_backend._url
-            api_key = env_backend._key
-            model = env_backend._model or model
-        else:
-            temp_srv = start_abliteration_server(0)
-            target_url = f"http://127.0.0.1:{temp_srv.server_port}/v1/chat/completions"
-            endpoint_mode = "local_openai_server"
+        temp_srv = start_abliteration_server(0)
+        target_url = f"http://127.0.0.1:{temp_srv.server_port}/v1/chat/completions"
+        api_key = None
 
     try:
         ab = AbliterationBackend(

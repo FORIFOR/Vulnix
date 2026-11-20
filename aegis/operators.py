@@ -23,6 +23,8 @@ requires a current code in addition to the password.
 from __future__ import annotations
 
 import base64
+import contextlib
+import functools
 import hashlib
 import hmac
 import json
@@ -34,6 +36,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote
+
+from .grant_lease import GrantLease
 
 ROLES = ("operator", "approver", "admin")
 SESSION_TTL = 12 * 3600
@@ -165,6 +169,16 @@ class Session:
     expires: float
 
 
+def _revocation(method):
+    """Ends or narrows someone's access: waits for in-flight deliveries, and no new one
+    starts while it waits (aegis/grant_lease.py)."""
+    @functools.wraps(method)
+    def wrapped(self, *args, **kwargs):
+        with self._grant.exclusive():
+            return method(self, *args, **kwargs)
+    return wrapped
+
+
 class OperatorStore:
     """Thread-safe operator + session store backed by a JSON seed file."""
 
@@ -175,6 +189,8 @@ class OperatorStore:
         self.sessions_path = Path(sessions_path) if sessions_path else self.seed_path.with_name("sessions.json")
         self._clock = clock
         self._lock = threading.Lock()
+        # deliveries share it; a revocation is exclusive (aegis/grant_lease.py)
+        self._grant = GrantLease()
         self._ops: dict[str, Operator] = {}
         self._sessions: dict[str, Session] = {}     # keyed by session_key(token); never the token
         self._auth_failures: dict[str, list[float]] = {}
@@ -313,6 +329,7 @@ class OperatorStore:
         with self._lock:
             return sorted(self._unsaved)
 
+    @_revocation
     def revoke_all_sessions(self, reason: str) -> int:
         """Everyone signs in again (e.g. after an unclean shutdown, when a logout
         or sign-out-everywhere may not have reached the disk)."""
@@ -391,6 +408,7 @@ class OperatorStore:
             raise AuthError("変更は現在のプロセスには反映されましたが、ファイルへの保存に失敗しました。"
                             "このままでは再起動後に元へ戻ります。データディレクトリの書き込み権限を確認してください")
 
+    @_revocation
     def change_password(self, name: str, current: str, new: str, *, keep_token: str | None = None) -> None:
         """Verify the current password, set a new one, and revoke this operator's
         other sessions (the one making the change, keep_token, is kept)."""
@@ -407,6 +425,7 @@ class OperatorStore:
             raise AuthError("現在と異なるパスワードを設定してください")
         new_hash = hash_password(new)
         with self._lock:
+            self._require_self_locked(name, keep_token)
             op.password_hash = new_hash
             keep = session_key(keep_token) if keep_token else None
             for key in [k for k, s in self._sessions.items() if s.operator == name and k != keep]:
@@ -557,14 +576,26 @@ class OperatorStore:
             return {self._throttle_names.get(k, "?"): until - now
                     for k, until in self._locked_until.items() if until > now}
 
-    def unlock(self, target: str, *, actor: str) -> bool:
+    def _require_admin_locked(self, actor: str, session_token: str | None) -> None:
+        if session_token is not None:
+            # Revocation is checked against the in-memory session even if a
+            # failed save allows only power-reducing recovery operations.
+            current = self._resolve_locked(session_token)
+            if current is None or current.operator != actor:
+                raise AuthError("管理者のログインが失効しました")
+            if "admin" not in current.roles:
+                raise AuthError("管理者の権限が失効しました")
+            return
+        acting = self._ops.get(actor)
+        if acting is None or "admin" not in acting.roles:
+            raise AuthError("管理者の権限がありません")
+
+    def unlock(self, target: str, *, actor: str, session_token: str | None = None) -> bool:
         """An admin lifts a lock early (recovery for a legitimate user). The lock
         also ends by itself after AUTH_LOCK_SECONDS, is not kept across a restart,
         and can be lifted from the machine itself with an `unlock.request` file."""
         with self._lock:
-            acting = self._ops.get(actor)
-            if acting is None or "admin" not in acting.roles:
-                raise AuthError("ロックを解除できるのは管理者だけです")
+            self._require_admin_locked(actor, session_token)
             tab, key = self._slot_locked(target)
             was_locked = self._locked_until.pop(key, 0.0) > self._clock()
             tab.pop(key, None)
@@ -625,23 +656,37 @@ class OperatorStore:
     def resolve(self, token: str | None) -> Session | None:
         if not token:
             return None
-        key = session_key(token)
         with self._lock:
-            sess = self._sessions.get(key)
-            if sess and self._clock() >= sess.expires:
-                del self._sessions[key]
-                return None
-            if sess is None:
-                return None
-            # Roles come from the account as it is NOW, so a revoked role stops
-            # working at once and a stored session cannot carry a stale one.
-            op = self._ops.get(sess.operator)
-            if op is None:
-                del self._sessions[key]
-                return None
-            # the caller gets the token it presented; the store keeps only its hash
-            return Session(token, sess.operator, op.roles, sess.created, sess.expires)
+            return self._resolve_locked(token)
 
+    def _resolve_locked(self, token: str) -> Session | None:
+        key = session_key(token)
+        sess = self._sessions.get(key)
+        if sess and self._clock() >= sess.expires:
+            del self._sessions[key]
+            return None
+        if sess is None:
+            return None
+        # Roles come from the account as it is NOW, so a revoked role stops
+        # working at once and a stored session cannot carry a stale one.
+        op = self._ops.get(sess.operator)
+        if op is None:
+            del self._sessions[key]
+            return None
+        # the caller gets the token it presented; the store keeps only its hash
+        return Session(token, sess.operator, op.roles, sess.created, sess.expires)
+
+    @contextlib.contextmanager
+    def locked_session(self, token: str):
+        """Hold session revocation and role changes until one grant is used. Only the
+        shared delivery lease is held while the caller works: other requests (logins,
+        emergency stops) never wait for it; a revocation waits for it to end."""
+        with self._grant.shared():
+            with self._lock:
+                current = None if self._unsaved else self._resolve_locked(token)
+            yield current
+
+    @_revocation
     def logout(self, token: str | None) -> None:
         if not token:
             return
@@ -650,14 +695,14 @@ class OperatorStore:
         if removed:
             self._persist_sessions(strict=True)
 
-    def create_account(self, name: str, password: str, *, display: str = "", actor: str) -> Operator:
+    def create_account(self, name: str, password: str, *, display: str = "", actor: str,
+                       session_token: str | None = None) -> Operator:
         """An admin creates an `operator` account for someone else. No session is
         issued; the new operator logs in with the password they were given."""
         with self._lock:
-            acting = self._ops.get(actor)
-            if acting is None or "admin" not in acting.roles:
-                raise AuthError("アカウントを作成できるのは管理者だけです")
-        sess = self.register(name, password, display=display, _created_by=actor, _issue_session=False)
+            self._require_admin_locked(actor, session_token)
+        sess = self.register(name, password, display=display, _created_by=actor,
+                             _issue_session=False, _acting_token=session_token)
         with self._lock:
             return self._ops[sess.operator]
 
@@ -667,7 +712,8 @@ class OperatorStore:
             return bool(op and op.created_by == "self")
 
     def register(self, name: str, password: str, *, display: str = "",
-                 _created_by: str = "self", _issue_session: bool = True) -> Session:
+                 _created_by: str = "self", _issue_session: bool = True,
+                 _acting_token: str | None = None) -> Session:
         """Creates an `operator` account (storing only its scrypt password hash).
         Called directly it is SELF-registration, which the server allows only in
         development mode. It can never grant `approver` or `admin`; those are
@@ -687,6 +733,8 @@ class OperatorStore:
         pw_hash = hash_password(password)
         now = self._clock()
         with self._lock:
+            if _acting_token is not None:
+                self._require_admin_locked(_created_by, _acting_token)
             if clean_name in self._ops:
                 raise AuthError("このユーザー名は既に登録されています")
             self._ops[clean_name] = Operator(clean_name, clean_display, pw_hash, clean_roles,
@@ -711,7 +759,9 @@ class OperatorStore:
         with self._lock:
             return list(self._ops.values())
 
-    def set_roles(self, target: str, roles: list[str] | tuple[str, ...], *, actor: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    @_revocation
+    def set_roles(self, target: str, roles: list[str] | tuple[str, ...], *, actor: str,
+                  session_token: str | None = None) -> tuple[tuple[str, ...], tuple[str, ...]]:
         """Replace `target`'s roles. Returns (before, after). The caller (server)
         has already established that `actor` is an authenticated admin; this
         re-checks it, and refuses changes that would defeat the model."""
@@ -720,9 +770,7 @@ class OperatorStore:
             raise AuthError(f"不明なロールです: {', '.join(unknown)}")
         new_roles = tuple(r for r in ROLES if r == "operator" or r in roles)   # canonical order
         with self._lock:
-            acting = self._ops.get(actor)
-            if acting is None or "admin" not in acting.roles:
-                raise AuthError("ロールを変更できるのは管理者だけです")
+            self._require_admin_locked(actor, session_token)
             op = self._ops.get(target)
             if op is None:
                 raise AuthError("対象のアカウントが見つかりません")
@@ -744,10 +792,17 @@ class OperatorStore:
             op = self._ops.get(name)
         return bool(op and op.totp_secret)
 
-    def begin_totp_enroll(self, name: str) -> tuple[str, str]:
+    def _require_self_locked(self, name: str, session_token: str | None) -> None:
+        if session_token is not None:
+            current = self._resolve_locked(session_token)
+            if current is None or current.operator != name:
+                raise AuthError("ログインの有効期限が切れました。もう一度ログインしてください")
+
+    def begin_totp_enroll(self, name: str, *, session_token: str | None = None) -> tuple[str, str]:
         """Generate a pending secret and return (secret, otpauth URI). Not active
         until confirm_totp() proves the operator can produce a current code."""
         with self._lock:
+            self._require_self_locked(name, session_token)
             op = self._ops.get(name)
             if not op:
                 raise AuthError("不明なアカウントです")
@@ -757,7 +812,7 @@ class OperatorStore:
             self._pending_totp[name] = secret
         return secret, provisioning_uri(secret, name)
 
-    def confirm_totp(self, name: str, code: str) -> None:
+    def confirm_totp(self, name: str, code: str, *, session_token: str | None = None) -> None:
         with self._lock:
             secret = self._pending_totp.get(name)
             op = self._ops.get(name)
@@ -766,6 +821,7 @@ class OperatorStore:
         if not verify_totp(secret, code, self._clock()):
             raise AuthError("認証コードが違います")
         with self._lock:
+            self._require_self_locked(name, session_token)
             op.totp_secret = secret
             self._pending_totp.pop(name, None)
         try:
@@ -776,7 +832,8 @@ class OperatorStore:
             raise AuthError("2要素認証の設定を保存できなかったため、有効になっていません。"
                             "データディレクトリの書き込み権限を確認してください") from None
 
-    def disable_totp(self, name: str, current_password: str, code: str | None = None) -> None:
+    def disable_totp(self, name: str, current_password: str, code: str | None = None,
+                     *, session_token: str | None = None) -> None:
         """Turning the second factor off needs BOTH factors: the password and a
         current code. (Lost device: an admin resets it with `reset_totp`.)"""
         with self._lock:
@@ -790,17 +847,17 @@ class OperatorStore:
             raise AuthError("現在の認証コード（2要素）が必要です")
         self._clear_failures(name)
         with self._lock:
+            self._require_self_locked(name, session_token)
             op.totp_secret = None
             self._pending_totp.pop(name, None)
         self._persist_operators()
 
-    def reset_totp(self, target: str, *, actor: str) -> bool:
+    @_revocation
+    def reset_totp(self, target: str, *, actor: str, session_token: str | None = None) -> bool:
         """Recovery for a lost authenticator: an admin (never the account itself)
         removes the second factor and signs the account out everywhere."""
         with self._lock:
-            acting = self._ops.get(actor)
-            if acting is None or "admin" not in acting.roles:
-                raise AuthError("2要素認証をリセットできるのは管理者だけです")
+            self._require_admin_locked(actor, session_token)
             if target == actor:
                 raise AuthError("自分自身の2要素認証はリセットできません。別の管理者に依頼してください")
             op = self._ops.get(target)

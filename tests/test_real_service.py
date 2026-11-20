@@ -16,13 +16,15 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from aegis import evidence, l2_rules
+from aegis import artex_bridge, evidence, l2_rules
+from aegis.artex_bridge import PlanItem
 from tests import TEST_CONFINEMENT
 from aegis.assessment import AssessmentService
 from aegis.evidence import reproduction_verdict
 from aegis.l2_rules import BUILTIN_PROFILE_DIR, L2RuleSet, RuleError, validate_profile
 from aegis.lab import set_lab_mode, start_lab
 from aegis.network import NetworkError
+from aegis.policy import PolicyError
 from aegis.ownership import parse_service_target, verify_ownership_challenge
 from aegis.remotion_export import build_remotion_export
 from aegis.secrets_store import EncryptedSecretStore
@@ -67,6 +69,7 @@ class FakeService(http.server.ThreadingHTTPServer):
     def __init__(self):
         super().__init__(("127.0.0.1", 0), _FakeHandler)
         self.mode = "vulnerable"
+        self.banner = "nginx"
         self.seen: list[tuple[str, str | None]] = []
         self.hanging = threading.Event()
 
@@ -104,7 +107,7 @@ class _FakeHandler(http.server.BaseHTTPRequestHandler):
             return self._send(200, {"late": True})
         if self.path == "/":
             return self._send(200, {"ok": True}, [
-                ("Server", "nginx"), ("Set-Cookie", "sid=abc; Path=/"),
+                ("Server", srv.banner), ("Set-Cookie", "sid=abc; Path=/"),
                 ("Access-Control-Allow-Origin", self.headers.get("Origin", "")),
                 ("Access-Control-Allow-Credentials", "true")])
         if mode == "token_expired" or not token:
@@ -433,9 +436,18 @@ class RealServiceBase(unittest.TestCase):
 
     def setUp(self):
         set_lab_mode("vulnerable")
+        # This fixture also exercises the explicitly enabled legacy L2 controls.
+        # The application default remains read-only; each API fixture opts in here.
+        from aegis import server as srvmod
+        legacy_mode = patch.multiple(srvmod, REAL_SERVICE_DIAGNOSIS=True, REAL_SITE_L1_ONLY=False)
+        legacy_mode.start()
+        self.addCleanup(legacy_mode.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.dir = Path(self.tmp.name)
-        self.svc = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT, verify_seconds=0.1, l2_profile_dirs=PROFILE_DIRS)
+        # These tests also exercise the separately gated legacy L2 path. Public-beta
+        # callers start read-only and must opt into that test path explicitly.
+        self.svc = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT, verify_seconds=0.1,
+                                     l2_profile_dirs=PROFILE_DIRS, real_site_read_only=False)
         self.fake = FakeService()
         threading.Thread(target=self.fake.serve_forever, daemon=True).start()
         self.url = f"http://{HOST}:{self.fake.server_port}"
@@ -452,13 +464,14 @@ class RealServiceBase(unittest.TestCase):
     def _token_lookup(self, challenge):
         return lambda name: [f'{name} text = "{challenge["dns_txt_value"]}"']
 
-    def onboard(self, *, loopback=True):
+    def onboard(self, *, loopback=True, allow_status_probe=False):
         ch = self.svc.issue_ownership_challenge(url=self.url, approver="appr")["challenge"]
         res = self.svc.verify_asset_ownership(url_or_host=self.url, method="dns_txt", actor="appr",
                                               dns_lookup=self._token_lookup(ch))
         self.assertTrue(res["verified"])
         return self.svc.confirm_asset_scope(url_or_host=self.url, approver="appr",
-                                            activate_workspace=True, allow_loopback_test=loopback)
+                                            activate_workspace=True, allow_loopback_test=loopback,
+                                            allow_status_probe=allow_status_probe)
 
     def run_l1(self):
         self.svc.start()
@@ -579,6 +592,679 @@ class TestOwnershipGate(RealServiceBase):
 
 
 class TestL1Diagnosis(RealServiceBase):
+    def test_public_beta_report_says_real_site_l2_is_disabled(self):
+        self.onboard()
+        self.svc.real_site_read_only = True
+        report = self.svc.report_markdown()
+        self.assertIn("L2はこの公開βで実行しません", report)
+        self.assertNotIn("個別承認分のみです", report)
+
+    def test_status_marker_is_forbidden_in_non_read_only_real_site_mode(self):
+        self.onboard(allow_status_probe=True)
+        marker_url = self.url + "/server-status?auto"
+        marker = self.svc.gateway.egress.check(marker_url, self.svc.a.engagement.targets["lab"])
+        with self.assertRaises(PolicyError):
+            self.svc._launch_guard("status_marker", {"url": marker_url}, marker)
+        self.assertEqual(self.fake.seen, [])
+
+    def test_status_result_is_not_adopted_after_scope_regrant(self):
+        self.svc.real_site_read_only = True
+        self.onboard(allow_status_probe=True)
+        self.assertEqual(self.run_l1()["state"], "completed")
+        marker_url = self.url + "/server-status?auto"
+        marker = self.svc.gateway.egress.check(marker_url, self.svc.a.engagement.targets["lab"])
+        self.svc._launch_guard("status_marker", {"url": marker_url}, marker)
+        self.svc.confirm_asset_scope(url_or_host=self.url, approver="appr",
+                                     allow_loopback_test=True, allow_status_probe=True)
+        with self.svc._lock:
+            self.assertFalse(self.svc._record_status_result_locked(
+                {"tool": "status_marker", "audit_hash": "old-result"}))
+        self.assertNotIn("status_result_audit_hash", self.svc.ledger.scan_usage[HOST])
+        self.assertEqual([path for path, _ in self.fake.seen], ["/"])
+
+    def test_second_fixed_get_requires_separate_signed_consent(self):
+        self.svc.real_site_read_only = True
+        self.onboard()
+        self.assertEqual(self.run_l1()["state"], "completed")
+        marker_url = self.url + "/server-status?auto"
+        marker = self.svc.gateway.egress.check(marker_url, self.svc.a.engagement.targets["lab"])
+        with self.assertRaises(PolicyError):
+            self.svc._launch_guard("status_marker", {"url": marker_url}, marker)
+        self.assertEqual(self.svc.ledger.scan_usage[HOST]["paths"], ["/"])
+        self.assertEqual([p for p, _ in self.fake.seen], ["/"])
+
+    def test_explicit_status_consent_allows_one_ordered_fixed_reservation(self):
+        self.svc.real_site_read_only = True
+        self.onboard(allow_status_probe=True)
+        with self.svc._lock:
+            self.svc._new_scan_usage_locked()
+        marker_url = self.url + "/server-status?auto"
+        marker = self.svc.gateway.egress.check(marker_url, self.svc.a.engagement.targets["lab"])
+        with self.assertRaises(PolicyError):
+            self.svc._launch_guard("status_marker", {"url": marker_url}, marker)
+        root = self.svc.gateway.egress.check(self.url, self.svc.a.engagement.targets["lab"])
+        self.svc._launch_guard("http_probe", {"url": self.url, "method": "GET"}, root)
+        with self.assertRaises(PolicyError):
+            self.svc._launch_guard("status_marker", {"url": marker_url}, marker)
+        self.assertEqual(self.run_l1()["state"], "completed")
+        self.svc._launch_guard("status_marker", {"url": marker_url}, marker)
+        with self.assertRaises(PolicyError):
+            self.svc._launch_guard("status_marker", {"url": marker_url}, marker)
+        usage = dict(self.svc.ledger.scan_usage[HOST])
+        self.assertEqual(usage["paths"], ["/", "/server-status?auto"])
+        self.assertTrue(usage["status_probe_allowed"])
+        self.assertTrue(any(e["event"] == "asset.scope_confirmed" and
+                            e["fields"].get("allow_status_probe") is True
+                            for e in self.svc.audit.entries()))
+        reopened = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT,
+                                     real_site_read_only=True)
+        try:
+            self.assertEqual(reopened.ledger.scan_usage[HOST], usage)
+            self.assertTrue(reopened.ledger.verified_external_hosts[HOST]["allow_status_probe"])
+        finally:
+            reopened.close()
+        self.assertEqual([p for p, _ in self.fake.seen], ["/"])
+
+    def test_late_scope_reconfirmation_cannot_upgrade_existing_run(self):
+        self.svc.real_site_read_only = True
+        self.onboard()
+        self.assertEqual(self.run_l1()["state"], "completed")
+        marker_url = self.url + "/server-status?auto"
+        marker = self.svc.gateway.egress.check(marker_url, self.svc.a.engagement.targets["lab"])
+        self.svc.confirm_asset_scope(url_or_host=self.url, approver="appr",
+                                     allow_status_probe=True, allow_loopback_test=True)
+        with self.assertRaises(PolicyError):
+            self.svc._launch_guard("status_marker", {"url": marker_url}, marker)
+        self.assertEqual(self.svc.ledger.scan_usage[HOST]["paths"], ["/"])
+        self.assertEqual([p for p, _ in self.fake.seen], ["/"])
+
+    def test_reconfirmed_scope_cannot_revive_old_consented_run(self):
+        self.svc.real_site_read_only = True
+        self.onboard(allow_status_probe=True)
+        self.assertEqual(self.run_l1()["state"], "completed")
+        old_usage = dict(self.svc.ledger.scan_usage[HOST])
+        old_ref = self.svc._verified_external_hosts[HOST]["authorization_ref"]
+        self.svc.confirm_asset_scope(url_or_host=self.url, approver="appr",
+                                     sow_id=old_ref, allow_status_probe=True,
+                                     allow_loopback_test=True)
+        self.assertEqual(self.svc._verified_external_hosts[HOST]["authorization_ref"], old_ref)
+        marker_url = self.url + "/server-status?auto"
+        marker = self.svc.gateway.egress.check(marker_url, self.svc.a.engagement.targets["lab"])
+        with self.assertRaises(PolicyError):
+            self.svc._launch_guard("status_marker", {"url": marker_url}, marker)
+        self.assertEqual(self.svc.ledger.scan_usage[HOST], old_usage)
+        self.assertEqual([p for p, _ in self.fake.seen], ["/"])
+
+    def test_existing_signed_scope_without_nonce_can_start_new_root_run(self):
+        self.svc.real_site_read_only = True
+        self.onboard()
+        self.svc._verified_external_hosts[HOST].pop("scope_nonce")
+        self.assertTrue(self.svc.ledger.commit())
+        self.assertEqual(self.run_l1()["state"], "completed")
+        self.assertEqual([p for p, _ in self.fake.seen], ["/"])
+
+    def test_concurrent_status_reservations_allow_only_one(self):
+        self.svc.real_site_read_only = True
+        self.onboard(allow_status_probe=True)
+        self.assertEqual(self.run_l1()["state"], "completed")
+        marker_url = self.url + "/server-status?auto"
+        marker = self.svc.gateway.egress.check(marker_url, self.svc.a.engagement.targets["lab"])
+        gate = threading.Barrier(3)
+        outcomes = []
+
+        def reserve():
+            gate.wait()
+            try:
+                self.svc._launch_guard("status_marker", {"url": marker_url}, marker)
+                outcomes.append("allowed")
+            except PolicyError:
+                outcomes.append("denied")
+
+        threads = [threading.Thread(target=reserve) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        gate.wait()
+        for thread in threads:
+            thread.join(timeout=5)
+        self.assertEqual(sorted(outcomes), ["allowed", "denied"])
+        self.assertEqual([p for p, _ in self.fake.seen], ["/"])
+
+    def test_status_reservation_refuses_wrong_path_or_expired_scope(self):
+        self.svc.real_site_read_only = True
+        self.onboard(allow_status_probe=True)
+        self.assertEqual(self.run_l1()["state"], "completed")
+        marker_url = self.url + "/server-status?auto"
+        marker = self.svc.gateway.egress.check(marker_url, self.svc.a.engagement.targets["lab"])
+        wrong = self.svc.gateway.egress.check(marker_url + "&more=1",
+                                              self.svc.a.engagement.targets["lab"])
+        with self.assertRaises(PolicyError):
+            self.svc._launch_guard("status_marker", {"url": marker_url + "&more=1"}, wrong)
+        with self.assertRaises(PolicyError):
+            self.svc._launch_guard("status_marker", {"url": marker_url, "method": "GET"}, marker)
+        self.svc._verified_external_hosts[HOST]["not_after"] = time.time() - 1
+        with self.assertRaises(PolicyError):
+            self.svc._launch_guard("status_marker", {"url": marker_url}, marker)
+        self.assertEqual(self.svc.ledger.scan_usage[HOST]["paths"], ["/"])
+        self.assertEqual([p for p, _ in self.fake.seen], ["/"])
+
+    def test_status_reservation_write_failure_cannot_launch(self):
+        from aegis import authority_ledger
+
+        self.svc.real_site_read_only = True
+        self.onboard(allow_status_probe=True)
+        self.assertEqual(self.run_l1()["state"], "completed")
+        marker_url = self.url + "/server-status?auto"
+        marker = self.svc.gateway.egress.check(marker_url, self.svc.a.engagement.targets["lab"])
+        original = authority_ledger._write_durable
+
+        def fail_marker(path, body):
+            if path.name == "authority.ledger" and "/server-status?auto" in body:
+                raise OSError("mock disk full")
+            return original(path, body)
+
+        with patch.object(authority_ledger, "_write_durable", side_effect=fail_marker), \
+                patch.object(self.svc.workers, "run") as worker:
+            with self.assertRaises(PolicyError):
+                self.svc._launch_guard("status_marker", {"url": marker_url}, marker)
+            worker.assert_not_called()
+        self.assertIsNotNone(self.svc._persist_error)
+        self.assertEqual([p for p, _ in self.fake.seen], ["/"])
+
+    def test_manual_real_site_artex_setting_does_not_auto_plan_by_default(self):
+        self.svc.real_site_read_only = True
+        self.svc._real_site_local_artex = True
+        self.svc._artex_real_cmd = ["mock-artex"]
+        self.onboard()
+        with patch.dict("os.environ", {"VULNIX_REAL_SITE_INITIAL_ARTEX": "0",
+                                       "VULNIX_ARTEX_LLM_MODE": "gateway-forward",
+                                       "VULNIX_ARTEX_LLM_UPSTREAM_URL": "http://127.0.0.1:19991/v1/chat/completions"}), \
+                patch.object(self.svc, "_plan_with_artex", side_effect=AssertionError("unexpected model")) as plan:
+            snap = self.run_l1()
+        self.assertEqual(snap["state"], "completed", snap.get("failure"))
+        self.assertEqual([path for path, _ in self.fake.seen], ["/"])
+        plan.assert_not_called()
+
+    def test_malformed_local_model_setting_keeps_fixed_l1_result(self):
+        self.svc.real_site_read_only = True
+        self.svc._real_site_local_artex = True
+        self.svc._artex_real_cmd = ["mock-artex"]
+        self.onboard()
+        with patch.dict("os.environ", {"VULNIX_REAL_SITE_INITIAL_ARTEX": "1",
+                                       "VULNIX_ARTEX_LLM_MODE": "gateway-forward",
+                                       "VULNIX_ARTEX_LLM_UPSTREAM_URL": "http://[bad"}), \
+                patch.object(self.svc, "_plan_with_artex", side_effect=AssertionError("unexpected model")) as plan:
+            snap = self.run_l1()
+        self.assertEqual(snap["state"], "completed")
+        self.assertEqual([path for path, _ in self.fake.seen], ["/"])
+        plan.assert_not_called()
+        self.assertTrue(any(e["event"] == "artex.initial_fallback" and
+                            e["fields"].get("reason") == "bad_local_upstream"
+                            for e in self.svc.audit.entries()))
+
+    def test_public_artex_api_still_refuses_in_progress_run_with_signed_root(self):
+        self.svc.real_site_read_only = True
+        self.onboard()
+        self.assertEqual(self.run_l1()["state"], "completed")
+        self.svc._real_site_local_artex = True
+        self.svc._artex_real_cmd = ["mock-artex"]
+        with self.svc._lock:
+            self.svc.a.state = "running"
+        with self.assertRaises(ValueError):
+            self.svc.plan_with_artex("op")
+        self.assertEqual([path for path, _ in self.fake.seen], ["/"])
+
+    def test_opted_in_initial_artex_receives_only_root_fingerprint_after_one_get(self):
+        self.svc.real_site_read_only = True
+        self.svc._real_site_local_artex = True
+        self.svc._artex_real_cmd = ["mock-artex"]
+        self.fake.banner = "Apache/2.4.62"
+        self.onboard(allow_status_probe=True)
+        seen = []
+
+        def plan(_actor, **kwargs):
+            seen.append((self.svc.a.state, kwargs))
+            return self.svc.snapshot()
+
+        with patch.dict("os.environ", {"VULNIX_REAL_SITE_INITIAL_ARTEX": "1",
+                                       "VULNIX_ARTEX_LLM_MODE": "gateway-forward",
+                                       "VULNIX_ARTEX_LLM_UPSTREAM_URL": "http://127.0.0.1:19991/v1/chat/completions"}), \
+                patch.object(self.svc, "_plan_with_artex", create=True, side_effect=plan):
+            snap = self.run_l1()
+        self.assertEqual(snap["state"], "completed", snap.get("failure"))
+        self.assertEqual([path for path, _ in self.fake.seen], ["/"])
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0][0], "running")
+        self.assertEqual(seen[0][1]["fingerprint"]["status_class"], "2xx")
+        self.assertEqual(seen[0][1]["fingerprint"]["server_family"], "apache")
+
+    def test_manual_artex_reuses_signed_root_fingerprint_without_another_get(self):
+        self.svc.real_site_read_only = True
+        self.svc._real_site_local_artex = True
+        self.svc._artex_real_cmd = ["mock-artex"]
+        self.fake.banner = "Apache/2.4.62"
+        self.onboard(allow_status_probe=True)
+        self.assertEqual(self.run_l1()["state"], "completed")
+        seen = []
+
+        def plan(_actor, **kwargs):
+            seen.append(kwargs.get("fingerprint"))
+            return self.svc.snapshot()
+
+        with patch.object(self.svc, "_plan_with_artex", side_effect=plan):
+            self.svc.plan_with_artex("op")
+        self.assertEqual(seen[0]["server_family"], "apache")
+        self.assertEqual(self.svc.ledger.scan_usage[HOST]["root_fingerprint"], seen[0])
+        self.assertEqual([path for path, _ in self.fake.seen], ["/"])
+
+    def test_manual_artex_reuses_signed_root_fingerprint_after_restart(self):
+        self.svc.real_site_read_only = True
+        self.svc._real_site_local_artex = True
+        self.svc._artex_real_cmd = ["mock-artex"]
+        self.fake.banner = "Apache/2.4.62"
+        self.onboard(allow_status_probe=True)
+        self.assertEqual(self.run_l1()["state"], "completed")
+        expected = dict(self.svc.ledger.scan_usage[HOST]["root_fingerprint"])
+        reopened = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT,
+                                     real_site_read_only=True)
+        try:
+            reopened._custom_resolver = self.svc._custom_resolver
+            reopened._real_site_local_artex = True
+            reopened._artex_real_cmd = ["mock-artex"]
+            with patch.object(reopened, "_plan_with_artex", return_value=reopened.snapshot()) as planner:
+                reopened.plan_with_artex("op")
+            self.assertEqual(planner.call_args.kwargs["fingerprint"], expected)
+            self.assertEqual([path for path, _ in self.fake.seen], ["/"])
+        finally:
+            reopened.close()
+
+    def test_manual_artex_rejects_unsigned_fingerprint_before_model(self):
+        self.svc.real_site_read_only = True
+        self.svc._real_site_local_artex = True
+        self.svc._artex_real_cmd = ["mock-artex"]
+        self.fake.banner = "Apache/2.4.62"
+        self.onboard(allow_status_probe=True)
+        self.assertEqual(self.run_l1()["state"], "completed")
+        with self.svc._lock:
+            self.svc.ledger.scan_usage[HOST]["root_fingerprint"] = {"server_family": "apache"}
+        with patch.object(self.svc, "_plan_with_artex") as plan:
+            with self.assertRaises(ValueError):
+                self.svc.plan_with_artex("op")
+        plan.assert_not_called()
+
+    def test_manual_artex_rejects_missing_signed_run_before_model(self):
+        self.svc.real_site_read_only = True
+        self.svc._real_site_local_artex = True
+        self.svc._artex_real_cmd = ["mock-artex"]
+        self.fake.banner = "Apache/2.4.62"
+        self.onboard(allow_status_probe=True)
+        self.assertEqual(self.run_l1()["state"], "completed")
+        with self.svc._lock:
+            self.svc.ledger.scan_usage.pop(HOST)
+            self.assertTrue(self.svc.ledger.commit())
+        with patch.object(self.svc, "_plan_with_artex") as plan:
+            with self.assertRaisesRegex(ValueError, "監査済み"):
+                self.svc.plan_with_artex("op")
+        plan.assert_not_called()
+
+    def test_manual_artex_skips_model_when_no_extra_check_is_eligible(self):
+        self.svc.real_site_read_only = True
+        self.svc._real_site_local_artex = True
+        self.svc._artex_real_cmd = ["mock-artex"]
+        self.onboard(allow_status_probe=True)
+        self.assertEqual(self.run_l1()["state"], "completed")  # default non-Apache banner
+        with patch.object(self.svc, "_plan_with_artex") as plan:
+            with self.assertRaisesRegex(ValueError, "追加確認"):
+                self.svc.plan_with_artex("op")
+        plan.assert_not_called()
+        self.assertEqual([path for path, _ in self.fake.seen], ["/"])
+
+    def test_manual_artex_rejects_fingerprint_from_previous_signed_run(self):
+        self.svc.real_site_read_only = True
+        self.svc._real_site_local_artex = True
+        self.svc._artex_real_cmd = ["mock-artex"]
+        self.fake.banner = "Apache/2.4.62"
+        self.onboard(allow_status_probe=True)
+        self.assertEqual(self.run_l1()["state"], "completed")
+        with self.svc._lock:
+            usage = self.svc.ledger.scan_usage[HOST]
+            old_context = (usage["run_nonce"], usage["result_audit_hash"])
+            fingerprint = dict(usage["root_fingerprint"])
+            usage["run_nonce"] = "different-signed-run"
+            self.assertTrue(self.svc.ledger.commit())
+        with self.assertRaisesRegex(ValueError, "初期観測"):
+            self.svc._plan_with_artex("op", fingerprint=fingerprint,
+                                      root_observation=old_context)
+
+    def test_initial_artex_skips_non_apache_without_spending_model_calls(self):
+        self.svc.real_site_read_only = True
+        self.svc._real_site_local_artex = True
+        self.svc._artex_real_cmd = ["mock-artex"]
+        self.onboard(allow_status_probe=True)
+        with patch.dict("os.environ", {"VULNIX_REAL_SITE_INITIAL_ARTEX": "1",
+                                       "VULNIX_ARTEX_LLM_MODE": "gateway-forward",
+                                       "VULNIX_ARTEX_LLM_UPSTREAM_URL": "http://127.0.0.1:19991/v1/chat/completions"}), \
+                patch.object(self.svc, "_plan_with_artex", side_effect=AssertionError("unexpected model")) as plan:
+            snap = self.run_l1()
+        self.assertEqual(snap["state"], "completed")
+        self.assertEqual([path for path, _ in self.fake.seen], ["/"])
+        plan.assert_not_called()
+        self.assertTrue(any(e["event"] == "artex.initial_skipped" and
+                            e["fields"].get("reason") == "no_allowed_extra_check"
+                            for e in self.svc.audit.entries()))
+
+    def test_initial_artex_skips_without_signed_extra_probe_consent(self):
+        self.svc.real_site_read_only = True
+        self.svc._real_site_local_artex = True
+        self.svc._artex_real_cmd = ["mock-artex"]
+        self.fake.banner = "Apache/2.4.62"
+        self.onboard(allow_status_probe=False)
+        with patch.dict("os.environ", {"VULNIX_REAL_SITE_INITIAL_ARTEX": "1",
+                                       "VULNIX_ARTEX_LLM_MODE": "gateway-forward",
+                                       "VULNIX_ARTEX_LLM_UPSTREAM_URL": "http://127.0.0.1:19991/v1/chat/completions"}), \
+                patch.object(self.svc, "_plan_with_artex", side_effect=AssertionError("unexpected model")) as plan:
+            snap = self.run_l1()
+        self.assertEqual(snap["state"], "completed")
+        self.assertEqual([path for path, _ in self.fake.seen], ["/"])
+        plan.assert_not_called()
+
+    def test_initial_artex_falls_back_if_extra_catalog_changes_without_review(self):
+        self.svc.real_site_read_only = True
+        self.svc._real_site_local_artex = True
+        self.svc._artex_real_cmd = ["mock-artex"]
+        self.fake.banner = "Apache/2.4.62"
+        self.onboard(allow_status_probe=True)
+        extra = artex_bridge.CatalogEntry(
+            "l1_future_read_only", "http_probe", "read_only_probe", "L1",
+            "future test check", ("future",))
+        with patch.dict("os.environ", {"VULNIX_REAL_SITE_INITIAL_ARTEX": "1",
+                                       "VULNIX_ARTEX_LLM_MODE": "gateway-forward",
+                                       "VULNIX_ARTEX_LLM_UPSTREAM_URL": "http://127.0.0.1:19991/v1/chat/completions"}), \
+                patch.object(artex_bridge, "CATALOG", artex_bridge.CATALOG + (extra,)), \
+                patch.object(self.svc, "_plan_with_artex",
+                             side_effect=AssertionError("unexpected model")) as plan:
+            snap = self.run_l1()
+        self.assertEqual(snap["state"], "completed")
+        self.assertEqual([path for path, _ in self.fake.seen], ["/"])
+        plan.assert_not_called()
+        self.assertTrue(any(e["event"] == "artex.initial_fallback" and
+                            e["fields"].get("reason") == "unreviewed_extra_catalog"
+                            for e in self.svc.audit.entries()))
+
+    def test_manual_artex_plan_cannot_run_an_unreviewed_real_site_l1_entry(self):
+        self.svc.real_site_read_only = True
+        self.svc._real_site_local_artex = True
+        self.onboard(allow_status_probe=True)
+        self.assertEqual(self.run_l1()["state"], "completed")
+        entry = artex_bridge.CatalogEntry(
+            "l1_future_read_only", "http_probe", "read_only_probe", "L1",
+            "future test check", ("future",))
+        item = PlanItem("future-item", 1, "future", entry.id, "L1", entry.label,
+                        "lab", {}, status="planned")
+        with self.svc._lock:
+            self.svc._artex_plan = {"run_id": "future-run"}
+            self.svc._artex_items[item.id] = {
+                "item": item, "gen": self.svc._run_generation,
+                "run_id": "future-run", "requested_by": "operator", "task_id": None}
+        with patch.dict("aegis.assessment.CATALOG_BY_ID", {entry.id: entry}), \
+                patch.object(self.svc, "_exec", side_effect=AssertionError("unexpected GET")) as execute:
+            with self.assertRaisesRegex(ValueError, "未審査"):
+                self.svc.execute_artex_item(item.id, "operator")
+        execute.assert_not_called()
+        self.assertEqual([path for path, _ in self.fake.seen], ["/"])
+
+    def test_pause_before_initial_plan_blocks_model_until_resume(self):
+        self.svc.real_site_read_only = True
+        self.svc._real_site_local_artex = True
+        self.svc._artex_real_cmd = ["mock-artex"]
+        self.fake.banner = "Apache/2.4.62"
+        self.onboard(allow_status_probe=True)
+        original = self.svc._analyze
+        def pause_after_observation(*args):
+            result = original(*args)
+            self.svc.pause("op")
+            return result
+
+        with patch.dict("os.environ", {"VULNIX_REAL_SITE_INITIAL_ARTEX": "1",
+                                       "VULNIX_ARTEX_LLM_MODE": "gateway-forward",
+                                       "VULNIX_ARTEX_LLM_UPSTREAM_URL": "http://127.0.0.1:19991/v1/chat/completions"}), \
+                patch.object(self.svc, "_analyze", side_effect=pause_after_observation), \
+                patch.object(self.svc, "_plan_with_artex", return_value={}) as plan:
+            self.svc.start()
+            deadline = time.time() + 10
+            while time.time() < deadline and self.svc.a.state != "paused":
+                time.sleep(0.01)
+            self.assertEqual(self.svc.a.state, "paused")
+            self.assertFalse(self.svc._artex_may_start(self.svc._run_generation))
+            plan.assert_not_called()
+            self.svc.resume("op")
+            deadline = time.time() + 10
+            while time.time() < deadline and self.svc.snapshot()["state"] == "running":
+                time.sleep(0.01)
+        self.assertEqual(self.svc.snapshot()["state"], "completed")
+        plan.assert_called_once()
+        self.assertEqual([path for path, _ in self.fake.seen], ["/"])
+
+    def test_initial_model_failure_keeps_root_result(self):
+        self.svc.real_site_read_only = True
+        self.svc._real_site_local_artex = True
+        self.svc._artex_real_cmd = ["mock-artex"]
+        self.fake.banner = "Apache/2.4.62"
+        self.onboard(allow_status_probe=True)
+        with patch.dict("os.environ", {"VULNIX_REAL_SITE_INITIAL_ARTEX": "1",
+                                       "VULNIX_ARTEX_LLM_MODE": "gateway-forward",
+                                       "VULNIX_ARTEX_LLM_UPSTREAM_URL": "http://127.0.0.1:19991/v1/chat/completions"}), \
+                patch.object(self.svc, "_plan_with_artex", create=True,
+                             side_effect=ValueError("local model unavailable")):
+            snap = self.run_l1()
+        self.assertEqual(snap["state"], "completed")
+        self.assertEqual([path for path, _ in self.fake.seen], ["/"])
+        self.assertTrue(self.svc.ledger.scan_usage[HOST].get("root_fingerprint"))
+        root_finding = next(f for f in snap["findings"] if f["id"] == "f_headers")
+        self.assertIn(root_finding["evidence_status"], ("detected", "proven"))
+        self.assertTrue(root_finding["evidence"][0]["audit_hash"])
+        self.assertTrue(any(e["event"] == "artex.initial_fallback" and
+                            e["fields"].get("reason") == "planner_failure"
+                            for e in self.svc.audit.entries()))
+
+    def test_initial_plan_revocation_does_not_complete(self):
+        self.svc.real_site_read_only = True
+        self.svc._real_site_local_artex = True
+        self.svc._artex_real_cmd = ["mock-artex"]
+        self.fake.banner = "Apache/2.4.62"
+        self.onboard(allow_status_probe=True)
+        with patch.dict("os.environ", {"VULNIX_REAL_SITE_INITIAL_ARTEX": "1",
+                                       "VULNIX_ARTEX_LLM_MODE": "gateway-forward",
+                                       "VULNIX_ARTEX_LLM_UPSTREAM_URL": "http://127.0.0.1:19991/v1/chat/completions"}), \
+                patch.object(self.svc, "_plan_with_artex", create=True,
+                             side_effect=lambda *_args, **_kwargs: self._revoke_during_plan()):
+            snap = self.run_l1()
+        self.assertEqual(snap["state"], "failed")
+        self.assertEqual([path for path, _ in self.fake.seen], ["/"])
+
+    def test_ownership_expiry_at_final_result_adoption_fails_closed(self):
+        self.svc.real_site_read_only = True
+        self.onboard()
+        original = self.svc._phase
+        def expire_at_report(key, status, detail):
+            result = original(key, status, detail)
+            if key == "report" and status == "done":
+                self.svc._verified_external_hosts[HOST]["not_after"] = time.time() - 1
+            return result
+
+        with patch.object(self.svc, "_phase", side_effect=expire_at_report):
+            snap = self.run_l1()
+        self.assertEqual(snap["state"], "failed")
+        self.assertEqual([path for path, _ in self.fake.seen], ["/"])
+
+    def test_pause_at_final_result_adoption_does_not_complete_until_resume(self):
+        self.svc.real_site_read_only = True
+        self.onboard()
+        original = self.svc._phase
+        def pause_at_report(key, status, detail):
+            result = original(key, status, detail)
+            if key == "report" and status == "done":
+                self.svc.pause("op")
+            return result
+
+        with patch.object(self.svc, "_phase", side_effect=pause_at_report):
+            self.svc.start()
+            deadline = time.time() + 10
+            while time.time() < deadline and self.svc.a.state != "paused":
+                time.sleep(0.01)
+            self.assertEqual(self.svc.a.state, "paused")
+            time.sleep(0.1)
+            self.assertEqual(self.svc.a.state, "paused")
+            self.svc.resume("op")
+            deadline = time.time() + 10
+            while time.time() < deadline and self.svc.snapshot()["state"] == "running":
+                time.sleep(0.01)
+        self.assertEqual(self.svc.snapshot()["state"], "completed")
+        self.assertEqual([path for path, _ in self.fake.seen], ["/"])
+
+    def test_checkpoint_waits_if_only_gateway_is_paused(self):
+        self.svc.a.state = "running"
+        self.svc.gateway.pause("op")
+        done = threading.Event()
+        thread = threading.Thread(target=lambda: (self.svc._checkpoint(), done.set()), daemon=True)
+        thread.start()
+        self.assertFalse(done.wait(0.15))
+        self.svc.gateway.resume("op")
+        self.assertTrue(done.wait(2))
+        thread.join(timeout=2)
+
+    def _revoke_during_plan(self):
+        self.svc._verified_external_hosts[HOST]["not_after"] = time.time() - 1
+        raise ValueError("local model unavailable")
+
+    def test_concurrent_read_only_requests_share_one_signed_allowance(self):
+        self.svc.real_site_read_only = True
+        self.onboard()
+        with self.svc._lock:
+            self.svc._new_scan_usage_locked()
+        dest = self.svc.gateway.egress.check(self.url, self.svc.a.engagement.targets["lab"])
+        gate = threading.Barrier(3)
+        outcomes = []
+
+        def reserve():
+            gate.wait()
+            try:
+                self.svc._launch_guard("http_probe", {"url": self.url, "method": "GET"}, dest)
+                outcomes.append("allowed")
+            except PolicyError:
+                outcomes.append("denied")
+
+        threads = [threading.Thread(target=reserve) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        gate.wait()
+        for thread in threads:
+            thread.join(timeout=5)
+        self.assertEqual(sorted(outcomes), ["allowed", "denied"])
+        self.assertEqual(self.svc.ledger.scan_usage[HOST]["paths"], ["/"])
+        self.assertEqual(self.fake.seen, [])
+
+    def test_scan_reservation_failure_starts_no_worker(self):
+        from aegis import authority_ledger
+
+        self.svc.real_site_read_only = True
+        self.onboard()
+        with self.svc._lock:
+            self.svc._new_scan_usage_locked()
+        dest = self.svc.gateway.egress.check(self.url, self.svc.a.engagement.targets["lab"])
+        original = authority_ledger._write_durable
+
+        def fail_scan_reservation(path, body):
+            if path.name == "authority.ledger":
+                raise OSError("mock disk full")
+            return original(path, body)
+
+        with patch.object(authority_ledger, "_write_durable", side_effect=fail_scan_reservation), \
+                patch.object(self.svc.workers, "run") as worker:
+            with self.assertRaises(PolicyError):
+                self.svc._launch_guard("http_probe", {"url": self.url, "method": "GET"}, dest)
+            worker.assert_not_called()
+        self.assertEqual(self.fake.seen, [])
+        self.assertIsNotNone(self.svc._persist_error)
+
+    def test_root_result_is_not_observed_when_signed_result_save_fails(self):
+        from aegis import authority_ledger
+
+        self.svc.real_site_read_only = True
+        self.onboard()
+        original = authority_ledger._write_durable
+
+        def fail_result(path, body):
+            if path.name == "authority.ledger" and '"result_audit_hash"' in body:
+                raise OSError("mock disk full")
+            return original(path, body)
+
+        with patch.object(authority_ledger, "_write_durable", side_effect=fail_result):
+            self.svc.start()
+            end = time.time() + 20
+            while time.time() < end and self.svc.snapshot()["state"] == "running":
+                time.sleep(0.02)
+        self.assertEqual(self.svc.snapshot()["state"], "failed")
+        self.assertEqual([p for p, _ in self.fake.seen], ["/"])
+        with self.svc._lock:
+            self.svc.a.state = "completed"  # unsigned display state cannot bless an uncommitted result
+            self.assertFalse(self.svc._root_probe_observed_locked())
+        self.assertIsNotNone(self.svc._persist_error)
+
+    def test_public_run_uses_one_signed_root_probe_and_rejects_duplicate(self):
+        self.svc.real_site_read_only = True
+        self.onboard()
+        self.assertEqual(self.run_l1()["state"], "completed")
+        first = dict(self.svc.ledger.scan_usage[HOST])
+        self.assertEqual(first["paths"], ["/"])
+        self.assertTrue(first["result_audit_hash"])
+        self.assertEqual([p for p, _ in self.fake.seen], ["/"])
+        with self.svc._lock:
+            self.svc._ensure_active_window_locked()  # even a reset of the in-memory Budget cannot refill it
+        with patch.object(self.svc.workers, "run") as worker:
+            result, evidence = self.svc._exec("http_probe", "read_only_probe",
+                                              {"url": self.url, "method": "GET"},
+                                              approval_actor="artex-L1:op")
+        self.assertIsNone(result)
+        self.assertIsNone(evidence)
+        worker.assert_not_called()
+        self.assertEqual([p for p, _ in self.fake.seen], ["/"])
+
+        # A process restart must restore the spent cap from the signed ledger.
+        reopened = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT,
+                                     real_site_read_only=True)
+        try:
+            self.assertEqual(reopened.ledger.scan_usage[HOST], first)
+        finally:
+            reopened.close()
+
+        # Only a new explicit diagnosis receives a new run allowance.
+        self.svc.restart("op")
+        end = time.time() + 20
+        while time.time() < end and self.svc.snapshot()["state"] == "running":
+            time.sleep(0.02)
+        self.assertEqual(self.svc.snapshot()["state"], "completed")
+        self.assertEqual([p for p, _ in self.fake.seen], ["/", "/"])
+        second = self.svc.ledger.scan_usage[HOST]
+        self.assertNotEqual(second["run_nonce"], first["run_nonce"])
+        self.assertEqual(second["paths"], ["/"])
+        self.assertNotEqual(second["result_audit_hash"], first["result_audit_hash"])
+
+    def test_new_service_defaults_to_read_only_on_real_sites(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            svc = AssessmentService(Path(data_dir), LAB_PORT, l2_confinement=TEST_CONFINEMENT,
+                                    l2_profile_dirs=PROFILE_DIRS)
+            try:
+                self.assertTrue(svc.real_site_read_only)
+                svc._custom_resolver = lambda h: ["127.0.0.1"] if h == HOST else []
+                challenge = svc.issue_ownership_challenge(url=self.url)["challenge"]
+                svc.verify_asset_ownership(url_or_host=self.url, method="dns_txt",
+                                           dns_lookup=self._token_lookup(challenge))
+                svc.confirm_asset_scope(url_or_host=self.url, activate_workspace=True, allow_loopback_test=True)
+                with self.assertRaisesRegex(ValueError, "読み取り専用"):
+                    svc.request_l2_run("f_ex_idor", "operator")
+            finally:
+                svc.close()
+
     def test_l1_run_is_read_only_and_leaves_l2_as_unmeasured_candidates(self):
         self.onboard()
         self.set_secrets()                           # even WITH credentials, L1 sends none
@@ -587,10 +1273,17 @@ class TestL1Diagnosis(RealServiceBase):
         self.assertEqual([p for p, _ in self.fake.seen], ["/"])
         self.assertIsNone(self.fake.seen[0][1])
         by_id = {f["id"]: f for f in snap["findings"]}
-        for fid in ("f_headers", "f_l1_cookies", "f_l1_cors", "f_powered", "f_l1_unauth_api"):
+        for fid in ("f_headers", "f_l1_cors", "f_powered"):
             self.assertIn(fid, by_id)
             self.assertIn(by_id[fid]["evidence_status"], ("proven", "detected"))
             self.assertTrue(by_id[fid]["evidence"][0]["audit_hash"])
+        # This site has not supplied an accepted session-cookie purpose spec.
+        # Missing flags alone are observable, but cannot establish session risk.
+        self.assertEqual(by_id["f_l1_cookies"]["evidence_status"], "candidate")
+        self.assertTrue(by_id["f_l1_cookies"]["evidence"][0]["audit_hash"])
+        # A JSON 200 at the root has no independent protected-scope evidence.
+        self.assertEqual(by_id["f_l1_unauth_api"]["evidence_status"], "candidate")
+        self.assertEqual(by_id["f_l1_unauth_api"]["risk_score"], 0)
         l2 = [by_id[c["finding"]["id"]] for c in EXAMPLE["checks"]]
         self.assertEqual({f["evidence_status"] for f in l2}, {"candidate"})
         self.assertFalse(any(f.get("demo_fixture") for f in snap["findings"]))
@@ -607,10 +1300,30 @@ class TestL1Diagnosis(RealServiceBase):
         report = self.svc.report_markdown()
         self.assertIn("所有確認済みの実サービス", report)
         self.assertNotIn("架空", report)
-        self.assertIsNone(snap["history"])                       # no fictional history on a real service
+        self.assertIsNone(snap["history"])
         primary = self.svc.assets()[0]
         self.assertEqual((primary["name"], primary["previous_risk_score"]), (HOST, None))
         self.assertNotIn("ローカル模擬ラボ", report)
+
+    def test_confirmed_owner_root_requirement_is_detected_without_leak_claim(self):
+        self.onboard()
+        self.svc.l2.profiles["example"]["root_access"] = {
+            "requirement": "authentication_required", "spec_status": "confirmed",
+            "spec_evidence": ["owner API specification section 3"]}
+        snap = self.run_l1()
+        finding = next(f for f in snap["findings"] if f["id"] == "f_l1_unauth_api")
+        self.assertEqual(finding["verdict"], "detected")
+        self.assertEqual(finding["evidence_status"], "detected")
+        self.assertIn("未実証", finding["caveat"])
+        self.assertTrue(finding["evidence"][0]["audit_hash"])
+
+    def test_confirmed_public_root_requirement_does_not_create_access_finding(self):
+        self.onboard()
+        self.svc.l2.profiles["example"]["root_access"] = {
+            "requirement": "public", "spec_status": "confirmed",
+            "spec_evidence": ["owner API specification section 2"]}
+        snap = self.run_l1()
+        self.assertNotIn("f_l1_unauth_api", {f["id"] for f in snap["findings"]})
 
     def test_read_only_mode_says_so_instead_of_promising_an_l2(self):
         # public beta: no L2 ever runs on a real site, so the run must not say one is waiting
@@ -625,6 +1338,7 @@ class TestL1Diagnosis(RealServiceBase):
         self.assertNotIn("承認", verification["detail"])
         thoughts = [e for e in self.svc.audit.entries() if e["event"] == "agent.thought"]
         self.assertFalse(any("承認待ち" in json.dumps(e, ensure_ascii=False) for e in thoughts))
+        self.assertFalse(any("ARTEX" in json.dumps(e, ensure_ascii=False) for e in thoughts))
 
     def test_snapshot_reports_the_mode_outside_the_public_beta_too(self):
         self.assertFalse(self.svc.snapshot()["real_site_read_only"])
@@ -637,6 +1351,8 @@ class TestL1Diagnosis(RealServiceBase):
         self.svc.verify_finding("all", actor="appr")
         self.assertEqual([p for p, _ in self.fake.seen], ["/"])
         self.assertEqual(self.finding("f_ex_idor")["evidence_status"], "candidate")
+        self.assertEqual(self.finding("f_ex_idor")["verdict"], "candidate")
+        self.assertEqual(self.finding("f_ex_idor")["risk_score"], 0)
 
 
 class TestL2HumanApprovedChecks(RealServiceBase):
@@ -844,7 +1560,8 @@ class TestUnconfirmedRulesCannotRun(RealServiceBase):
         self.svc.workers.kill_all()
         (self.dir / "l2_profiles").chmod(0o700)
         (self.dir / "l2_profiles" / "sample_api.json").chmod(0o600)
-        self.svc = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT, verify_seconds=0.1)       # default profile dirs
+        self.svc = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT, verify_seconds=0.1,
+                                     real_site_read_only=False)  # default profile dirs; legacy L2 test
         # a site profile is listed but nothing in it runs until an admin accepts its exact content
         self.assertEqual(self.svc.l2.runnable_check_ids(), ())
         status = self.svc.l2_profiles_status()["profiles"]
@@ -1101,7 +1818,12 @@ class TestRemotionExport(RealServiceBase):
         self.assertEqual(out["remotion_timeline"]["events"][0]["scene"], "ownership_verified")
         self.assertTrue(out["confirmed_findings"])
         self.assertTrue(all(f["audit_hash"] for f in out["confirmed_findings"]))
-        self.assertEqual(out["summary"]["unverified_candidate_count"], len(EXAMPLE["checks"]))
+        # The response includes a cookie with no accepted owner purpose spec.
+        self.assertEqual(out["summary"]["unverified_candidate_count"], len(EXAMPLE["checks"]) + 2)
+        detailed = self.svc.remotion_export(anonymize=False)
+        self.assertIn("f_l1_unauth_api", {f["id"] for f in detailed["unverified_candidates"]})
+        self.assertIn("f_l1_cookies", {f["id"] for f in detailed["unverified_candidates"]})
+        self.assertNotIn("f_l1_unauth_api", {f["id"] for f in detailed["confirmed_findings"]})
         self.assertEqual(out["summary"]["proven_count"] + out["summary"]["detected_count"]
                          + out["summary"]["not_reproduced_count"], len(out["confirmed_findings"]))
         self.assertIn(HOST, json.dumps(self.svc.remotion_export(anonymize=False)))
@@ -1148,7 +1870,8 @@ class TestRealServiceApi(RealServiceBase):
             with urllib.request.urlopen(req) as r:
                 return r.status, json.load(r), (r.headers.get("Set-Cookie") or "").split(";")[0]
         except urllib.error.HTTPError as e:
-            return e.code, json.load(e), ""
+            with e:
+                return e.code, json.load(e), ""
 
     def login(self, name):
         return self.call("/auth/login", {"name": name, "password": f"{name}-pw"})[2]

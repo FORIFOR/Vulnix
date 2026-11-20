@@ -655,9 +655,11 @@ class TestUnsavedLogoutOverHttp(unittest.TestCase):
         svc = AssessmentService(data, LAB_PORT, verify_seconds=0.1, l2_confinement=TEST_CONFINEMENT,
                                 revocation_marker_dirs=[Path(tempfile.mkdtemp())])
         self.addCleanup(svc.workers.kill_all)
+        self.addCleanup(svc.close)
         ops = OperatorStore(seed(data))
         srv = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(svc, ops))
         threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
         self.addCleanup(srv.shutdown)
         api = f"http://127.0.0.1:{srv.server_port}/api"
         hdr = {"Content-Type": "application/json", "X-Aegis-Request": "1"}
@@ -669,7 +671,8 @@ class TestUnsavedLogoutOverHttp(unittest.TestCase):
                 urllib.request.urlopen(urllib.request.Request(api + "/auth/logout", b"{}", {**hdr, "Cookie": cookie}))
         self.assertEqual(cm.exception.code, 500)
         self.assertIn("Max-Age=0", cm.exception.headers.get("Set-Cookie", ""))
-        self.assertFalse(json.loads(cm.exception.read())["logout_saved"])
+        with cm.exception:
+            self.assertFalse(json.loads(cm.exception.read())["logout_saved"])
 
 
 class TestProofFileWithBom(unittest.TestCase):
@@ -772,10 +775,12 @@ class TestUntrustedAuthStateOverHttp(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.data, True)
         self.svc = AssessmentService(self.data, LAB_PORT, verify_seconds=0.1, l2_confinement=TEST_CONFINEMENT,
                                      revocation_marker_dirs=[Path(tempfile.mkdtemp())])
+        self.addCleanup(self.svc.close)
         self.addCleanup(self.svc.workers.kill_all)
         self.ops = OperatorStore(seed(self.data))
         srv = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(self.svc, self.ops))
         threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
         self.addCleanup(srv.shutdown)
         self.api = f"http://127.0.0.1:{srv.server_port}/api"
 
@@ -786,7 +791,8 @@ class TestUntrustedAuthStateOverHttp(unittest.TestCase):
             with self.urllib.urlopen(self.urllib.Request(self.api + path, json.dumps(body).encode(), hdr)) as r:
                 return r.status, json.loads(r.read() or b"{}"), r.headers
         except urllib.error.HTTPError as e:
-            return e.code, json.loads(e.read() or b"{}"), e.headers
+            with e:
+                return e.code, json.loads(e.read() or b"{}"), e.headers
 
     def test_new_operations_are_refused_but_stopping_is_not(self):
         code, _, h = self.post("/auth/login", {"name": "appr", "password": "appr-password"})
@@ -799,6 +805,7 @@ class TestUntrustedAuthStateOverHttp(unittest.TestCase):
             self.assertNotEqual(self.post("/auth/login", {"name": "op", "password": "op-password"})[0], 200)
             code, body, _ = self.post("/assessments/scan_001/emergency-stop", {}, cookie)
             self.assertEqual(code, 200, body)                    # stopping is always possible
+            self.assertEqual(body, {"stopped": True, "details_unavailable": True})
         self.ops._last_retry = -1e9                              # (retries happen at most once a second)
         self.assertEqual(self.post("/auth/login", {"name": "op", "password": "op-password"})[0], 200)
 

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { command } from "@/lib/api";
 import type { Snapshot } from "@/lib/types";
+import { useSession } from "@/lib/useSession";
 import { HelpPopover } from "../learning/HelpPopover";
 
 export function ExecutionControls({ snap, onUpdate, refetch }: {
@@ -13,6 +14,7 @@ export function ExecutionControls({ snap, onUpdate, refetch }: {
   const [busy, setBusy] = useState(false);
   const [armed, setArmed] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const { multiTenant } = useSession();
   const base = `/api/assessments/${snap.id}`;
 
   const run = async (path: string) => {
@@ -85,7 +87,7 @@ export function ExecutionControls({ snap, onUpdate, refetch }: {
           ↻ 再診断を実行
         </button>
       )}
-      {snap.state === "completed" && !snap.defense_comparison && !(snap.is_external_service && snap.real_site_read_only) && (
+      {snap.state === "completed" && !snap.defense_comparison && !(snap.is_external_service && (multiTenant || snap.real_site_read_only)) && !(multiTenant && !snap.is_external_service) && (
         <button
           disabled={busy}
           onClick={() => run("/verify-fix")}

@@ -94,7 +94,7 @@ function DashboardInner() {
         <div>
           <h1 className="text-2xl font-bold">セキュリティ診断</h1>
           <p className="text-xs text-zinc-500">
-            サイトのURLを入力して所有確認をすると、AI がセキュリティ上の問題と直し方を調べます。
+            サイトのURLを入力して所有確認をすると、公開ページの設定を確認し、結果と対策を表示します。
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">

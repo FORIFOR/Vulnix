@@ -56,6 +56,14 @@ class TestServer(unittest.TestCase):
         self.cookie = None
 
     def tearDown(self):
+        # SSE tests may leave the scan runner active after closing the stream.
+        # Stop and join it before removing the service's temporary storage;
+        # otherwise a late state/audit write can recreate an entry during rmtree.
+        runner = self.svc._thread
+        if runner is not None and runner.is_alive():
+            self.svc.emergency_stop("test_teardown")
+            runner.join(timeout=10)
+            self.assertFalse(runner.is_alive(), "scan runner outlived the test")
         self.svc.workers.kill_all()
         self.srv.shutdown()
         self.srv.server_close()
@@ -77,7 +85,8 @@ class TestServer(unittest.TestCase):
                     self.cookie = sc.split(";")[0]
                 return r.status, json.load(r)
         except urllib.error.HTTPError as e:
-            return e.code, json.load(e)
+            with e:
+                return e.code, json.load(e)
 
     def post(self, path, body=None, headers=None):
         return self._req(self.base + path, body if body is not None else {}, headers)
@@ -107,11 +116,42 @@ class TestServer(unittest.TestCase):
                      "/system/verify-controls", "/cve/real-software-verify", "/operators"):
             self.assertEqual(self._req(self.root + path)[0], 401, path)
         self.assertEqual(self._req(f"{self.root}/auth/me"), (200, {"session": None, "self_registration": False,
-                                                                 "real_service_diagnosis": True, "real_site_read_only": False, "google_ownership": False,
-                                                             "development": False}))
+                                                                 "real_service_diagnosis": False, "real_site_read_only": True, "google_ownership": False,
+                                                                 "optional_status_check": False, "development": False}))
         self.assertEqual(self._req(f"{self.root}/health"), (200, {"ok": True}))
         self.login("op", "op-pw")
         self.assertEqual(self.get()["state"], "idle")
+
+    def test_single_org_logout_after_binding_cannot_read_logs(self):
+        self.login("op", "op-pw")
+        token = self.cookie.split("=", 1)[1]
+        entered, release = threading.Event(), threading.Event()
+        response = []
+        handler = self.srv.RequestHandlerClass
+        original_bind = handler._bind
+
+        def paused_bind(request, *args, **kwargs):
+            bound = original_bind(request, *args, **kwargs)
+            if request.path == "/api/assessments/scan_001/logs":
+                entered.set()
+                if not release.wait(5):
+                    raise TimeoutError("single-org read test did not release")
+            return bound
+
+        with patch.object(handler, "_bind", paused_bind):
+            thread = threading.Thread(target=lambda: response.append(self._req(self.base + "/logs")))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            self.ops.logout(token)
+            release.set()
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(response[0][0], 401)
+
+    def test_single_org_approver_can_read_planner_preview(self):
+        self.login("appr", "appr-pw")
+        code, _ = self._req(self.base + "/artex/llm-preview")
+        self.assertEqual(code, 200)
 
     def test_open_reads_remain_available_as_an_explicit_opt_out(self):
         open_srv = ThreadingHTTPServer(("127.0.0.1", 0),
@@ -269,6 +309,23 @@ class TestServer(unittest.TestCase):
                 if len(ids) >= 2:
                     break
         self.assertEqual(ids, [4, 5])
+
+    def test_idle_sse_heartbeat_reports_last_transmitted_sequence(self):
+        self.login("appr", "appr-pw")
+        last = self.get()["last_seq"]
+        req = urllib.request.Request(self.base + f"/events?after={last}",
+                                     headers={"Cookie": self.cookie})
+        with urllib.request.urlopen(req, timeout=12) as stream:
+            lines = []
+            while len(lines) < 8:
+                line = stream.readline().decode("utf-8").strip()
+                if line:
+                    lines.append(line)
+                if line.startswith("data: "):
+                    break
+        self.assertIn("event: heartbeat", lines)
+        sent = next(line for line in lines if line.startswith("data: "))
+        self.assertEqual(json.loads(sent.removeprefix("data: "))["seq"], last)
 
     def test_chat_and_report_and_history(self):
         self.login("op", "op-pw")
@@ -507,12 +564,49 @@ class TestServer(unittest.TestCase):
         finally:
             restarted_svc.workers.kill_all()
 
+    def test_interrupted_run_restores_as_failed_with_restart_available(self):
+        for prior in ("paused", "running"):
+            with self.subTest(prior=prior):
+                self.svc._set_state(prior)
+                reopened = AssessmentService(Path(self.tmp.name), LAB_PORT, verify_seconds=0.05)
+                try:
+                    snap = reopened.snapshot()
+                    self.assertEqual(snap["state"], "failed")
+                    self.assertEqual(snap["failure"]["kind"], "interrupted")
+                    self.assertIn("再診断", snap["failure"]["reason"])
+                    with self.assertRaises(ValueError):
+                        reopened.resume("op")
+                    self.assertEqual(reopened.snapshot()["state"], "failed")
+                    if prior == "running":
+                        reopened.restart("op")
+                        reopened.emergency_stop("op")
+                        if reopened._thread is not None:
+                            reopened._thread.join(timeout=5)
+                        self.assertEqual(reopened.snapshot()["state"], "stopped")
+                finally:
+                    reopened.workers.kill_all()
+
+    def test_live_paused_runner_can_still_resume(self):
+        self.login("appr", "appr-pw")
+        self.assertEqual(self.post("/start")[0], 200)
+        pending = self.wait_for(lambda s: any(a["status"] == "pending" for a in s["approvals"]))
+        self.assertEqual(self.post("/pause")[0], 200)
+        self.assertEqual(self.get()["state"], "paused")
+        self.assertEqual(self.post("/resume")[0], 200)
+        self.assertEqual(self.get()["state"], "running")
+        self.post(f"/approvals/{pending['approvals'][0]['id']}", {"decision": "reject"})
+        self.wait_for(lambda s: s["state"] == "completed")
+
     def test_artex_cli_and_abliteration_api_live_verification_endpoint(self):
         self.login("op", "op-pw")
         self.assertEqual(self._req(f"{self.root}/router/verify", {})[0], 403)    # spawns a CLI + model call
         self.assertEqual(self._req(f"{self.root}/cve/sync", {})[0], 403)         # replaces feed data
         self.login("appr", "appr-pw")
-        code, rep = self._req(f"{self.root}/router/verify", {})
+        # This public API route must not discover a configured paid endpoint.
+        # External model evaluation has its own approval and budget boundary.
+        with patch("aegis.router.AbliterationBackend.from_env",
+                   side_effect=AssertionError("configured model must not be used")):
+            code, rep = self._req(f"{self.root}/router/verify", {})
         self.assertEqual(code, 200)
         self.assertTrue(rep["all_verified"])
         self.assertTrue(rep["artex_cli"]["verified"])

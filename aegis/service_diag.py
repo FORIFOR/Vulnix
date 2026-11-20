@@ -10,20 +10,119 @@ Implements:
 """
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
 from typing import Optional
 import urllib.parse
 
 from . import cve
+from .workers.http_probe import _split_cookie_parts, sanitize_set_cookie_header
+
+
+def sanitize_http_probe_payload(payload: object) -> dict:
+    """Scrub raw Set-Cookie values from an http_probe response dict."""
+    if not isinstance(payload, dict):
+        raise ValueError("http_probe payload is not an object")
+    out = dict(payload)
+    raw_cookies: list[str] = []
+    if isinstance(out.get("set_cookies"), list):
+        raw_cookies.extend(str(c) for c in out["set_cookies"][:50])
+    if isinstance(out.get("headers"), dict):
+        clean_headers = {}
+        for k, v in out["headers"].items():
+            if str(k).lower() in ("set-cookie", "set-cookie2"):
+                if not raw_cookies and isinstance(v, str):
+                    raw_cookies.append(v)
+            else:
+                clean_headers[k] = v
+        out["headers"] = clean_headers
+    if "set_cookies" in out or raw_cookies:
+        out["set_cookies"] = [sanitize_set_cookie_header(c) for c in raw_cookies[:50]]
+    return out
+
 
 
 EXECUTOR_DEFAULT = {
-    "agent": "ARTEX 実行エンジン（ProposalRouter 制御）",
-    "model": "提案元は診断コンテキストを参照（実行権限なし）",
+    "agent": "Vulnix 診断エンジン",
+    "model": "内蔵の検査ルール（実行権限なし）",
 }
 
+
+def _auth_error_only(res: dict, headers_lower: dict[str, str]) -> bool:
+    """Recognize a complete 200 JSON denial, not a protected data response."""
+    body = res.get("body_prefix")
+    length = headers_lower.get("content-length", "")
+    if not isinstance(body, str):
+        return False
+    body_size = len(body.encode("utf-8"))
+    if length:
+        complete = len(length) <= 10 and length.isdecimal() and int(length) == body_size
+    else:
+        # http_probe.read(4096) returns a short body only at HTTP EOF.
+        complete = body_size < 4096
+    if not complete:
+        return False
+    try:
+        payload = json.loads(body)
+    except (ValueError, TypeError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    keys = set(payload)
+    if not keys <= {"error", "message", "code", "request_id"} or len(keys & {"error", "message"}) != 1:
+        return False
+    if "code" in payload and payload["code"] != "AUTH_REQUIRED":
+        return False
+    if "request_id" in payload and (not isinstance(payload["request_id"], str)
+                                    or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", payload["request_id"])):
+        return False
+    value = payload.get("error", payload.get("message"))
+    return isinstance(value, str) and value.strip().casefold() in {
+        "authentication required", "unauthorized", "login required", "sign in required",
+        "認証が必要です", "ログインが必要です",
+    }
+
+
 SEVERITY_BASE_SCORE = {"critical": 90, "high": 75, "medium": 50, "low": 25}
+
+
+def analyze_status_marker_report(report: dict, evidence: dict) -> dict:
+    """Turn one audited fixed Worker report into an L1 finding."""
+    if (report.get("check_id") != "apache_mod_status"
+            or type(report.get("detected")) is not bool
+            or not isinstance(evidence.get("audit_hash"), str)
+            or evidence.get("tool") != "status_marker"):
+        raise ValueError("status marker result has no auditable fixed verdict")
+    detected = report["detected"]
+    verdict = "detected" if detected else "not_reproduced"
+    score, rationale = compute_finding_risk_score("medium", verdict)
+    return {
+        "id": "f_l1_apache_mod_status",
+        "title": ("Apache mod_status の公開露出" if detected
+                  else "Apache mod_status の公開は確認できず"),
+        "category": "情報公開設定",
+        "severity": "medium",
+        "risk_level": "L1",
+        "verdict": verdict,
+        "verdict_basis": "l1_observation",
+        "risk_score": score,
+        "risk_rationale": rationale,
+        "cve": [],
+        "help_term": "security_headers",
+        "summary": ("固定パスでApache mod_status固有の応答マーカーを観測しました。" if detected
+                    else "固定パスではApache mod_status固有の応答マーカーを確認できませんでした。"),
+        "why_detected": ("HTTP 200とTotal Accesses、Uptimeの両マーカーを確認しました。" if detected
+                         else "この検査では露出を確認できませんでした。"),
+        "what_was_established": ("固定パスで状態情報の公開を観測しました。" if detected else None),
+        "evidence": [evidence],
+        "remediation": {
+            "steps": ["Apache mod_status を公開範囲から外すか、管理者だけにアクセスを制限する"],
+            "how_to_verify": "同じ固定パスを再診断し、状態情報が公開されないことを確認します。",
+        },
+        "executor": {**EXECUTOR_DEFAULT, "tool": "status_marker"},
+        "demo_fixture": False,
+    }
 
 
 def compute_finding_risk_score(
@@ -41,7 +140,7 @@ def compute_finding_risk_score(
         else 0.75
         if verdict == "detected"
         else 0.0
-        if verdict == "not_reproduced"
+        if verdict in ("candidate", "not_reproduced", "unverified", "aborted")
         else 0.5
     )
     bonus = (10 if kev else 0) + (5 if internet_facing else 0)
@@ -125,6 +224,7 @@ def analyze_l1_service_response(
     ev: dict,
     target_url: str,
     cve_monitor: Optional[cve.FeedMonitor] = None,
+    *, root_access: Optional[dict] = None, cookie_policy: Optional[dict] = None,
 ) -> list[dict]:
     """Analyze a read-only L1 ``http_probe`` response for an external HTTPS service."""
     findings: list[dict] = []
@@ -137,6 +237,8 @@ def analyze_l1_service_response(
     status_code = res.get("status")
     is_redirect = isinstance(status_code, int) and 300 <= status_code < 400
     parsed_url = urllib.parse.urlparse(target_url)
+    if parsed_url.path not in ("", "/"):
+        root_access = None
     is_https = parsed_url.scheme.lower() == "https"
     tls_info = res.get("tls") or {}
     set_cookies: list[str] = [clean_target_text(c, 1024) for c in (res.get("set_cookies") or [])[:50]]
@@ -289,42 +391,96 @@ def analyze_l1_service_response(
 
     # 3. Cookie Secure, HttpOnly, SameSite
     insecure_cookies: list[str] = []
+    candidate_cookies: list[str] = []
+    cookie_checks: list[dict] = []
+    policy_confirmed = bool(cookie_policy and cookie_policy.get("status") == "confirmed"
+                            and cookie_policy.get("evidence"))
     for raw_cookie in set_cookies:
-        cookie_name = raw_cookie.split("=", 1)[0].strip()[:64] or "cookie"
+        parts = _split_cookie_parts(raw_cookie)
+        first = parts[0].strip() if parts else ""
+        cookie_name = (first.split("=", 1)[0].strip()[:64] if "=" in first else "") or "cookie"
+        if policy_confirmed and cookie_name in cookie_policy["non_session"]:
+            cookie_checks.append({"name": cookie_name, "purpose": "non_session",
+                                  "verdict": "none", "gaps": []})
+            continue
+        session_cookie = bool(policy_confirmed and cookie_name in cookie_policy["session"])
         # attributes are the ";"-separated parts AFTER name=value; a cookie name or
         # value that merely contains the word "secure" does not count
-        attrs = {part.strip().split("=", 1)[0].lower() for part in raw_cookie.split(";")[1:]}
+        attrs = {}
+        ambiguous = False
+        for part in parts[1:]:
+            key, _, value = part.strip().partition("=")
+            key = key.strip().lower()
+            val = value.strip()
+            if len(val) >= 2 and val[0] == '"' and val[-1] == '"':
+                val = val[1:-1].strip()
+            if key in attrs and attrs[key].lower() != val.lower():
+                ambiguous = True
+            attrs[key] = val
         missing_flags: list[str] = []
         if is_https and "secure" not in attrs:
             missing_flags.append("Secure")
         if "httponly" not in attrs:
             missing_flags.append("HttpOnly")
-        if "samesite" not in attrs:
+        expected_same_site = cookie_policy["same_site"] if session_cookie else None
+        if expected_same_site:
+            acceptable = {"Lax", "Strict"} if expected_same_site == "Lax" else {expected_same_site}
+            if attrs.get("samesite", "").capitalize() not in acceptable:
+                missing_flags.append(f"SameSite={expected_same_site}")
+        elif "samesite" not in attrs:
             missing_flags.append("SameSite")
-        if missing_flags:
-            insecure_cookies.append(f"{cookie_name} (未設定: {'/'.join(missing_flags)})")
+        if missing_flags or ambiguous:
+            if ambiguous:
+                missing_flags.append("属性の重複・不一致")
+            detail = f"{cookie_name} (未設定・不一致: {'/'.join(missing_flags)})"
+            if session_cookie and not ambiguous:
+                insecure_cookies.append(detail)
+                item_verdict = "detected"
+            else:
+                candidate_cookies.append(detail)
+                item_verdict = "candidate"
+            cookie_checks.append({"name": cookie_name,
+                                  "purpose": "session" if session_cookie else "unknown",
+                                  "verdict": item_verdict, "gaps": missing_flags})
+        else:
+            cookie_checks.append({"name": cookie_name,
+                                  "purpose": "session" if session_cookie else "unknown",
+                                  "verdict": "none", "gaps": []})
 
-    if insecure_cookies:
+    if insecure_cookies or candidate_cookies:
+        detected = bool(insecure_cookies)
+        verdict = "detected" if detected else "candidate"
+        described = "; ".join(filter(None, [
+            f"確認済みの属性不足・不一致: {'; '.join(insecure_cookies)}" if insecure_cookies else "",
+            f"用途・属性が未確認: {'; '.join(candidate_cookies)}" if candidate_cookies else "",
+        ]))
         r_score, r_rat = compute_finding_risk_score(
-            "medium", "detected", internet_facing=is_https
+            "medium", verdict, internet_facing=is_https
         )
         findings.append(
             {
                 "id": "f_l1_cookies",
-                "title": "Cookieのセキュリティ属性（Secure / HttpOnly / SameSite）不足",
+                "title": ("認証セッションCookieの保護属性不足・仕様不一致" if detected else
+                          "Cookie用途と保護属性の確認候補"),
                 "severity": "medium",
-                "verdict": "detected",
-                "verdict_basis": "l1_observation",
+                "verdict": verdict,
+                "verdict_basis": "owner_spec_and_l1_observation" if detected else "unverified_scope",
                 "category": "セッション・Cookie設定",
                 "cve": [],
                 "risk_level": "L1",
                 "help_term": "security_headers",
                 "risk_score": r_score,
                 "risk_rationale": r_rat,
-                "summary": f"Set-Cookie ヘッダーにおいてセキュリティ属性の不足を検出しました: {'; '.join(insecure_cookies)}",
-                "why_detected": "応答の Set-Cookie ヘッダー属性を解析した結果です。",
-                "what_was_established": f"実際の応答Cookieに保護属性不足（{'; '.join(insecure_cookies)}）を確認しました。",
-                "impact": "XSSによるセッショントークン窃取（HttpOnly欠落）、平文通信への漏えい（Secure欠落）、CSRF攻撃（SameSite欠落）のリスクが高まります。",
+                "summary": f"Set-Cookie の属性を観測しました: {described}",
+                "cookie_checks": cookie_checks,
+                "why_detected": ("承認済み所有者仕様で認証セッション用途を確認し、応答属性との不一致を観測しました。"
+                                 if detected else "属性不足を観測しましたが、認証セッション用途は確認できていません。"),
+                "what_was_established": (f"認証セッションCookieの保護属性不足・仕様不一致（{'; '.join(insecure_cookies)}）を観測しました。"
+                                         if detected else None),
+                "caveat": ("セッション悪用やCSRFの成立は実証していません。" if detected else
+                           "Cookie名だけでは用途を判定しません。所有者仕様が揃うまで脆弱性とは扱いません。"),
+                "impact": ("セッション保護が弱まる可能性があります。悪用は未実証です。" if detected else
+                           "認証セッションへの影響は未確認です。"),
                 "evidence": [
                     _enrich_ev(
                         ev,
@@ -334,9 +490,11 @@ def analyze_l1_service_response(
                 ],
                 "remediation": {
                     "steps": [
-                        "セッション・認証に関わるすべてのCookieに Secure; HttpOnly; SameSite=Lax（または Strict）を付与する"
+                        (f"所有者仕様で認証用と確認されたCookieに Secure; HttpOnly; SameSite={cookie_policy['same_site']} を設定する"
+                         if detected else "Cookieの用途を確認し、認証用であれば所有者仕様に沿って保護属性を設定する")
                     ],
-                    "how_to_verify": "修正後に同じGET検査を実行し、Set-Cookie ヘッダーに Secure, HttpOnly, SameSite が含まれることを確認します。",
+                    "how_to_verify": ("修正後に同じGET検査を実行し、Set-Cookieの属性と承認済み所有者仕様の一致を確認します。"
+                                      if detected else "Cookie用途を所有者仕様で確定し、同じGET検査で属性を再確認します。"),
                 },
                 "executor": {**EXECUTOR_DEFAULT, "tool": "http_probe"},
                 "demo_fixture": False,
@@ -347,9 +505,12 @@ def analyze_l1_service_response(
     acao = headers_lower.get("access-control-allow-origin", "")
     acac = headers_lower.get("access-control-allow-credentials", "").lower()
     probe_origin = str(res.get("cors_probe_origin", "https://untrusted-origin.example"))
-    # "null" is as untrusted as a reflected origin (sandboxed frames, local files)
-    if acao in ("*", "null") or (acao and probe_origin and acao == probe_origin):
-        sev = "high" if (acao in (probe_origin, "null") and acac == "true") else "medium"
+    # A public response with ACAO * or a reflected origin is not by itself a
+    # credentialed cross-origin exposure. Browsers reject ACAO * together with
+    # credentials; require an observed credentialed policy before detection.
+    # "null" represents untrusted sandboxed/file origins.
+    if acac == "true" and (acao == "null" or (acao and probe_origin and acao == probe_origin)):
+        sev = "high"
         r_score, r_rat = compute_finding_risk_score(
             sev, "detected", internet_facing=is_https
         )
@@ -363,7 +524,7 @@ def analyze_l1_service_response(
                 "category": "CORS・オリジン境界",
                 "cve": [],
                 "risk_level": "L1",
-                "help_term": "security_headers",
+                "help_term": "cors",
                 "risk_score": r_score,
                 "risk_rationale": r_rat,
                 "summary": (
@@ -372,7 +533,12 @@ def analyze_l1_service_response(
                     f"(Allow-Credentials: {acac or '未設定'}) が返却されました。"
                 ),
                 "why_detected": f"Origin: {probe_origin} を付与した非破壊GETリクエストの応答ヘッダーで確認されました。",
-                "what_was_established": f"未承認の外部オリジンに対して Access-Control-Allow-Origin: {acao} が返却されることを確認しました。",
+                "what_was_established": (
+                    f"Origin: {probe_origin} を付けたGETへの応答で "
+                    f"Access-Control-Allow-Origin: {acao} と "
+                    "Access-Control-Allow-Credentials: true を確認しました。"
+                ),
+                "verdict_note": "確認したのはCORS応答設定です。認証付きの機密情報をブラウザから読み取れたことは実証していません。",
                 "impact": "悪意ある外部サイトからブラウザ経由でAPI応答を読み取られる（クロスオリジン情報漏えい）恐れがあります。",
                 "evidence": [
                     _enrich_ev(
@@ -404,14 +570,17 @@ def analyze_l1_service_response(
         if v
     ]
     if exposed_tech:
+        banner_text = " ".join([server_hdr, powered_by])
+        has_version = cve.banner_has_version(banner_text)
+        cve_feed_available = bool(cve_monitor and getattr(cve_monitor, "catalog", None))
         candidates = (
             cve.detect_from_banner(
-                " ".join([server_hdr, powered_by]),
+                banner_text,
                 source="server-header",
                 catalog=cve_monitor.catalog,
                 kev=cve_monitor.kev,
             )
-            if cve_monitor
+            if cve_feed_available and has_version
             else []
         )
         cve_ids = sorted({c.cve.id for c in candidates})
@@ -424,7 +593,11 @@ def analyze_l1_service_response(
         cve_note = (
             f" 関連CVE候補: {', '.join(cve_ids)}（バナー照合による検出・未実証）。"
             if cve_ids
-            else "（NVD/CISA KEV上の既知悪用バナー一致なし）"
+            else "（バージョン番号が含まれないためCVE照合は未判定。既知CVEへの該当有無は断定できません）"
+            if not has_version
+            else "（CVEフィード未取得のためCVE照合は未実施）"
+            if not cve_feed_available
+            else "（現在のNVD/CISA KEVカタログ上の既知バナー一致なし。安全性の保証ではありません）"
         )
         findings.append(
             {
@@ -470,26 +643,54 @@ def analyze_l1_service_response(
     # 6. Unauthenticated API access control boundary check
     content_type = headers_lower.get("content-type", "")
     media_type = content_type.lower().split(";", 1)[0].strip()
-    if status_code == 200 and (media_type == "application/json" or media_type.endswith("+json")):
+    if status_code == 200 and (media_type == "application/json" or media_type.endswith("+json")) \
+            and not (root_access and root_access.get("spec_status") == "confirmed"
+                     and root_access.get("requirement") == "public"):
+        protected = bool(root_access and root_access.get("spec_status") == "confirmed"
+                         and root_access.get("requirement") == "authentication_required"
+                         and root_access.get("spec_evidence"))
+        denial_only = _auth_error_only(res, headers_lower)
+        verdict = "detected" if protected and not denial_only else "candidate"
         r_score, r_rat = compute_finding_risk_score(
-            "medium", "detected", internet_facing=is_https
+            "medium", verdict, internet_facing=is_https
         )
+        if denial_only:
+            title = "未認証要求への認証拒否を確認（HTTP 200）"
+            summary = f"認証ヘッダーなしのGET（{target_url}）には HTTP 200 が返りましたが、JSON本文は認証拒否だけでした。"
+            reason = "HTTP 200のJSON本文は認証エラーだけでした。保護対象データの取得は確認できません。"
+            impact = "この応答から保護対象データの露出は確認できません。"
+            fix = "必要に応じて、認証拒否時のHTTPステータスを401/403に揃える"
+        else:
+            title = ("所有者仕様で認証必須のJSON応答が未認証で取得可能"
+                     if protected else "未認証JSON応答の公開範囲を確認する候補")
+            summary = (f"認証ヘッダーなしのGETリクエスト（{target_url}）に対して HTTP 200 "
+                       f"({content_type}) が返却されました。公開エンドポイントとして意図されたものか確認が必要です。")
+            reason = ("管理者承認済みの所有者仕様でルートが認証必須と定められ、"
+                      "未認証の読み取り専用GETでJSON応答を観測しました。" if protected else
+                      "未認証の読み取り専用プローブでJSON応答を観測しました。"
+                      "保護対象かどうかは、この応答だけでは判定できません。")
+            impact = "認証が必須であるべきAPIが未認証で応答している場合、内部ステータスやメタデータが外部へ露出する恐れがあります。"
+            fix = "公開が不要なAPIエンドポイントでは認証ミドルウェアを必須化し、未認証時は HTTP 401 Unauthorized を返却する"
         findings.append(
             {
                 "id": "f_l1_unauth_api",
-                "title": "未認証リクエストに対するJSON API応答の返却（認証境界の確認が必要）",
+                "title": title,
                 "severity": "medium",
-                "verdict": "detected",
+                "verdict": verdict,
+                "verdict_basis": "owner_spec_and_l1_observation" if verdict == "detected" else "unverified_scope",
                 "category": "APIアクセス制御",
                 "cve": [],
                 "risk_level": "L1",
                 "help_term": "idor",
                 "risk_score": r_score,
                 "risk_rationale": r_rat,
-                "summary": f"認証ヘッダーなしのGETリクエスト（{target_url}）に対して HTTP 200 ({content_type}) が返却されました。公開エンドポイントとして意図されたものか確認が必要です。",
-                "why_detected": "未認証の読み取り専用プローブに対して JSON ペイロードが返却されたためです。",
-                "caveat": "公開ヘルスチェック等の場合は正常ですが、保護対象APIの場合は認可ミドルウェアの適用漏れがないか確認が必要です。",
-                "impact": "認証が必須であるべきAPIが未認証で応答している場合、内部ステータスやメタデータが外部へ露出する恐れがあります。",
+                "summary": summary,
+                "why_detected": reason,
+                "what_was_established": ("認証ヘッダーなしのGETでHTTP 200のJSON応答を取得しました。"
+                                         if verdict == "detected" else None),
+                "caveat": ("認証要件との不一致を観測しました。応答内容が機密情報か、他ユーザーの情報を読めたかは未実証です。"
+                           if verdict == "detected" else "保護対象データの取得は確認できません。追加の根拠が揃うまで脆弱性とは判定しません。"),
+                "impact": impact,
                 "evidence": [
                     _enrich_ev(
                         ev,
@@ -498,9 +699,7 @@ def analyze_l1_service_response(
                     )
                 ],
                 "remediation": {
-                    "steps": [
-                        "公開が不要なAPIエンドポイントでは認証ミドルウェアを必須化し、未認証時は HTTP 401 Unauthorized を返却する"
-                    ],
+                    "steps": [fix],
                     "how_to_verify": "未認証GETリクエストに対して HTTP 401/403 が返却されることを確認します。",
                 },
                 "executor": {**EXECUTOR_DEFAULT, "tool": "http_probe"},
@@ -542,14 +741,14 @@ def build_l2_candidates(
             else "未検査（この項目に必要なL2検証用アカウントが未設定・人間の個別承認待ち）"
         )
         r_score, r_rat = compute_finding_risk_score(
-            spec["severity"], "detected", internet_facing=is_https
+            spec["severity"], "candidate", internet_facing=is_https
         )
         candidates.append(
             {
                 "id": spec["id"],
                 "title": spec["title"],
                 "severity": spec["severity"],
-                "verdict": "detected",
+                "verdict": "candidate",
                 "category": spec["category"],
                 "cve": [],
                 "risk_level": "L2",

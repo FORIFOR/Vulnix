@@ -2,7 +2,10 @@
 invitations, and that one account can never read or act on another organization."""
 import tests  # noqa: F401  (hermetic revocation-marker directory)
 import json
+import http.client
 import os
+import socketserver
+import subprocess
 import tempfile
 import threading
 import time
@@ -14,7 +17,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from aegis.assessment import AssessmentService
-from aegis.operators import OperatorStore, hash_password
+from aegis.lab import start_lab
+from aegis.operators import OperatorStore, hash_password, totp_code
 from aegis.server import make_handler
 from aegis.tenancy import (DEFAULT_ORG, MAX_ORGS_PER_ACCOUNT, OrgStore, TenancyError, TenantRegistry,
                            default_members_from, service_roles)
@@ -136,6 +140,1306 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
         self.svc.close()
         self.tmp.cleanup()
 
+    def test_logout_after_org_binding_cannot_start_a_scan(self):
+        who = self.signup("latebinding")
+        org_id = who["orgs"][0]["id"]
+        svc = self.reg.service(org_id)
+        entered, release, started = threading.Event(), threading.Event(), threading.Event()
+        response = []
+        handler = self.srv.RequestHandlerClass
+        original_bind = handler._bind
+
+        def paused_bind(request, *args, **kwargs):
+            bound = original_bind(request, *args, **kwargs)
+            if bound and request.path == "/api/assessments/scan_001/start":
+                entered.set()
+                if not release.wait(5):
+                    raise TimeoutError("binding test did not release the request")
+            return bound
+
+        with patch.object(handler, "_bind", paused_bind), patch.object(svc, "start", side_effect=started.set):
+            thread = threading.Thread(target=lambda: response.append(
+                self.req(who, "/assessments/scan_001/start", {}, org=org_id)))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            self.ops.logout(who["cookie"].split("=", 1)[1])
+            release.set()
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(response[0][0], 401)
+        self.assertFalse(started.is_set())
+
+    def test_logout_after_asset_selection_cannot_receive_snapshot(self):
+        who = self.signup("lateselect")
+        org_id = who["orgs"][0]["id"]
+        svc = self.reg.service(org_id)
+        entered, release = threading.Event(), threading.Event()
+        response = []
+        original_assets = svc.assets
+
+        def delayed_assets():
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("asset selection response did not release")
+            return original_assets()
+
+        with patch.object(svc, "assets", side_effect=delayed_assets):
+            thread = threading.Thread(target=lambda: response.append(
+                self.req(who, "/assets/select", {"id": svc.a.asset["id"]}, org=org_id)))
+            thread.start()
+            try:
+                self.assertTrue(entered.wait(5))
+                self.ops.logout(who["cookie"].split("=", 1)[1])
+            finally:
+                release.set()
+                thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(response[0][0], 401)
+        self.assertNotIn("snapshot", response[0][1])
+
+    def test_logout_after_asset_registration_cannot_receive_asset_list(self):
+        who = self.signup("lateregisterasset")
+        org_id = who["orgs"][0]["id"]
+        svc = self.reg.service(org_id)
+        entered, release = threading.Event(), threading.Event()
+        response = []
+        original_assets = svc.assets
+
+        def delayed_assets():
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("asset registration response did not release")
+            return original_assets()
+
+        with patch.object(svc, "register_asset", return_value={"id": "mock_asset"}), \
+                patch.object(svc, "assets", side_effect=delayed_assets):
+            thread = threading.Thread(target=lambda: response.append(self.req(
+                who, "/assets", {"name": "lab.test", "authorization_ref": "lab-only"}, org=org_id)))
+            thread.start()
+            try:
+                self.assertTrue(entered.wait(5))
+                self.ops.logout(who["cookie"].split("=", 1)[1])
+            finally:
+                release.set()
+                thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(response[0][0], 401)
+        self.assertNotIn("assets", response[0][1])
+
+    def test_logout_after_asset_secret_or_delete_commit_cannot_receive_snapshot(self):
+        cases = (
+            ("secrets", "configure_asset_secrets", {"configured": True}, {"host": "lab.test"}),
+            ("delete", "delete_asset", [], {"id": "asset_001"}),
+        )
+        for suffix, method, result, body in cases:
+            with self.subTest(suffix=suffix):
+                who = self.signup(f"late{suffix}")
+                org_id = who["orgs"][0]["id"]
+                svc = self.reg.service(org_id)
+                entered, release = threading.Event(), threading.Event()
+                response = []
+                original_snapshot = svc.snapshot
+
+                def delayed_snapshot():
+                    entered.set()
+                    if not release.wait(5):
+                        raise TimeoutError("asset mutation response did not release")
+                    return original_snapshot()
+
+                with patch.object(svc, method, return_value=result), \
+                        patch.object(svc, "snapshot", side_effect=delayed_snapshot):
+                    thread = threading.Thread(target=lambda: response.append(
+                        self.req(who, f"/assets/{suffix}", body, org=org_id)))
+                    thread.start()
+                    try:
+                        self.assertTrue(entered.wait(5))
+                        self.ops.logout(who["cookie"].split("=", 1)[1])
+                    finally:
+                        release.set()
+                        thread.join(5)
+                self.assertFalse(thread.is_alive())
+                self.assertEqual(response[0][0], 401)
+                self.assertNotIn("snapshot", response[0][1])
+
+    def test_logout_during_diagnostic_post_cannot_receive_result(self):
+        cases = (
+            ("verify-finding", "verify_finding", {"finding_id": "f_mock"}),
+            ("artex/plan", "plan_with_artex", {}),
+            ("artex/items/mock/execute", "execute_artex_item", {}),
+            ("verify-fix", "verify_fix", {}),
+            ("chat", "ask_chat", {"question": "結果を説明してください"}),
+        )
+        for index, (suffix, method, body) in enumerate(cases):
+            with self.subTest(suffix=suffix):
+                who = self.signup(f"latepost{index}")
+                org_id = who["orgs"][0]["id"]
+                svc = self.reg.service(org_id)
+                entered, release = threading.Event(), threading.Event()
+                response = []
+
+                def delayed_result(*args, **kwargs):
+                    entered.set()
+                    if not release.wait(5):
+                        raise TimeoutError("diagnostic response did not release")
+                    return {"private_result": "must-not-be-returned"}
+
+                with patch.object(svc, method, side_effect=delayed_result):
+                    thread = threading.Thread(target=lambda: response.append(self.req(
+                        who, f"/assessments/scan_001/{suffix}", body, org=org_id)))
+                    thread.start()
+                    try:
+                        self.assertTrue(entered.wait(5))
+                        self.ops.logout(who["cookie"].split("=", 1)[1])
+                    finally:
+                        release.set()
+                        thread.join(5)
+                self.assertFalse(thread.is_alive())
+                self.assertEqual(response[0][0], 401)
+                self.assertNotIn("private_result", response[0][1])
+
+    def test_logout_during_diagnostic_error_hides_exception_detail(self):
+        who = self.signup("lateerror")
+        org_id = who["orgs"][0]["id"]
+        svc = self.reg.service(org_id)
+        entered, release = threading.Event(), threading.Event()
+        response = []
+
+        def delayed_error(*args, **kwargs):
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("diagnostic error test did not release")
+            raise ValueError("PRIVATE_DIAGNOSTIC_ERROR_DETAIL")
+
+        with patch.object(svc, "ask_chat", side_effect=delayed_error):
+            thread = threading.Thread(target=lambda: response.append(self.req(
+                who, "/assessments/scan_001/chat", {"question": "説明"}, org=org_id)))
+            thread.start()
+            try:
+                self.assertTrue(entered.wait(5))
+                self.ops.logout(who["cookie"].split("=", 1)[1])
+            finally:
+                release.set()
+                thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(response[0][0], 401)
+        self.assertNotIn("PRIVATE_DIAGNOSTIC_ERROR_DETAIL", response[0][1])
+
+    def test_logout_during_platform_verification_hides_result(self):
+        cases = (
+            ("/router/verify", self.svc, "verify_planner_connections"),
+            ("/l2-profiles/accept", self.svc, "accept_l2_profile"),
+            ("/cve/sync", self.svc.cve_monitor, "ingest_payloads"),
+            ("/system/verify-controls", "aegis.server.run_live_control_verification", None),
+            ("/cve/real-software-verify", "aegis.server.run_real_software_cve_comparison", None),
+        )
+        for path, target, method in cases:
+            with self.subTest(path=path):
+                admin = self.login("padmin", "padmin-pw-1")
+                entered, release = threading.Event(), threading.Event()
+                response = []
+
+                def delayed_report(*args, **kwargs):
+                    entered.set()
+                    if not release.wait(5):
+                        raise TimeoutError("platform verification test did not release")
+                    return {"private_platform_report": "must-not-be-returned", "all_passed": True,
+                            "cve_count": 0, "kev_count": 0}
+
+                patcher = (patch.object(target, method, side_effect=delayed_report) if method else
+                           patch(target, side_effect=delayed_report))
+                with patcher:
+                    thread = threading.Thread(target=lambda: response.append(self.req(admin, path, {})))
+                    thread.start()
+                    try:
+                        self.assertTrue(entered.wait(5))
+                        self.ops.logout(admin["cookie"].split("=", 1)[1])
+                    finally:
+                        release.set()
+                        thread.join(5)
+                self.assertFalse(thread.is_alive())
+                self.assertEqual(response[0][0], 401)
+                self.assertNotIn("private_platform_report", response[0][1])
+
+    def test_logout_during_platform_verification_error_returns_401(self):
+        admin = self.login("padmin", "padmin-pw-1")
+        entered, release = threading.Event(), threading.Event()
+        response = []
+
+        def delayed_error(*args, **kwargs):
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("platform error test did not release")
+            raise RuntimeError("PRIVATE_PLATFORM_ERROR")
+
+        with patch.object(self.svc, "verify_planner_connections", side_effect=delayed_error):
+            thread = threading.Thread(target=lambda: response.append(self.req(admin, "/router/verify", {})))
+            thread.start()
+            try:
+                self.assertTrue(entered.wait(5))
+                self.ops.logout(admin["cookie"].split("=", 1)[1])
+            finally:
+                release.set()
+                thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(response[0][0], 401)
+        self.assertNotIn("PRIVATE_PLATFORM_ERROR", response[0][1])
+
+    def test_logout_after_binding_invokes_stop_without_returning_protected_data(self):
+        for suffix, method in (("pause", "pause"), ("emergency-stop", "emergency_stop")):
+            with self.subTest(suffix=suffix):
+                who = self.signup(f"late{method}")
+                org_id = who["orgs"][0]["id"]
+                svc = self.reg.service(org_id)
+                entered, release, stopped = threading.Event(), threading.Event(), threading.Event()
+                response = []
+                handler = self.srv.RequestHandlerClass
+                original_bind = handler._bind
+                path = f"/api/assessments/scan_001/{suffix}"
+
+                def paused_bind(request, *args, **kwargs):
+                    bound = original_bind(request, *args, **kwargs)
+                    if bound and request.path == path:
+                        entered.set()
+                        if not release.wait(5):
+                            raise TimeoutError("stop binding test did not release the request")
+                    return bound
+
+                def record_stop(*_):
+                    stopped.set()
+                    return {"target_url": "https://private.lab.test"} if method == "emergency_stop" else None
+
+                with patch.object(handler, "_bind", paused_bind), \
+                        patch.object(svc, method, side_effect=record_stop), \
+                        patch.object(svc, "snapshot", return_value={"target_url": "https://private.lab.test"}):
+                    thread = threading.Thread(target=lambda: response.append(
+                        self.req(who, f"/assessments/scan_001/{suffix}", {}, org=org_id)))
+                    thread.start()
+                    self.assertTrue(entered.wait(5))
+                    self.ops.logout(who["cookie"].split("=", 1)[1])
+                    release.set()
+                    thread.join(5)
+                self.assertFalse(thread.is_alive())
+                self.assertTrue(stopped.is_set(), "revocation must not prevent the stop handler")
+                self.assertEqual(response[0][0], 401)
+                self.assertNotIn("target_url", response[0][1])
+
+    def test_membership_removal_after_binding_invokes_stop_without_returning_protected_data(self):
+        owner, member = self.signup("stopowner"), self.signup("stopmember")
+        org_id = owner["orgs"][0]["id"]
+        _, invite = self.reg.store.create_invite(org_id, "stopowner", ["runner"])
+        self.reg.store.accept_invite(invite, "stopmember")
+        svc = self.reg.service(org_id)
+        for suffix, method in (("pause", "pause"), ("emergency-stop", "emergency_stop")):
+            with self.subTest(suffix=suffix):
+                entered, release, stopped = threading.Event(), threading.Event(), threading.Event()
+                response = []
+                handler = self.srv.RequestHandlerClass
+                original_bind = handler._bind
+                path = f"/api/assessments/scan_001/{suffix}"
+
+                def paused_bind(request, *args, **kwargs):
+                    bound = original_bind(request, *args, **kwargs)
+                    if bound and request.path == path:
+                        entered.set()
+                        if not release.wait(5):
+                            raise TimeoutError("stop binding test did not release the request")
+                    return bound
+
+                def record_stop(*_):
+                    stopped.set()
+                    return {"target_url": "https://private.lab.test"} if method == "emergency_stop" else None
+
+                with patch.object(handler, "_bind", paused_bind), \
+                        patch.object(svc, method, side_effect=record_stop), \
+                        patch.object(svc, "snapshot", return_value={"target_url": "https://private.lab.test"}):
+                    thread = threading.Thread(target=lambda: response.append(
+                        self.req(member, f"/assessments/scan_001/{suffix}", {}, org=org_id)))
+                    thread.start()
+                    self.assertTrue(entered.wait(5))
+                    self.reg.store.remove_member(org_id, "stopowner", "stopmember")
+                    release.set()
+                    thread.join(5)
+                self.assertFalse(thread.is_alive())
+                self.assertTrue(stopped.is_set(), "revocation must not prevent the stop handler")
+                self.assertEqual(response[0][0], 403)
+                self.assertNotIn("target_url", response[0][1])
+                if suffix == "pause":
+                    _, invite = self.reg.store.create_invite(org_id, "stopowner", ["runner"])
+                    self.reg.store.accept_invite(invite, "stopmember")
+
+    def test_logout_after_org_binding_cannot_read_logs(self):
+        who = self.signup("latereadlogout")
+        org_id = who["orgs"][0]["id"]
+        entered, release = threading.Event(), threading.Event()
+        response = []
+        handler = self.srv.RequestHandlerClass
+        original_bind = handler._bind
+
+        def paused_bind(request, *args, **kwargs):
+            bound = original_bind(request, *args, **kwargs)
+            if bound and request.path == "/api/assessments/scan_001/logs":
+                entered.set()
+                if not release.wait(5):
+                    raise TimeoutError("GET binding test did not release the request")
+            return bound
+
+        with patch.object(handler, "_bind", paused_bind):
+            thread = threading.Thread(target=lambda: response.append(
+                self.req(who, "/assessments/scan_001/logs", org=org_id)))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            self.ops.logout(who["cookie"].split("=", 1)[1])
+            release.set()
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(response[0][0], 401)
+
+    def test_logout_during_cve_status_generation_cannot_read_platform_status(self):
+        who = self.signup("cvestatuslogout")
+        entered, release = threading.Event(), threading.Event()
+        response = []
+
+        def delayed_status():
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("CVE status test did not release generation")
+            return {"cve_count": 12345}
+
+        with patch.object(self.svc.cve_monitor, "status", side_effect=delayed_status):
+            thread = threading.Thread(target=lambda: response.append(self.req(who, "/cve/status")))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            self.ops.logout(who["cookie"].split("=", 1)[1])
+            release.set()
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(response[0][0], 401)
+        self.assertNotIn("cve_count", response[0][1])
+
+    def test_membership_removal_after_org_binding_cannot_read_report(self):
+        owner, member = self.signup("reportowner"), self.signup("reportmember")
+        org_id = owner["orgs"][0]["id"]
+        _, invite = self.reg.store.create_invite(org_id, "reportowner", ["runner"])
+        self.reg.store.accept_invite(invite, "reportmember")
+        entered, release = threading.Event(), threading.Event()
+        response = []
+        handler = self.srv.RequestHandlerClass
+        original_bind = handler._bind
+
+        def paused_bind(request, *args, **kwargs):
+            bound = original_bind(request, *args, **kwargs)
+            if bound and request.path == "/api/assessments/scan_001/report":
+                entered.set()
+                if not release.wait(5):
+                    raise TimeoutError("GET membership test did not release the request")
+            return bound
+
+        with patch.object(handler, "_bind", paused_bind):
+            thread = threading.Thread(target=lambda: response.append(
+                self.req(member, "/assessments/scan_001/report", org=org_id)))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            self.reg.store.remove_member(org_id, "reportowner", "reportmember")
+            release.set()
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(response[0][0], 403)
+
+    def test_approver_revocation_after_binding_cannot_read_planner_preview(self):
+        owner, member = self.signup("previewowner"), self.signup("previewmember")
+        org_id = owner["orgs"][0]["id"]
+        _, invite = self.reg.store.create_invite(org_id, "previewowner", ["approver"])
+        self.reg.store.accept_invite(invite, "previewmember")
+        entered, release = threading.Event(), threading.Event()
+        response = []
+        handler = self.srv.RequestHandlerClass
+        original_bind = handler._bind
+
+        def paused_bind(request, *args, **kwargs):
+            bound = original_bind(request, *args, **kwargs)
+            if bound and request.path == "/api/assessments/scan_001/artex/llm-preview":
+                entered.set()
+                if not release.wait(5):
+                    raise TimeoutError("preview role test did not release the request")
+            return bound
+
+        with patch.object(handler, "_bind", paused_bind):
+            thread = threading.Thread(target=lambda: response.append(
+                self.req(member, "/assessments/scan_001/artex/llm-preview", org=org_id)))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            self.reg.store.set_roles(org_id, "previewowner", "previewmember", ["viewer"])
+            release.set()
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(response[0][0], 403)
+
+    def test_membership_removal_after_binding_cannot_read_system_status(self):
+        owner, member = self.signup("statusowner"), self.signup("statusmember")
+        org_id = owner["orgs"][0]["id"]
+        _, invite = self.reg.store.create_invite(org_id, "statusowner", ["viewer"])
+        self.reg.store.accept_invite(invite, "statusmember")
+        entered, release = threading.Event(), threading.Event()
+        response = []
+        handler = self.srv.RequestHandlerClass
+        original_bind = handler._bind
+
+        def paused_bind(request, *args, **kwargs):
+            bound = original_bind(request, *args, **kwargs)
+            if bound and request.path == "/api/system/status":
+                entered.set()
+                if not release.wait(5):
+                    raise TimeoutError("system status test did not release the request")
+            return bound
+
+        with patch.object(handler, "_bind", paused_bind):
+            thread = threading.Thread(target=lambda: response.append(
+                self.req(member, "/system/status", org=org_id)))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            self.reg.store.remove_member(org_id, "statusowner", "statusmember")
+            release.set()
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(response[0][0], 403)
+
+    def test_logout_before_platform_role_change_cannot_grant_approver(self):
+        admin = self.login("padmin", "padmin-pw-1")
+        target = self.signup("lateplatformrole")
+        entered, release = threading.Event(), threading.Event()
+        response = []
+        handler = self.srv.RequestHandlerClass
+        original_change = handler._set_roles
+
+        def paused_change(request, *args, **kwargs):
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("role change test did not release the request")
+            return original_change(request, *args, **kwargs)
+
+        with patch.object(handler, "_set_roles", paused_change):
+            thread = threading.Thread(target=lambda: response.append(
+                self.req(admin, "/operators/roles",
+                         {"name": "lateplatformrole", "roles": ["operator", "approver"]})))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            self.ops.logout(admin["cookie"].split("=", 1)[1])
+            release.set()
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(response[0][0], 401)
+        self.assertNotIn("approver", self.ops.roles_of("lateplatformrole"))
+
+    def test_logout_before_platform_account_creation_creates_nothing(self):
+        admin = self.login("padmin", "padmin-pw-1")
+        entered, release = threading.Event(), threading.Event()
+        response = []
+        original_create = self.ops.create_account
+
+        def paused_create(*args, **kwargs):
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("account creation test did not release the request")
+            return original_create(*args, **kwargs)
+
+        with patch.object(self.ops, "create_account", side_effect=paused_create):
+            thread = threading.Thread(target=lambda: response.append(self.req(
+                admin, "/auth/register", {"name": "latecreated", "password": "latecreated-Passw0rd!"})))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            self.ops.logout(admin["cookie"].split("=", 1)[1])
+            release.set()
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(response[0][0], 401)
+        self.assertEqual(self.req({}, "/auth/login",
+                                  {"name": "latecreated", "password": "latecreated-Passw0rd!"})[0], 401)
+
+    def test_logout_before_platform_mfa_recovery_cannot_reset(self):
+        admin = self.login("padmin", "padmin-pw-1")
+        target = self.signup("laterecovery")
+        entered, release = threading.Event(), threading.Event()
+        response = []
+        handler = self.srv.RequestHandlerClass
+        original_recovery = handler._admin_recovery
+
+        def paused_recovery(request, *args, **kwargs):
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("MFA recovery test did not release the request")
+            return original_recovery(request, *args, **kwargs)
+
+        with patch.object(handler, "_admin_recovery", paused_recovery):
+            thread = threading.Thread(target=lambda: response.append(
+                self.req(admin, "/operators/reset-mfa", {"name": "laterecovery"})))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            self.ops.logout(admin["cookie"].split("=", 1)[1])
+            release.set()
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(response[0][0], 401)
+        self.assertEqual(self.req(target, "/auth/me")[0], 200)
+
+    def test_logout_before_org_creation_cannot_create_an_org(self):
+        who = self.signup("lateorgcreate")
+        before = len(self.reg.store.orgs_of("lateorgcreate"))
+        entered, release = threading.Event(), threading.Event()
+        response = []
+        handler = self.srv.RequestHandlerClass
+        original_session = handler._session
+
+        def paused_session(request):
+            sess = original_session(request)
+            if request.path == "/api/orgs":
+                entered.set()
+                if not release.wait(5):
+                    raise TimeoutError("org creation test did not release the request")
+            return sess
+
+        with patch.object(handler, "_session", paused_session):
+            thread = threading.Thread(target=lambda: response.append(
+                self.req(who, "/orgs", {"name": "late org"})))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            self.ops.logout(who["cookie"].split("=", 1)[1])
+            release.set()
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(response[0][0], 401)
+        self.assertEqual(len(self.reg.store.orgs_of("lateorgcreate")), before)
+
+    def test_logout_before_password_change_keeps_the_old_password(self):
+        who = self.signup("latepassword")
+        entered, release = threading.Event(), threading.Event()
+        response = []
+        handler = self.srv.RequestHandlerClass
+        original_change = handler._change_password
+
+        def paused_change(request, *args, **kwargs):
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("password test did not release the request")
+            return original_change(request, *args, **kwargs)
+
+        with patch.object(handler, "_change_password", paused_change):
+            thread = threading.Thread(target=lambda: response.append(self.req(
+                who, "/auth/password", {"current": "latepassword-Passw0rd!",
+                                        "new": "latepassword-NewPassw0rd!"})))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            self.ops.logout(who["cookie"].split("=", 1)[1])
+            release.set()
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(response[0][0], 401)
+        self.assertEqual(self.req({}, "/auth/login",
+                                  {"name": "latepassword", "password": "latepassword-Passw0rd!"})[0], 200)
+
+    def test_logout_before_totp_enrollment_cannot_receive_a_secret(self):
+        who = self.signup("latetotp")
+        entered, release = threading.Event(), threading.Event()
+        response = []
+        handler = self.srv.RequestHandlerClass
+        original_enroll = handler._totp_enroll
+
+        def paused_enroll(request, *args, **kwargs):
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("TOTP test did not release the request")
+            return original_enroll(request, *args, **kwargs)
+
+        with patch.object(handler, "_totp_enroll", paused_enroll):
+            thread = threading.Thread(target=lambda: response.append(
+                self.req(who, "/auth/totp/enroll", {})))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            self.ops.logout(who["cookie"].split("=", 1)[1])
+            release.set()
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(response[0][0], 401)
+        self.assertNotIn("secret", response[0][1])
+
+    def test_logout_before_totp_confirmation_does_not_enable_mfa(self):
+        who = self.signup("lateconfirm")
+        secret, _ = self.ops.begin_totp_enroll("lateconfirm")
+        entered, release = threading.Event(), threading.Event()
+        response = []
+        handler = self.srv.RequestHandlerClass
+        original_confirm = handler._totp_confirm
+
+        def paused_confirm(request, *args, **kwargs):
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("TOTP confirm test did not release")
+            return original_confirm(request, *args, **kwargs)
+
+        with patch.object(handler, "_totp_confirm", paused_confirm):
+            thread = threading.Thread(target=lambda: response.append(self.req(
+                who, "/auth/totp/confirm", {"code": totp_code(secret, time.time())})))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            self.ops.logout(who["cookie"].split("=", 1)[1])
+            release.set()
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(response[0][0], 401)
+        self.assertFalse(self.ops.totp_enabled("lateconfirm"))
+
+    def test_logout_before_totp_disable_does_not_remove_mfa(self):
+        who = self.signup("latedisable")
+        secret, _ = self.ops.begin_totp_enroll("latedisable")
+        self.ops.confirm_totp("latedisable", totp_code(secret, time.time()))
+        entered, release = threading.Event(), threading.Event()
+        response = []
+        handler = self.srv.RequestHandlerClass
+        original_disable = handler._totp_disable
+
+        def paused_disable(request, *args, **kwargs):
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("TOTP disable test did not release")
+            return original_disable(request, *args, **kwargs)
+
+        with patch.object(handler, "_totp_disable", paused_disable):
+            thread = threading.Thread(target=lambda: response.append(self.req(
+                who, "/auth/totp/disable", {"current": "latedisable-Passw0rd!",
+                                             "code": totp_code(secret, time.time())})))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            self.ops.logout(who["cookie"].split("=", 1)[1])
+            release.set()
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(response[0][0], 401)
+        self.assertTrue(self.ops.totp_enabled("latedisable"))
+
+    def test_logout_before_org_list_cannot_read_membership(self):
+        who = self.signup("lateorglist")
+        entered, release = threading.Event(), threading.Event()
+        response = []
+        handler = self.srv.RequestHandlerClass
+        original_session = handler._session
+
+        def paused_session(request):
+            sess = original_session(request)
+            if request.path == "/api/orgs":
+                entered.set()
+                if not release.wait(5):
+                    raise TimeoutError("org list test did not release")
+            return sess
+
+        with patch.object(handler, "_session", paused_session):
+            thread = threading.Thread(target=lambda: response.append(self.req(who, "/orgs")))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            self.ops.logout(who["cookie"].split("=", 1)[1])
+            release.set()
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(response[0][0], 401)
+
+    def test_logout_before_admin_account_list_cannot_read_accounts(self):
+        admin = self.login("padmin", "padmin-pw-1")
+        entered, release = threading.Event(), threading.Event()
+        response = []
+        handler = self.srv.RequestHandlerClass
+        original_session = handler._session
+
+        def paused_session(request):
+            sess = original_session(request)
+            if request.path == "/api/operators":
+                entered.set()
+                if not release.wait(5):
+                    raise TimeoutError("admin account list test did not release")
+            return sess
+
+        with patch.object(handler, "_session", paused_session):
+            thread = threading.Thread(target=lambda: response.append(self.req(admin, "/operators")))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            self.ops.logout(admin["cookie"].split("=", 1)[1])
+            release.set()
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(response[0][0], 401)
+
+    def test_logout_before_session_probe_does_not_return_an_old_session(self):
+        who = self.signup("lateprobe")
+        entered, release = threading.Event(), threading.Event()
+        response = []
+        handler = self.srv.RequestHandlerClass
+        original_session = handler._session
+
+        def paused_session(request):
+            sess = original_session(request)
+            if request.path == "/api/auth/me":
+                entered.set()
+                if not release.wait(5):
+                    raise TimeoutError("session probe test did not release")
+            return sess
+
+        with patch.object(handler, "_session", paused_session):
+            thread = threading.Thread(target=lambda: response.append(self.req(who, "/auth/me")))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            self.ops.logout(who["cookie"].split("=", 1)[1])
+            release.set()
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(response[0][0], 200)
+        self.assertIsNone(response[0][1]["session"])
+
+    def test_org_owner_can_read_planner_preview(self):
+        owner = self.signup("previewowner")
+        org_id = owner["orgs"][0]["id"]
+        self.assertEqual(self.req(owner, "/assessments/scan_001/artex/llm-preview", org=org_id)[0], 200)
+
+    def test_every_organization_shares_one_platform_advisor_cap(self):
+        a, b = self.signup("capone"), self.signup("captwo")
+        sa, sb = self.reg.service(a["orgs"][0]["id"]), self.reg.service(b["orgs"][0]["id"])
+        self.assertIsNotNone(sa._platform_advisor_cap)
+        self.assertEqual({str(x._platform_advisor_cap.path) for x in (sa, sb, self.reg.default_svc)},
+                         {str(sa._platform_advisor_cap.path)})
+        sa._platform_advisor_cap.reserve(5, cap_micro_usd=10)
+        self.assertEqual(sb._platform_advisor_cap.spent(), 5)
+
+    def test_report_generation_does_not_block_logout(self):
+        who = self.signup("slowreport")
+        org_id = who["orgs"][0]["id"]
+        svc = self.reg.service(org_id)
+        entered, release, logged_out = threading.Event(), threading.Event(), threading.Event()
+        response = []
+        original_report = svc.report_markdown
+
+        def paused_report():
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("report test did not release")
+            return original_report()
+
+        with patch.object(svc, "report_markdown", side_effect=paused_report):
+            thread = threading.Thread(target=lambda: response.append(
+                self.req(who, "/assessments/scan_001/report", org=org_id)))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            logout_thread = threading.Thread(target=lambda: (
+                self.ops.logout(who["cookie"].split("=", 1)[1]), logged_out.set()))
+            logout_thread.start()
+            try:
+                self.assertTrue(logged_out.wait(0.5), "report held the global account lock")
+            finally:
+                release.set()
+                thread.join(5)
+                logout_thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertFalse(logout_thread.is_alive())
+        self.assertEqual(response[0][0], 401)
+
+    def test_a_slow_reader_does_not_hold_the_account_lock_while_its_response_is_written(self):
+        # one tenant's slow client must not delay logins or emergency stops elsewhere
+        import socketserver
+        who = self.signup("slowreader")
+        other = self.signup("someoneelse")      # before the stall: signing up needs the lock too
+        org_id, other_org = who["orgs"][0]["id"], other["orgs"][0]["id"]
+        entered, release = threading.Event(), threading.Event()
+        original_write = socketserver._SocketWriter.write
+        armed = [True]
+
+        def stalled_write(self_, b):
+            if armed[0] and threading.current_thread() is not threading.main_thread() and len(b) > 0:
+                armed[0] = False
+                entered.set()
+                release.wait(5)
+            return original_write(self_, b)
+
+        response, done = [], {}
+
+        def timed(name, fn):
+            t0 = time.monotonic()
+            done[name] = (fn(), time.monotonic() - t0)
+
+        with patch.object(socketserver._SocketWriter, "write", stalled_write):
+            thread = threading.Thread(target=lambda: response.append(
+                self.req(who, "/assessments/scan_001/logs", org=org_id)))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            do_login = lambda: self.login("someoneelse", "someoneelse-Passw0rd!")   # noqa: E731
+            do_stop = lambda: self.req(other, "/assessments/scan_001/emergency-stop", {}, org=other_org)[0]  # noqa: E731
+            workers = [threading.Thread(target=timed, args=("login", do_login)),
+                       threading.Thread(target=timed, args=("stop", do_stop))]
+            for w in workers:
+                w.start()
+            for w in workers:
+                w.join(0.5)
+            try:
+                self.assertIn("login", done, "a slow reader delayed another account's login")
+                self.assertIn("stop", done, "a slow reader delayed another organization's emergency stop")
+            finally:
+                release.set()
+                thread.join(5)
+                for w in workers:
+                    w.join(5)
+        self.assertEqual(done["stop"][0], 200)
+        self.assertEqual(response[0][0], 200)
+
+    def test_snapshot_generation_does_not_block_logout(self):
+        who = self.signup("slowsnapshot")
+        org_id = who["orgs"][0]["id"]
+        svc = self.reg.service(org_id)
+        entered, release, logged_out = threading.Event(), threading.Event(), threading.Event()
+        response = []
+        original_snapshot = svc.snapshot
+
+        def paused_snapshot():
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("snapshot test did not release")
+            return original_snapshot()
+
+        with patch.object(svc, "snapshot", side_effect=paused_snapshot):
+            thread = threading.Thread(target=lambda: response.append(
+                self.req(who, "/assessments/scan_001", org=org_id)))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            logout_thread = threading.Thread(target=lambda: (
+                self.ops.logout(who["cookie"].split("=", 1)[1]), logged_out.set()))
+            logout_thread.start()
+            try:
+                self.assertTrue(logged_out.wait(0.5), "snapshot held the global account lock")
+            finally:
+                release.set()
+                thread.join(5)
+                logout_thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertFalse(logout_thread.is_alive())
+        self.assertEqual(response[0][0], 401)
+
+    def test_system_status_generation_does_not_block_logout(self):
+        who = self.signup("slowstatus")
+        org_id = who["orgs"][0]["id"]
+        svc = self.reg.service(org_id)
+        entered, release, logged_out = threading.Event(), threading.Event(), threading.Event()
+        response = []
+        original_status = svc.system_status
+
+        def paused_status():
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("status test did not release")
+            return original_status()
+
+        with patch.object(svc, "system_status", side_effect=paused_status):
+            thread = threading.Thread(target=lambda: response.append(self.req(who, "/system/status", org=org_id)))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            logout_thread = threading.Thread(target=lambda: (
+                self.ops.logout(who["cookie"].split("=", 1)[1]), logged_out.set()))
+            logout_thread.start()
+            try:
+                self.assertTrue(logged_out.wait(0.5), "status held the global account lock")
+            finally:
+                release.set()
+                thread.join(5)
+                logout_thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertFalse(logout_thread.is_alive())
+        self.assertEqual(response[0][0], 401)
+
+    def test_remotion_generation_does_not_block_logout(self):
+        who = self.signup("slowexport")
+        org_id = who["orgs"][0]["id"]
+        svc = self.reg.service(org_id)
+        entered, release, logged_out = threading.Event(), threading.Event(), threading.Event()
+        response = []
+        original_export = svc.remotion_export
+
+        def paused_export(*args, **kwargs):
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("export test did not release")
+            return original_export(*args, **kwargs)
+
+        with patch.object(svc, "remotion_export", side_effect=paused_export):
+            thread = threading.Thread(target=lambda: response.append(
+                self.req(who, "/assessments/scan_001/remotion", org=org_id)))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            logout_thread = threading.Thread(target=lambda: (
+                self.ops.logout(who["cookie"].split("=", 1)[1]), logged_out.set()))
+            logout_thread.start()
+            try:
+                self.assertTrue(logged_out.wait(0.5), "export held the global account lock")
+            finally:
+                release.set()
+                thread.join(5)
+                logout_thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertFalse(logout_thread.is_alive())
+        self.assertEqual(response[0][0], 401)
+
+    def test_identified_export_rechecks_approver_and_does_not_audit_a_denial(self):
+        owner, approver = self.signup("exportowner"), self.signup("exportapprover")
+        org_id = owner["orgs"][0]["id"]
+        _, invite = self.reg.store.create_invite(org_id, "exportowner", ["approver"])
+        self.reg.store.accept_invite(invite, "exportapprover")
+        svc = self.reg.service(org_id)
+        entered, release = threading.Event(), threading.Event()
+        response = []
+        original_export = svc.remotion_export
+
+        def paused_export(*args, **kwargs):
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("identified export test did not release")
+            return original_export(*args, **kwargs)
+
+        with patch.object(svc, "remotion_export", side_effect=paused_export):
+            thread = threading.Thread(target=lambda: response.append(self.req(
+                approver, "/assessments/scan_001/remotion?anonymize=0", org=org_id)))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            self.reg.store.set_roles(org_id, "exportowner", "exportapprover", ["viewer"])
+            release.set()
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(response[0][0], 403)
+        self.assertFalse(any(e["event"] == "export.remotion_identified" for e in svc.audit.entries()))
+
+    def test_member_removal_waits_for_an_inflight_event_write(self):
+        owner, member = self.signup("streamowner"), self.signup("streammember")
+        org_id = owner["orgs"][0]["id"]
+        _, invite = self.reg.store.create_invite(org_id, "streamowner", ["viewer"])
+        self.reg.store.accept_invite(invite, "streammember")
+        svc = self.reg.service(org_id)
+        entered, release, removed = threading.Event(), threading.Event(), threading.Event()
+        marker = b"PRIVATE_EVENT_DURING_REMOVAL"
+        original_write = socketserver._SocketWriter.write
+
+        def paused_write(writer, data):
+            if marker in data:
+                entered.set()
+                if not release.wait(5):
+                    raise TimeoutError("event write test did not release")
+            return original_write(writer, data)
+
+        conn = http.client.HTTPConnection("127.0.0.1", self.srv.server_port, timeout=10)
+        try:
+            with patch.object(socketserver._SocketWriter, "write", paused_write):
+                conn.request("GET", "/api/assessments/scan_001/events",
+                             headers={"Cookie": member["cookie"], "X-Vulnix-Org": org_id})
+                resp = conn.getresponse()
+                self.assertEqual(resp.status, 200)
+                self.assertEqual(resp.fp.readline(), b"retry: 2000\n")
+                resp.fp.readline()
+                svc.bus.publish(svc.a.id, "test.private", marker=marker.decode())
+                self.assertTrue(entered.wait(5))
+                remove_thread = threading.Thread(target=lambda: (
+                    self.reg.store.remove_member(org_id, "streamowner", "streammember"), removed.set()))
+                remove_thread.start()
+                self.assertFalse(removed.wait(0.1), "revocation completed before the event write")
+                release.set()
+                seen = b""
+                for _ in range(40):
+                    seen += resp.fp.readline()
+                    if marker in seen:
+                        break
+                self.assertIn(marker, seen)
+                remove_thread.join(5)
+                self.assertFalse(remove_thread.is_alive())
+                self.assertTrue(removed.is_set())
+        finally:
+            release.set()
+            conn.close()
+
+    def test_membership_removal_after_org_binding_cannot_start_a_scan(self):
+        owner, member = self.signup("lateowner"), self.signup("latemember")
+        org_id = owner["orgs"][0]["id"]
+        _, invite = self.reg.store.create_invite(org_id, "lateowner", ["runner"])
+        self.reg.store.accept_invite(invite, "latemember")
+        svc = self.reg.service(org_id)
+        entered, release, started = threading.Event(), threading.Event(), threading.Event()
+        response = []
+        handler = self.srv.RequestHandlerClass
+        original_bind = handler._bind
+
+        def paused_bind(request, *args, **kwargs):
+            bound = original_bind(request, *args, **kwargs)
+            if bound and request.path == "/api/assessments/scan_001/start":
+                entered.set()
+                if not release.wait(5):
+                    raise TimeoutError("membership test did not release the request")
+            return bound
+
+        with patch.object(handler, "_bind", paused_bind), patch.object(svc, "start", side_effect=started.set):
+            thread = threading.Thread(target=lambda: response.append(
+                self.req(member, "/assessments/scan_001/start", {}, org=org_id)))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            self.reg.store.remove_member(org_id, "lateowner", "latemember")
+            release.set()
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(response[0][0], 403)
+        self.assertFalse(started.is_set())
+
+    def test_org_owner_role_does_not_become_platform_admin_on_one_connection(self):
+        who = self.signup("sameconnection")
+        org_id = who["orgs"][0]["id"]
+        accepted = threading.Event()
+        conn = http.client.HTTPConnection("127.0.0.1", self.srv.server_port, timeout=5)
+        try:
+            conn.request("GET", "/api/assets", headers={"Cookie": who["cookie"], "X-Vulnix-Org": org_id})
+            first = conn.getresponse()
+            first.read()
+            self.assertEqual(first.status, 200)
+            with patch.object(self.svc, "accept_l2_profile", side_effect=lambda *a: accepted.set()):
+                conn.request("POST", "/api/l2-profiles/accept", body=b'{}', headers={
+                    "Cookie": who["cookie"], "Content-Type": "application/json", "X-Aegis-Request": "1",
+                })
+                second = conn.getresponse()
+                second.read()
+            self.assertEqual(second.status, 403)
+            self.assertFalse(accepted.is_set())
+        finally:
+            conn.close()
+
+    def test_logout_cannot_pass_between_authorization_and_scan_start(self):
+        who = self.signup("atomicstart")
+        org_id = who["orgs"][0]["id"]
+        svc = self.reg.service(org_id)
+        entered, release, logged_out = threading.Event(), threading.Event(), threading.Event()
+        response_waiting, release_response = threading.Event(), threading.Event()
+        response = []
+        original_record = svc.audit.record
+
+        def paused_start():
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("start test did not release the request")
+
+        def logout():
+            self.ops.logout(who["cookie"].split("=", 1)[1])
+            logged_out.set()
+
+        def paused_record(event, *args, **kwargs):
+            if event == "assessment.start_requested":
+                response_waiting.set()
+                if not release_response.wait(5):
+                    raise TimeoutError("start response test did not release")
+            return original_record(event, *args, **kwargs)
+
+        with patch.object(svc, "start", side_effect=paused_start), \
+                patch.object(svc.audit, "record", side_effect=paused_record):
+            request = threading.Thread(target=lambda: response.append(
+                self.req(who, "/assessments/scan_001/start", {}, org=org_id)))
+            request.start()
+            revocation = None
+            try:
+                self.assertTrue(entered.wait(5))
+                revocation = threading.Thread(target=logout)
+                revocation.start()
+                self.assertFalse(logged_out.wait(0.1))
+                release.set()
+                self.assertTrue(response_waiting.wait(5))
+                self.assertTrue(logged_out.wait(5))
+            finally:
+                release.set()
+                release_response.set()
+                request.join(5)
+                if revocation is not None:
+                    revocation.join(5)
+        self.assertFalse(request.is_alive() or revocation.is_alive())
+        self.assertEqual(response[0][0], 401)
+        self.assertTrue(logged_out.is_set())
+
+    def test_long_plan_receives_live_request_authority(self):
+        who = self.signup("liveplanner")
+        org_id = who["orgs"][0]["id"]
+        svc = self.reg.service(org_id)
+        guards = []
+
+        def capture_plan(*args, **kwargs):
+            guards.append(kwargs["request_authorized"])
+            return svc.snapshot()
+
+        with patch.object(svc, "plan_with_artex", side_effect=capture_plan):
+            self.assertEqual(self.req(who, "/assessments/scan_001/artex/plan", {}, org=org_id)[0], 200)
+        self.assertTrue(guards[0]())
+        self.ops.logout(who["cookie"].split("=", 1)[1])
+        self.assertFalse(guards[0]())
+
+    def test_chat_receives_live_request_authority(self):
+        who = self.signup("livechat")
+        org_id = who["orgs"][0]["id"]
+        svc = self.reg.service(org_id)
+        guards = []
+
+        def capture_chat(*args, **kwargs):
+            guards.append(kwargs["request_authorized"])
+            return {"message": {}, "chat_messages": [], "planner": {}}
+
+        with patch.object(svc, "ask_chat", side_effect=capture_chat):
+            self.assertEqual(self.req(who, "/assessments/scan_001/chat",
+                                      {"question": "説明して"}, org=org_id)[0], 200)
+        self.assertTrue(guards[0]())
+        logged_out = threading.Event()
+
+        def logout():
+            self.ops.logout(who["cookie"].split("=", 1)[1])
+            logged_out.set()
+
+        with guards[0].lease():
+            revocation = threading.Thread(target=logout)
+            revocation.start()
+            self.assertFalse(logged_out.wait(0.05))
+        revocation.join(5)
+        self.assertFalse(revocation.is_alive())
+        self.assertTrue(logged_out.is_set())
+        self.assertFalse(guards[0]())
+
+    def test_foreground_worker_routes_receive_live_request_authority(self):
+        who = self.signup("liveworker")
+        org_id = who["orgs"][0]["id"]
+        svc = self.reg.service(org_id)
+        guards = []
+
+        def capture(*args, **kwargs):
+            guards.append(kwargs["request_authorized"])
+            return svc.snapshot()
+
+        with patch.object(svc, "verify_finding", side_effect=capture), \
+                patch.object(svc, "execute_artex_item", side_effect=capture):
+            self.assertEqual(self.req(who, "/assessments/scan_001/verify-finding",
+                                      {"finding_id": "f_banner"}, org=org_id)[0], 200)
+            self.assertEqual(self.req(who, "/assessments/scan_001/artex/items/item123/execute",
+                                      {}, org=org_id)[0], 200)
+        self.assertEqual(len(guards), 2)
+        self.assertTrue(all(guard() for guard in guards))
+        logged_out = threading.Event()
+
+        def logout():
+            self.ops.logout(who["cookie"].split("=", 1)[1])
+            logged_out.set()
+
+        with guards[0].lease():
+            revocation = threading.Thread(target=logout)
+            revocation.start()
+            self.assertFalse(logged_out.wait(0.05))
+        revocation.join(2)
+        self.assertFalse(revocation.is_alive())
+        self.assertTrue(logged_out.is_set())
+        self.assertTrue(all(not guard() for guard in guards))
+
+    def test_logout_before_gateway_worker_launch_starts_no_process(self):
+        lab = start_lab(LAB_PORT)
+        self.addCleanup(lab.server_close)
+        self.addCleanup(lab.shutdown)
+        who = self.signup("logoutbeforeworker")
+        org_id = who["orgs"][0]["id"]
+        svc = self.reg.service(org_id)
+        entered, release = threading.Event(), threading.Event()
+        response = []
+        original_guard = svc.gateway.late_launch_guard
+        before_evidence = sum(len(f.get("evidence") or []) for f in svc.snapshot()["findings"])
+
+        def pause_before_launch():
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("worker launch test did not release the request")
+            return original_guard()
+
+        with patch.object(svc.gateway, "late_launch_guard", side_effect=pause_before_launch), \
+                patch("aegis.runtime.subprocess.Popen") as popen:
+            request = threading.Thread(target=lambda: response.append(self.req(
+                who, "/assessments/scan_001/verify-finding", {"finding_id": "all"}, org=org_id)))
+            request.start()
+            try:
+                self.assertTrue(entered.wait(5))
+                self.assertEqual(self.req(who, "/auth/logout", {})[0], 200)
+            finally:
+                release.set()
+                request.join(5)
+            self.assertFalse(request.is_alive())
+            popen.assert_not_called()
+        self.assertEqual(response[0][0], 401)
+        self.assertFalse([e for e in svc.audit.entries() if e["event"] == "result"])
+        self.assertEqual(sum(len(f.get("evidence") or []) for f in svc.snapshot()["findings"]),
+                         before_evidence)
+        denials = [e for e in svc.audit.entries() if e["event"] == "deny"]
+        self.assertTrue(any("権限" in str(e.get("fields", {})) for e in denials), denials)
+
+    def test_logout_waits_for_gateway_worker_launch_registration(self):
+        lab = start_lab(LAB_PORT)
+        self.addCleanup(lab.server_close)
+        self.addCleanup(lab.shutdown)
+        who = self.signup("logoutduringworker")
+        old_cookie = who["cookie"]
+        org_id = who["orgs"][0]["id"]
+        svc = self.reg.service(org_id)
+        at_popen, release_popen = threading.Event(), threading.Event()
+        logout_entered, logout_called, logout_done = threading.Event(), threading.Event(), threading.Event()
+        response, logout_response = [], []
+        real_popen = subprocess.Popen
+        handler = self.srv.RequestHandlerClass
+        real_session = handler._session
+        real_logout = self.ops.logout
+
+        def paused_popen(*args, **kwargs):
+            at_popen.set()
+            if not release_popen.wait(5):
+                raise TimeoutError("worker launch test did not release Popen")
+            return real_popen(*args, **kwargs)
+
+        def observed_session(request, *args, **kwargs):
+            if request.path == "/api/auth/logout":
+                logout_entered.set()
+            return real_session(request, *args, **kwargs)
+
+        def observed_logout(token):
+            logout_called.set()
+            return real_logout(token)
+
+        def logout_request():
+            try:
+                logout_response.append(self.req(who, "/auth/logout", {}))
+            finally:
+                logout_done.set()
+
+        with patch("aegis.runtime.subprocess.Popen", side_effect=paused_popen) as popen, \
+                patch.object(handler, "_session", observed_session), \
+                patch.object(self.ops, "logout", side_effect=observed_logout):
+            request = threading.Thread(target=lambda: response.append(self.req(
+                who, "/assessments/scan_001/verify-finding", {"finding_id": "all"}, org=org_id)))
+            request.start()
+            revocation = None
+            try:
+                self.assertTrue(at_popen.wait(5))
+                revocation = threading.Thread(target=logout_request)
+                revocation.start()
+                self.assertTrue(logout_entered.wait(5))
+                # The logout may be called, but the revocation must not take effect while
+                # the worker launch still holds the grant: the session stays valid and the
+                # logout does not complete until the launch is registered.
+                self.assertFalse(logout_done.wait(0.1), "logout completed before worker registration")
+                self.assertIsNotNone(self.ops.resolve(old_cookie.split("=", 1)[1]),
+                                     "the session was revoked before worker registration")
+            finally:
+                release_popen.set()
+                request.join(10)
+                if revocation is not None:
+                    revocation.join(10)
+            self.assertFalse(request.is_alive())
+            self.assertFalse(revocation and revocation.is_alive())
+            popen.assert_called_once()
+        self.assertEqual(logout_response[0][0], 200)
+        self.assertTrue(logout_called.is_set())
+        self.assertEqual(response[0][0], 403)
+        self.assertIn("権限", str(response[0][1]))
+        self.assertTrue(any(e["event"] == "result" for e in svc.audit.entries()))
+        self.assertEqual(self.req({"cookie": old_cookie}, "/assessments/scan_001", org=org_id)[0], 401)
+
     def req(self, who, path, body=None, org=None):
         h = {"Content-Type": "application/json"}
         if body is not None:
@@ -152,7 +1456,8 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
                     who["cookie"] = sc.split(";")[0]
                 return resp.status, json.load(resp)
         except urllib.error.HTTPError as e:
-            return e.code, json.load(e)
+            with e:
+                return e.code, json.load(e)
 
     def signup(self, name, **extra):
         who = {}
@@ -215,6 +1520,13 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
         ca = self.req(a, "/assets/challenge", url)[1]["challenge"]["dns_txt_value"]
         cb = self.req(b, "/assets/challenge", url)[1]["challenge"]["dns_txt_value"]
         self.assertNotEqual(ca, cb)           # one org's proof can never satisfy another's
+
+    def test_safe_ai_explanation_cannot_be_requested_for_another_org(self):
+        a, b = self.signup("alice"), self.signup("bobby")
+        a_org = a["orgs"][0]["id"]
+        code, _ = self.req(b, "/assessments/scan_001/chat",
+                           {"question": "AIで解説", "safe_advice": True, "finding_id": "f_headers"}, org=a_org)
+        self.assertEqual(code, 403)
 
     def test_invite_roles_viewer_read_only_and_promotion(self):
         a, b = self.signup("alice"), self.signup("bobby")
@@ -355,11 +1667,11 @@ class TestReviewFixesOverHttp(TestTenantIsolationOverHttp):
         conn.close()
         self.assertNotIn(b"bobby", data.split(b"tenancy.member_removed")[-1] if b"tenancy.member_removed" in data else b"")
 
-    def test_the_shared_lab_mode_is_platform_admin_only(self):
+    def test_the_shared_lab_mode_cannot_be_changed_while_tenants_share_it(self):
         a = self.signup("alice")                                   # owner of her own org
         self.assertEqual(self.req(a, "/assessments/scan_001/lab-mode", {"mode": "patched"})[0], 403)
         p = self.login("padmin", "padmin-pw-1")
-        self.assertNotEqual(self.req(p, "/assessments/scan_001/lab-mode", {"mode": "vulnerable"})[0], 403)
+        self.assertEqual(self.req(p, "/assessments/scan_001/lab-mode", {"mode": "patched"})[0], 403)
 
     def test_system_status_is_the_callers_own_org(self):
         p = self.login("padmin", "padmin-pw-1")
@@ -369,6 +1681,20 @@ class TestReviewFixesOverHttp(TestTenantIsolationOverHttp):
         st = json.dumps(self.req(a, "/system/status")[1], ensure_ascii=False)
         self.assertNotIn("legacy-secret-host", st)
         self.assertEqual(self.req(p, "/system/status")[0], 200)
+
+    def test_planner_status_is_the_callers_own_org(self):
+        a, b = self.signup("planstatusa"), self.signup("planstatusb")
+        a_org, b_org = a["orgs"][0]["id"], b["orgs"][0]["id"]
+        a_svc, b_svc = self.reg.service(a_org), self.reg.service(b_org)
+        with patch.object(self.svc, "planner_status", return_value={"model_name": "default-only"}), \
+                patch.object(a_svc, "planner_status", return_value={"model_name": "a-only"}), \
+                patch.object(b_svc, "planner_status", return_value={"model_name": "b-only"}):
+            self.assertEqual(self.req(a, "/router/status"), (200, {"model_name": "a-only"}))
+            self.assertEqual(self.req(b, "/router/status"), (200, {"model_name": "b-only"}))
+            self.assertEqual(self.req(a, "/router/status", org=b_org)[0], 403)
+            self.assertEqual(self.req(b, "/router/status", org="default")[0], 403)
+            self.ops.logout(a["cookie"].split("=", 1)[1])
+            self.assertEqual(self.req(a, "/router/status")[0], 401)
 
     def test_account_events_go_to_the_platform_audit_not_the_default_org(self):
         self.signup("alice")
@@ -512,19 +1838,15 @@ class TestThirdReviewFixes(TestTenantIsolationOverHttp):
         with patch.object(srvmod, "CHAT_PER_ORG_PER_HOUR", 1):
             self.assertEqual(self.req(a, "/assessments/scan_001/chat", {"question": "x"})[0], 200)
 
-    def test_the_default_orgs_fix_check_puts_the_shared_lab_back(self):
-        import aegis.assessment as am
+    def test_the_default_org_cannot_claim_a_patched_comparison_on_a_shared_lab(self):
         from aegis.lab import get_lab_mode, set_lab_mode
         set_lab_mode("vulnerable")
-        self.assertTrue(getattr(self.svc, "_restore_lab_after_fix", False))
-
-        def body(actor):                 # stands in for the real check: it switches the lab
-            am.set_lab_mode("patched")
-            return {"defense_comparison": {"lab_mode": get_lab_mode()}}
-        with patch.object(self.svc, "_verify_fix_body", side_effect=body):
-            out = self.svc._verify_fix("padmin")
-        self.assertEqual(out["defense_comparison"]["lab_mode"], "patched")   # recorded during the check
-        self.assertEqual(get_lab_mode(), "vulnerable")                       # shared lab put back
+        self.assertFalse(getattr(self.svc, "_may_switch_lab", True))
+        self.svc.a.state = "completed"
+        with self.assertRaisesRegex(ValueError, "共有"):
+            self.svc.verify_fix("padmin")
+        self.assertIsNone(self.svc.a.defense_comparison)
+        self.assertEqual(get_lab_mode(), "vulnerable")
 
 
 class TestFourthReviewLows(TestTenantIsolationOverHttp):
@@ -535,20 +1857,48 @@ class TestFourthReviewLows(TestTenantIsolationOverHttp):
             for _ in range(3):        # refused by the service (no approval): never 429
                 self.assertNotEqual(self.req(a, "/assessments/scan_001/artex/plan", {"llm_mode": "gateway-forward"})[0], 429)
 
-    def test_the_report_shows_the_lab_state_the_fix_check_used(self):
+    def test_report_does_not_trust_old_shared_lab_comparison(self):
         self.svc.a.defense_comparison = {"lab_mode": "patched", "items": [], "before_score": 1, "after_score": 0}
         from aegis.lab import set_lab_mode
         set_lab_mode("vulnerable")
-        self.assertIn("ラボ防御状態: `patched`", self.svc.report_markdown())
+        self.assertNotIn("ラボ防御状態: `patched`", self.svc.report_markdown())
+        self.assertIn("ラボ防御状態: `vulnerable`", self.svc.report_markdown())
 
 
 class TestPublicDeploymentSwitches(TestTenantIsolationOverHttp):
     """Switches for the public beta: no traffic to real sites, bounded AI spending."""
 
+    def test_multi_tenant_real_site_stays_read_only_under_legacy_broad_switch(self):
+        from aegis import server as srvmod
+        a = self.signup("alice")
+        with patch.multiple(srvmod, REAL_SERVICE_DIAGNOSIS=True, REAL_SITE_L1_ONLY=False):
+            me = self.req(a, "/auth/me")[1]
+            self.assertIs(me["real_site_read_only"], True)
+            self.assertIs(me["real_service_diagnosis"], True)
+            code, _ = self.req(a, "/assets/challenge", {"url": "https://owned.example.test/"})
+            self.assertEqual(code, 200)
+            osvc = self.reg.service(a["orgs"][0]["id"])
+            self.assertTrue(osvc.real_site_read_only)
+            from aegis.ownership import challenge_for_host
+            token = challenge_for_host("owned.example.test", osvc._ownership_secret)["token"]
+            with patch("aegis.ownership.default_dns_txt_lookup", return_value=[f'"{token}"']):
+                self.assertEqual(self.req(a, "/assets/verify-ownership", {
+                    "host": "owned.example.test", "method": "dns_txt"})[0], 200)
+            self.assertEqual(self.req(a, "/assets/confirm-scope", {
+                "host": "owned.example.test", "confirmed_prohibited": True,
+                "activate_workspace": True})[0], 200)
+            for route, body in (("/request-l2", {"finding_id": "f_x"}),
+                                ("/verify-finding", {"finding_id": "f_x"}),
+                                ("/approvals/req_0a", {"decision": "approve"}),
+                                ("/verify-fix", {})):
+                code, out = self.req(a, f"/assessments/{osvc.a.id}{route}", body)
+                self.assertEqual(code, 403, route)
+                self.assertIn("読み取り", out["error"], route)
+
     def test_real_site_traffic_is_refused_when_switched_off(self):
         from aegis import server as srvmod
         a = self.signup("alice")
-        with patch.object(srvmod, "REAL_SERVICE_DIAGNOSIS", False):
+        with patch.multiple(srvmod, REAL_SERVICE_DIAGNOSIS=False, REAL_SITE_L1_ONLY=False):
             code, body = self.req(a, "/assets/challenge", {"url": "https://shop.example.com/"})
             self.assertEqual(code, 200)                                   # registering and the proof value: allowed
             code, body = self.req(a, "/assets/verify-ownership", {"host": "shop.example.com", "method": "dns_txt"})
@@ -572,6 +1922,19 @@ class TestPublicDeploymentSwitches(TestTenantIsolationOverHttp):
             m = importlib.reload(srvmod)
             self.assertEqual((m.ARTEX_LLM_PLANS_PLATFORM_PER_HOUR, m.CHAT_PLATFORM_PER_DAY, m.REAL_SERVICE_DIAGNOSIS), (0, 7, False))
         importlib.reload(srvmod)
+
+    def test_real_site_mode_defaults_to_read_only_and_typos_fail_closed(self):
+        import importlib
+        from aegis import server as srvmod
+        try:
+            with patch.dict(os.environ, {"VULNIX_NO_ENV_LOCAL": "1"}, clear=True):
+                m = importlib.reload(srvmod)
+                self.assertEqual((m.REAL_SERVICE_DIAGNOSIS, m.REAL_SITE_L1_ONLY), (False, True))
+                os.environ["VULNIX_REAL_SERVICE_DIAGNOSIS"] = "ll"
+                m = importlib.reload(srvmod)
+                self.assertEqual((m.REAL_SERVICE_DIAGNOSIS, m.REAL_SITE_L1_ONLY), (False, False))
+        finally:
+            importlib.reload(srvmod)
 
     def test_all_artex_plans_are_capped_per_org(self):
         from aegis import server as srvmod
@@ -625,7 +1988,7 @@ class TestFifthReviewFixes(TestTenantIsolationOverHttp):
     def test_switching_to_a_real_site_is_refused_and_the_switch_is_visible(self):
         from aegis import server as srvmod
         a = self.signup("alice")
-        with patch.object(srvmod, "REAL_SERVICE_DIAGNOSIS", False):
+        with patch.multiple(srvmod, REAL_SERVICE_DIAGNOSIS=False, REAL_SITE_L1_ONLY=False):
             self.req(a, "/assets/challenge", {"url": "https://shop.example.com/"})
             real = next(x for x in self.req(a, "/assets")[1] if x.get("name") == "shop.example.com")
             self.assertEqual(self.req(a, "/assets/select", {"id": real["id"]})[0], 403)
@@ -746,6 +2109,216 @@ class TestPublicReadOnlyRealSites(TestTenantIsolationOverHttp):
         with patch("aegis.ownership.default_dns_txt_lookup", return_value=[f'"{token}"']):
             return self.req(who, "/assets/verify-ownership", {"host": host, "method": "dns_txt"})
 
+    def test_logout_after_challenge_commit_cannot_receive_ownership_token(self):
+        who = self.signup("latechallenge")
+        org_id = who["orgs"][0]["id"]
+        svc = self.reg.service(org_id)
+        entered, release = threading.Event(), threading.Event()
+        response = []
+        original_assets = svc.assets
+
+        def delayed_assets():
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError("challenge response did not release")
+            return original_assets()
+
+        with patch.object(svc, "assets", side_effect=delayed_assets):
+            worker = threading.Thread(target=lambda: response.append(self.req(
+                who, "/assets/challenge", {"url": "https://owned.example/"})), daemon=True)
+            worker.start()
+            try:
+                self.assertTrue(entered.wait(5))
+                self.ops.logout(who["cookie"].split("=", 1)[1])
+            finally:
+                release.set()
+                worker.join(5)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(response[0][0], 401)
+        self.assertNotIn("dns_txt", response[0][1])
+
+    def test_role_downgrade_after_challenge_commit_hides_ownership_token(self):
+        owner, member = self.signup("lateowner"), self.signup("latemember")
+        org_id = owner["orgs"][0]["id"]
+        _, invite = self.reg.store.create_invite(org_id, "lateowner", ["runner"])
+        self.reg.store.accept_invite(invite, "latemember")
+        svc = self.reg.service(org_id)
+        entered, release = threading.Event(), threading.Event()
+        response = []
+        original_assets = svc.assets
+
+        def delayed_assets():
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError("role downgrade response did not release")
+            return original_assets()
+
+        with patch.object(svc, "assets", side_effect=delayed_assets):
+            worker = threading.Thread(target=lambda: response.append(self.req(
+                member, "/assets/challenge", {"url": "https://owned.example/"}, org=org_id)), daemon=True)
+            worker.start()
+            try:
+                self.assertTrue(entered.wait(5))
+                self.reg.store.set_roles(org_id, "lateowner", "latemember", ["viewer"])
+            finally:
+                release.set()
+                worker.join(5)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(response[0][0], 403)
+        self.assertNotIn("dns_txt", response[0][1])
+
+    def test_logout_after_proof_commit_cannot_receive_ownership_result(self):
+        who = self.signup("lateproof")
+        host = "owned.example"
+        self.assertEqual(self.req(who, "/assets/challenge", {"url": f"https://{host}/"})[0], 200)
+        svc = self.reg.service(who["orgs"][0]["id"])
+        from aegis.ownership import challenge_for_host
+        token = challenge_for_host(host, svc._ownership_secret)["token"]
+        entered, release = threading.Event(), threading.Event()
+        response = []
+        original_assets = svc.assets
+
+        def delayed_assets():
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError("proof response did not release")
+            return original_assets()
+
+        with patch("aegis.ownership.default_dns_txt_lookup", return_value=[f'"{token}"']), \
+                patch.object(svc, "assets", side_effect=delayed_assets):
+            worker = threading.Thread(target=lambda: response.append(self.req(
+                who, "/assets/verify-ownership", {"host": host, "method": "dns_txt"})), daemon=True)
+            worker.start()
+            try:
+                self.assertTrue(entered.wait(5))
+                self.ops.logout(who["cookie"].split("=", 1)[1])
+            finally:
+                release.set()
+                worker.join(5)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(response[0][0], 401)
+        self.assertNotIn("verified", response[0][1])
+
+    def test_logout_after_scope_commit_cannot_receive_snapshot(self):
+        who = self.signup("latescope")
+        host = "owned.example"
+        self.assertEqual(self.req(who, "/assets/challenge", {"url": f"https://{host}/"})[0], 200)
+        self.assertTrue(self._verify(who, host)[1]["verified"])
+        svc = self.reg.service(who["orgs"][0]["id"])
+        entered, release = threading.Event(), threading.Event()
+        response = []
+        original_snapshot = svc.snapshot
+
+        def delayed_snapshot():
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError("scope response did not release")
+            return original_snapshot()
+
+        with patch.object(svc, "snapshot", side_effect=delayed_snapshot):
+            worker = threading.Thread(target=lambda: response.append(self.req(
+                who, "/assets/confirm-scope", {"host": host, "confirmed_prohibited": True})), daemon=True)
+            worker.start()
+            try:
+                self.assertTrue(entered.wait(5))
+                self.ops.logout(who["cookie"].split("=", 1)[1])
+            finally:
+                release.set()
+                worker.join(5)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(response[0][0], 401)
+        self.assertNotIn("snapshot", response[0][1])
+
+    def test_logout_during_dns_lookup_cannot_grant_ownership(self):
+        a = self.signup("alice")
+        host = "next-standards.com"
+        self.req(a, "/assets/challenge", {"url": f"https://{host}"})
+        from aegis.ownership import challenge_for_host
+        osvc = self.reg.service(a["orgs"][0]["id"])
+        token = challenge_for_host(host, osvc._ownership_secret)["token"]
+        entered, release = threading.Event(), threading.Event()
+        result = []
+
+        def blocked_lookup(_name):
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError("test did not release DNS lookup")
+            return [f'"{token}"']
+
+        with patch("aegis.ownership.default_dns_txt_lookup", side_effect=blocked_lookup):
+            worker = threading.Thread(target=lambda: result.append(self.req(
+                a, "/assets/verify-ownership", {"host": host, "method": "dns_txt"})), daemon=True)
+            worker.start()
+            try:
+                self.assertTrue(entered.wait(5))
+                self.ops.logout(a["cookie"].split("=", 1)[1])
+            finally:
+                release.set()
+                worker.join(5)
+            self.assertFalse(worker.is_alive())
+        self.assertEqual(result[0][0], 401)
+        self.assertNotIn(host, osvc.ledger.ownership_proofs)
+
+    def test_logout_during_proof_file_fetch_cannot_grant_ownership(self):
+        a = self.signup("alice")
+        host = "next-standards.com"
+        self.req(a, "/assets/challenge", {"url": f"https://{host}"})
+        from aegis.ownership import challenge_for_host
+        osvc = self.reg.service(a["orgs"][0]["id"])
+        token = challenge_for_host(host, osvc._ownership_secret)["token"]
+        entered, release = threading.Event(), threading.Event()
+        result = []
+
+        def blocked_fetch(_url):
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError("test did not release proof file fetch")
+            return token
+
+        with patch("aegis.ownership.default_well_known_fetcher", side_effect=blocked_fetch):
+            worker = threading.Thread(target=lambda: result.append(self.req(
+                a, "/assets/verify-ownership", {"host": host, "method": "well_known"})), daemon=True)
+            worker.start()
+            try:
+                self.assertTrue(entered.wait(5))
+                self.ops.logout(a["cookie"].split("=", 1)[1])
+            finally:
+                release.set()
+                worker.join(5)
+            self.assertFalse(worker.is_alive())
+        self.assertEqual(result[0][0], 401)
+        self.assertNotIn(host, osvc.ledger.ownership_proofs)
+
+    def test_logout_before_scope_commit_cannot_grant_diagnosis(self):
+        a = self.signup("alice")
+        host = "next-standards.com"
+        self.req(a, "/assets/challenge", {"url": f"https://{host}"})
+        self.assertTrue(self._verify(a, host)[1]["verified"])
+        osvc = self.reg.service(a["orgs"][0]["id"])
+        entered, release = threading.Event(), threading.Event()
+        result = []
+        original = AssessmentService.confirm_asset_scope
+
+        def delayed_scope(service, **kwargs):
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError("test did not release scope confirmation")
+            return original(service, **kwargs)
+
+        with patch.object(AssessmentService, "confirm_asset_scope", delayed_scope):
+            worker = threading.Thread(target=lambda: result.append(self.req(
+                a, "/assets/confirm-scope", {"host": host, "confirmed_prohibited": True})), daemon=True)
+            worker.start()
+            try:
+                self.assertTrue(entered.wait(5))
+                self.ops.logout(a["cookie"].split("=", 1)[1])
+            finally:
+                release.set()
+                worker.join(5)
+            self.assertFalse(worker.is_alive())
+        self.assertEqual(result[0][0], 401)
+        self.assertNotIn(host, osvc.ledger.verified_external_hosts)
+
     def test_register_prove_and_start_on_a_proven_site(self):
         a = self.signup("alice")
         self.assertEqual(self.req(a, "/assets/challenge", {"url": "https://next-standards.com"})[0], 200)
@@ -760,6 +2333,36 @@ class TestPublicReadOnlyRealSites(TestTenantIsolationOverHttp):
         with patch("aegis.assessment.AssessmentService.start", return_value={"ok": True}) as start:
             self.assertEqual(self.req(a, f"/assessments/{aid}/start", {})[0], 200)
         start.assert_called_once()
+
+    def test_optional_status_consent_is_explicit_and_tenant_bound(self):
+        a, b = self.signup("alice"), self.signup("bobby")
+        a_org = a["orgs"][0]["id"]
+        self.assertFalse(self.req(a, "/auth/me")[1].get("optional_status_check", False))
+        self.assertEqual(self.req(a, "/assets/confirm-scope", {
+            "host": "next-standards.com", "confirmed_prohibited": True,
+            "allow_status_probe": True})[0], 409)
+        osvc = self.reg.service(a_org)
+        osvc._real_site_local_artex = True
+        osvc._artex_real_cmd = ["mock-artex"]
+        config = {"VULNIX_REAL_SITE_LOCAL_ARTEX": "1",
+                  "VULNIX_REAL_SITE_INITIAL_ARTEX": "1",
+                  "VULNIX_ARTEX_REAL_CMD": "mock-artex",
+                  "VULNIX_ARTEX_LLM_MODE": "gateway-forward",
+                  "VULNIX_ARTEX_LLM_UPSTREAM_URL": "http://127.0.0.1:19991/v1/chat/completions"}
+        with patch.dict(os.environ, config):
+            self.assertTrue(self.req(a, "/auth/me")[1]["optional_status_check"])
+            with patch.dict(os.environ, {"VULNIX_ARTEX_LLM_UPSTREAM_URL": "https://external-model.example/v1"}):
+                self.assertFalse(self.req(a, "/auth/me")[1]["optional_status_check"])
+            self.req(a, "/assets/challenge", {"url": "https://next-standards.com"})
+            self._verify(a, "next-standards.com")
+            scope = {"host": "next-standards.com", "confirmed_prohibited": True,
+                     "activate_workspace": True, "allow_status_probe": "true"}
+            self.assertEqual(self.req(a, "/assets/confirm-scope", scope)[0], 200)
+            self.assertFalse(osvc._verified_external_hosts["next-standards.com"]["allow_status_probe"])
+            scope["allow_status_probe"] = True
+            self.assertEqual(self.req(b, "/assets/confirm-scope", scope, org=a_org)[0], 403)
+            self.assertEqual(self.req(a, "/assets/confirm-scope", scope)[0], 200)
+            self.assertTrue(osvc._verified_external_hosts["next-standards.com"]["allow_status_probe"])
 
     def test_a_subdomain_can_be_registered_too(self):
         a = self.signup("alice")
@@ -839,6 +2442,36 @@ class TestPublicReadOnlyRealSitesReview(TestPublicReadOnlyRealSites):
             for route in ("/restart", "/resume"):
                 self.assertNotEqual(self.req(a, f"/assessments/{aid}{route}", {})[0], 403, route)
         self.assertNotEqual(self.req(a, f"/assessments/{aid}/chat", {"question": "x"})[0], 403)
+
+    def test_opted_in_anonymous_artex_plan_and_l1_item_reach_only_their_organization(self):
+        a, b = self.signup("alice"), self.signup("bobby")
+        aid = self._proven(a)
+        osvc = self.reg.service(a["orgs"][0]["id"])
+        osvc._real_site_local_artex = True
+        plan = f"/assessments/{aid}/artex/plan"
+        item = f"/assessments/{aid}/artex/items/ax_test_1/execute"
+        with patch.object(osvc, "plan_with_artex", return_value={"ok": True}) as planned, \
+                patch.object(osvc, "execute_artex_item", return_value={"ok": True}) as executed:
+            self.assertEqual(self.req(a, plan, {})[0], 200)
+            self.assertEqual(self.req(a, item, {})[0], 200)
+            a_org = a["orgs"][0]["id"]
+            self.assertEqual(self.req(b, plan, {}, org=a_org)[0], 403)
+            self.assertEqual(self.req(b, item, {}, org=a_org)[0], 403)
+        planned.assert_called_once()
+        executed.assert_called_once()
+
+    def test_opted_in_artex_l1_item_is_counted_against_real_site_run_limit(self):
+        from aegis import server as srvmod
+        a = self.signup("alice")
+        aid = self._proven(a)
+        osvc = self.reg.service(a["orgs"][0]["id"])
+        osvc._real_site_local_artex = True
+        item = f"/assessments/{aid}/artex/items/ax_test_1/execute"
+        with patch.object(srvmod, "REAL_SITE_RUNS_PER_ORG_PER_HOUR", 1), \
+                patch.object(osvc, "execute_artex_item", return_value={"ok": True}) as executed:
+            self.assertEqual(self.req(a, item, {})[0], 200)
+            self.assertEqual(self.req(a, item, {})[0], 429)
+        executed.assert_called_once()
 
     def test_real_site_runs_are_capped_per_org(self):
         from aegis import server as srvmod

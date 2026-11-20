@@ -1,0 +1,16 @@
+{
+  "public_json": {"protected_root": false, "unauth_exposure": false, "cross_account_access": false, "idor_check_appropriate": false},
+  "auth_required_json": {"protected_root": true, "unauth_exposure": false, "cross_account_access": false, "idor_check_appropriate": false},
+  "unauth_exposure": {"protected_root": true, "unauth_exposure": true, "cross_account_access": true, "idor_check_appropriate": true},
+  "idor_vulnerable": {"protected_root": false, "unauth_exposure": false, "cross_account_access": true, "idor_check_appropriate": true},
+  "denied_403": {"protected_root": false, "unauth_exposure": false, "cross_account_access": false, "idor_check_appropriate": true},
+  "denied_404": {"protected_root": false, "unauth_exposure": false, "cross_account_access": false, "idor_check_appropriate": true},
+  "confusing_200": {"protected_root": false, "unauth_exposure": false, "cross_account_access": false, "idor_check_appropriate": true},
+  "public_json_marker": {"protected_root": false, "unauth_exposure": false, "cross_account_access": false, "idor_check_appropriate": false},
+  "protected_json_decoy": {"protected_root": true, "unauth_exposure": true, "cross_account_access": false, "idor_check_appropriate": false},
+  "auth_required_account_api": {"protected_root": true, "unauth_exposure": false, "cross_account_access": false, "idor_check_appropriate": true},
+  "public_account_directory": {"protected_root": false, "unauth_exposure": false, "cross_account_access": false, "idor_check_appropriate": false},
+  "idor_owner_missing": {"protected_root": false, "unauth_exposure": false, "cross_account_access": false, "idor_check_appropriate": true},
+  "idor_decoy_marker": {"protected_root": false, "unauth_exposure": false, "cross_account_access": false, "idor_check_appropriate": true},
+  "unknown_json": {"protected_root": false, "unauth_exposure": false, "cross_account_access": false, "idor_check_appropriate": false}
+}

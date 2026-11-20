@@ -34,6 +34,7 @@ import time
 from pathlib import Path
 from typing import Callable, Iterable
 
+from .grant_lease import GrantLease
 from .audit import AuditLog
 
 ORG_ROLES = ("owner", "admin", "runner", "approver", "viewer")
@@ -89,6 +90,8 @@ class OrgStore:
                  clock: Callable[[], float] = time.time, max_orgs: int | None = None):
         self.path = Path(path)
         self._lock = threading.RLock()
+        # deliveries share it; a membership change is exclusive (aegis/grant_lease.py)
+        self._grant = GrantLease()
         self._clock = clock
         self._max_orgs = MAX_ORGS if max_orgs is None else max_orgs
         if self.path.exists():
@@ -102,8 +105,9 @@ class OrgStore:
     # ---- persistence ---------------------------------------------------------
     @contextlib.contextmanager
     def _tx(self):
-        """A write either reaches the disk or changes nothing (memory included)."""
-        with self._lock:
+        """A write either reaches the disk or changes nothing (memory included). A change
+        to who belongs where waits for in-flight deliveries (aegis/grant_lease.py)."""
+        with self._grant.exclusive(), self._lock:
             before = copy.deepcopy(self._data)
             try:
                 yield
@@ -126,6 +130,13 @@ class OrgStore:
         with self._lock:
             org = self._data["orgs"].get(org_id)
             return tuple((org or {}).get("members", {}).get(account, ()))
+
+    @contextlib.contextmanager
+    def locked_roles_in(self, org_id: str, account: str):
+        """Hold membership changes until one grant is used. Only the shared delivery
+        lease is held while the caller works, never the store's lock."""
+        with self._grant.shared():
+            yield self.roles_in(org_id, account)
 
     def orgs_of(self, account: str) -> list[dict]:
         with self._lock:
@@ -304,8 +315,14 @@ class TenantRegistry:
         # account-level events (sign-up, sign-in, MFA, roles, refused org access) of every
         # tenant: never in an organization's own audit log or event stream
         self.platform_audit = AuditLog(Path(data_dir) / "platform-audit.jsonl")
-        # the default service shares the mock lab with every organization
-        default_svc._restore_lab_after_fix = True
+        # Every organization, including the legacy default one, shares this
+        # process-wide lab. No tenant may change its mode during another run.
+        default_svc._may_switch_lab = False
+        # One external-advisor spend total for the whole platform: with public sign-up a
+        # new organization must not bring a fresh budget (VULNIX_ADVISOR_PLATFORM_MAX_COST_USD).
+        from .spend_cap import DurableSpendCap
+        self.platform_advisor_cap = DurableSpendCap(Path(data_dir) / "platform-advisor-spend.json")
+        default_svc._platform_advisor_cap = self.platform_advisor_cap
 
     def service(self, org_id: str):
         if org_id == DEFAULT_ORG:
@@ -319,10 +336,10 @@ class TenantRegistry:
                 d.mkdir(parents=True, exist_ok=True)
                 os.chmod(d, 0o700)
                 svc = self._factory(d)
-                # the mock lab is one process-wide service: only the default organization's
-                # service may switch it (start / restart / verify-fix would otherwise change
-                # what every other organization's checks see)
+                # The mock lab is one process-wide service. A mode change would
+                # change what another organization's running check observes.
                 svc._may_switch_lab = False
+                svc._platform_advisor_cap = self.platform_advisor_cap
                 self._services[org_id] = svc
             return svc
 

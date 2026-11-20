@@ -44,7 +44,8 @@ class PersistenceBase(RealServiceBase):
     def open(self, **kw):
         svc = AssessmentService(self.dir, LAB_PORT, verify_seconds=0.1, l2_profile_dirs=PROFILE_DIRS,
                                 l2_confinement=kw.pop("l2_confinement", TEST_CONFINEMENT),
-                                revocation_marker_dirs=kw.pop("markers", [self.markers]), **kw)
+                                revocation_marker_dirs=kw.pop("markers", [self.markers]),
+                                real_site_read_only=kw.pop("real_site_read_only", False), **kw)
         svc._custom_resolver = lambda h: ["127.0.0.1"] if h == HOST else []
         return svc
 
@@ -534,7 +535,9 @@ class TestRealServiceL2NeedsKernelConfinement(PersistenceBase):
         self.assertEqual(self.tokens_seen(), [])
 
     def test_confinement_lost_during_the_run_discards_the_result(self):
-        conf = _Scripted([True, False])
+        # Gateway checks before setup, WorkerPool checks after wrapping, and
+        # Gateway checks again after the worker. Lose enforcement only there.
+        conf = _Scripted([True, True, False])
         self.prepare(conf)
         self.svc.verify_finding("f_ex_idor", actor="appr", roles={"approver"})
         self.assertEqual(conf.s.wrapped, 1)
@@ -543,13 +546,24 @@ class TestRealServiceL2NeedsKernelConfinement(PersistenceBase):
         self.assertNotEqual(f["verdict"], "proven")
         self.assertFalse([e for e in f.get("evidence", []) if e.get("tool") == "reproduction_probe"])
 
+    def test_confinement_lost_after_wrapping_starts_no_worker(self):
+        conf = _Scripted([True, False])
+        self.prepare(conf)
+        with patch("aegis.runtime.subprocess.Popen") as popen:
+            self.svc.verify_finding("f_ex_idor", actor="appr", roles={"approver"})
+        popen.assert_not_called()
+        self.assertEqual(conf.s.wrapped, 1)
+        self.assertEqual(self.tokens_seen(), [])
+        self.assertNotEqual(self.finding("f_ex_idor")["verdict"], "proven")
+
     def test_a_confirmed_confinement_runs_and_is_recorded(self):
-        conf = _Scripted([True, True])
+        conf = _Scripted([True, True, True])
         self.prepare(conf)
         self.svc.verify_finding("f_ex_idor", actor="appr", roles={"approver"})
         self.assertEqual(conf.s.wrapped, 1)
         self.assertTrue(self.events("confinement.applied"))
         self.assertEqual(sorted(set(self.tokens_seen())), sorted({f"Bearer {TOKEN_A}", f"Bearer {TOKEN_B}"}))
+        self.assertEqual(self.finding("f_ex_idor")["verdict"], "proven")
 
     def test_l1_and_lab_runs_do_not_ask_for_confinement(self):
         conf = _Refusing()
@@ -645,6 +659,16 @@ class TestKernelConfinementLogic(unittest.TestCase):
         self.assertFalse(self.make(_FakeRun(), euid=0, tools=("nft", "sh")).status()["ok"])
         with self.assertRaises(ConfinementError):
             self.make(_FakeRun(sudo_ok=False)).session("203.0.113.7", 443)
+
+    def test_sudo_preflight_times_out_and_refuses_confinement(self):
+        def slow_sudo(argv, **kwargs):
+            self.assertEqual(argv, ["/bin/sudo", "-n", "true"])
+            self.assertEqual(kwargs.get("timeout"), 5)
+            raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+
+        status = self.make(slow_sudo).status()
+        self.assertFalse(status["ok"])
+        self.assertIn("sudo", status["reason"])
 
     def test_verified_session_and_teardown(self):
         run = _FakeRun()

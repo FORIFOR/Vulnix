@@ -3,7 +3,9 @@ fixed upstream, inspection, reserved budgets, preview without any external call)
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
+import http.client
 import json
 import os
 import sys
@@ -15,7 +17,7 @@ import urllib.request
 from pathlib import Path
 from unittest.mock import patch
 
-from aegis.planner_llm_gateway import Budget, GatewayRefused, PlannerLLMGateway
+from aegis.planner_llm_gateway import Budget, GatewayRefused, PlannerLLMGateway, estimate_tokens
 from tests.artex_mock_llm import MockLLM
 
 KEY = "sk-test-gateway-key-NEVER-SENT-AS-CONTENT"
@@ -29,7 +31,7 @@ def chat(text="lab.test を計画して", tools=("add_intent",), **extra):
 
 
 def canned(_body):
-    return {"choices": [{"message": {"role": "assistant", "content": "ok"}}],
+    return {"choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
             "usage": {"prompt_tokens": 10, "completion_tokens": 5}}
 
 
@@ -75,7 +77,8 @@ def post(gw, body, token=None, raw=None):
         with urllib.request.urlopen(req, timeout=10) as r:
             return r.status, json.loads(r.read())
     except urllib.error.HTTPError as e:
-        return e.code, json.loads(e.read())
+        with e:
+            return e.code, json.loads(e.read())
 
 
 class TestInspection(unittest.TestCase):
@@ -138,6 +141,50 @@ class TestInspection(unittest.TestCase):
         self.assertEqual(preview().inspect(chat())["max_tokens"], 2048)
         self.assertEqual(preview().inspect(chat(max_tokens=99999))["max_tokens"], 2048)
 
+    def test_only_plain_json_response_format_is_forwarded_and_fingerprinted(self):
+        body = chat(tools=(), response_format={"type": "json_object"})
+        out = preview().inspect(body)
+        self.assertEqual(out["response_format"], {"type": "json_object"})
+        self.assertNotEqual(sha_of(preview(), body), sha_of(preview(), chat(tools=())))
+        for invalid in ({"type": "json_schema"}, {"type": "json_object", "extra": "x"},
+                        {"type": "text"}, "json_object", {}):
+            self.refused(chat(tools=(), response_format=invalid), "response_format")
+
+    def test_reasoning_controls_are_model_bound_and_require_explicit_approval_to_forward(self):
+        body = chat(tools=(), reasoning_effort="low")
+        with preview() as gw:
+            self.assertEqual(gw.inspect(body)["reasoning_effort"], "low")
+            self.assertNotEqual(sha_of(gw, body), sha_of(gw, chat(tools=())))
+        with PlannerLLMGateway(mode="preview", model="other-model", responder=canned) as gw:
+            with self.assertRaises(GatewayRefused):
+                gw.inspect(body)
+        with forward(ok_transport) as gw:
+            with self.assertRaises(GatewayRefused):
+                gw.inspect(body)
+        approved_gw = PlannerLLMGateway(
+            mode="forward", model="abliterated-model", upstream_url=UP, api_key=KEY,
+            allowed_hosts={"lab.test"}, transport=ok_transport, budget=Budget(**PRICED),
+            approval={"max_calls": 1, "first_request_sha256": sha_of(preview(), body),
+                      "reasoning_effort": "low"})
+        with approved_gw as gw:
+            self.assertEqual(gw.inspect(body)["reasoning_effort"], "low")
+            with self.assertRaises(GatewayRefused):
+                gw.inspect(chat(tools=(), reasoning_effort="none"))
+            with self.assertRaises(GatewayRefused):
+                gw.inspect(chat(tools=(), reasoning={"max_tokens": 128}))
+
+    def test_invalid_reasoning_controls_are_refused_before_send(self):
+        for extra in ({"reasoning_effort": "high"}, {"reasoning_effort": 1},
+                      {"reasoning": {"max_tokens": 0}}, {"reasoning": {"max_tokens": -1}},
+                      {"reasoning": {"max_tokens": 257}}, {"reasoning": {"max_tokens": True}},
+                      {"reasoning": {"unexpected": 1}},
+                      {"reasoning_effort": "low", "reasoning": {"max_tokens": 32}}):
+            with self.subTest(extra=extra):
+                self.refused(chat(tools=(), **extra), "reasoning_config")
+        with preview() as gw:
+            self.assertEqual(gw.inspect(chat(tools=(), reasoning={"max_tokens": 128}))
+                             ["reasoning"], {"max_tokens": 128})
+
 
 class TestPreviewSendsNothing(unittest.TestCase):
     def test_preview_records_what_would_be_sent_and_never_forwards(self):
@@ -159,6 +206,81 @@ class TestPreviewSendsNothing(unittest.TestCase):
 
 
 class TestBudgets(unittest.TestCase):
+    def test_real_upstream_marks_unfinished_or_unknown_completion_terminal(self):
+        for finish in ("length", "content_filter", "unexpected", None):
+            with self.subTest(finish=finish):
+                response = {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
+                if finish is not None:
+                    response["choices"][0]["finish_reason"] = finish
+                with forward(lambda *_: json.dumps(response).encode(), audit=Audit()) as gw:
+                    code, _ = post(gw, chat())
+                    self.assertEqual(post(gw, chat())[0], 403)
+                self.assertEqual(code, 200)
+                self.assertTrue(gw.failed)
+                self.assertEqual(gw.report()["failed_upstream"]["error_type"], "IncompleteCompletion")
+                self.assertEqual(gw.report()["failed"], 1)
+
+    def test_finish_reason_must_match_tool_call_shape(self):
+        tool_call = {"id": "c1", "type": "function",
+                     "function": {"name": "add_intent", "arguments": "{}"}}
+        for finish, calls in (("tool_calls", None), ("stop", [tool_call])):
+            with self.subTest(finish=finish):
+                message = {"role": "assistant", "content": "ok"}
+                if calls is not None:
+                    message["tool_calls"] = calls
+                response = {"choices": [{"message": message, "finish_reason": finish}]}
+                with forward(lambda *_: json.dumps(response).encode(), audit=Audit()) as gw:
+                    self.assertEqual(post(gw, chat())[0], 200)
+                self.assertTrue(gw.failed)
+                self.assertEqual(gw.report()["failed_upstream"]["error_type"], "IncompleteCompletion")
+                self.assertEqual(gw.report()["failed"], 1)
+
+    def test_dense_unicode_cost_reserves_utf8_bytes_before_any_send(self):
+        body = chat("あ" * 1000 + " lab.test")
+        with preview() as sample:
+            clean = sample.inspect(body)
+        payload = json.dumps(clean, ensure_ascii=False, sort_keys=True).encode()
+        prices = Budget(**PRICED)
+        coarse = prices.estimate(estimate_tokens(payload.decode()), clean["max_tokens"])
+        byte_bound = prices.estimate(len(payload), clean["max_tokens"])
+        self.assertGreater(byte_bound, coarse)
+        cap = (coarse + byte_bound) / 2
+        with preview(budget=Budget(max_cost_usd=cap, **PRICED)) as gw:
+            code, _ = post(gw, body)
+        self.assertEqual(code, 403)
+        self.assertEqual(gw.report()["records"][0]["reason"], "cost_budget")
+
+    def test_non_finite_or_negative_budget_values_are_rejected_before_send(self):
+        for value in (float("nan"), float("inf"), -1.0):
+            with self.assertRaises(ValueError):
+                Budget(max_cost_usd=value)
+            with self.assertRaises(ValueError):
+                Budget(usd_per_1k_input=value)
+            with self.assertRaises(ValueError):
+                Budget(usd_per_1k_output=value)
+        for count in (0, -1):
+            with self.assertRaises(ValueError):
+                Budget(max_calls=count)
+            with self.assertRaises(ValueError):
+                Budget(max_total_tokens=count)
+
+    def test_provider_usage_above_reservation_ends_the_run(self):
+        sent = []
+
+        def high_usage(*_args):
+            sent.append(1)
+            return json.dumps({"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                               "usage": {"prompt_tokens": 10_000, "completion_tokens": 5}}).encode()
+
+        budget = Budget(max_calls=3, max_total_tokens=20_000, max_cost_usd=0.009,
+                        usd_per_1k_input=0.001, usd_per_1k_output=0.003)
+        with forward(high_usage, audit=Audit(), budget=budget) as gw:
+            self.assertEqual(post(gw, chat())[0], 409)
+            self.assertEqual(post(gw, chat())[0], 403)
+        self.assertEqual(len(sent), 1)
+        self.assertTrue(gw.failed)
+        self.assertGreater(gw.report()["est_cost_usd"], budget.max_cost_usd)
+
     def test_call_token_and_cost_budgets(self):
         with preview(budget=Budget(max_calls=2)) as gw:
             codes = [post(gw, chat())[0] for _ in range(3)]
@@ -256,6 +378,20 @@ class TestForwarding(unittest.TestCase):
             code, _ = post(gw, chat())
         self.assertEqual((code, sent), (403, []))
 
+    def test_a_broken_audit_chain_prevents_model_forward(self):
+        from aegis.audit import AuditLog
+        sent = []
+        with tempfile.TemporaryDirectory() as tmp:
+            audit = AuditLog(Path(tmp) / "audit.jsonl")
+            audit.record("test.marker", value="original")
+            audit.record("test.marker", value="second")
+            lines = audit.path.read_text().splitlines()
+            lines[0] = lines[0].replace("original", "modified")
+            audit.path.write_text("\n".join(lines) + "\n")
+            with forward(lambda *a: sent.append(a) or ok_transport(), audit=audit) as gw:
+                code, _ = post(gw, chat())
+        self.assertEqual((code, sent), (403, []))
+
     def test_a_stopped_or_closed_run_forwards_nothing(self):
         sent, running = [], [True]
         gw = forward(lambda *a: sent.append(a) or ok_transport(), audit=Audit(), may_forward=lambda: running[0])
@@ -266,6 +402,182 @@ class TestForwarding(unittest.TestCase):
             gw.close()
             self.assertEqual(post(gw, chat())[0], 403)
         self.assertEqual(sent, [])
+
+    def test_stop_during_forward_audit_prevents_upstream_send(self):
+        sent = []
+
+        class StopAfterAudit(Audit):
+            def record(self, event, **fields):
+                super().record(event, **fields)
+                if event == "planner_llm.forwarding":
+                    gw.close()
+
+        with forward(lambda *a: sent.append(a) or ok_transport(), audit=StopAfterAudit()) as gw:
+            code, _ = post(gw, chat())
+        self.assertEqual(code, 403)
+        self.assertEqual(sent, [])
+        self.assertEqual(gw.report()["records"][0]["reason"], "stopped")
+
+    def test_stop_while_waiting_for_send_authority_prevents_forward(self):
+        entered = threading.Event()
+        release = threading.Event()
+        sent = []
+
+        @contextlib.contextmanager
+        def send_scope():
+            entered.set()
+            self.assertTrue(release.wait(5))
+            yield
+
+        with forward(lambda *a: sent.append(a) or ok_transport(), audit=Audit(),
+                     send_scope=send_scope) as gw:
+            outcome = []
+            thread = threading.Thread(target=lambda: outcome.append(post(gw, chat())[0]))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            gw.close()
+            release.set()
+            thread.join(5)
+            self.assertFalse(thread.is_alive())
+        self.assertEqual((outcome, sent), ([403], []))
+
+    def test_denied_send_scope_refunds_an_unsent_reservation(self):
+        sent = []
+
+        @contextlib.contextmanager
+        def send_scope():
+            raise GatewayRefused("stopped", "authority expired")
+            yield
+
+        with forward(lambda *a: sent.append(a) or ok_transport(), audit=Audit(),
+                     send_scope=send_scope) as gw:
+            code, _ = post(gw, chat())
+        report = gw.report()
+        self.assertEqual((code, sent), (403, []))
+        self.assertEqual((report["calls"], report["est_tokens"], report["est_cost_usd"]), (0, 0, 0))
+        self.assertEqual(report["records"][0]["reason"], "stopped")
+
+    def test_real_transport_writes_only_inside_scope_and_waits_outside_it(self):
+        active = [False]
+        calls = []
+
+        @contextlib.contextmanager
+        def send_scope():
+            active[0] = True
+            try:
+                yield
+            finally:
+                active[0] = False
+
+        class Connection(http.client.HTTPSConnection):
+            def __init__(self, *args, **kwargs):
+                calls.append("created")
+                self.sock = type("Socket", (), {"settimeout": lambda _, seconds: calls.append(("timeout", seconds))})()
+
+            def connect(self):
+                self.assert_not_active()
+                calls.append("connected")
+
+            def assert_not_active(self):
+                if active[0]:
+                    raise AssertionError("network setup or response wait held authority")
+
+            def request(self, method, path, *, body, headers):
+                if not active[0]:
+                    raise AssertionError("request write lacked live authority")
+                calls.append("written")
+
+            def getresponse(self):
+                self.assert_not_active()
+                calls.append("response")
+                return type("Response", (), {"status": 200, "read": lambda _, limit: ok_transport()})()
+
+            def close(self):
+                calls.append("closed")
+
+        with patch("aegis.planner_llm_gateway.http.client.HTTPSConnection", Connection):
+            with forward(None, audit=Audit(), send_scope=send_scope) as gw:
+                code, _ = post(gw, chat())
+        self.assertEqual(code, 200)
+        self.assertEqual(calls, ["created", "connected", ("timeout", 1.0), "written",
+                                 ("timeout", 30.0), "response", "closed"])
+
+    def test_stop_during_real_tls_connect_sends_no_request(self):
+        connecting = threading.Event()
+        release = threading.Event()
+        writes = []
+
+        class Connection(http.client.HTTPSConnection):
+            def __init__(self, *args, **kwargs):
+                self.sock = None
+
+            def connect(self):
+                connecting.set()
+                if not release.wait(5):
+                    raise AssertionError("connection test timed out")
+
+            def request(self, *args, **kwargs):
+                writes.append(True)
+
+            def close(self):
+                pass
+
+        with patch("aegis.planner_llm_gateway.http.client.HTTPSConnection", Connection):
+            with forward(None, audit=Audit(), send_scope=contextlib.nullcontext) as gw:
+                outcome = []
+                thread = threading.Thread(target=lambda: outcome.append(post(gw, chat())[0]))
+                thread.start()
+                self.assertTrue(connecting.wait(5))
+                gw.close()
+                release.set()
+                thread.join(5)
+                self.assertFalse(thread.is_alive())
+        self.assertEqual((outcome, writes), ([403], []))
+
+    def test_stalled_real_write_releases_stop_lock_after_socket_timeout(self):
+        authority = threading.Lock()
+        writing = threading.Event()
+
+        @contextlib.contextmanager
+        def send_scope():
+            with authority:
+                yield
+
+        class Socket:
+            timeout = None
+
+            def settimeout(self, seconds):
+                self.timeout = seconds
+
+        class Connection(http.client.HTTPSConnection):
+            def __init__(self, *args, **kwargs):
+                self.sock = Socket()
+
+            def connect(self):
+                pass
+
+            def request(self, *args, **kwargs):
+                writing.set()
+                time.sleep(self.sock.timeout)
+                raise TimeoutError("simulated stalled socket write")
+
+            def close(self):
+                pass
+
+        with patch("aegis.planner_llm_gateway.http.client.HTTPSConnection", Connection):
+            with forward(None, audit=Audit(), send_scope=send_scope) as gw:
+                outcome = []
+                thread = threading.Thread(target=lambda: outcome.append(post(gw, chat())[0]))
+                thread.start()
+                self.assertTrue(writing.wait(5))
+                started = time.monotonic()
+                self.assertTrue(authority.acquire(timeout=3), "stop waited past the bounded write")
+                elapsed = time.monotonic() - started
+                authority.release()
+                thread.join(5)
+                self.assertFalse(thread.is_alive())
+        self.assertLess(elapsed, 2.5)
+        self.assertEqual(outcome, [409])
 
     def test_a_loopback_mock_upstream_needs_no_approval(self):
         with MockLLM() as mock, PlannerLLMGateway(mode="forward", model="m", upstream_url=mock.url + "/chat/completions",
@@ -324,14 +636,14 @@ class TestResponseShapeIsAudited(unittest.TestCase):
         self.assertEqual(f["content_chars"], 0)
         self.assertNotIn("SECRET-NOT-OFFERED", json.dumps(f))
 
-    def test_odd_tool_call_entries_still_answer_once_and_keep_the_run_open(self):
+    def test_odd_tool_call_entries_are_audited_but_end_the_run(self):
         for bad in ({"function": "x"}, {"function": ["a"]}, {}, {"function": {"name": 7}}):
             audit = Audit()
             resp = {"choices": [{"message": {"role": "assistant", "content": [{"type": "text"}],
                                              "tool_calls": [bad]}, "finish_reason": {"x": "EVIL"}}]}
             with forward(lambda *a: json.dumps(resp).encode(), audit=audit) as gw:
                 self.assertEqual(post(gw, chat())[0], 200, bad)
-                self.assertFalse(gw._failed.is_set())
+                self.assertTrue(gw._failed.is_set())
             calls = [e["fields"] for e in audit.entries if e["event"] == "planner_llm.call"]
             self.assertEqual(len(calls), 1, bad)
             self.assertEqual(calls[0]["tool_call_names"], ["(other)"])
@@ -439,6 +751,37 @@ class TestServiceApprovalFlow(unittest.TestCase):
         s = AssessmentService(Path(tmp.name), 18094, l2_confinement=TEST_CONFINEMENT)
         self.addCleanup(s.workers.kill_all)
         return s
+
+    def test_request_revocation_blocks_later_planner_model_calls(self):
+        svc = self.svc()
+        allowed = [True]
+        with patch.object(svc, "_artex_may_start", return_value=True):
+            gw = svc._planner_gateway("op", None, (), svc._run_generation,
+                                      "gateway-preview", request_authorized=lambda: allowed[0])
+            self.assertTrue(gw._may())
+            allowed[0] = False
+            self.assertFalse(gw._may())
+
+    def test_request_revocation_blocks_worker_launch_guard(self):
+        from aegis.policy import PolicyError
+        svc = self.svc()
+        svc._tls.request_authorized = lambda: False
+        with self.assertRaisesRegex(PolicyError, "権限"):
+            svc._launch_guard("http_probe", {"url": "http://lab.test/"}, None)
+
+    def test_late_worker_guard_is_bound_and_rechecks_revocation(self):
+        from aegis.policy import PolicyError
+        svc = self.svc()
+        svc._tls.request_authorized = lambda: False
+        with self.assertRaisesRegex(PolicyError, "権限"):
+            svc.gateway.late_launch_guard()
+
+    def test_nested_finding_verification_keeps_outer_request_authority(self):
+        svc = self.svc()
+        svc._tls.request_authorized = lambda: False
+        with patch.object(svc, "_verify_finding", return_value={}):
+            with self.assertRaisesRegex(PermissionError, "権限が失効"):
+                svc.verify_finding("f_banner", "op")
 
     def stored_preview(self, svc, run_by="op", sha="b" * 64, age=0):
         with svc._lock:
@@ -593,7 +936,7 @@ class TestReplayedModelTurns(unittest.TestCase):
 
         def transport(_u, _h, body):
             sent.append(json.loads(body))
-            return json.dumps({"choices": [{"message": turn}], "usage": {"prompt_tokens": 1,
+            return json.dumps({"choices": [{"message": turn, "finish_reason": "tool_calls"}], "usage": {"prompt_tokens": 1,
                                                                             "completion_tokens": 1}}).encode()
         smuggle = "internal db at 10.0.0.5, password: hunter2hunter2"
         variants = [
@@ -812,7 +1155,7 @@ class TestReviewRoundFive(unittest.TestCase):
         replies = iter(turns)
 
         def t(*_a):
-            return json.dumps({"choices": [{"message": next(replies)}],
+            return json.dumps({"choices": [{"message": next(replies), "finish_reason": "tool_calls"}],
                                "usage": {"prompt_tokens": 1, "completion_tokens": 1}}).encode()
         with self.gw(t) as gw:
             self.assertEqual(post(gw, chat())[0], 200)

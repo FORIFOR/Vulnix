@@ -4,18 +4,21 @@
 // than what we have; duplicates are dropped and a gap triggers a full refetch,
 // so the screen always converges on server state.
 import { useCallback, useEffect, useRef, useState, type SetStateAction } from "react";
-import { needsPoll, POLL_EVERY_MS } from "./polling";
-import { getJSON } from "./api";
+import { heartbeatDecision, needsAuthoritativeRefresh, needsPoll, POLL_EVERY_MS, shouldApplyRequestFailure, shouldApplySnapshot } from "./polling";
+import { ApiHttpError, getJSON } from "./api";
 import { applyEvent, withNewerPlanner } from "./assessmentEvents";
 import type { AegisEvent, AuditEntry, Snapshot } from "./types";
 
 export type Conn = "connecting" | "live" | "reconnecting" | "offline";
 
 export function useAssessment(id: string) {
+  const accessDeniedRef = useRef(false);
   const [snap, setRawSnap] = useState<Snapshot | null>(null);
   // Every whole-snapshot replacement keeps the newest model connection state.
   const setSnap = useCallback((next: SetStateAction<Snapshot | null>) => {
-    setRawSnap((prev) => withNewerPlanner(prev, typeof next === "function" ? next(prev) : next));
+    if (!accessDeniedRef.current) {
+      setRawSnap((prev) => withNewerPlanner(prev, typeof next === "function" ? next(prev) : next));
+    }
   }, []);
   const [error, setError] = useState<string | null>(null);
   const [conn, setConn] = useState<Conn>("connecting");
@@ -23,17 +26,31 @@ export function useAssessment(id: string) {
   const [chainValid, setChainValid] = useState<boolean | null>(null);
   const [notes, setNotes] = useState<AegisEvent[]>([]);
   const seqRef = useRef(0);
+  const requestSerialRef = useRef(0);
+  const appliedSerialRef = useRef(0);
+  const lastSnapshotAtRef = useRef(0);
   const auditHashes = useRef(new Set<string>());
   const lastHashRef = useRef<string | null>(null);
   const verifyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const refetch = useCallback(async () => {
+    if (accessDeniedRef.current) return null;
+    const requestSerial = ++requestSerialRef.current;
     try {
       const [s, logs] = await Promise.all([
         getJSON<Snapshot>(`/api/assessments/${id}`),
         getJSON<{ entries: AuditEntry[]; chain_valid: boolean }>(`/api/assessments/${id}/logs`),
       ]);
+      if (accessDeniedRef.current) return null;
+      if (!shouldApplySnapshot(s.last_seq, seqRef.current, requestSerial, appliedSerialRef.current)) {
+        // An SSE event arrived while the request was in flight. Keep its
+        // newer state and try another authoritative read on the next tick.
+        lastSnapshotAtRef.current = 0;
+        return null;
+      }
       seqRef.current = Math.max(seqRef.current, s.last_seq);
+      appliedSerialRef.current = requestSerial;
+      lastSnapshotAtRef.current = Date.now();
       setSnap(s);
       auditHashes.current = new Set(logs.entries.map((e) => e.hash));
       lastHashRef.current = logs.entries.at(-1)?.hash ?? null;
@@ -42,6 +59,16 @@ export function useAssessment(id: string) {
       setError(null);
       return s.last_seq;
     } catch (e) {
+      if (accessDeniedRef.current) return null;
+      if (!shouldApplyRequestFailure(requestSerial, requestSerialRef.current, appliedSerialRef.current)) return null;
+      if (e instanceof ApiHttpError && (e.status === 401 || e.status === 403)) {
+        accessDeniedRef.current = true;
+        setRawSnap(null);
+        setAudit([]);
+        setChainValid(null);
+        setNotes([]);
+        setConn("offline");
+      }
       setError((e as Error).message);
       return null;
     }
@@ -67,9 +94,13 @@ export function useAssessment(id: string) {
     let es: EventSource | null = null;
     let cancelled = false;
     let lastEventAt = Date.now();
+    lastSnapshotAtRef.current = lastEventAt;
     // backup for paths that hold event streams back (e.g. Cloudflare Quick Tunnels)
     const poll = setInterval(() => {
-      if (needsPoll(lastEventAt, Date.now(), document.visibilityState === "visible")) {
+      const now = Date.now();
+      const visible = document.visibilityState === "visible";
+      if (needsPoll(lastEventAt, now, visible) ||
+          needsAuthoritativeRefresh(lastSnapshotAtRef.current, now, visible)) {
         lastEventAt = Date.now();
         void refetch();
       }
@@ -83,12 +114,28 @@ export function useAssessment(id: string) {
       es = new EventSource(`/api/assessments/${id}/events?after=${last}`);
       es.onopen = () => setConn("live");
       es.onerror = () => setConn(es?.readyState === EventSource.CLOSED ? "offline" : "reconnecting");
+      es.addEventListener("heartbeat", (message) => {
+        let serverSeq: unknown;
+        try {
+          serverSeq = (JSON.parse((message as MessageEvent).data) as { seq?: unknown }).seq;
+        } catch {
+          return; // malformed data must not disable the fallback
+        }
+        const decision = heartbeatDecision(serverSeq, seqRef.current);
+        if (decision === "ignore") return;
+        lastEventAt = Date.now();
+        if (decision === "refresh") void refetch();
+      });
       es.onmessage = (m) => {
+        if (accessDeniedRef.current) return;
         lastEventAt = Date.now();
         const ev = JSON.parse(m.data) as AegisEvent;
         if (ev.seq <= seqRef.current) return; // duplicate / stale
         const gap = ev.seq > seqRef.current + 1;
         seqRef.current = ev.seq;
+        // Any snapshot already in flight may predate this event even when its
+        // sequence matches. Only a request started after the event can replace it.
+        appliedSerialRef.current = requestSerialRef.current + 1;
         if (gap) {
           void refetch();
           return;

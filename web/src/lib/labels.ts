@@ -1,4 +1,4 @@
-import type { AssessmentState, PhaseStatus, Severity, Verdict } from "./types";
+import type { AssessmentState, CveStatus, Finding, PhaseStatus, Severity, Verdict } from "./types";
 
 // Every status is shown with text, never colour alone.
 export const SEVERITY: Record<Severity, { label: string; cls: string }> = {
@@ -10,6 +10,7 @@ export const SEVERITY: Record<Severity, { label: string; cls: string }> = {
 };
 
 export const VERDICT: Record<Verdict, { label: string; cls: string; help: string }> = {
+  candidate: { label: "未計測の候補", cls: "border-zinc-400 text-zinc-700 dark:text-zinc-300", help: "verdict_unverified" },
   proven: { label: "実証成功", cls: "border-red-500 text-red-700 dark:text-red-300", help: "verdict_proven" },
   detected: { label: "検出（未実証）", cls: "border-amber-500 text-amber-700 dark:text-amber-300", help: "verdict_detected" },
   unverified: { label: "未検証", cls: "border-zinc-400 text-zinc-700 dark:text-zinc-300", help: "verdict_unverified" },
@@ -66,3 +67,28 @@ export const AUDIT_EVENT: Record<string, string> = {
 
 export const fmtTime = (ts: number | null | undefined) =>
   ts ? new Date(ts * 1000).toLocaleString("ja-JP", { hour12: false }) : "—";
+
+export function completedHeadline(findings: Pick<Finding, "evidence_status" | "demo_fixture">[]): string {
+  const actual = findings.filter((f) => !f.demo_fixture);
+  const confirmed = actual.filter((f) => f.evidence_status === "detected" || f.evidence_status === "proven").length;
+  const candidates = actual.filter((f) => f.evidence_status === "candidate").length;
+  const incomplete = actual.filter((f) => f.evidence_status === "incomplete").length;
+  const notReproduced = actual.filter((f) => f.evidence_status === "not_reproduced").length;
+  return "診断が完了しました。" +
+    (confirmed ? `証拠のある問題を${confirmed}件確認しました。` : "問題を確認していません（未検査項目が安全という意味ではありません）。") +
+    (candidates ? `未確認の候補${candidates}件。` : "") +
+    (incomplete ? `検証が完了していない所見${incomplete}件。` : "") +
+    (notReproduced ? `再現できなかった所見${notReproduced}件。` : "");
+}
+
+export function threatFeedSummary(
+  status: Pick<CveStatus, "cve_count" | "kev_count" | "last_synced_at" | "freshness" | "stale" | "last_sync_error"> | null | undefined,
+): string {
+  if (!status) return "脅威情報の件数を取得できていません。";
+  const base = `NVD 登録 ${status.cve_count} 件 / CISA KEV 悪用確認 ${status.kev_count} 件（最終同期: ${status.last_synced_at ? fmtTime(status.last_synced_at) : "未同期（同梱データのみ）"}）`;
+  const freshNote =
+    status.freshness === "unfetched" ? "・フィード未取得" :
+    status.stale || status.freshness === "stale" ? "・更新期限超過（要同期）" : "";
+  const errNote = status.last_sync_error ? "・直近の同期に失敗（以前のデータを保持）" : "";
+  return base + freshNote + errNote;
+}

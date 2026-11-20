@@ -16,6 +16,7 @@ import http.server
 import json
 import re
 import threading
+from collections.abc import Callable
 
 INTENTS = [
     {"summary": "对 /api/search 的 q 参数进行 SQL 注入边界的非破坏性验证", "asset_ids": [1], "priority": 8},
@@ -50,6 +51,16 @@ def _seeded_asset_id(messages: list) -> int:
     return 1
 
 
+def _initial_selection_fact_available(messages: list[dict]) -> bool:
+    """Whether the first ARTEX summary carries a measured selection signal."""
+    return any(isinstance(m, dict) and m.get("role") == "user"
+               and isinstance(m.get("content"), str)
+               and (re.search(r"Measured account resource link: (?:present|absent)\b", m["content"])
+                    or re.search(r"Measured root fingerprint:.*?server_family.{0,12}"
+                                 r"(?:apache|nginx|other|unknown)\b", m["content"]))
+               for m in messages)
+
+
 # An asset that EXISTS in ARTEX's store but is not the seeded target (ARTEX creates
 # host/domain assets next to a seeded HTTP service): such an intent is stored by
 # ARTEX but must never become executable in Vulnix.
@@ -63,10 +74,13 @@ def intents_for(asset_id: int) -> list[dict]:
     return out
 
 
-def _tool_calls(asset_id: int = 1) -> list[dict]:
+def _tool_calls(asset_id: int = 1, intents: list[dict] | None = None) -> list[dict]:
+    chosen = (intents_for(asset_id) if intents is None else
+              [{**it, "asset_ids": [asset_id if a == 1 else a for a in it.get("asset_ids", [])]}
+               for it in intents])
     calls = [{"id": "call_add_intent", "type": "function",
               "function": {"name": "add_intent",
-                           "arguments": json.dumps({"intents": intents_for(asset_id)}, ensure_ascii=False)}}]
+                           "arguments": json.dumps({"intents": chosen}, ensure_ascii=False)}}]
     for i, (name, args) in enumerate(FORBIDDEN_CALLS):
         calls.append({"id": f"call_forbidden_{i}", "type": "function",
                       "function": {"name": name, "arguments": json.dumps(args)}})
@@ -103,9 +117,15 @@ class MockLLM:
     `fail_at` / `fail_status`: answer the Nth request with that HTTP error (its body
     carries a secret-looking string, to prove the gateway never logs or shows it)."""
 
-    def __init__(self, port: int = 0, *, strict: bool = False, fail_at: int | None = None, fail_status: int = 402):
+    def __init__(self, port: int = 0, *, strict: bool = False, fail_at: int | None = None,
+                 fail_status: int = 402, intents: list[dict] | None = None,
+                 intent_selector: Callable[[list[dict]], list[dict]] | None = None,
+                 prefer_initial_facts: bool = False):
         self.requests: list[dict] = []
         self.strict, self.fail_at, self.fail_status = strict, fail_at, fail_status
+        self.intents = intents
+        self.intent_selector = intent_selector
+        self.prefer_initial_facts = prefer_initial_facts
         mock = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -133,13 +153,37 @@ class MockLLM:
                         return self._send(400, json.dumps({"error": {"message": why}}).encode(), "application/json")
                 msgs = req.get("messages") or []
                 has_results = any(m.get("role") == "tool" for m in msgs if isinstance(m, dict))
-                if has_results:
+                called = [tc.get("function", {}).get("name")
+                          for m in msgs if isinstance(m, dict) and m.get("role") == "assistant"
+                          for tc in m.get("tool_calls") or [] if isinstance(tc, dict)]
+                if (mock.intent_selector is not None and "list_facts" not in called
+                        and not (mock.prefer_initial_facts and _initial_selection_fact_available(msgs))):
+                    message = {"role": "assistant", "content": "",
+                               "tool_calls": [{"id": "call_list_facts", "type": "function",
+                                               "function": {"name": "list_facts", "arguments": "{}"}}]}
+                    finish = "tool_calls"
+                elif mock.intent_selector is not None and "add_intent" not in called:
+                    chosen = mock.intent_selector(msgs)
+                    if chosen:
+                        message = {"role": "assistant", "content": "",
+                                   "tool_calls": _tool_calls(_seeded_asset_id(msgs), chosen)}
+                        finish = "tool_calls"
+                    else:
+                        message = {"role": "assistant", "content": "追加検査は提案しません。"}
+                        finish = "stop"
+                elif has_results:
                     message = {"role": "assistant", "content": "规划完成：已提交探索方向。"}
                     finish = "stop"
                 else:
-                    message = {"role": "assistant", "content": "",
-                               "tool_calls": _tool_calls(_seeded_asset_id(msgs))}
-                    finish = "tool_calls"
+                    chosen = (mock.intent_selector(msgs) if mock.intent_selector is not None
+                              else mock.intents)
+                    if chosen == []:
+                        message = {"role": "assistant", "content": "追加検査は提案しません。"}
+                        finish = "stop"
+                    else:
+                        message = {"role": "assistant", "content": "",
+                                   "tool_calls": _tool_calls(_seeded_asset_id(msgs), chosen)}
+                        finish = "tool_calls"
                 if req.get("stream"):
                     self._stream(message, finish)
                 else:

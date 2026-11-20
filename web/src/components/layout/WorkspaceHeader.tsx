@@ -1,8 +1,10 @@
 "use client";
 
 import { STATE } from "@/lib/labels";
+import { diagnosisSource } from "@/lib/diagnosisSource";
 import type { Snapshot } from "@/lib/types";
 import type { Conn } from "@/lib/useAssessment";
+import { useSession } from "@/lib/useSession";
 import { ExecutionControls } from "../assessment/ExecutionControls";
 import { RiskScore } from "../findings/RiskScore";
 import { Pill } from "../ui";
@@ -23,6 +25,8 @@ export function WorkspaceHeader({ snap, conn, onUpdate, refetch }: {
 }) {
   const done = snap.phases.filter((p) => p.status === "done").length;
   const auth = snap.authorization;
+  const source = diagnosisSource(snap);
+  const { multiTenant } = useSession();
   return (
     <header className="sticky top-0 z-30 border-b border-zinc-200 bg-white/90 px-4 py-3 backdrop-blur md:px-6 dark:border-zinc-800 dark:bg-zinc-950/90">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -48,26 +52,13 @@ export function WorkspaceHeader({ snap, conn, onUpdate, refetch }: {
         </div>
       </div>
       <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg bg-zinc-100 px-3 py-2 text-xs dark:bg-zinc-900">
-        <span className="font-semibold">{snap.planner.external_model_configured ? `${snap.planner.model_name || "外部モデル"}（${connectionLabel(snap.planner)}）` : "内蔵 ARTEX プランナー"}</span>
-        <span className="text-zinc-500">
-          {snap.planner.external_model_configured
-            ? "内蔵プランナーも有効"
-            : snap.planner.explanation_model_configured
-              ? `AI解説：${snap.planner.model_name || "外部モデル"}（${connectionLabel(snap.planner)}）`
-              : "外部 AI モデル未設定"}
-        </span>
-        <span className="text-zinc-500">提案 → Gateway 審査 → 許可範囲内で実行</span>
+        <span className="font-semibold">{source.plan}</span>
+        <span className="text-zinc-500">{source.explanation}</span>
+        {snap.is_external_service && (multiTenant || snap.real_site_read_only) && <span className="text-zinc-500">読み取り専用の診断</span>}
       </div>
       <div className="mt-3">
         <ExecutionControls snap={snap} onUpdate={onUpdate} refetch={refetch} />
       </div>
     </header>
   );
-}
-
-function connectionLabel(p: Snapshot["planner"]): string {
-  const state = p.connection_state ?? (p.connection_verified ? "verified" : "configured");
-  if (state === "verified") return "解説応答確認済み";
-  if (state === "failed") return `直近の接続に失敗${p.connection_error ? `：${p.connection_error}` : ""}・内蔵解説で回答`;
-  return "設定済み・疎通未確認";
 }

@@ -35,13 +35,41 @@ def enforce_verdict(finding: dict) -> dict:
             out["risk_score"], out["risk_rationale"] = compute_finding_risk_score(
                 str(finding.get("severity") or "medium"), "detected", kev=bool(finding.get("kev")),
                 internet_facing=target.lower().startswith("https://"))
-        return out
+        finding = out
+    evs = finding.get("evidence")
+    if isinstance(evs, list) and evs:
+        import json
+        from .service_diag import sanitize_http_probe_payload
+        cleaned_evs = []
+        changed = False
+        for ev in evs:
+            if (isinstance(ev, dict) and ev.get("tool") == "http_probe"
+                    and isinstance(ev.get("content"), str) and ev["content"].strip()):
+                try:
+                    parsed = json.loads(ev["content"])
+                except (TypeError, ValueError):
+                    parsed = None
+                if isinstance(parsed, dict) and (
+                    "set_cookies" in parsed
+                    or (isinstance(parsed.get("headers"), dict)
+                        and any(str(k).lower() in ("set-cookie", "set-cookie2") for k in parsed["headers"]))
+                ):
+                    sanitized = sanitize_http_probe_payload(parsed)
+                    new_content = json.dumps(sanitized, ensure_ascii=False)
+                    if new_content != ev["content"]:
+                        ev = {**ev, "content": new_content}
+                        changed = True
+            cleaned_evs.append(ev)
+        if changed:
+            finding = {**finding, "evidence": cleaned_evs}
     return finding
 
 
 def evidence_status(finding: dict) -> str:
     if finding.get("demo_fixture"):
         return "fixture"
+    if finding.get("verdict") == "candidate":
+        return "candidate"
     if finding.get("verdict") in {"aborted", "unverified"}:
         return "incomplete"
     # A pre-populated candidate or unattached example is not a measured finding.
@@ -88,6 +116,33 @@ def reproduction_verdict(result: dict | None, check: str, rule: dict | None = No
         return evaluate(worker_rule, result)["verdict"]
     if not result or result.get("check") != check or check not in REPRODUCTION_MARKERS:
         return "unverified"
+    if check == "idor":
+        if (result.get("request_path") != "/api/accounts/B/secret"
+                or result.get("request_headers") != {"X-Test-Account": "acct_A"}):
+            return "unverified"
+        response = result.get("response")
+        owner = result.get("control_response")
+        if (result.get("control_status") != 200
+                or result.get("control_verified") is not True
+                or not isinstance(owner, dict)
+                or owner.get("Check") != "idor_cross_account_access"
+                or owner.get("caller_account") != "acct_B"
+                or owner.get("resource_owner") != "acct_B"
+                or owner.get("resource_id") != "res_b_001"
+                or owner.get("confidential_marker") != REPRODUCTION_MARKERS["idor"]):
+            return "unverified"
+        if (not isinstance(response, dict)
+                or response.get("Check") != "idor_cross_account_access"
+                or response.get("established") is not True
+                or response.get("caller_account") != "acct_A"
+                or response.get("resource_owner") != "acct_B"
+                or response.get("resource_id") != "res_b_001"
+                or response.get("confidential_marker") != REPRODUCTION_MARKERS["idor"]):
+            if (result.get("status") in REPRODUCTION_DENY_STATUSES["idor"]
+                    and result.get("established") is False
+                    and result.get("verdict") == "not_reproduced"):
+                return "not_reproduced"
+            return "unverified"
     if (result.get("status") == 200 and result.get("established") is True
             and result.get("verdict") == "proven"
             and REPRODUCTION_MARKERS[check] in json.dumps(result.get("response"))):

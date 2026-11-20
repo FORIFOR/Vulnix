@@ -52,6 +52,7 @@ class TestStolenSessionFile(ApiBase):
                 with self.assertRaises(urllib.error.HTTPError) as cm:
                     urllib.request.urlopen(req)
                 self.assertEqual(cm.exception.code, 401)
+                cm.exception.close()
         self.assertEqual(self.call("/assets", who="appr")[0], 200)                # the real cookie still works
         self.assertNotIn(token, json.dumps([vars(s) for s in self.ops._sessions.values()]))
 
@@ -92,7 +93,8 @@ class TestPasswordGuessing(ApiBase):
             with urllib.request.urlopen(req) as r:
                 return r.status, json.load(r), r.headers
         except urllib.error.HTTPError as e:
-            return e.code, json.load(e), e.headers
+            with e:
+                return e.code, json.load(e), e.headers
 
     def test_guessing_locks_the_name_and_the_right_password_does_not_get_through(self):
         with patch("aegis.server.time.sleep"):
@@ -301,7 +303,8 @@ class TestVerificationJobsCannotBeTriggeredByALink(ApiBase):
             with urllib.request.urlopen(req) as r:
                 return r.status
         except urllib.error.HTTPError as e:
-            return e.code
+            with e:
+                return e.code
 
     def test_get_never_starts_a_job_and_post_needs_csrf_header_origin_and_role(self):
         with patch("aegis.server.run_live_control_verification", return_value={"all_passed": True}) as job1, \
@@ -350,7 +353,8 @@ class TestPlantedOrEditedProfile(RealServiceBase):
 
     def start(self):
         self.svc.workers.kill_all()
-        self.svc = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT, verify_seconds=0.1)        # default (site) profile dirs
+        self.svc = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT, verify_seconds=0.1,
+                                     real_site_read_only=False)  # default (site) profile dirs; legacy L2 test
         self.svc._custom_resolver = lambda h: ["127.0.0.1"] if h == HOST else []
         return self.svc
 

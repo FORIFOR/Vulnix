@@ -1,5 +1,5 @@
 export type Severity = "critical" | "high" | "medium" | "low" | "info";
-export type Verdict = "detected" | "unverified" | "proven" | "not_reproduced" | "aborted";
+export type Verdict = "candidate" | "detected" | "unverified" | "proven" | "not_reproduced" | "aborted";
 export type AssessmentState = "idle" | "running" | "paused" | "stopped" | "failed" | "completed";
 export type PhaseStatus = "pending" | "running" | "done" | "aborted" | "skipped";
 export type RiskLevel = "L1" | "L2" | "L3";
@@ -44,6 +44,7 @@ export interface Finding {
   what_was_established?: string;
   why_detected?: string;
   caveat?: string;
+  cookie_checks?: { name: string; purpose: "session" | "non_session" | "unknown"; verdict: "detected" | "candidate" | "none"; gaps: string[] }[];
   verdict_note?: string;
   evidence: Evidence[];
   remediation: { steps: string[]; how_to_verify: string };
@@ -153,8 +154,15 @@ export interface ControlVerificationReport {
 export interface CveStatus {
   cve_count: number;
   kev_count: number;
-  last_synced_at: number;
+  /** null until a feed was actually fetched or ingested (bundled data only) */
+  last_synced_at: number | null;
   sync_source: string;
+  freshness?: "fresh" | "stale" | "unfetched";
+  stale?: boolean;
+  nvd_sha256?: string | null;
+  kev_sha256?: string | null;
+  last_sync_error?: string | null;
+  last_error_at?: number | null;
   cves: {
     id: string;
     product: string;
@@ -251,6 +259,8 @@ export interface Snapshot {
   defense_comparison?: DefenseComparison | null;
   cve_status?: CveStatus;
   artex_plan?: ArtexPlanView | null;
+  /** Display-only provenance. It survives restart; executable plan items do not. */
+  plan_source?: { engine: "artex-binary" | "unverified"; pinned: boolean; model: string | null } | null;
   artex_tasks?: {
     id: string;
     phase: string;
@@ -316,6 +326,7 @@ export interface ArtexPlanView {
     requested_by: string;
     at: number;
     engine: { kind: string; label: string; pinned?: boolean; sha256?: string; artex_commit?: string; go_version?: string };
+    llm_model?: string;
     isolation?: {
       confined: boolean; label: string; mechanism?: string; kernel_dropped_packets?: number;
       pinned?: string; pinned_extra?: string[]; egress_canary?: string | null;

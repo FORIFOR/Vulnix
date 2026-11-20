@@ -1,0 +1,6 @@
+{
+  "protected_root_denial_200": {"root_requirement": "authentication_required", "account_resource_requirement": "none"},
+  "public_root_personal_shape": {"root_requirement": "public", "account_resource_requirement": "none"},
+  "account_link_denied_404": {"root_requirement": "public", "account_resource_requirement": "authentication_required"},
+  "account_link_allowed_200": {"root_requirement": "public", "account_resource_requirement": "authentication_required"}
+}

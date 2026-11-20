@@ -3,7 +3,7 @@
 import { useState, type Dispatch, type SetStateAction } from "react";
 import { applyChatReply } from "@/lib/assessmentEvents";
 import { command } from "@/lib/api";
-import { fmtTime } from "@/lib/labels";
+import { completedHeadline, fmtTime } from "@/lib/labels";
 import { failureHeadline, statusNotices, stoppedHeadline } from "@/lib/statusNotices";
 import { canApprove, useSession } from "@/lib/useSession";
 import type { AegisEvent, Approval, AuditEntry, Snapshot } from "@/lib/types";
@@ -48,7 +48,7 @@ function headline(s: Snapshot): string {
     case "paused": return "一時停止中です。新しい操作は実行されません（実行中の処理は完了まで続きます）。";
     case "stopped": return stoppedHeadline(s);
     case "failed": return failureHeadline(s);
-    case "completed": return `診断が完了しました。${s.findings.filter((f) => !f.demo_fixture).length} 件の問題を記録しています。`;
+    case "completed": return completedHeadline(s.findings);
     default: return running ? `${running.label}：${running.detail}` : "処理を進めています。";
   }
 }
@@ -174,7 +174,6 @@ export function AgentActivity({
           audit={audit}
           chainValid={chainValid}
           externalBusy={externalBusy}
-          defaultOpen
         />
       </div>
 
@@ -275,7 +274,7 @@ export function AgentActivity({
             value={question}
             onChange={(e) => setQuestion(e.target.value)}
             disabled={chatBusy}
-            placeholder={snap.planner.external_model_configured || snap.planner.explanation_model_configured ? "AIに質問する…（原因・証拠・対策）" : "内蔵解説に質問する…（原因・証拠・対策）"}
+            placeholder={!snap.is_external_service && (snap.planner.external_model_configured || snap.planner.explanation_model_configured) ? "診断について質問する…" : "結果について質問する…"}
             className="flex-1 rounded-2xl border border-zinc-300 bg-white px-4 py-2.5 text-sm dark:border-zinc-700 dark:bg-zinc-900"
           />
           <button

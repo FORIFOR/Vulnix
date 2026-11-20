@@ -1,0 +1,265 @@
+# 現行開発コードの処理系統
+
+この文書はDraft PR #53〜#84をまとめたPR #85統合候補の経路を示す。公開βへ反映済みという意味ではない。APIと関数の基礎的な静的列挙は[PROCESS_INVENTORY.json](PROCESS_INVENTORY.json)、履歴と重複候補は[PROCESS_AUDIT.md](PROCESS_AUDIT.md)、同一ラボ測定は[STATUS_EXPOSURE_INTEGRATION.md](STATUS_EXPOSURE_INTEGRATION.md)。後続の検査選択評価は[ACCESS_CONTROL_BLIND_LAB.md](ACCESS_CONTROL_BLIND_LAB.md)、HTTP 200認証拒否の再測定は[AUTH_RESPONSE_LAB.md](AUTH_RESPONSE_LAB.md)、Cookie用途の再測定は[COOKIE_PURPOSE_LAB.md](COOKIE_PURPOSE_LAB.md)に分離した。静的列挙は後続PRのスクリプトまで網羅せず、動的URLや実行時設定も解決できないため、P17以降をコードと照合して追記した。
+
+この累積コードとmainは異なる。PR #63以降はDraft・未マージ。#68の実Abliteration AI固定評価は別々に承認された2回ともJSON本文なしで不採用。後続の`d199021`までのモデル応答・組織状態・画面出所境界をP42〜P44、動的な模擬ラボ・承認APIをP45に追記した。公開βの実DNS所有確認・実サイト診断も未実証。以下の動作証拠は、明記がなければ隔離した模擬対象による。
+
+## 構成
+
+```mermaid
+flowchart LR
+  U[利用者] --> B[P01-P03 認証・組織・URL登録]
+  B --> O[P04-P06 所有確認・範囲確定]
+  O --> S[P07 開始]
+  S --> G[P08 Gateway直前審査]
+  G --> W[P08 隔離Worker: 初回GET]
+  W --> E[P11 証拠・実測特徴]
+  E --> A[P09 ARTEXとローカルモデル]
+  A --> Q[P42 モデル要求・応答を検証]
+  Q --> A
+  A -. 未信頼の案 .-> V[P09 固定カタログ・同意を照合]
+  V -->|固定L1のみ| G2[P10 Gateway再審査]
+  G2 --> W2[P10 隔離Worker: 追加GET]
+  W2 --> R[P11 証拠判定・保存]
+  E --> R --> UI[P44 出所と未実施を明示して結果表示]
+  B --> M[P43 組織別モデル状態参照] --> UI
+  UI -->|解説を要求| J[P12 許可済みAIまたは内蔵解説]
+  J --> UI
+  O -->|取消・期限切れ| X[P13 拒否・停止]
+  S -->|緊急停止| X
+```
+
+公開βの操作は「URL入力→所有確認→診断開始→結果表示」。Google所有確認は設定時だけ表示し、未設定ならDNS TXTまたはファイル方式を使う。URL登録では診断通信をしない。追加の`/server-status?auto` GETは設定、明示同意、署名付き範囲と診断枠、Apache系の初回実測、ARTEXの固定カタログ案がすべて揃った場合だけ実行する。実サイトL2は禁止。
+
+## 操作・条件と発火する処理
+
+表中のサーバールートは[`aegis/server.py`](../aegis/server.py)、`AssessmentService`の関数は[`aegis/assessment.py`](../aegis/assessment.py)、Gatewayは[`aegis/gateway.py`](../aegis/gateway.py)、隔離Workerは[`aegis/runtime.py`](../aegis/runtime.py)と[`aegis/workers`](../aegis/workers)、ARTEX変換は[`aegis/artex_bridge.py`](../aegis/artex_bridge.py)、画面は[`web/src`](../web/src)にある。機械抽出JSONにはファイルと行番号が入っている。
+
+| ID | APIまたは条件 | 主な関数 | 主なテスト・通信 |
+|---|---|---|---|
+| P01 | `POST /api/auth/register`, `POST /api/auth/login`、MFA等 | `server.py` `_register`, `_login`, `do_POST`、`SessionProvider` | `test_server.py`, `test_tenancy.py`。Host・Origin・CSRF・セッション |
+| P02 | `/api/orgs/*` | `_bind`, `_get_org`, `_dispatch`, `TenantRegistry.service` | `test_tenancy.py`。組織別のサービスへ限定 |
+| P03 | `/api/assets/challenge` | `OwnershipWizard.issue` → `issue_ownership_challenge` | `test_real_service.py`。資産・証明値保存。対象通信なし |
+| P04 | Google設定時 `/api/assets/google/start`, `/finish` | `google_ownership.py` → `verify_asset_ownership` | `test_tenancy.py`。Google OAuth / Search Console。公開βでは未設定 |
+| P05 | `/api/assets/verify-ownership` | `OwnershipWizard.verify` → `verify_asset_ownership` | `test_real_service.py`。DNS照会または確認ファイルGET。不一致なら証明しない |
+| P06 | `/api/assets/confirm-scope` | `OwnershipWizard.confirmScope` → `confirm_asset_scope` | `test_authority_ledger.py`。所有、承認者、対象、期限、追加GET同意を署名付き記録へ |
+| P07 | `POST /api/assessments/{id}/{start,pause,resume,restart}` | `AssessmentService.start`, `_run`, `_run_inner` | `test_real_service.py`, `test_server.py`。世代・起動枠を確認 |
+| P08 | 初回の安全なGET | `_run_inner` → `_plan` → `_exec` → `Gateway.execute` → `WorkerPool.run` → `_record_root_result_locked` | `test_gateway.py`, `test_real_service.py`。所有・範囲・IP・期限・停止・回数を直前審査し、root応答の匿名特徴を現runの監査済み証拠に結び付けて保存 |
+| P09 | 初回自動計画、または`POST /api/assessments/{id}/artex/plan` | `plan_with_artex` → `_root_probe_observed_locked` → `_plan_with_artex` → `anonymous_real_site_request` → `run_artex_planner` → `reconstruct` → `ProposalRouter` | `test_artex_bridge.py`, `test_real_service.py`、Linuxの実ARTEXジョブ。実サイトの手動計画は現runの署名済み初期観測と追加検査の実行可能性をモデル前に要求。固定匿名特徴だけ送信、失敗時は固定L1のみ。モデル名は実転送確認時だけ表示 |
+| P10 | 同意済み追加GET、または`POST /api/assessments/{id}/artex/items/{item}/execute` | `execute_artex_item` → 固定カタログ → `_exec` → `Gateway` → `WorkerPool` | `test_status_exposure_lab.py`, `test_gateway.py`。固定L1のみ、実サイトL2拒否 |
+| P11 | `GET /api/assessments/{id}`, `GET .../logs`, `GET .../events`, `GET .../report` | `_analyze`, `_record_status_result_locked`, `analyze_status_marker_report`, `snapshot` | `test_real_service.py`, `test_status_exposure_lab.py`。証拠と監査ハッシュから`detected`。案のみは`candidate` |
+| P12 | `POST /api/assessments/{id}/chat` | `live_request_authority` → `ask_chat` → `_safe_real_ai_explanation` または `_answer_question`。外部AI時は予算監査→TLS接続→`send_scope`（セッション→組織→診断状態を保持）→HTTP要求送出→リース解放→応答検証 | `test_ai_advisor.py`, `test_tenancy.py`。固定項目だけ送信、失効後は代替モデルへ進まない。不採用なら許可が続く間だけ内蔵解説。TLS接続はリース前、既に送出した要求の取消しは保証外。実API未検証 |
+| P13 | 停止・取消・期限切れ | `emergency_stop`, `_expiry_watch`, `_launch_guard`、Gateway起動世代 | `test_gateway.py`, `test_authority_ledger.py`。失効後の起動と結果採用を拒否 |
+| P14 | `/api/system/verify-controls`, `/api/cve/*`, `/api/router/*` | `server.py` `JOB_ROUTES`, `control_verification.py`, `cve.py`、`router/status`はP43 | `test_cve.py`, `test_server.py`, `test_tenancy.py`。通常診断から独立。`/router/verify`のモデル側は設定済み有料APIを自動発見せず、ループバック模擬サーバーでアダプタを確認する。実モデルの接続証明ではない。組織別モデル状態の参照はP43、共通POSTの結果送信はP51 |
+| P15 | SSE心拍と静穏時の代替取得 | `useAssessment`、`polling.ts`、`server.py` `_sse_loop` | `web/tests/polling.test.mjs`, `test_server.py`。通し番号付き心拍で正常時の重複取得を抑え、欠落・切断時はsnapshotと監査ログへ収束。正常な心拍でも30秒ごとに正式な状態を再取得 |
+| P16 | 画面内通知・承認待ち | `EventBus.publish`/`wait`, `_sse_loop`, `_decide` | `test_server.py`。メール・Webhook送信は見つからない |
+| P17 | 14条件の実モデル選択評価（診断APIとは独立） | `scripts/eval_selection_model.py` `run_preview`, `run_approved` → 既存LLM Gateway → P42の出力検証 | `test_selection_model_eval.py`と[2回の実測](ABLITERATION_SELECTION_REAL_RESULT.md)。別SHA・各1回・US$0.01予算・2,000トークン。承認済み2回ともJSON不採用。推論設定を加えた新候補はローカル限定・未送信。対象GET・Worker起動なし |
+| P18 | 認証・アクセス制御の模擬検証 | 初回GET → `analyze_l1_service_response`、観測リンク → ARTEX計画 → `execute_artex_item` → Gateway・Worker | `test_access_control_lab.py`, `bench_access_control.py`。14条件の独立正解、実ARTEX＋ローカル模擬モデルで選択精度を比較。IDORの再現は模擬対象限定 |
+| P19 | IDOR・CORSの結果表示と競合制御 | `idorEvidence.ts`、`FindingLearningCard`、`FindingCard`、`useAssessment`、`polling.ts` | Webユニットテストと390px模擬ブラウザ。IDORの取得断定には対照証拠とbackend `proven` が必要。古い401/403で新しい画面を消さない |
+| P20 | HTTP 200の認証拒否JSON | `analyze_l1_service_response` → `_auth_error_only` | `test_auth_response_lab.py`。6条件でGateway/Worker各6回、対象GET6回。本文全体と限定した拒否文言が確認できた場合だけ`candidate`へ下げる |
+| P21 | Cookie用途と応答属性の照合 | 管理者承認済みサイトプロファイル `cookie_policy` → `_analyze` → `analyze_l1_service_response` | `test_cookie_purpose_lab.py`, `bench_cookie_purpose.py`。独立10条件の1分類。用途不明は`candidate`、既知の一般用途はセッション所見にしない。新しい対象通信なし |
+| P22 | 混在Cookieの個別表示とHTTPS実測 | `analyze_l1_service_response` → `cookie_checks` → `FindingCard`/詳細画面。ローカルHTTPSサーバー→Chromium | `test_cookie_purpose_lab.py`, `cookieChecks.test.mjs`, `check_cookie_ui_390.py`, `check_cookie_https.py`。認証用・一般用途・用途不明を別表示し、Cookie値は表示しない。HTTPS6条件でブラウザ属性と判定を照合。対象通信はループバックだけ |
+| P23 | 5分類の独立ラボ採点 | 既存のCORS・Cookie・認証/IDOR・ApacheラボJSON → `bench_multiclass.py` → 分類別指標とMacro平均 | `test_multiclass_macro.py`, `MULTICLASS_BLIND_LAB.md`。比較不能な分類はARTEX欄を空欄とし、Precision未定義を除外して分母を記録。CIでは既存の実ARTEX測定JSONを再利用 |
+| P24 | 修正後のCORS・Cookie再確認 | `verify_fix` → `_verify_fix_body` → 初回と同じ `analyze_l1_service_response` → 証拠付き比較 | `test_cors_policy_lab.py`, `test_cookie_purpose_lab.py`。公開ワイルドカードや一般Cookieを再検出せず、用途不明は`candidate`。対象への再GETはGateway・Workerと既存権限の確認を通る。公開βの読み取り専用実サイトでは実行不可 |
+| P25 | 初期観測後の追加検査省略 | `_run_inner` → `safe_public_fingerprint` → 署名済み追加GET同意・根拠確認 → `artex.initial_skipped` またはP09/P10 | `test_real_service.py`, `test_status_exposure_lab.py`, `bench_initial_extra_selection.py`, `INITIAL_EXTRA_SELECTION.md`。現行実サイトカタログの追加L1はApache `mod_status`だけ。CORS・Cookieの15条件で無駄な計画を削減。AI自身の判断力の証明ではない |
+| P26 | 初期計画のカタログ変更検知 | P25 → `initial_real_site_extra_checks` → 未審査の追加L1があれば `artex.initial_fallback`、固定L1を継続 | `test_initial_extra_catalog.py`, `test_real_service.py`。カタログの全追加L1を明示分類するテストが、新項目追加時の安全性レビュー漏れを検出する |
+| P27 | 既存分類と追加検査の混合条件評価 | 保留用正解表 → ローカルHTTPS対象 → P25/P26 → P09/P10 → 分類別の検出・選択採点 | `bench_initial_mixed_holdout.py`, `test_initial_mixed_holdout.py`, `INITIAL_MIXED_HOLDOUT.md`。CORS・Cookieの5組合せで固定・一律・観測選択を比較。実AIの推論精度は未評価 |
+| P28 | Apache情報露出の選択と検出を分離 | 独立正解表 → 所有確認済みローカルHTTPS → P25/P26 → Gateway・Worker → 状態別採点 | `bench_status_selection_holdout.py`, `test_status_selection_holdout.py`, `STATUS_SELECTION_HOLDOUT.md`。同意なし条件は追加GETを行わず、脆弱性検出精度の分母から除外する |
+| P29 | 5分類の保留用条件を横断比較 | CORS/Cookie・Apache・認証/IDORの独立対象 → 分類別TP/FP/FN/TN → Macro・選択精度・通信費用 | `bench_access_holdout.py`, `bench_five_class_holdout.py`, `test_access_holdout.py`, `FIVE_CLASS_HOLDOUT.md`。認証とIDORが共有する対象GETは一度だけ数え、実AIの精度と混同しない |
+| P30 | 初期観測事実から単回で検査選択 | P09の初期グラフ要約 → 事実が十分なら直接意図提案、足りなければ `list_facts` → P10のGateway審査 | `vulnix_bridge.go`, `artex_mock_llm.py`, `bench_first_prompt_selection.py`, `FIRST_PROMPT_SELECTION.md`。既存の事実表示を再利用し、事実不足時の参照手段は維持する。実モデルが省略するかは未測定 |
+| P31 | 未知のLink表記を隔離ラボで比較 | 独立したLink応答・所有者仕様・正解表 → 初期観測 → P30/P09 → Gateway・隔離Worker → 選択と実証を別採点 | `access_link_holdout_lab.py`, `bench_access_link_holdout.py`, `test_access_link_holdout.py`, `ACCESS_LINK_HOLDOUT.md`。Lab専用の関係解析を拡張し、実サイトL2禁止は維持する |
+| P32 | Apache観測事実の再取得を比較 | 初期の匿名化指紋 → ARTEXの初回要約または `list_facts` → P10の審査・隔離Worker | `bench_status_first_prompt.py`, `test_status_selection_holdout.py`, `STATUS_FIRST_PROMPT.md`。同じ同意・露出条件で選択・証拠・通信・モデル要求を比較し、実AIの判断とは区別する |
+| P33 | 所有確認中にログアウト・権限失効 | P03〜P06の外部照会後 → `live_grant_roles` → `OperatorStore.locked_session`・`OrgStore.locked_roles_in` → 署名済み保存 | `test_google_ownership.py`, `test_tenancy.py`。現在のセッション・組織役割を保存まで保持し、失効後の証明付与を拒否。実DNS・Google APIは未検証 |
+| P34 | モデル費用・停止・送信先 | `PlannerLLMGateway.handle` → `Budget`有限値確認・費用予約 → `planner_llm.forwarding`監査 → 停止再確認 → `AssessmentService.send_scope` → `PlannerLLMGateway._send_upstream` | `test_planner_llm_gateway.py`, `test_artex_bridge.py`, `test_router.py`, `test_selection_model_eval.py`。NaN設定・監査直後の停止・環境プロキシを拒否。`f60f7fe`で有料forwardのHTTPS接続後、権限リース内で要求を書込み、応答待ちはリース外。失効による未送信予約は解放。詰まった模擬書込みの停止ロック解放は2.5秒未満。ローカル全件・Linux CI #44159555107成功。実usage超過後の追加送信は禁止、初回請求の絶対上限と停止完了の厳密な1秒上限は保証しない。実サイト送信先はループバック限定 |
+| P35 | 監査チェーン破損・切り戻し・同時追記 | `AuditLog.record("allow"/"planner_llm.forwarding")`・`record_with_budget` → ファイル単位の排他 → `verified_entries`・予算計算・既知の末尾照合 → 追記 → Gateway/モデル送信 | `test_gateway.py`, `test_planner_llm_gateway.py`, `test_audit_snapshot.py`。破損と稼働中の既知末尾の切り戻しは送信拒否、2サービスの同時許可・予算予約も直列化。後続P52で再起動前の単独JSONL切り戻しを別の累積予約額と照合して拒否する。両ファイル同時切り戻しは検知できない。1,002件の単発照合は旧実装で4.352ms、修正後は未測定 |
+| P36 | 390pxの結果更新と修正後再確認 | SSE再接続・定期状態取得・組織切替・レポート出力、隔離ラボの`verify-fix` → 詳細画面 | `bench_browser_owned_flow.py`, `bench_browser_lab_recheck.py`, `QA_BROWSER_INTEGRATION.md`。新旧証拠ID、HTTP 200→403、`proven`→`not_reproduced`を表示。実サイト再現は実行しない |
+| P37 | 新しい認証拒否・IDOR保留条件 | 独立4条件 → `_auth_error_only`・初期観測 → 固定/一律/観測選択 → Gateway/Worker | `bench_access_fresh_holdout.py`, `test_access_fresh_holdout.py`, `ACCESS_FRESH_HOLDOUT.md`。HTTP 200拒否＋要求IDの誤検知を1→0、IDOR TP1維持。規則型代役で実AIの性能ではない |
+| P38 | 組織結合後のセッション・権限失効 | `_bind` → 対象・費用制限 → `_dispatch`冒頭の`locked_session`・`locked_roles_in` → 診断開始・再開時の短い`live_grant_roles` → 操作 | `server.py`, `test_tenancy.py`。結合後のログアウト・除名を模擬再現し診断開始を拒否。長時間のARTEX・Worker実行中の失効と既に開始した処理の中断は別途検証が必要 |
+| P39 | 同じHTTP接続での組織権限と全体権限 | 組織要求は明示的に渡された`svc`と現在の`_bound_org`を照合 → 全体要求は現在のグローバル役割のみ使用 | `server.py`, `test_tenancy.py`。HTTP/1.1接続に残る組織ownerのadmin役割が全体L2プロファイル承認に使われるP1を再現し、全体要求で403・承認0へ修正 |
+| P40 | 長時間操作中の要求者失効 | HTTP要求に紐付く`live_request_allowed` → ARTEXの`may_start`・Planner Gatewayの各`may_forward`・採用前 → Planner送出時の`send_scope` → foreground `execute_artex_item`/`verify_finding`のTLS継承 → Gatewayの`_launch_guard` | `server.py`, `assessment.py`, `test_planner_llm_gateway.py`, `test_tenancy.py`。ログアウト後のモデル転送と新しいWorker起動を検査境界で拒否。実サイトのPlanner先はループバック。有料forwardの送出境界と残る停止時間の限界はP34に記録 |
+| P41 | 前景Workerの起動直前失効 | `live_request_authority.lease` → `AssessmentService._late_launch_guard` → `Gateway` → `WorkerPool.run` → アカウント・組織の短いロック → poolのepoch確認・Popen登録 | `server.py`, `assessment.py`, `gateway.py`, `runtime.py`, `test_gateway.py`, `test_tenancy.py`。隔離コマンド準備中とpool lock待ちの失効を単体競合で確認。実Gateway/Workerとログアウトの同時E2E、背景診断の範囲取消競合は未実証 |
+| P42 | モデル推論設定・出力終了・費用の拒否 | `PlannerLLMGateway.inspect` → `_send` → `_settle` → `AssessmentService._plan_with_artex`または`eval_selection_model.run_approved` | `test_planner_llm_gateway.py`, `test_selection_model_eval.py`, `test_real_service.py`。未確認の`reasoning_effort`/`reasoning.max_tokens`はローカル模擬だけ。外部送信前に拒否し、要求SHAと予約費用を別計算。`length`/`content_filter`/未知終了・本文なし・矛盾したtool_calls・不正/過大usageは計画・評価へ採用しない。固定L1所見と監査ハッシュは保持。実モデルの採用0/2は変わらない |
+| P43 | `GET /api/router/status`の組織別状態 | `server.py` `_bind` → `_authorized_org_read` → 組織の`AssessmentService.planner_status` | `test_tenancy.py`。別組織403、ログアウト後401、組織別の状態を模擬確認。外部AIへ送信しない。公開βでの失効競合は未検証 |
+| P44 | 結果画面の診断元・AI未実施表示 | `diagnosisSource` → `WorkspaceHeader`。実ARTEX、検証用プランナー、実行元不明、固定設定検査のみを分ける | `diagnosisSource.test.mjs`, `bench_browser_owned_flow.py`。固定のみならAI追加検査未実施、模擬プランナーが追加GETした場合はその出所を表示。390px Chromiumでは実表示を待って記録。実モデル品質と公開βの証拠ではない |
+| P45 | 動的`/api/assessments/{id}/lab-mode`、`/request-l2`、`/verify-finding`、`/approvals/{req_id}` | `server.py` `do_POST`・`_dispatch` → `set_lab_mode`、`AssessmentService.request_l2_run` / `verify_finding` / `decide_approval` | `test_tenancy.py`, `test_server.py`, `test_real_service.py`。共有模擬ラボのモード変更は組織分離のある公開経路で403。L2は依頼者と承認者を分けて権限・証拠を確認。複数組織の旧広域設定1でも実サイトL2を拒否、設定0は所有確認・診断通信を全面拒否する`6180df3`の回帰9件を追加。一般UIの基本フローに入れない |
+| P46 | 安全停止中の失効と応答秘匿 | `POST /api/assessments/{id}/pause`・`/emergency-stop` → `_bind` → 停止処理 → `_authorized_org_read`で応答前の生存読取権限を確認 | `test_tenancy.py`。結合後のログアウト・除名では停止ハンドラを呼び、401/403で保護情報を返さない。認証状態の保存に失敗した場合は停止の200を維持し、詳細を含まない`stopped/details_unavailable`だけを返すことを`test_release_safety.py`で確認。実Workerの停止効果は既存のGateway/隔離テストで別途確認 |
+| P47 | CVE状態生成中のログアウト | `GET /api/cve/status` → `cve_monitor.status` → 現行セッションを再確認して送信 | `test_tenancy.py`。修正前は生成中のログアウト後も200で全体状態を返した。修正後は401。送信中は既存の管理GETと同じ2秒ソケット上限を適用。公開βの中継は未検証 |
+| P48 | 所有確認の保存後から応答までの失効 | `POST /api/assets/challenge`・`/verify-ownership`・`/confirm-scope`・Google開始/完了 → 所有確認処理 → 送信直前の現行権限確認 | `test_tenancy.py`の登録トークン、証明結果、範囲スナップショットに対するログアウト3件と、登録トークンに対する組織役割降格1件。旧コードの登録応答200を再現し、修正後401/403。Google完了は外部照会の後、証明保存と応答を単一の権限リースで直列化し、既存の同時ログアウト200契約を維持。実Google・公開βは未実証 |
+| P49 | 資産操作の保存後から応答までの失効 | `POST /api/assets`・`/select`・`/secrets`・`/delete` → 対象登録/選択/設定/削除 → 現行の組織操作権限（検証用設定と実サイト削除は承認者）を送信時に再確認 | `test_tenancy.py`で選択、設定、削除の旧200を再現し、修正後401。登録応答も同じ送信時確認で401を個別確認。操作後の応答秘匿だけを実証し、外部通信や失効後の副作用停止までは主張しない |
+| P50 | 診断POSTの処理後から応答までの失効 | `POST /api/assessments/{id}/verify-finding`・ARTEX計画/実行・`/verify-fix`・`/chat`等 → サービスの検証/推論 → 現行の組織操作権限を送信時に再確認 | `test_tenancy.py`で計画・実行・所見再確認・解説・修正後確認の処理中ログアウト後401と結果非送信を模擬確認。例外文の旧409漏れも再現し、失効後401に変更。Worker起動と外部AI送信は従来の実行直前の権限境界が別途必要。処理中の取り消しや全POSTエラー応答は未実証 |
+| P51 | 共通プラットフォームPOSTの結果送信時失効 | `POST /api/router/verify`・`/api/l2-profiles/accept`・`/api/cve/sync`・2種類の`JOB_ROUTES` → 共通ジョブ/設定処理 → `_authorized_platform_read`で現行セッションと全体admin/approver権限を再確認 | `test_tenancy.py`で5経路の処理中ログアウト後401と結果非送信、例外応答409から401への変更をループバックで確認。旧`/router/verify`は200、例外時409を赤テストで再現。既に始まったジョブの取り消しや外部先の設定値は未実証 |
+
+| P52 | 外部AI解説費用の再起動後履歴 | `AuditLog.record_with_budget` → 監査JSONLの検証と累積額照合 → 0600別ファイルへ先行保存 → 監査追記 → 外部送信 | `test_ai_advisor.py`, `test_audit_snapshot.py`。旧JSONLの有効な接頭辞への切り戻しを赤テストで再現し、`92940a5`で不一致を拒否。関連133件とColima Linux12件成功。CI #44403021164はPython1,894件とWeb・実ARTEXの3/3成功。両ファイルの同時切り戻し、旧形式履歴と追記失敗後の自動復旧は未対応。ローカル全件では別のSocketIO警告競合1件を観測し、修正後の全件を再確認中 |
+| P53 | ログアウト後に届く古い認証応答 | Webの`SessionProvider.refresh` → 要求番号とログアウト中状態を確認 → 現行応答だけを表示へ反映。ログアウト開始時に同一オリジンの別タブにも通知して保護表示を隠し、成功時はログインへ、失敗時は警告と再照会へ進む。開始通知を逃したタブも完了通知で再照会し、完了通知がないまま30秒経てば再読み込み案内 | `sessionResponse.test.mjs`, `bench_browser_owned_flow.py --stale-auth-after-logout`。Web123件・ビルド・Lint成功。HTTP 200のJavaScript応答を遅延解放する両幅模擬、2タブ成功・通信失敗・16秒遅延の模擬に成功。実HTTP/Set-Cookie順序、別端末同期は未完了 |
+| P54 | 対象サイトが新規発行したSet-Cookie秘密値の非保存（P2解消） | `http_probe.py::sanitize_set_cookie_header` → `Gateway._execute` / `AssessmentService._exec` `sanitize_http_probe_payload` → `evidence.py::enforce_verdict` | `test_cookie_purpose_lab.py`（10件）、`check_cookie_https.py`。Workerの`headers`から`Set-Cookie`生値を除外し、`set_cookies`にはCookie名と検査用属性だけを保持（値は`[REDACTED]`）。引用符内セミコロンやExpiresカンマも正確に分割し、マスキング失敗時はfail-closedで記録拒否。snapshot、report、監査ログ、state.json、Remotion出力にCANARY秘密値が一切残らないことをローカルHTTPSで実証 |
+| P55 | CVE照合の4条件分離・出所完全性・同期失敗時の保持 | `cve.py::FeedMonitor`（`nvd_sha256`, `kev_sha256`, `freshness`, `stale`, `last_sync_error`）→ `service_diag.py::analyze_l1_service_response` → Web `threatFeedSummary` | `test_cve.py`（21件）、`web/tests/labels.test.mjs`。該当バージョン（`detected`・CVE付与）、非該当（一致なし）、バージョン番号なし（未判定明示）、フィード未取得（未実施明示）を分離し、同期失敗時は以前のカタログ・ハッシュ・同期日時を保持してUIに鮮度と失敗を表示 |
+
+## 時系列と異常系
+
+```mermaid
+sequenceDiagram
+  participant U as 利用者
+  participant UI as Web
+  participant S as 組織別AssessmentService
+  participant A as 隔離ARTEX/ローカルモデル
+  participant L as LLM Gateway
+  participant G as Gateway
+  participant W as 隔離Worker
+  opt モデル状態を参照
+    UI->>S: P43 組織結合と現在の権限を確認
+    S-->>UI: 組織別状態、失効なら401/403
+  end
+  U->>UI: URLを入力
+  UI->>S: P03 資産登録・証明値発行
+  alt Google設定済みで所有者権限あり
+    UI->>S: P04 一回限りOAuth状態で確認
+  else Google未設定・不成立
+    U->>UI: DNS TXTまたはファイルを設定
+    UI->>S: P05 内容を確認
+  end
+  S-->>UI: 不一致なら証明せず再試行
+  U->>UI: P06 範囲を確定しP07開始
+  S->>G: P08 公開GET申請
+  G->>W: 権限・IP・期限・停止・回数を直前確認
+  W-->>S: 応答と監査証拠
+  opt 初回ARTEXを明示設定済み
+    S->>A: P09 許可済み固定特徴
+    A->>L: P42 固定要求と予算を検証
+    L-->>A: 完全な応答またはterminal failure
+    A-->>S: 未信頼の計画案
+    alt 失敗・未対応・同意なし
+      S-->>UI: 固定L1結果を表示
+    else 固定項目・実測・同意・署名枠が成立
+      S->>G: P10 固定GET申請
+      G->>W: 直前再審査
+      W-->>S: 固定マーカーと監査ハッシュ
+    end
+  end
+  S->>S: P11 採用直前に所有・範囲・世代を再確認
+  S-->>UI: P44 証拠・検証状態・実際の計画元を表示
+  opt 解説を要求
+    UI->>S: P12 所見IDを指定
+    S-->>UI: 検証済みAI解説または内蔵解説
+  end
+  opt P45 隔離ラボの模擬操作・承認だけ
+    UI->>S: 動的lab-modeまたはapprovals API
+    S-->>UI: 組織分離・役割を確認して許可/拒否
+  end
+```
+
+ARTEX中・Worker中の停止、所有取消、期限切れ、IP変更はP13が新規起動または結果採用を拒否する。再試行時も再審査する。SSE切断はP15の取得で補う。監査失敗時は新しい計画・実行候補を有効化しない。再起動後は計画元の表示だけ復元し、実行可能項目は復元しない。
+
+P17は診断フローの外にある固定入力の評価であり、モデル出力をP10の実行へ接続しない。P18のIDOR `proven` は所有者側の対照GETと別アカウントからのGETを要し、実サイトL2では実行しない。P19の表示はバックエンド判定を超えた脆弱性の断定をしない。P20の6条件は独立した追加測定であり、P17の承認済み14条件の入力ハッシュに含めない。
+
+P21は初回GETに含まれる`Set-Cookie`だけを評価し、追加GETを発生させない。サイトプロファイルの内容が変わった場合は従来の管理者によるハッシュ承認が必要で、未承認の用途情報は検出判定に使わない。Cookie名・属性・所有者仕様をARTEXや外部AIへ追加送信しない。
+
+P24は再GETの観測を初回と同じ判定器へ渡す。P25はP09の起動前に追加検査の適用可能性と同意を確認するだけであり、実行直前のGatewayによる再審査を省かない。現行カタログで有益な追加L1がない場合はモデルを起動せず、初回所見と監査を残す。P26は新しい追加L1がP25の省略条件を黙って継承しないよう検知する。P27は複数の既存所見とApache追加検査を同時に持つ条件で、省略と必要検査の見逃しを別々に測る。
+
+| 外部通信先 | 発生条件・境界 |
+|---|---|
+| DNSまたは対象の確認ファイル | P05の所有確認操作時。診断用通信とは区別 |
+| Google OAuth / Search Console API | P04が設定済みで選択された場合だけ。現在の公開βでは未設定 |
+| 所有確認済み対象または`lab.test` | P08の初回GET、条件成立時だけP10の追加GET。必ずGateway・隔離Worker経由 |
+| ARTEXのモデル上流 | P09のローカルLLM Gateway経由。実サイトでは許可済みの構造化特徴だけ |
+| Abliteration AI | P12の明示設定・解説要求時だけ。固定項目の送信と応答検証が必要。公開βでは無効 |
+
+`/api/cve/sync`は提供された資料の取り込みで、通常診断で外部URLを取得しない。`FeedMonitor.sync_from_urls`はテスト以外の呼び出しが見つからず、運用上の用途は未確認。外部モデル上流や資料URLは設定・引数から決まるため、静的文字列の列挙だけでは確定しない。
+
+## 信頼境界
+
+```mermaid
+flowchart LR
+  subgraph B1[未信頼]
+    U[ブラウザ入力]
+    X[対象応答]
+    M[AIの案・解説]
+  end
+  subgraph B2[組織ごとの制御プレーン]
+    H[P01-P02 認証・所属・CSRF]
+    T[P43 組織別状態と失効確認]
+    S[P03-P07 証明・範囲・期限]
+    V[P09 固定スキーマ・カタログ]
+    L[P42 モデル要求・出力・費用の検証]
+    G[P08-P10 Gateway直前審査]
+    E[P11 証拠・監査・保存]
+  end
+  subgraph B3[隔離プロセス]
+    A[P09 ARTEX]
+    W[P08-P10 Worker]
+  end
+  U --> H --> S --> G --> W --> X
+  H --> T
+  X -.実測.-> W --> E
+  E -.許可済み固定項目.-> A
+  A --> L --> A
+  A -.案のみ.-> V --> G
+  M -.検証対象.-> V
+  E -.許可済み固定項目.-> M
+  E --> D[P44 出所と未実施の表示]
+```
+
+AIにはホスト名、URL、認証情報、個人情報、応答本文、秘密情報を無断送信しない。ARTEXにWorker起動権限はない。Gatewayの実行直前審査は時間差・失効・DNS/IP変化・停止競合に必要なため削らない。
+
+P17の実モデル評価は診断経路と切り離している。
+
+```mermaid
+flowchart LR
+  subgraph LOCAL[ローカル評価と既存Gateway]
+    F[14条件の匿名特徴] --> H[送信前SHA・単回マーカー・監査]
+    H --> L[既存LLM Gateway: 予算・回数上限]
+    V[JSON・既知ID・重複検証] -->|採用| Q[ローカル採点]
+    V -->|不採用| J[不採用理由]
+    T[独立正解ラベル] --> Q
+    Q --> R[TP・FP・FN・TNと使用量]
+    J --> R
+    L -->|使用量・費用| R
+  end
+  subgraph EXTERNAL[外部AI境界]
+    P[Abliteration AI provider]
+  end
+  L -->|匿名特徴だけ| P
+  P -->|未信頼の応答| V
+```
+
+正解ラベルはモデル入力へ入れず、評価応答から診断・Worker起動へ向かう辺もない。初回はJSON本文なしで不採用のため、実モデルの検査選択指標は未算出である。
+
+P42は`json_object`だけでは推論トークンを制御できると仮定しない。対象モデルの推論設定はローカル模擬要求に限り、実外部送信を拒否する。`length`等の途中終了と過大使用量はGatewayで失敗にし、P09の計画採用前にも確認する。P17の評価器もGatewayの失敗状態とJSONの既知ID・重複・余分な項目を別々に検証する。失敗時はP08で得た固定L1所見と監査証拠を維持し、AI追加検査を実施済みと扱わない。P43は組織別モデル状態のGETを既存の所属確認と送信時の失効確認に通す。P44は実際の計画元で表示を分けるため、検証用プランナーが追加GETした結果を「固定検査のみ」と誤表示しない。[安全性と未送信要求](ABLITERATION_OUTPUT_CONTRACT.md)および[完了判定](GOAL_COMPLETION_MATRIX.md)に測定範囲を記録する。
+
+P45は通常の実サイト診断とは別の模擬・L2依頼/承認経路である。動的な`base + ...`式は静的な固定URL一覧に載らないため、機械抽出後に手動で`server.py`の分岐と`test_tenancy.py`・`test_server.py`・`test_real_service.py`を照合した。実サイトL2を許可する経路としては扱わない。
+
+## 最適化の実測と残件
+
+独立した3モードの`mod_status`ラボでは、固定L1がTP0/FP0/FN1/TN2、実ARTEX計画と同意済み追加GETがTP1/FP0/FN0/TN2。Precisionは前者が未定義、後者が100%、Recallは0%→100%、誤検知率は両方0%。同条件でGateway/Worker/対象GETは各1→2、状態保存15→17、署名台帳commit17→21、完了時間も増加。Planner Gatewayの8,328トークンは予算用推定値で、実使用量・請求額ではない。[測定資料](STATUS_EXPOSURE_INTEGRATION.md)に各モードの値がある。速度・費用改善は証明できていない。
+
+| 指標 | 固定L1 | 実ARTEX・ローカル模擬モデル | 測定範囲 |
+|---|---:|---:|---|
+| 診断完了時間 | 0.107 / 0.204 / 0.107秒 | 1.368 / 1.220 / 1.321秒 | 脆弱・修正済み・紛らわしい200の各1回 |
+| Gateway / Worker / 対象GET | 各1回 | 各2回 | 各モード |
+| 状態保存 / 署名台帳commit | 15 / 17回 | 17 / 21回 | JSON・台帳への書き込み。SQL DBアクセスではない |
+| LLM呼び出し / 予算用推定トークン | 0 / 0 | 2回 / 8,328 | ローカル模擬モデル。実トークン数は未計測 |
+| 商用モデルの推定・実費用 | 未算定 / 0 | 未算定 / 0 | 有料APIを呼んでいない |
+| TP / FP / FN / TN | 0 / 0 / 1 / 2 | 1 / 0 / 0 / 2 | 独立3モードの固定ラベル |
+| 期限切れ・所有取消の拒否 | 2/2 | 2/2 | この2条件のみ。全安全制御の成功率ではない |
+
+390px幅の本番ビルド通し測定は代役プランナーに加え、Linux CIで**ピン留めした実ARTEXとローカル模擬モデル**でも実行した。実ARTEXの単発測定はブラウザAPI要求12回、ログイン後の操作8回、模擬モデル2回、対象GET2回、診断開始から所見表示まで1.771秒。[測定資料](STATUS_EXPOSURE_INTEGRATION.md)。
+
+ログイン画面の重複した`/api/auth/me`取得と監査ログの同一ファイル二度読みは削減済み。P15は正常なSSE心拍の間だけ静穏時の重複取得を抑え、24秒の同一模擬条件で待機時API要求12→6回だった。使途未確認の`FeedMonitor.sync_from_urls`は未変更。外部AI解説のドル建て予算予約は後続Draft PRのコードで実装したが、運用料金の妥当性と実請求額は未照合。390px幅の一連操作は実ARTEXを含む[模擬環境の通し測定](STATUS_EXPOSURE_INTEGRATION.md)を行った。公開βの所有確認→実サイト診断→結果表示、実Abliteration AIの採用可能な日本語解説、実サイト全般の精度は未確認または未完成。公開βで開発ブランチの機能が動いていると扱わない。
+
+## 次の変更順序
+
+`40059c4`では保護GET（組織・単一組織）、SSEイベント、全体管理者と自己アカウントの変更に、送信または変更直前の生存セッション・組織権限の照合を追加した。HTTP競合テストで、`_bind`後のログアウト・除名、送信中のSSE除名、管理者変更・組織作成・パスワード/TOTP変更前のログアウトを追跡した。SSEは1イベントごとに権限リースを解放する。最新全件・Linux CIと大きな結果/履歴での失効待ちは未確認。
+`7d918b9`では`/api/auth/me`の応答時にもセッションを再確認し、ログアウト後の古いセッション表示を防ぐ。組織GETのソケット待ち上限は2秒。HTTP競合テストは成功、最新全件・Linux CIは未確認。
+`feaaebd`と`d1b7289`では重いレポート・監査ログ・映像用出力を権限リース外で生成し、送信直前に現在の権限を再確認する。匿名化なしの映像用出力は承認者権限と監査記録を送信開始前に再検証する。失効競合のHTTPテストは成功。巨大データの生成時間・最新全件・Linux CIは未確認。
+
+1. P12の外部AI費用上限はDraft PRで送信前の最悪値予約・同時要求・再起動後の累計を実装した。独立レビュー、料金設定と実請求額の照合を経るまで公開βでは有効にしない。
+2. P15は正常なSSEで待機時API要求を削減し、APIが応答する限り30秒を超えた次の正式な状態再取得で未発行イベントによる無期限の古さを防ぐ。Cloudflare等の中継を挟んだ監査ログの鮮度と失効通知の遅れは別途測る。停止・取消が画面に届く保証は維持する。
+3. 同一の独立ラボでブラウザのURL登録から結果表示までを390px幅で通し、実ARTEXとローカル模擬モデルでも所見・出所表示・ホスト名とURLの非送信を確認した。公開βの実DNS・組織設定・中継を含む動作確認は残る。
+4. P09/P12の採用率・実トークン・費用と公開βの実サイト経路は、必要な承認と所有確認を得た後に別途検証する。実サイトL2は引き続き禁止する。
+5. P17の別々に承認済みの2回は各要求のハッシュ、費用上限、鍵、二重送信防止を送信直前に照合して実行した。JSON採用0/2、選択TP/FP/FN/TNは未算出、確定請求額は未照合。固定規則の成績を実モデル性能に流用しない。追加送信には新しい承認が必要。
+6. P18の14条件では、ローカル模擬モデルで一律提案から観測選択へ移ると不要な検査が6→1件、対象GETが34→29回だった一方、実ARTEX経路の推定トークンは104,174→139,338へ増加した。実AIの選択能力・複数分類の精度には一般化しない。P20の6条件はHTTP 200認証拒否によるFPを3→0件に減らしたが、ARTEX選択や実サイトの診断範囲は増やしていない。
+7. P21のCookie用途10条件は固定L1のTP/FP/FN/TNが3/4/1/2、所有者仕様を用いた修正後は4/0/0/6だった。これも1分類の小さなラボであり、実HTTPSのWorker経路・ARTEX選択・実サイト精度は残る。
+8. P22では混在Cookieを個別に保持し、390pxのChromiumで画面部品の表示を確認した。ループバックHTTPS6条件でも属性保存・`document.cookie`と診断判定の一致を確認した。公開βの画面通し操作や実HTTPSのGateway/Worker経路は残る。
+9. P23では5分類を同じTP/FP/FN/TN定義で採点し、分類ごとの条件数とMacro平均の分母を示す。CORS・CookieのARTEX欄は未評価のまま保ち、実ARTEX+模擬モデルと実Abliteration AIを混同しない。
+10. P24は修正後再確認で初回診断より弱いCORS・Cookie基準を使っていた回帰を修正した。P25はCORS・CookieのローカルHTTPS15条件で一律ARTEXの不要な提案15件・計画起動15回を省いた。対象GETとWorker起動は15回のまま、判定一致も15/15を維持した。実ARTEXとローカル模擬モデルの代表条件はLinux CIで別途測る。
+
+`4f1ac7b`では診断結果とシステム状態も同じ初回・送信前の権限照合に移し、隔離事前確認の`sudo`待ちを5秒で拒否する。個別の失効競合と時間切れテストは成功。最新全件・Linux CIは成功。

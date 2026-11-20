@@ -10,7 +10,8 @@ export function RealServicePanel({ snap, onUpdate }: { snap: Snapshot; onUpdate:
   const status = snap.secrets_status;
   const [open, setOpen] = useState(false);
   // the public beta (multi-tenant) only reads real sites: no test accounts, no extra checks
-  const { multiTenant: readOnly } = useSession();
+  const { multiTenant } = useSession();
+  const readOnly = multiTenant || Boolean(snap.real_site_read_only);
   const [tokens, setTokens] = useState<Record<string, string>>({});
   const [paths, setPaths] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
@@ -91,13 +92,13 @@ export function RealServicePanel({ snap, onUpdate }: { snap: Snapshot; onUpdate:
               : "L2検証（判定ルール未設定）"}
             {open ? " ▴" : " ▾"}
           </button>}
-          <button
+          {!readOnly && <button
             type="button"
             onClick={exportVideoData}
             className="rounded-lg border border-sky-300 bg-white px-2.5 py-1.5 font-semibold text-sky-900 hover:bg-sky-100 dark:border-sky-700 dark:bg-zinc-900 dark:text-sky-100"
           >
             ⇩ 動画用データ（匿名化JSON）
-          </button>
+          </button>}
         </div>
       </div>
 

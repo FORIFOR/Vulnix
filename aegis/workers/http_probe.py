@@ -31,8 +31,10 @@ from __future__ import annotations
 
 import argparse
 import http.client
+import io
 import json
 import os
+import re
 import signal
 import socket
 import ssl
@@ -43,6 +45,98 @@ CONNECT_TIMEOUT_S = 8.0       # TCP connect, and separately the TLS handshake
 FIRST_BYTE_TIMEOUT_S = 30.0   # request sent -> status line (cold starts live here)
 OVERALL_DEADLINE_S = 45.0     # whole run; the gateway's own limit is above this
 MAX_STAGE_TIMEOUT_S = 60.0
+MAX_SET_COOKIE_BYTES = 8192
+MAX_COOKIE_NAME_LEN = 64
+_SAFE_COOKIE_ATTR_NAMES = frozenset({
+    "secure", "httponly", "samesite", "path", "domain", "expires", "max-age", "partitioned",
+})
+
+
+def _split_cookie_parts(raw: str) -> list[str]:
+    """Split a Set-Cookie header value on `;` outside double quotes."""
+    parts: list[str] = []
+    cur: list[str] = []
+    in_quotes = False
+    escape = False
+    for ch in raw[:MAX_SET_COOKIE_BYTES]:
+        if escape:
+            cur.append(ch)
+            escape = False
+            continue
+        if ch == "\\" and in_quotes:
+            cur.append(ch)
+            escape = True
+            continue
+        if ch == '"':
+            in_quotes = not in_quotes
+            cur.append(ch)
+            continue
+        if ch == ";" and not in_quotes:
+            parts.append("".join(cur))
+            cur = []
+            continue
+        cur.append(ch)
+    parts.append("".join(cur))
+    return parts
+
+
+def sanitize_set_cookie_header(raw: object) -> str:
+    """Keep only the cookie name and attribute metadata; never retain the cookie value."""
+    if not isinstance(raw, str):
+        return "cookie=[REDACTED]"
+    cleaned = re.sub(r"[\x00-\x1f\x7f]+", "", raw[:MAX_SET_COOKIE_BYTES]).strip()
+    if not cleaned:
+        return "cookie=[REDACTED]"
+    parts = _split_cookie_parts(cleaned)
+    first = parts[0].strip()
+    if "=" in first:
+        raw_name, _, _ = first.partition("=")
+        cookie_name = raw_name.strip()[:MAX_COOKIE_NAME_LEN] or "cookie"
+    else:
+        cookie_name = "cookie"
+    out = [f"{cookie_name}=[REDACTED]"]
+    for part in parts[1:32]:
+        token = part.strip()
+        if not token:
+            continue
+        attr_name, sep, attr_val = token.partition("=")
+        key = attr_name.strip()
+        key_lower = key.lower()
+        val = attr_val.strip()
+        if len(val) >= 2 and val[0] == '"' and val[-1] == '"':
+            val = val[1:-1].strip()
+        if not sep:
+            if key_lower == "secure":
+                out.append("Secure")
+            elif key_lower == "httponly":
+                out.append("HttpOnly")
+            elif key_lower == "partitioned":
+                out.append("Partitioned")
+            elif key_lower in _SAFE_COOKIE_ATTR_NAMES:
+                out.append(key[:32])
+            else:
+                out.append(f"attr:{re.sub(r'[^A-Za-z0-9_-]', '', key)[:32] or 'unknown'}")
+        else:
+            if key_lower == "samesite":
+                safe_val = re.sub(r"[^A-Za-z0-9_-]", "", val)[:32] or "invalid"
+                out.append(f"SameSite={safe_val}")
+            elif key_lower == "max-age":
+                safe_val = val[:32] if re.fullmatch(r"-?[0-9]{1,20}", val) else "[set]"
+                out.append(f"Max-Age={safe_val}")
+            elif key_lower in ("secure", "httponly", "partitioned"):
+                safe_val = re.sub(r"[^A-Za-z0-9_-]", "", val)[:32] or "[set]"
+                out.append(f"{key[:32]}={safe_val}")
+            elif key_lower == "path":
+                out.append("Path=/" if val == "/" else "Path=[set]")
+            elif key_lower == "domain":
+                out.append("Domain=[set]")
+            elif key_lower == "expires":
+                out.append("Expires=[set]")
+            else:
+                safe_key = re.sub(r"[^A-Za-z0-9_-]", "", key)[:32] or "unknown"
+                out.append(f"attr:{safe_key}=[set]")
+    return "; ".join(out)
+
 
 
 def _extract_tls_info(sock: socket.socket, scheme: str) -> dict | None:
@@ -64,12 +158,33 @@ def _extract_tls_info(sock: socket.socket, scheme: str) -> dict | None:
     }
 
 
+class _SafeSocketIO(socket.SocketIO):
+    """A timer may interrupt SocketIO before its _sock attribute is assigned."""
+
+    def close(self):
+        if not hasattr(self, "_sock"):
+            return io.RawIOBase.close(self)  # no socket IO reference exists yet
+        super().close()
+
+
 class _Response(http.client.HTTPResponse):
     """HTTPResponse that a half-built instance can still close. The alarm can land inside
     __init__ before `fp` is set; that object is finalized later (possibly after the probe
     returned) and close() would report AttributeError on stderr. A class-level `fp = None`
     makes it close quietly; a fully built response sets its own `fp` as usual."""
     fp = None
+
+    def __init__(self, *args, **kwargs):
+        # HTTPResponse.__init__ calls socket.makefile(). SIGALRM can interrupt
+        # SocketIO.__init__ before _sock exists; its finalizer then reports an
+        # unraisable AttributeError. Use the safe wrapper only while makefile
+        # constructs this response. The Worker handles one probe per process.
+        original = socket.SocketIO
+        try:
+            socket.SocketIO = _SafeSocketIO
+            super().__init__(*args, **kwargs)
+        finally:
+            socket.SocketIO = original
 
 
 class DeadlineExceeded(Exception):
@@ -189,6 +304,9 @@ def probe(a: argparse.Namespace, clock=time.monotonic) -> dict:
 
     def error_result(e: StageError) -> dict:
         timings["total_ms"] = round((clock() - t0) * 1000)
+        if getattr(a, "report_mode", "full") == "status_marker":
+            return {"check_id": "apache_mod_status", "elapsed_ms": timings["total_ms"],
+                    "error": {"stage": e.stage, "kind": e.kind}}
         return {
             "error": {"stage": e.stage, "kind": e.kind, "timeout_s": e.timeout_s, "exception": e.detail},
             "connected_ip": a.ip,
@@ -240,10 +358,38 @@ def probe(a: argparse.Namespace, clock=time.monotonic) -> dict:
             return r.read(4096) if a.method == "GET" else b""
         raw_body = stage("body", a.read_timeout, body)
         timings["total_ms"] = round((clock() - t0) * 1000)
+        if getattr(a, "report_mode", "full") == "status_marker":
+            markers = {
+                "total_accesses": bool(re.search(rb"(?m)^Total Accesses: [0-9]+\r?$", raw_body)),
+                "uptime_seconds": bool(re.search(rb"(?m)^ServerUptimeSeconds: [0-9]+\r?$", raw_body)),
+            }
+            return {"check_id": "apache_mod_status", "elapsed_ms": timings["total_ms"],
+                    "status": r.status, "markers": markers,
+                    "detected": r.status == 200 and all(markers.values())}
+        headers = {}
+        link_values = []
+        set_cookie_values = []
+        for name, value in r.getheaders():
+            lower_name = name.lower()
+            if lower_name == "link":
+                link_values.append(value)
+            elif lower_name in ("set-cookie", "set-cookie2"):
+                set_cookie_values.append(sanitize_set_cookie_header(value))
+            else:
+                headers[name] = value
+        if not set_cookie_values:
+            raw_cookies = (r.msg.get_all("Set-Cookie") or []) + (r.msg.get_all("Set-Cookie2") or [])
+            set_cookie_values = [sanitize_set_cookie_header(c) for c in raw_cookies[:50]]
+        else:
+            set_cookie_values = set_cookie_values[:50]
+        if link_values:
+            # Repeated Link fields have the same list meaning as one comma-separated
+            # field. Keep all values for the bounded local-lab observation parser.
+            headers["Link"] = ", ".join(link_values)
         return {
             "status": r.status,
-            "headers": dict(r.getheaders()),
-            "set_cookies": r.msg.get_all("Set-Cookie") or [],
+            "headers": headers,
+            "set_cookies": set_cookie_values,
             "tls": tls_info,
             "cors_probe_origin": a.origin,
             "redirect_location": r.getheader("Location"),  # reported, NOT followed
@@ -376,6 +522,7 @@ def main() -> None:
     p.add_argument("--read-timeout", type=_seconds, default=FIRST_BYTE_TIMEOUT_S)
     p.add_argument("--overall-timeout", type=_seconds, default=OVERALL_DEADLINE_S)
     p.add_argument("--progress", default="none", choices=["none", "stderr"])
+    p.add_argument("--report-mode", default="full", choices=["full", "status_marker"])
     a = p.parse_args()
     _PROGRESS["on"] = a.progress == "stderr"
     out = probe(a)

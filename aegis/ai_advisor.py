@@ -1,4 +1,4 @@
-"""AI advisor: explanations, remediation and next-check suggestions for findings (phase 1: mock only).
+"""AI advisor: bounded explanations and suggestions from allow-listed finding fields.
 
 What the model is given, and what comes back, are both narrow on purpose:
 
@@ -9,8 +9,8 @@ What the model is given, and what comes back, are both narrow on purpose:
   never read, because analyzer titles embed observed values (an ACAO origin, a TLS
   version). The serialized payload is scanned again before sending and refused if it
   still looks like it carries a URL, host, IP, e-mail, token or cookie.
-* A finding about a real service is not given to the advisor at all; the caller
-  (`AssessmentService.advise_findings`) filters with the existing allow-list.
+* The general `advise_findings` caller excludes real services. A separate,
+  operator-enabled per-finding explanation path uses this allow-list for real sites.
 * Output must be one JSON object of a fixed schema (v2), checked structurally first: a
   claim level the verdict allows, citations of input fields that were actually given,
   remediation *fix ids* and next-check *operation ids* from aegis/advisor_catalog.py that
@@ -23,14 +23,16 @@ What the model is given, and what comes back, are both narrow on purpose:
   normal gates (ownership, scope, L2 approval for L2 items). This module imports no
   gateway, token authority, approval store or worker runner, and a next check has no
   tool/action/args, so it cannot become a gateway proposal.
-* Phase 1 talks only to a loopback endpoint (the bundled mock server) and takes no
-  API key. Connecting the real Abliteration AI API is a separate, later decision.
+* The default adapter talks only to loopback and takes no API key. The explicit
+  external adapter requires HTTPS and a key; it is used only on the opted-in path.
 """
 from __future__ import annotations
 
 import json
+import http.client
 import math
 import re
+import time
 import unicodedata
 import urllib.parse
 import urllib.request
@@ -44,31 +46,33 @@ from .router import (DEFAULT_MODEL_TIMEOUT_SECONDS, MAX_MODEL_RESPONSE_BYTES, Tr
 
 PROMPT_MARKER = "vulnix-advisor/v2"
 
-SYSTEM_ADVISOR_PROMPT = (
+_PROMPT_BEFORE_CATALOG = (
     f"[{PROMPT_MARKER}] あなたは Vulnix のセキュリティ診断アドバイザーです。"
     "与えられた所見（参照ID、規則、分類、深刻度、判定）だけを根拠に答えてください。"
     "claim_level は判定に合うものを選び、cites には根拠にした入力の項目名を入れてください。"
     "remediation の fix と next_checks の operation は、次の一覧の id だけを使えます。"
     "それ以外の操作は提案できません。実行は Vulnix の承認ゲートを通ります。"
     "URL、ホスト名、コマンド、攻撃手順は書かないでください。"
-    + catalog.catalog_for_prompt() +
+)
+_PROMPT_AFTER_CATALOG = (
     ' JSON だけを返してください: {"advice": [{"ref": "F1", "claim_level": "observed", "cites": ["rule", "verdict"], '
     '"risk_explanation": "...", "remediation": [{"fix": "<id>", "detail": "..."}], '
     '"next_checks": [{"operation": "<id>", "purpose": "<id>"}]}]}'
 )
+SYSTEM_ADVISOR_PROMPT = _PROMPT_BEFORE_CATALOG + catalog.catalog_for_prompt() + _PROMPT_AFTER_CATALOG
 
 # ---- input allow-list -------------------------------------------------------------
 
 KNOWN_RULES = frozenset({
     "f_l1_tls", "f_l1_no_tls", "f_headers", "f_l1_cookies", "f_l1_cors", "f_powered",
-    "f_l1_unauth_api", "f_banner", "f_idor", "f_sqli",
+    "f_l1_unauth_api", "f_l1_apache_mod_status", "f_banner", "f_idor", "f_sqli",
 })
 KNOWN_CATEGORIES = frozenset({
     "暗号・TLS設定", "設定不備", "セッション・Cookie設定", "CORS・オリジン境界", "既知の脆弱性（CVE）",
-    "情報露出", "APIアクセス制御", "アクセス制御", "入力検証",
+    "情報露出", "情報公開設定", "APIアクセス制御", "アクセス制御", "入力検証", "インジェクション",
 })
 SEVERITIES = ("critical", "high", "medium", "low", "info")
-VERDICTS = ("detected", "proven", "not_reproduced", "unverified", "fixed")
+VERDICTS = ("candidate", "detected", "proven", "not_reproduced", "unverified", "fixed")
 VERDICT_BASES = ("l1_observation", "l2_reproduction", "demo_fixture")
 _CVE_RE = re.compile(r"^CVE-\d{4}-\d{4,7}$")
 MAX_FINDINGS = 20
@@ -88,7 +92,7 @@ def finding_to_payload_item(ref: str, finding: dict) -> dict:
         "rule": _enum(finding.get("id"), KNOWN_RULES, "other"),
         "category": _enum(finding.get("category"), KNOWN_CATEGORIES, "その他"),
         "severity": _enum(finding.get("severity"), SEVERITIES, "medium"),
-        "verdict": _enum(finding.get("verdict"), VERDICTS, "detected"),
+        "verdict": _enum(finding.get("verdict"), VERDICTS, "unverified"),
         "verdict_basis": _enum(finding.get("verdict_basis"), VERDICT_BASES, "l1_observation"),
         "cve": cves,
         "risk_score": risk if risk is None or 0 <= risk <= 100 else None,
@@ -470,8 +474,14 @@ class AbliterationAdvisor:
     _send: Callable[[str, dict, bytes], bytes] = field(init=False, repr=False)
     endpoint_kind: str = field(init=False, default="loopback_mock")
 
-    def __post_init__(self) -> None:
+    def _require_endpoint(self) -> None:
         _require_loopback(self.url)
+
+    def _headers(self) -> dict[str, str]:
+        return {"Content-Type": "application/json"}
+
+    def __post_init__(self) -> None:
+        self._require_endpoint()
         self.timeout_s = _model_timeout(self.timeout_s)
         self._send = self.transport or partial(_loopback_transport, timeout_s=self.timeout_s)
         # an injected transport (tests) is not the loopback transport; say so in results and audit
@@ -487,21 +497,34 @@ class AbliterationAdvisor:
             raise AdvisorError(f"payload refused: {leaks}")
         payload = {
             "model": self.model,
-            "messages": [{"role": "system", "content": SYSTEM_ADVISOR_PROMPT},
+            "messages": [{"role": "system", "content": (_PROMPT_BEFORE_CATALOG
+                          + catalog.catalog_for_prompt(
+                              rules={item["rule"] for item in items},
+                              verdicts={item["verdict"] for item in items})
+                          + _PROMPT_AFTER_CATALOG)},
                          {"role": "user", "content": user}],
             "temperature": 0.2,
         }
         return json.dumps(payload, ensure_ascii=False).encode("utf-8"), ref_map
 
-    def advise(self, findings: list[dict]) -> AdviceResult:
+    def advise(self, findings: list[dict], *, before_send=None, send_scope=None) -> AdviceResult:
         body, ref_map = self.build_request(findings)
         if not ref_map:
             return AdviceResult((), (), (), (), self.name, self.endpoint_kind)
-        _require_loopback(self.url)
+        self._require_endpoint()
         try:
-            raw = self._send(self.url, {"Content-Type": "application/json"}, body)
+            if before_send is not None:
+                before_send()
+            if send_scope is not None and self.endpoint_kind == "external":
+                raw = _external_transport(self.url, self._headers(), body,
+                                          timeout_s=self.timeout_s, send_scope=send_scope)
+            else:
+                raw = self._send(self.url, self._headers(), body)
             data = json.loads(raw)
-            content = data["choices"][0]["message"]["content"]
+            choice = data["choices"][0]
+            if choice.get("finish_reason") in ("length", "content_filter"):
+                raise ValueError(f"unusable finish_reason: {choice.get('finish_reason')}")
+            content = choice["message"]["content"]
         except Exception as e:  # noqa: BLE001 - any transport / format failure is one error
             raise AdvisorError(f"no usable reply: {type(e).__name__}") from None
         parsed = _extract_json_from_text(content) if isinstance(content, str) else None
@@ -515,3 +538,82 @@ class AbliterationAdvisor:
             missing_refs=tuple(r for r in ref_map if r not in answered),
             backend=self.name, endpoint_kind=self.endpoint_kind,
         )
+
+
+def _external_transport(url: str, headers: dict, body: bytes, *, timeout_s: float,
+                        send_scope=None) -> bytes:
+    # No environment proxy or redirect may receive the credential or anonymized findings.
+    if send_scope is not None:
+        # Establish TLS before taking the short authorization lease. Keep the
+        # lease through the actual request write, then release it while waiting
+        # for the slow model response so emergency stop remains responsive.
+        parts = urllib.parse.urlsplit(url)
+        if (parts.scheme != "https" or parts.hostname != "api.abliteration.ai"
+                or parts.port not in (None, 443) or parts.path != "/v1/chat/completions"
+                or parts.username is not None or parts.password is not None
+                or parts.query or parts.fragment):
+            raise AdvisorError("external advisor endpoint refused")
+        deadline = time.monotonic() + timeout_s
+        conn = http.client.HTTPSConnection("api.abliteration.ai", port=443, timeout=timeout_s)
+        try:
+            conn.connect()
+            remaining = max(0.01, deadline - time.monotonic())
+            if remaining <= 0.01:
+                raise AdvisorError("advisor connect timeout")
+            conn.sock.settimeout(min(1.0, remaining))
+            with send_scope():
+                conn.request("POST", parts.path, body=body, headers=headers)
+            conn.sock.settimeout(max(0.01, deadline - time.monotonic()))
+            response = conn.getresponse()
+            if not 200 <= response.status < 300:
+                raise AdvisorError("advisor HTTP response refused")
+            data = response.read(MAX_MODEL_RESPONSE_BYTES + 1)
+        finally:
+            conn.close()
+        if len(data) > MAX_MODEL_RESPONSE_BYTES:
+            raise AdvisorError("reply too large")
+        return data
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
+    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    with opener.open(req, timeout=timeout_s) as response:
+        data = response.read(MAX_MODEL_RESPONSE_BYTES + 1)
+    if len(data) > MAX_MODEL_RESPONSE_BYTES:
+        raise AdvisorError("reply too large")
+    return data
+
+
+@dataclass
+class ExternalAbliterationAdvisor(AbliterationAdvisor):
+    """Explicit remote adapter; the default advisor remains loopback-only."""
+
+    model: str = "abliterated-model"
+    api_key: str = field(default="", repr=False)
+
+    def _require_endpoint(self) -> None:
+        try:
+            parts = urllib.parse.urlsplit(self.url)
+            official = (parts.scheme == "https" and parts.hostname == "api.abliteration.ai"
+                        and parts.port in (None, 443) and parts.path == "/v1/chat/completions"
+                        and parts.username is None and parts.password is None
+                        and not parts.query and not parts.fragment)
+        except ValueError:
+            official = False
+        if not official or not self.api_key:
+            raise AdvisorError("external advisor requires the official Abliteration HTTPS endpoint and API key")
+
+    def _headers(self) -> dict[str, str]:
+        return {"Content-Type": "application/json", "Authorization": f"Bearer {self.api_key}"}
+
+    def build_request(self, findings: list[dict]) -> tuple[bytes, dict[str, dict]]:
+        body, ref_map = super().build_request(findings)
+        payload = json.loads(body)
+        payload["max_tokens"] = 2048
+        payload["response_format"] = {"type": "json_object"}
+        if self.model in ("abliterated-model", "abliterated-model-large-flash"):
+            payload["reasoning_effort"] = "none"
+        return json.dumps(payload, ensure_ascii=False).encode("utf-8"), ref_map
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        self._send = self.transport or partial(_external_transport, timeout_s=self.timeout_s)
+        self.endpoint_kind = "external" if self.transport is None else "injected_transport"

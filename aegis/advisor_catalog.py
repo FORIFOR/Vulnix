@@ -12,10 +12,11 @@ disjoint, so an operation id can never be mistaken for something the gateway exe
 """
 from __future__ import annotations
 
+from collections.abc import Iterable
 from types import MappingProxyType
 
 ALL_RULES = ("f_l1_tls", "f_l1_no_tls", "f_headers", "f_l1_cookies", "f_l1_cors", "f_powered",
-             "f_l1_unauth_api", "f_banner", "f_idor", "f_sqli")
+             "f_l1_unauth_api", "f_l1_apache_mod_status", "f_banner", "f_idor", "f_sqli")
 
 # What the explanation claims about the finding. The verdict decides which are honest.
 CLAIM_LEVELS = MappingProxyType({
@@ -26,6 +27,7 @@ CLAIM_LEVELS = MappingProxyType({
     "fixed_verified": "修正後の再検証で再現しなかった",
 })
 CLAIMS_BY_VERDICT = MappingProxyType({
+    "candidate": frozenset({"suspected", "inconclusive"}),
     "detected": frozenset({"observed", "suspected", "inconclusive"}),
     "unverified": frozenset({"suspected", "inconclusive"}),
     "proven": frozenset({"reproduced", "observed"}),
@@ -46,6 +48,7 @@ OPERATIONS = MappingProxyType({
     "l1_recheck_cookie_attributes": ("L1", "Cookie の属性を再確認する", {"f_l1_cookies"}),
     "l1_recheck_cors_policy": ("L1", "信頼しないオリジンへの CORS 応答を再確認する", {"f_l1_cors"}),
     "l1_recheck_unauth_response": ("L1", "未認証の要求への応答を再確認する", {"f_l1_unauth_api"}),
+    "l1_recheck_apache_status": ("L1", "Apacheの状態情報が公開されていないか再確認する", {"f_l1_apache_mod_status"}),
     "l2_authz_boundary_check": ("L2", "テスト用アカウント間の認可境界を確認する", {"f_idor", "f_l1_unauth_api"}),
     "l2_input_boundary_check": ("L2", "模擬データ環境で入力の境界を確認する", {"f_sqli"}),
     "manual_config_review": ("manual", "設定を人が見直す", set(ALL_RULES)),
@@ -71,6 +74,7 @@ REMEDIATION_ACTIONS = MappingProxyType({
     "restrict_cors_allowlist": ("許可するオリジンを明示的な一覧に限る", {"f_l1_cors"}),
     "disallow_credentials_for_untrusted": ("信頼しないオリジンに資格情報つきの応答を許可しない", {"f_l1_cors"}),
     "require_authentication": ("公開を意図しない API に認証を必須にする", {"f_l1_unauth_api"}),
+    "restrict_apache_status": ("Apacheの状態情報を公開範囲から外すか管理者だけに制限する", {"f_l1_apache_mod_status"}),
     "minimize_response_fields": ("返す項目を最小限にする", {"f_l1_unauth_api", "f_idor"}),
     "confirm_intended_exposure": ("公開が意図どおりかを確認する", {"f_l1_unauth_api", "f_powered", "f_l1_cors"}),
     "enforce_object_ownership": ("資源ごとに所有者をサーバー側で照合する", {"f_idor"}),
@@ -139,10 +143,18 @@ def gates_for(level: str) -> tuple[str, ...]:
     return base + ("l2_human_approval",) if level == "L2" else base
 
 
-def catalog_for_prompt() -> str:
-    """The ids the model may use, for the system prompt (no case data, no labels)."""
-    ops = "; ".join(f"{k}({v[0]}: {', '.join(sorted(v[2]))})" for k, v in OPERATIONS.items())
-    acts = "; ".join(f"{k}({', '.join(sorted(v[1]))})" for k, v in REMEDIATION_ACTIONS.items())
-    claims = ", ".join(f"{v}: {', '.join(sorted(c))}" for v, c in CLAIMS_BY_VERDICT.items())
+def catalog_for_prompt(*, rules: Iterable[str] | None = None,
+                       verdicts: Iterable[str] | None = None) -> str:
+    """Only relevant IDs in a request; the full catalog remains the validator."""
+    rule_set = set(ALL_RULES if rules is None else rules)
+    verdict_set = set(CLAIMS_BY_VERDICT if verdicts is None else verdicts)
+    ops = "; ".join(f"{k}({v[0]}: {', '.join(sorted(v[2] & rule_set))})"
+                    for k, v in OPERATIONS.items() if v[2] & rule_set)
+    acts = "; ".join(f"{k}({', '.join(sorted(v[1] & rule_set))})"
+                     for k, v in REMEDIATION_ACTIONS.items()
+                     if v[1] & rule_set and any(fix_verdict_problem(k, verdict) is None
+                                                for verdict in verdict_set))
+    claims = ", ".join(f"{v}: {', '.join(sorted(c))}" for v, c in CLAIMS_BY_VERDICT.items()
+                       if v in verdict_set)
     return (f"operations: {ops}. remediation fixes: {acts}. claim_level by verdict: {claims}. "
             f"next check purposes: {', '.join(PURPOSES)}.")

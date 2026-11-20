@@ -2,14 +2,21 @@
 from __future__ import annotations
 
 import ast
+import contextlib
 import dataclasses
+import hashlib
 import json
+import os
+import tempfile
+import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from aegis import ai_advisor as adv
+from aegis.audit import AuditLog
 from aegis.abliteration_server import start_abliteration_server
-from aegis.router import sanitize_proposal
+from aegis.router import AbliterationBackend, sanitize_proposal
 from tests.test_real_service import HOST, RealServiceBase
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -93,7 +100,66 @@ class TestPayloadIsAnAllowList(unittest.TestCase):
         item = adv.finding_to_payload_item("F1", {"id": "f_site_specific_rule", "category": "社内システムXの分類",
                                                   "severity": "urgent", "verdict": "pwned", "risk_score": float("nan")})
         self.assertEqual((item["rule"], item["category"], item["severity"], item["verdict"], item["risk_score"]),
-                         ("other", "その他", "medium", "detected", None))
+                         ("other", "その他", "medium", "unverified", None))
+
+    def test_audited_status_finding_has_specific_safe_japanese_advice(self):
+        from aegis.service_diag import analyze_status_marker_report
+        finding = analyze_status_marker_report(
+            {"check_id": "apache_mod_status", "detected": True},
+            {"tool": "status_marker", "audit_hash": "a" * 64,
+             "target_url": "https://private.example/server-status?auto", "body_prefix": "SECRET"})
+        reply = _ok_item(
+            risk_explanation="Apacheの状態情報が公開されています。",
+            remediation=[_rem("公開範囲から外し、管理者だけにアクセスを制限します。", "restrict_apache_status")],
+            next_checks=[_chk("confirm_fix", "l1_recheck_apache_status")])
+        with _MockServer(_advice_reply([reply])) as mock:
+            result = adv.AbliterationAdvisor(mock.url).advise([finding])
+            sent = json.dumps(mock.srv.received[0], ensure_ascii=False)
+            item = json.loads(mock.srv.received[0]["messages"][1]["content"])["findings"][0]
+        self.assertEqual((item["rule"], item["category"], item["verdict"]),
+                         ("f_l1_apache_mod_status", "情報公開設定", "detected"))
+        self.assertNotIn("private.example", sent)
+        self.assertNotIn("SECRET", sent)
+        self.assertEqual(len(result.advice), 1, result.rejected)
+        self.assertEqual(result.advice[0].remediation[0].fix, "restrict_apache_status")
+
+    def test_single_finding_prompt_contains_only_relevant_catalog_ids(self):
+        finding = _leaky_finding("f_l1_apache_mod_status", category="情報公開設定", cve=[])
+        advisor = adv.AbliterationAdvisor("http://127.0.0.1:9/v1/chat/completions")
+        body, _ = advisor.build_request([finding])
+        prompt = json.loads(body)["messages"][0]["content"]
+        self.assertIn("restrict_apache_status", prompt)
+        self.assertIn("l1_recheck_apache_status", prompt)
+        self.assertNotIn("parameterize_queries", prompt)
+        self.assertNotIn("l2_input_boundary_check", prompt)
+        self.assertLess(len(prompt.encode("utf-8")), len(adv.SYSTEM_ADVISOR_PROMPT.encode("utf-8")))
+        bad = _ok_item(remediation=[_rem("入力値をパラメータ化する", "parameterize_queries")], next_checks=[])
+        accepted, rejected = adv.validate_advice({"advice": [bad]}, {"F1": finding})
+        self.assertEqual(accepted, [])
+        self.assertTrue(any(r["where"] == "remediation" for r in rejected))
+
+    def test_candidate_is_never_sent_or_explained_as_detected(self):
+        finding = _leaky_finding("f_sqli", verdict="candidate")
+        item = adv.finding_to_payload_item("F1", finding)
+        self.assertEqual(item["verdict"], "candidate")
+        self.assertEqual(adv.finding_to_payload_item("F1", {"id": "f_sqli", "category": "インジェクション"})["category"],
+                         "インジェクション")
+        observed = _ok_item("F1", claim_level="observed",
+                            remediation=[_rem("入力値をパラメータ化する", "parameterize_queries")], next_checks=[])
+        accepted, rejected = adv.validate_advice({"advice": [observed]}, {"F1": finding})
+        self.assertEqual(accepted, [])
+        self.assertTrue(any(r["where"] == "claim_level" for r in rejected))
+        suspected = _ok_item("F1", claim_level="suspected",
+                             remediation=[_rem("入力値をパラメータ化する", "parameterize_queries")], next_checks=[])
+        accepted, rejected = adv.validate_advice({"advice": [suspected]}, {"F1": finding})
+        self.assertEqual(len(accepted), 1)
+        self.assertEqual(rejected, [])
+        with _MockServer() as mock:
+            result = adv.AbliterationAdvisor(mock.url).advise([finding])
+            sent = json.loads(mock.srv.received[0]["messages"][1]["content"])
+        self.assertEqual(sent["findings"][0]["verdict"], "candidate")
+        self.assertTrue(result.advice, result.rejected)
+        self.assertTrue(all(a.claim_level in {"suspected", "inconclusive"} for a in result.advice))
 
     def test_a_payload_that_still_leaks_is_refused_before_sending(self):
         calls = []
@@ -127,6 +193,89 @@ class TestPhaseOneIsMockOnly(unittest.TestCase):
                 adv.AbliterationAdvisor(url)
         adv.AbliterationAdvisor("http://127.0.0.1:1/v1/chat/completions")
         adv.AbliterationAdvisor("http://[::1]:1/v1/chat/completions")
+
+    def test_external_adapter_requires_https_key_and_explicit_type(self):
+        for url in ("http://api.abliteration.ai/v1/chat/completions",
+                    "https://user:pw@api.abliteration.ai/v1/chat/completions",
+                    "https://provider.example/v1/chat/completions",
+                    "https://api.abliteration.ai.attacker.example/v1/chat/completions",
+                    "https://api.abliteration.ai:8443/v1/chat/completions",
+                    "https://api.abliteration.ai/v1/other"):
+            with self.assertRaises(adv.AdvisorError):
+                adv.ExternalAbliterationAdvisor(url, api_key="test-only-key")
+        with self.assertRaises(adv.AdvisorError):
+            adv.ExternalAbliterationAdvisor("https://api.abliteration.ai/v1/chat/completions")
+        seen = []
+        advisor = adv.ExternalAbliterationAdvisor(
+            "https://api.abliteration.ai/v1/chat/completions", api_key="test-only-key",
+            transport=lambda url, headers, body: seen.append((url, headers, body)) or json.dumps(
+                {"choices": [{"message": {"content": '{"advice": []}'}}]}).encode(),
+        )
+        advisor.advise([_leaky_finding()])
+        self.assertEqual(seen[0][1]["Authorization"], "Bearer test-only-key")
+        self.assertNotIn(HOST, seen[0][2].decode())
+        request = json.loads(seen[0][2])
+        self.assertLessEqual(request["max_tokens"], 2048)
+        self.assertEqual(request["response_format"], {"type": "json_object"})
+        self.assertEqual(request["reasoning_effort"], "none")
+        for bad_finish in ("length", "content_filter"):
+            bad_advisor = adv.ExternalAbliterationAdvisor(
+                "https://api.abliteration.ai/v1/chat/completions", api_key="test-only-key",
+                transport=lambda _u, _h, _b, fr=bad_finish: json.dumps(
+                    {"choices": [{"message": {"content": '{"advice": []}'},
+                                  "finish_reason": fr}]}).encode(),
+            )
+            with self.assertRaises(adv.AdvisorError):
+                bad_advisor.advise([_leaky_finding()])
+
+    def test_external_transport_holds_send_scope_only_while_request_is_written(self):
+        events = []
+
+        class Response:
+            status = 200
+
+            def read(self, limit):
+                events.append("read")
+                return b"{}"
+
+        class Connection:
+            def __init__(self, *args, **kwargs):
+                events.append("init")
+                self.sock = type("Socket", (), {"settimeout": lambda _self, n: events.append("timeout")})()
+
+            def connect(self):
+                events.append("connect")
+
+            def request(self, method, path, body, headers):
+                events.append("request")
+                self.method, self.path, self.body, self.headers = method, path, body, headers
+
+            def getresponse(self):
+                events.append("response")
+                return Response()
+
+            def close(self):
+                events.append("close")
+
+        @contextlib.contextmanager
+        def scope():
+            events.append("enter")
+            try:
+                yield
+            finally:
+                events.append("exit")
+
+        with patch.object(adv.http.client, "HTTPSConnection", Connection):
+            out = adv._external_transport(
+                "https://api.abliteration.ai/v1/chat/completions",
+                {"Authorization": "Bearer test-only-key", "Content-Type": "application/json"},
+                b"{}", timeout_s=3.0, send_scope=scope)
+        self.assertEqual(out, b"{}")
+        self.assertLess(events.index("connect"), events.index("enter"))
+        self.assertLess(events.index("enter"), events.index("request"))
+        self.assertLess(events.index("request"), events.index("exit"))
+        self.assertLess(events.index("exit"), events.index("response"))
+        self.assertEqual(events[-1], "close")
 
     def test_the_adapter_takes_no_api_key_and_sends_no_authorization(self):
         fields = {f.name for f in dataclasses.fields(adv.AbliterationAdvisor)}
@@ -301,7 +450,560 @@ class TestNoPathFromAdviceToAWorker(unittest.TestCase):
         self.assertEqual(r.status, "proposal_only")
 
 
+class TestAdvisorAuditBudget(unittest.TestCase):
+    def test_restarted_audit_rejects_valid_prefix_rollback_before_another_paid_send(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "audit.jsonl"
+            audit = AuditLog(path)
+            audit.record_with_budget("advisor.safe_send_requested", reserve_micro_usd=300_000,
+                                     cap_micro_usd=900_000, endpoint_kind="external")
+            older_valid_prefix = path.read_text()
+            audit.record_with_budget("advisor.safe_send_requested", reserve_micro_usd=300_000,
+                                     cap_micro_usd=900_000, endpoint_kind="external")
+            path.write_text(older_valid_prefix)
+
+            reopened = AuditLog(path)
+            with self.assertRaisesRegex(ValueError, "audit budget history invalid"):
+                reopened.record_with_budget("advisor.safe_send_requested", reserve_micro_usd=300_000,
+                                            cap_micro_usd=900_000, endpoint_kind="external")
+
+    def test_missing_budget_floor_and_interrupted_append_fail_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "audit.jsonl"
+            audit = AuditLog(path)
+            audit.record_with_budget("advisor.safe_send_requested", reserve_micro_usd=300_000,
+                                     cap_micro_usd=900_000, endpoint_kind="external")
+            floor = path.with_name(path.name + ".advisor-budget")
+            self.assertEqual(floor.read_text().strip(), "300000")
+            self.assertEqual(floor.stat().st_mode & 0o777, 0o600)
+            floor.unlink()
+            with self.assertRaisesRegex(ValueError, "audit budget history invalid"):
+                AuditLog(path).record_with_budget("advisor.safe_send_requested", reserve_micro_usd=1,
+                                                  cap_micro_usd=900_000, endpoint_kind="external")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "audit.jsonl"
+            # A pre-upgrade valid record has no separate floor. Its history
+            # cannot be attested after restart, so another paid send is refused.
+            AuditLog(path).record("advisor.safe_send_requested", endpoint_kind="external",
+                                  reserved_micro_usd=300_000, budget_cap_micro_usd=900_000)
+            with self.assertRaisesRegex(ValueError, "audit budget history invalid"):
+                AuditLog(path).record_with_budget("advisor.safe_send_requested", reserve_micro_usd=1,
+                                                  cap_micro_usd=900_000, endpoint_kind="external")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "audit.jsonl"
+            audit = AuditLog(path)
+            with patch.object(audit, "_append_locked", side_effect=OSError("audit append failed")):
+                with self.assertRaises(OSError):
+                    audit.record_with_budget("advisor.safe_send_requested", reserve_micro_usd=300_000,
+                                             cap_micro_usd=900_000, endpoint_kind="external")
+            with self.assertRaisesRegex(ValueError, "audit budget history invalid"):
+                AuditLog(path).record_with_budget("advisor.safe_send_requested", reserve_micro_usd=1,
+                                                  cap_micro_usd=900_000, endpoint_kind="external")
+
+    def test_budget_survives_reopen_and_counts_concurrent_reservations(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "audit.jsonl"
+            audit = AuditLog(path)
+            outcomes = []
+
+            def reserve():
+                try:
+                    audit.record_with_budget("advisor.safe_send_requested", reserve_micro_usd=300_000,
+                                             cap_micro_usd=500_000, endpoint_kind="external")
+                    outcomes.append("sent")
+                except ValueError:
+                    outcomes.append("refused")
+
+            threads = [threading.Thread(target=reserve) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+            self.assertCountEqual(outcomes, ["sent", "refused"])
+            reopened = AuditLog(path)
+            with self.assertRaises(ValueError):
+                reopened.record_with_budget("advisor.safe_send_requested", reserve_micro_usd=300_000,
+                                            cap_micro_usd=500_000, endpoint_kind="external")
+            self.assertEqual(len(reopened.entries()), 1)
+
+    def test_tampered_or_unpriced_prior_send_refuses_reservation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "audit.jsonl"
+            audit = AuditLog(path)
+            audit.record("advisor.safe_send_requested", endpoint_kind="external")
+            with self.assertRaises(ValueError):
+                audit.record_with_budget("advisor.safe_send_requested", reserve_micro_usd=1,
+                                         cap_micro_usd=500_000, endpoint_kind="external")
+            path.write_text(path.read_text().replace('"external"', '"tampered"'))
+            with self.assertRaises(ValueError):
+                audit.record_with_budget("advisor.safe_send_requested", reserve_micro_usd=1,
+                                         cap_micro_usd=500_000, endpoint_kind="external")
+
+
+class TestShownRemediationComesFromTheCatalog(unittest.TestCase):
+    """What the user is told to do is the approved fix, never the model's free text: a
+    validator that misses one dangerous phrase must not put it on screen."""
+
+    def _advice(self, detail):
+        return adv.Advice(ref="F1", finding_id="f_headers", claim_level="suspected", cites=("rule",),
+                          risk_explanation="ほかのサイトに埋め込まれるおそれがあります。",
+                          remediation=(adv.RemediationStep(fix="set_csp", label="Content-Security-Policy を設定する",
+                                                           detail=detail),),
+                          next_checks=())
+
+    def test_model_detail_never_reaches_the_shown_steps(self):
+        from aegis.assessment import AssessmentService
+        for detail in ("WAF を無効にして運用する", "認証を外して公開する"):
+            text = AssessmentService._safe_advice_text(self._advice(detail))
+            self.assertNotIn(detail, text)
+            self.assertIn("Content-Security-Policy を設定する", text)
+            self.assertIn("ほかのサイトに埋め込まれるおそれがあります。", text)
+
+    def test_a_fix_id_outside_the_catalog_is_not_shown(self):
+        from aegis.assessment import AssessmentService
+        a = self._advice("x")
+        a = adv.Advice(**{**a.__dict__, "remediation": (adv.RemediationStep(fix="disable_waf_rules", label="WAF を止める", detail="x"),)})
+        text = AssessmentService._safe_advice_text(a)
+        self.assertNotIn("WAF", text)
+
+
 class TestServiceIntegration(RealServiceBase):
+    def test_external_advisor_does_not_send_after_stop_at_budget_reservation(self):
+        self.onboard()
+        self.run_l1()
+        self.svc._chat_backend = AbliterationBackend(
+            "https://api.abliteration.ai/v1/chat/completions", model="mock", api_key="test-key")
+        self.svc._real_site_safe_ai = True
+        sent = []
+        reserves = []
+        original = self.svc.audit.record_with_budget
+
+        def reserve_then_stop(*args, **kwargs):
+            reserves.append(args[0])
+            result = original(*args, **kwargs)
+            self.svc.emergency_stop("appr")
+            return result
+
+        env = {"VULNIX_ADVISOR_PRICE_MODEL": "mock",
+               "VULNIX_ADVISOR_MAX_COST_USD": "0.50",
+               "VULNIX_ADVISOR_USD_PER_1K_INPUT": "0.10",
+               "VULNIX_ADVISOR_USD_PER_1K_OUTPUT": "0.10"}
+        with patch.dict(os.environ, env), \
+                patch.object(self.svc.audit, "record_with_budget", side_effect=reserve_then_stop), \
+                patch.object(adv, "_external_transport", side_effect=lambda *args, **kwargs: sent.append(args) or b"{}"):
+            with self.assertRaises(ValueError) as raised:
+                self.svc.ask_chat("解説", "appr", finding_id="f_headers", safe_advice=True)
+        self.assertFalse(sent, "external transport must not run after stop")
+        self.assertEqual(reserves, ["advisor.safe_send_requested"])
+        self.assertIn("診断対象または許可状態", str(raised.exception))
+
+    def test_external_advisor_does_not_send_after_request_authority_expires(self):
+        self.onboard()
+        self.run_l1()
+        self.svc._chat_backend = AbliterationBackend(
+            "https://api.abliteration.ai/v1/chat/completions", model="mock", api_key="test-key")
+        self.svc._real_site_safe_ai = True
+        active, sent = [True], []
+        original = self.svc.audit.record_with_budget
+
+        def reserve_then_revoke(*args, **kwargs):
+            result = original(*args, **kwargs)
+            active[0] = False
+            return result
+
+        env = {"VULNIX_ADVISOR_PRICE_MODEL": "mock",
+               "VULNIX_ADVISOR_MAX_COST_USD": "0.50",
+               "VULNIX_ADVISOR_USD_PER_1K_INPUT": "0.10",
+               "VULNIX_ADVISOR_USD_PER_1K_OUTPUT": "0.10"}
+        with patch.dict(os.environ, env), \
+                patch.object(self.svc.audit, "record_with_budget", side_effect=reserve_then_revoke), \
+                patch.object(adv, "_external_transport", side_effect=lambda *args, **kwargs: sent.append(1) or b"{}"):
+            with self.assertRaises(ValueError):
+                self.svc.ask_chat("解説", "appr", finding_id="f_headers", safe_advice=True,
+                                  request_authorized=lambda: active[0])
+        self.assertFalse(sent, "external transport must not run after request revocation")
+        self.assertEqual(self.svc.snapshot()["chat_messages"], [])
+
+    def test_external_advisor_does_not_send_after_scope_expires_at_reservation(self):
+        self.onboard()
+        self.run_l1()
+        self.svc._chat_backend = AbliterationBackend(
+            "https://api.abliteration.ai/v1/chat/completions", model="mock", api_key="test-key")
+        self.svc._real_site_safe_ai = True
+        sent = []
+        original = self.svc.audit.record_with_budget
+
+        def reserve_then_expire(*args, **kwargs):
+            result = original(*args, **kwargs)
+            with self.svc._lock:
+                self.svc._verified_external_hosts[HOST]["not_after"] = 0
+            return result
+
+        env = {"VULNIX_ADVISOR_PRICE_MODEL": "mock",
+               "VULNIX_ADVISOR_MAX_COST_USD": "0.50",
+               "VULNIX_ADVISOR_USD_PER_1K_INPUT": "0.10",
+               "VULNIX_ADVISOR_USD_PER_1K_OUTPUT": "0.10"}
+        with patch.dict(os.environ, env), \
+                patch.object(self.svc.audit, "record_with_budget", side_effect=reserve_then_expire), \
+                patch.object(adv, "_external_transport", side_effect=lambda *args, **kwargs: sent.append(1) or b"{}"):
+            with self.assertRaises(ValueError):
+                self.svc.ask_chat("解説", "appr", finding_id="f_headers", safe_advice=True)
+        self.assertFalse(sent, "external transport must not run after scope expiry")
+        self.assertEqual(self.svc.snapshot()["chat_messages"], [])
+
+    def test_external_advisor_rechecks_stop_at_transport_boundary(self):
+        self.onboard()
+        self.run_l1()
+        self.svc._chat_backend = AbliterationBackend(
+            "https://api.abliteration.ai/v1/chat/completions", model="mock", api_key="test-key")
+        self.svc._real_site_safe_ai = True
+        sent = []
+        original_advise = adv.ExternalAbliterationAdvisor.advise
+        service = self.svc
+
+        def stop_on_advise(advisor, findings, **kwargs):
+            service.emergency_stop("appr")
+            return original_advise(advisor, findings, **kwargs)
+
+        env = {"VULNIX_ADVISOR_PRICE_MODEL": "mock",
+               "VULNIX_ADVISOR_MAX_COST_USD": "0.50",
+               "VULNIX_ADVISOR_USD_PER_1K_INPUT": "0.10",
+               "VULNIX_ADVISOR_USD_PER_1K_OUTPUT": "0.10"}
+        with patch.dict(os.environ, env), \
+                patch.object(adv.ExternalAbliterationAdvisor, "advise", stop_on_advise), \
+                patch.object(adv, "_external_transport", side_effect=lambda *args, **kwargs: sent.append(1) or b"{}"):
+            with self.assertRaises(ValueError):
+                self.svc.ask_chat("解説", "appr", finding_id="f_headers", safe_advice=True)
+        self.assertFalse(sent, "external transport must not run after stop before send")
+        self.assertEqual(self.svc.snapshot()["chat_messages"], [])
+
+    def test_external_advisor_does_not_write_after_stop_during_tls_connect(self):
+        self.onboard()
+        self.run_l1()
+        self.svc._chat_backend = AbliterationBackend(
+            "https://api.abliteration.ai/v1/chat/completions", model="mock", api_key="test-key")
+        self.svc._real_site_safe_ai = True
+        sent = []
+        service = self.svc
+
+        class Connection:
+            def __init__(self, *args, **kwargs):
+                self.sock = type("Socket", (), {"settimeout": lambda _self, n: None})()
+
+            def connect(self):
+                service.emergency_stop("appr")
+
+            def request(self, *args, **kwargs):
+                sent.append(1)
+
+            def close(self):
+                pass
+
+        env = {"VULNIX_ADVISOR_PRICE_MODEL": "mock",
+               "VULNIX_ADVISOR_MAX_COST_USD": "0.50",
+               "VULNIX_ADVISOR_USD_PER_1K_INPUT": "0.10",
+               "VULNIX_ADVISOR_USD_PER_1K_OUTPUT": "0.10"}
+        with patch.dict(os.environ, env), patch.object(adv.http.client, "HTTPSConnection", Connection):
+            with self.assertRaises(ValueError):
+                service.ask_chat("解説", "appr", finding_id="f_headers", safe_advice=True)
+        self.assertFalse(sent, "request bytes must not be written after stop during TLS connect")
+        self.assertEqual(service.snapshot()["chat_messages"], [])
+
+    def test_external_advisor_holds_non_reentrant_authority_only_for_request_write(self):
+        self.onboard()
+        self.run_l1()
+        self.svc._chat_backend = AbliterationBackend(
+            "https://api.abliteration.ai/v1/chat/completions", model="mock", api_key="test-key")
+        self.svc._real_site_safe_ai = True
+        held, wrote = [False], []
+
+        def authorized():
+            if held[0]:
+                raise AssertionError("authority store lock was reacquired inside its lease")
+            return True
+
+        @contextlib.contextmanager
+        def lease():
+            held[0] = True
+            try:
+                yield
+            finally:
+                held[0] = False
+
+        authorized.lease = lease
+
+        class Response:
+            status = 200
+
+            def read(self, limit):
+                return b'{"choices":[{"message":{"content":"{\\"advice\\":[]}"}}]}'
+
+        class Connection:
+            def __init__(self, *args, **kwargs):
+                self.sock = type("Socket", (), {"settimeout": lambda _self, n: None})()
+
+            def connect(self):
+                pass
+
+            def request(self, *args, **kwargs):
+                wrote.append(held[0])
+
+            def getresponse(self):
+                if held[0]:
+                    raise AssertionError("authorization lease held while waiting for model reply")
+                return Response()
+
+            def close(self):
+                pass
+
+        env = {"VULNIX_ADVISOR_PRICE_MODEL": "mock",
+               "VULNIX_ADVISOR_MAX_COST_USD": "0.50",
+               "VULNIX_ADVISOR_USD_PER_1K_INPUT": "0.10",
+               "VULNIX_ADVISOR_USD_PER_1K_OUTPUT": "0.10"}
+        with patch.dict(os.environ, env), patch.object(adv.http.client, "HTTPSConnection", Connection):
+            result = self.svc.ask_chat("解説", "appr", finding_id="f_headers", safe_advice=True,
+                                       request_authorized=authorized)
+        self.assertEqual(wrote, [True])
+        self.assertFalse(held[0])
+        self.assertEqual(result["message"]["source"], "builtin")
+
+    def test_chat_does_not_try_fallback_model_after_request_revocation(self):
+        active, fallback_calls = [True], []
+
+        def revoke_during_safe_advice(*args, **kwargs):
+            active[0] = False
+            return None
+
+        with patch.object(self.svc, "_safe_real_ai_explanation", side_effect=revoke_during_safe_advice), \
+                patch.object(self.svc, "_answer_question", side_effect=lambda *a, **k: fallback_calls.append(1)):
+            with self.assertRaises(ValueError):
+                self.svc.ask_chat("解説", "appr", safe_advice=True,
+                                  request_authorized=lambda: active[0])
+        self.assertFalse(fallback_calls, "revoked request must not enter a fallback model")
+
+    def test_external_advisor_requires_a_durable_budget_before_sending(self):
+        self.onboard()
+        self.run_l1()
+        calls = []
+        self.svc._chat_backend = AbliterationBackend(
+            "https://api.abliteration.ai/v1/chat/completions", model="mock", api_key="test-key")
+        self.svc._real_site_safe_ai = True
+        with patch.object(adv, "_external_transport", side_effect=lambda *a, **k: calls.append(a) or b"{}"):
+            for config in (
+                {"VULNIX_ADVISOR_PRICE_MODEL": "mock", "VULNIX_ADVISOR_MAX_COST_USD": "",
+                 "VULNIX_ADVISOR_USD_PER_1K_INPUT": "", "VULNIX_ADVISOR_USD_PER_1K_OUTPUT": ""},
+                {"VULNIX_ADVISOR_PRICE_MODEL": "wrong-model", "VULNIX_ADVISOR_MAX_COST_USD": "0.50",
+                 "VULNIX_ADVISOR_USD_PER_1K_INPUT": "0.10", "VULNIX_ADVISOR_USD_PER_1K_OUTPUT": "0.10"},
+            ):
+                with self.subTest(config=config), patch.dict(os.environ, config):
+                    result = self.svc.ask_chat("解説", "appr", finding_id="f_headers", safe_advice=True)
+                    self.assertEqual(result["message"]["source"], "builtin")
+        self.assertEqual(calls, [])
+
+    def test_external_advisor_refuses_zero_negative_or_nonfinite_prices(self):
+        self.onboard()
+        self.run_l1()
+        calls = []
+        self.svc._chat_backend = AbliterationBackend(
+            "https://api.abliteration.ai/v1/chat/completions", model="mock", api_key="test-key")
+        self.svc._real_site_safe_ai = True
+        with patch.object(adv, "_external_transport", side_effect=lambda *a, **k: calls.append(a) or b"{}"):
+            for value in ("0", "-1", "NaN", "Infinity"):
+                with self.subTest(value=value), patch.dict(os.environ, {
+                    "VULNIX_ADVISOR_PRICE_MODEL": "mock",
+                    "VULNIX_ADVISOR_MAX_COST_USD": "0.50",
+                    "VULNIX_ADVISOR_USD_PER_1K_INPUT": value,
+                    "VULNIX_ADVISOR_USD_PER_1K_OUTPUT": "0.10",
+                }):
+                    result = self.svc.ask_chat("解説", "appr", finding_id="f_headers", safe_advice=True)
+                    self.assertEqual(result["message"]["source"], "builtin")
+        self.assertEqual(calls, [])
+
+    def test_external_advisor_reserves_before_send_and_refuses_second_call(self):
+        self.onboard()
+        self.run_l1()
+        calls = []
+        self.svc._chat_backend = AbliterationBackend(
+            "https://api.abliteration.ai/v1/chat/completions", model="mock", api_key="test-key")
+        self.svc._real_site_safe_ai = True
+        item = _ok_item(remediation=[_rem("CSPを適切に設定する", "set_csp")],
+                        next_checks=[_chk("confirm_fix", "l1_recheck_security_headers")])
+        reply = json.dumps({"choices": [{"message": {"content": _advice_reply([item])([])}}]}).encode()
+        env = {"VULNIX_ADVISOR_PRICE_MODEL": "mock",
+               "VULNIX_ADVISOR_MAX_COST_USD": "0.50",
+               "VULNIX_ADVISOR_USD_PER_1K_INPUT": "0.10",
+               "VULNIX_ADVISOR_USD_PER_1K_OUTPUT": "0.10"}
+        with patch.object(adv, "_external_transport", side_effect=lambda *a, **k: calls.append(a) or reply):
+            with patch.dict(os.environ, env):
+                first = self.svc.ask_chat("解説", "appr", finding_id="f_headers", safe_advice=True)
+                second = self.svc.ask_chat("解説", "appr", finding_id="f_headers", safe_advice=True)
+        self.assertEqual(first["message"]["source"], "external_model")
+        self.assertEqual(second["message"]["source"], "builtin")
+        self.assertEqual(len(calls), 1)
+        reserved = [e for e in self.svc.audit.entries() if e["event"] == "advisor.safe_send_requested"]
+        self.assertEqual(len(reserved), 1)
+        self.assertGreater(reserved[0]["fields"]["reserved_micro_usd"], 0)
+        self.assertEqual(reserved[0]["fields"]["payload_sha256"], hashlib.sha256(calls[0][2]).hexdigest())
+
+
+    def _platform_case(self, platform_env, prespent=0):
+        import tempfile
+        from pathlib import Path
+        from aegis.spend_cap import DurableSpendCap
+        self.onboard()
+        self.run_l1()
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        cap = DurableSpendCap(Path(tmp.name) / "platform-advisor-spend.json")
+        if prespent:
+            cap.reserve(prespent, cap_micro_usd=prespent)
+        self.svc._platform_advisor_cap = cap
+        calls = []
+        self.svc._chat_backend = AbliterationBackend(
+            "https://api.abliteration.ai/v1/chat/completions", model="mock", api_key="test-key")
+        self.svc._real_site_safe_ai = True
+        item = _ok_item(remediation=[_rem("CSPを適切に設定する", "set_csp")],
+                        next_checks=[_chk("confirm_fix", "l1_recheck_security_headers")])
+        reply = json.dumps({"choices": [{"message": {"content": _advice_reply([item])([])}}]}).encode()
+        env = {"VULNIX_ADVISOR_PRICE_MODEL": "mock", "VULNIX_ADVISOR_MAX_COST_USD": "0.50",
+               "VULNIX_ADVISOR_USD_PER_1K_INPUT": "0.10", "VULNIX_ADVISOR_USD_PER_1K_OUTPUT": "0.10",
+               **platform_env}
+        with patch.object(adv, "_external_transport", side_effect=lambda *a, **k: calls.append(a) or reply), \
+                patch.dict(os.environ, env):
+            if "VULNIX_ADVISOR_PLATFORM_MAX_COST_USD" not in platform_env:
+                os.environ.pop("VULNIX_ADVISOR_PLATFORM_MAX_COST_USD", None)
+            out = self.svc.ask_chat("解説", "appr", finding_id="f_headers", safe_advice=True)
+        return out, calls, cap
+
+    def test_the_platform_cap_stops_a_send_even_with_room_in_this_organization(self):
+        out, calls, cap = self._platform_case({"VULNIX_ADVISOR_PLATFORM_MAX_COST_USD": "1.00"},
+                                              prespent=1_000_000)     # other orgs used it all
+        self.assertEqual(calls, [])
+        self.assertEqual(out["message"]["source"], "builtin")
+        self.assertEqual(cap.spent(), 1_000_000)
+
+    def test_a_send_is_counted_against_the_platform_cap(self):
+        out, calls, cap = self._platform_case({"VULNIX_ADVISOR_PLATFORM_MAX_COST_USD": "1.00"})
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(out["message"]["source"], "external_model")
+        reserved = [e for e in self.svc.audit.entries() if e["event"] == "advisor.safe_send_requested"]
+        self.assertEqual(cap.spent(), reserved[0]["fields"]["reserved_micro_usd"])
+
+    def test_without_a_platform_cap_setting_a_shared_platform_sends_nothing(self):
+        out, calls, cap = self._platform_case({})
+        self.assertEqual(calls, [])
+        self.assertEqual(out["message"]["source"], "builtin")
+
+    def test_real_site_uses_only_allowlisted_finding_for_requested_ai_explanation(self):
+        self.onboard()
+        self.run_l1()
+        with _MockServer() as mock:
+            self.svc._chat_backend = AbliterationBackend(mock.url, model="mock")
+            self.svc._real_site_safe_ai = True
+            executed = []
+            original = self.svc.gateway.execute
+            self.svc.gateway.execute = lambda *a, **k: executed.append(a) or original(*a, **k)
+            try:
+                out = self.svc.ask_chat("AIで解説", "appr", finding_id="f_headers", safe_advice=True)
+            finally:
+                self.svc.gateway.execute = original
+            self.assertEqual(out["message"]["source"], "external_model")
+            self.assertIn("mock", out["message"]["actor"])
+            self.assertTrue(out["message"]["text"])
+            self.assertEqual(executed, [])
+            self.assertEqual(len(mock.srv.received), 1)
+            sent = json.dumps(mock.srv.received[0], ensure_ascii=False)
+            for private in (HOST, self.url, "evidence_id", "audit_hash", "target_url", "body_prefix", "Set-Cookie"):
+                self.assertNotIn(private, sent)
+            finding = json.loads(mock.srv.received[0]["messages"][1]["content"])["findings"][0]
+            self.assertEqual((finding["ref"], finding["rule"], finding["verdict"]),
+                             ("F1", "f_headers", "detected"))
+
+    def test_real_site_never_sends_arbitrary_chat_text_to_ai(self):
+        self.onboard()
+        self.run_l1()
+        with _MockServer() as mock:
+            self.svc._chat_backend = AbliterationBackend(mock.url, model="mock")
+            self.svc._real_site_safe_ai = True
+            out = self.svc.ask_chat("秘密の値は private-12345 です", "appr", finding_id="f_headers")
+            self.assertEqual(out["message"]["source"], "builtin")
+            self.assertEqual(mock.srv.received, [])
+            safe = self.svc.ask_chat("秘密の値は private-12345 です", "appr",
+                                     finding_id="f_headers", safe_advice=True)
+            self.assertEqual(safe["message"]["source"], "external_model")
+            self.assertNotIn("private-12345", json.dumps(mock.srv.received, ensure_ascii=False))
+
+    def test_real_site_ai_requires_operator_opt_in_and_rejects_overclaim(self):
+        self.onboard()
+        self.run_l1()
+        with _MockServer(_advice_reply([_ok_item(
+                risk_explanation="この脆弱性は実証済みで、悪用に成功しました。")])) as mock:
+            self.svc._chat_backend = AbliterationBackend(mock.url, model="mock")
+            self.svc._real_site_safe_ai = False
+            off = self.svc.ask_chat("AIで解説", "appr", finding_id="f_headers", safe_advice=True)
+            self.assertEqual(off["message"]["source"], "builtin")
+            self.assertEqual(mock.srv.received, [])
+            self.svc._real_site_safe_ai = True
+            rejected = self.svc.ask_chat("AIで解説", "appr", finding_id="f_headers", safe_advice=True)
+            self.assertEqual(rejected["message"]["source"], "builtin")
+            self.assertEqual(len(mock.srv.received), 1)
+
+    def test_real_site_ai_never_sends_when_pre_send_audit_fails(self):
+        self.onboard()
+        self.run_l1()
+        with _MockServer() as mock:
+            self.svc._chat_backend = AbliterationBackend(mock.url, model="mock")
+            self.svc._real_site_safe_ai = True
+            original = self.svc.audit.record
+
+            def fail_send(event, **fields):
+                if event == "advisor.safe_send_requested":
+                    raise OSError("audit unavailable")
+                return original(event, **fields)
+
+            with patch.object(self.svc.audit, "record", side_effect=fail_send):
+                with self.assertRaises(OSError):
+                    self.svc.ask_chat("AIで解説", "appr", finding_id="f_headers", safe_advice=True)
+            self.assertEqual(mock.srv.received, [])
+
+    def test_real_site_ai_reply_cannot_be_saved_after_workspace_switch(self):
+        self.onboard()
+        self.run_l1()
+        with _MockServer() as mock:
+            self.svc._chat_backend = AbliterationBackend(mock.url, model="mock")
+            self.svc._real_site_safe_ai = True
+            original = adv.AbliterationAdvisor.advise
+
+            def switch_during_reply(advisor, findings, **kwargs):
+                result = original(advisor, findings, **kwargs)
+                self.svc.select_asset("lab")
+                return result
+
+            with patch.object(adv.AbliterationAdvisor, "advise", switch_during_reply):
+                with self.assertRaisesRegex(ValueError, "変更"):
+                    self.svc.ask_chat("AIで解説", "appr", finding_id="f_headers", safe_advice=True)
+            self.assertEqual(self.svc.snapshot()["chat_messages"], [])
+
+    def test_real_site_ai_reply_names_the_model_that_answered(self):
+        self.onboard()
+        self.run_l1()
+        with _MockServer() as mock:
+            self.svc._chat_backend = AbliterationBackend(mock.url, model="original-model")
+            self.svc._real_site_safe_ai = True
+            original = adv.AbliterationAdvisor.advise
+
+            def replace_backend(advisor, findings, **kwargs):
+                result = original(advisor, findings, **kwargs)
+                self.svc._chat_backend = AbliterationBackend(mock.url, model="later-model")
+                return result
+
+            with patch.object(adv.AbliterationAdvisor, "advise", replace_backend):
+                out = self.svc.ask_chat("AIで解説", "appr", finding_id="f_headers", safe_advice=True)
+            self.assertIn("original-model", out["message"]["actor"])
+            self.assertNotIn("later-model", out["message"]["actor"])
+
     def test_real_service_findings_never_reach_the_advisor_and_nothing_runs(self):
         with _MockServer() as m:
             advisor = adv.AbliterationAdvisor(m.url)

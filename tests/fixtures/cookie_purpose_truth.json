@@ -1,0 +1,12 @@
+{
+  "language_plain": "none",
+  "theme_plain": "none",
+  "csrf_js_readable": "none",
+  "session_no_httponly": "detected",
+  "session_no_secure": "detected",
+  "session_no_samesite": "detected",
+  "session_full": "none",
+  "session_samesite_none_mismatch": "detected",
+  "session_samesite_none_policy": "none",
+  "session_like_unknown": "candidate"
+}

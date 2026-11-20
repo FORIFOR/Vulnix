@@ -48,6 +48,7 @@ EXPECT_KEYS = frozenset({"status", "content_type", "body_contains", "body_not_co
 _ID_RE = re.compile(r"[a-z][a-z0-9_]{1,60}")
 _TOKEN_KEY_RE = re.compile(r"[a-z][a-z0-9_]{0,40}_token")
 _PATH_KEY_RE = re.compile(r"[a-z][a-z0-9_]{0,40}_path")
+_COOKIE_NAME_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
 _PATH_RE = re.compile(r"/[!-~]{0,299}")
 # An override pattern is a deliberately tiny language, not general regex:
 #   literal text, where the only metacharacter-like items are "\\." and "\\?";
@@ -290,6 +291,42 @@ def validate_profile(raw, source: str = "<profile>") -> dict:
     checks_raw = raw.get("checks")
     _need(isinstance(checks_raw, list) and checks_raw, where, "`checks` must be a non-empty list")
     checks = [_validate_check(c, f"{where} checks[{i}]", tokens, paths) for i, c in enumerate(checks_raw)]
+    root_access = None
+    if raw.get("root_access") is not None:
+        root = raw["root_access"]
+        _need(isinstance(root, dict) and set(root) == {"requirement", "spec_status", "spec_evidence"},
+              where, "`root_access` must contain only requirement, spec_status and spec_evidence")
+        _need(root["requirement"] in ("public", "authentication_required"), where,
+              "`root_access.requirement` must be public or authentication_required")
+        _need(root["spec_status"] in SPEC_STATUSES, where,
+              "`root_access.spec_status` must be confirmed or placeholder")
+        evidence = _str_list(root["spec_evidence"], where, "root_access.spec_evidence", required=False)
+        _need(root["spec_status"] != "confirmed" or bool(evidence), where,
+              "confirmed root access needs owner specification evidence")
+        root_access = {"requirement": root["requirement"], "spec_status": root["spec_status"],
+                       "spec_evidence": evidence}
+    cookie_policy = None
+    if raw.get("cookie_policy") is not None:
+        policy = raw["cookie_policy"]
+        _need(isinstance(policy, dict) and set(policy) ==
+              {"status", "session", "non_session", "same_site", "evidence"}, where,
+              "`cookie_policy` must contain only status, session, non_session, same_site and evidence")
+        _need(policy["status"] in SPEC_STATUSES, where, "`cookie_policy.status` is invalid")
+        session = _str_list(policy["session"], where, "cookie_policy.session", required=False)
+        non_session = _str_list(policy["non_session"], where, "cookie_policy.non_session", required=False)
+        _need(len(session) <= 32 and len(non_session) <= 32
+              and len(set(session)) == len(session) and len(set(non_session)) == len(non_session)
+              and not set(session) & set(non_session)
+              and all(_COOKIE_NAME_RE.fullmatch(name) for name in session + non_session), where,
+              "`cookie_policy` names must be unique, disjoint and valid cookie names")
+        _need(policy["same_site"] in ("Lax", "Strict", "None"), where,
+              "`cookie_policy.same_site` must be Lax, Strict or None")
+        evidence = _str_list(policy["evidence"], where, "cookie_policy.evidence", required=False)
+        _need(policy["status"] != "confirmed" or bool(evidence), where,
+              "confirmed cookie policy needs owner specification evidence")
+        cookie_policy = {"status": policy["status"], "session": session,
+                         "non_session": non_session, "same_site": policy["same_site"],
+                         "evidence": evidence}
     for c in checks:
         # Two roles played by one account would make the comparison meaningless.
         for pre in c["preconditions"]:
@@ -310,6 +347,8 @@ def validate_profile(raw, source: str = "<profile>") -> dict:
         "tokens": tokens,
         "paths": paths,
         "distinct_tokens": distinct,
+        "root_access": root_access,
+        "cookie_policy": cookie_policy,
         "checks": checks,
     }
 
@@ -463,6 +502,10 @@ class L2RuleSet:
                     c["spec_status"] = "unaccepted"
                     c["spec_note"] = ("このプロファイルの内容は管理者にまだ承認されていません"
                                       "（承認後に変更された場合も再承認が必要です）。")
+            if profile.get("root_access") and profile["root_access"]["spec_status"] == "confirmed":
+                profile["root_access"]["spec_status"] = "unaccepted"
+            if profile.get("cookie_policy") and profile["cookie_policy"]["status"] == "confirmed":
+                profile["cookie_policy"]["status"] = "unaccepted"
             profile["spec_status"] = "unaccepted"
         return held
 

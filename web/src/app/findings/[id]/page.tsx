@@ -5,23 +5,29 @@ import { useParams, useSearchParams } from "next/navigation";
 import { Suspense, useState } from "react";
 import { ReasoningTrace } from "@/components/assessment/ReasoningTrace";
 import { FindingLearningCard } from "@/components/findings/FindingLearningCard";
+import { CookieCheckList } from "@/components/findings/CookieCheckList";
 import { EvidencePanel } from "@/components/findings/EvidencePanel";
 import { RemediationPanel } from "@/components/findings/RemediationPanel";
 import { HelpPopover } from "@/components/learning/HelpPopover";
 import { Card, FixtureBadge, Pill, SeverityBadge, VerdictBadge } from "@/components/ui";
 import { postJSON } from "@/lib/api";
+import { fmtTime } from "@/lib/labels";
+import { findingReason } from "@/lib/findingReason";
 import type { Snapshot } from "@/lib/types";
 import { useAssessment } from "@/lib/useAssessment";
+import { useSession } from "@/lib/useSession";
 
 function Detail() {
   const { id } = useParams<{ id: string }>();
   const aid = useSearchParams().get("a") ?? "scan_001";
   const { snap, setSnap, audit, chainValid, error } = useAssessment(aid);
+  const { multiTenant } = useSession();
   const [busy, setBusy] = useState(false);
   const [verifyErr, setVerifyErr] = useState<string | null>(null);
   if (!snap) return <p className="p-6 text-sm">{error ? `読み込めませんでした：${error}` : "読み込み中…"}</p>;
   const f = snap.findings.find((x) => x.id === id);
   if (!f) return <p className="p-6 text-sm">この問題は見つかりません。</p>;
+  const reason = findingReason(f);
 
   const runLiveVerify = async () => {
     setBusy(true);
@@ -41,19 +47,19 @@ function Detail() {
   return (
     <main className="mx-auto max-w-3xl space-y-4 p-4 md:p-8">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <Link href={`/assessments/${aid}?tab=findings`} className="text-sm text-zinc-500 hover:underline">← 問題一覧</Link>
-        <button
+        <Link href={`/assessments/${aid}?tab=findings`} className="text-sm text-zinc-500 hover:underline">← 結果一覧</Link>
+        {!(snap.is_external_service && (multiTenant || snap.real_site_read_only)) && <button
           type="button"
           disabled={busy}
           onClick={runLiveVerify}
           className="rounded-lg bg-zinc-900 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-white dark:text-zinc-900"
         >
-          {busy ? "Worker実行中…" : "▶ 実機Workerで今すぐ検証（Gateway経由）"}
-        </button>
+          {busy ? "再検証中…" : "再検証する"}
+        </button>}
       </div>
       {verifyErr && <p className="text-xs text-red-600">{verifyErr}</p>}
       <div className="flex flex-wrap items-center gap-2">
-        <SeverityBadge s={f.severity} />
+        {f.evidence_status !== "candidate" && <SeverityBadge s={f.severity} />}
         {f.evidence_status === "candidate" ? <Pill className="border border-zinc-400">未計測の候補</Pill> : <VerdictBadge v={f.verdict} />}
         {f.demo_fixture && <FixtureBadge />}
       </div>
@@ -75,25 +81,32 @@ function Detail() {
       <Card>
         <h2 className="mb-1 text-sm font-semibold">何が危険か</h2>
         <p className="text-sm">{f.summary}</p>
-        {f.what_was_established && (
-          <p className="mt-2 rounded-lg bg-red-50 p-2 text-sm dark:bg-red-950/30">
-            <span className="font-semibold">実証で成立したこと：</span>{f.what_was_established}
+        {f.impact && (
+          <p className="mt-2 text-sm text-zinc-700 dark:text-zinc-300">
+            <span className="font-semibold">起こり得る影響：</span>{f.impact}
+          </p>
+        )}
+        {f.cookie_checks && f.cookie_checks.length > 0 && <CookieCheckList checks={f.cookie_checks} />}
+        {f.what_was_established && (f.evidence_status === "detected" || f.evidence_status === "proven") && (
+          <p className={`mt-2 rounded-lg p-2 text-sm ${f.evidence_status === "proven" ? "bg-red-50 dark:bg-red-950/30" : "bg-sky-50 dark:bg-sky-950/30"}`}>
+            <span className="font-semibold">{f.evidence_status === "proven" ? "実証で成立したこと：" : "何が観測されたか："}</span>{f.what_was_established}
           </p>
         )}
         {f.verdict_note && <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">{f.verdict_note}</p>}
-        {f.caveat && <p className="mt-2 text-xs text-zinc-500">※ {f.caveat}</p>}
+        {f.caveat && <p className="mt-2 text-xs text-zinc-500"><span className="font-semibold">何がまだ証明されていないか：</span>{f.caveat}</p>}
         {f.cve.length > 0 && (
-          <p className="mt-2 flex items-center font-mono text-xs">{f.cve.join(" / ")}<HelpPopover term="cve" /></p>
+          <p className="mt-2 flex items-center font-mono text-xs"><span className="mr-1 font-sans text-zinc-500">関連CVE:</span>{f.cve.join(" / ")}<HelpPopover term="cve" /></p>
         )}
       </Card>
 
       <Card>
-        <h2 className="mb-1 text-sm font-semibold">なぜ検出されたか</h2>
-        <p className="text-sm">{f.why_detected}</p>
+        <h2 className="mb-1 text-sm font-semibold">{reason.heading}</h2>
+        <p className="text-sm">{reason.text}</p>
         <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
-          <dt className="text-zinc-500">実行主体</dt><dd>{f.executor.agent}</dd>
+          <dt className="text-zinc-500">検査元</dt><dd>{f.executor.agent}（ツール: {f.executor.tool}）</dd>
           <dt className="text-zinc-500">モデル</dt><dd>{f.executor.model}</dd>
-          <dt className="text-zinc-500">ツール</dt><dd>{f.executor.tool}</dd>
+          <dt className="text-zinc-500">最新の証拠ID</dt><dd className="font-mono">{f.evidence.at(-1)?.evidence_id ?? "未計測（証拠なし）"}</dd>
+          <dt className="text-zinc-500">検査日時</dt><dd>{fmtTime(f.evidence.at(-1)?.saved_at)}</dd>
           <dt className="flex items-center text-zinc-500">危険度<HelpPopover term="risk_level" /></dt><dd>{f.risk_level}</dd>
         </dl>
       </Card>

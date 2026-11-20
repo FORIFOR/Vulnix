@@ -143,6 +143,31 @@ def _env_json(name: str) -> dict:
 
 def run_lab_check(a) -> dict:
     spec = CHECKS[a.check]
+    control_obs = None
+    control_body = None
+    control_verified = False
+    if a.check == "idor":
+        # A positive owner control is required before attempting A -> B.
+        control_obs = _fetch(a, spec["path"], {"X-Test-Account": "acct_B"})
+        try:
+            control_body = json.loads(control_obs["body"][:EXCERPT])
+        except ValueError:
+            control_body = None
+        control_verified = (control_obs["status"] == 200 and not control_obs["truncated"]
+                            and isinstance(control_body, dict)
+                            and control_body.get("Check") == "idor_cross_account_access"
+                            and control_body.get("caller_account") == "acct_B"
+                            and control_body.get("resource_owner") == "acct_B"
+                            and control_body.get("resource_id") == "res_b_001"
+                            and control_body.get("confidential_marker") == spec["marker"])
+        if not control_verified:
+            return {"check": a.check, "request_path": spec["path"],
+                    "request_headers": dict(spec["headers"]), "status": None,
+                    "established": False, "verdict": "unverified",
+                    "unverified_reason": "owner control did not establish the resource",
+                    "control_status": control_obs["status"], "control_verified": False,
+                    "control_response": control_body,
+                    "connected_ip": a.ip, "connected_port": a.port}
     obs = _fetch(a, spec["path"], spec["headers"])
     raw_body = obs["body"][:EXCERPT]
     try:
@@ -150,6 +175,14 @@ def run_lab_check(a) -> dict:
     except ValueError:
         parsed_body = None
     established = obs["status"] == 200 and spec["marker"] in raw_body
+    if a.check == "idor":
+        established = (established and control_verified and isinstance(parsed_body, dict)
+                       and parsed_body.get("Check") == "idor_cross_account_access"
+                       and parsed_body.get("established") is True
+                       and parsed_body.get("caller_account") == "acct_A"
+                       and parsed_body.get("resource_owner") == "acct_B"
+                       and parsed_body.get("resource_id") == "res_b_001"
+                       and parsed_body.get("confidential_marker") == spec["marker"])
     reason = None
     if established:
         verdict = "proven"
@@ -168,6 +201,9 @@ def run_lab_check(a) -> dict:
         "unverified_reason": reason,
         "deny_statuses": list(LAB_DENY),
         "response": parsed_body if parsed_body is not None else raw_body,
+        "control_status": control_obs["status"] if control_obs else None,
+        "control_verified": control_verified if control_obs else None,
+        "control_response": control_body,
         "connected_ip": a.ip,
         "connected_port": a.port,
     }

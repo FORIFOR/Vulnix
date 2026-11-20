@@ -58,6 +58,7 @@ class _Server:
             threading.Thread(target=self._serve, args=(c,), daemon=True).start()
 
     def _serve(self, c):
+        s = None
         try:
             if not self.speak_tls:
                 time.sleep(5)          # accepts TCP, never answers the TLS ClientHello
@@ -74,9 +75,12 @@ class _Server:
             body = b'{"ok":true}'
             s.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nStrict-Transport-Security: max-age=31536000\r\n"
                       b"Server: Google Frontend\r\nContent-Length: " + str(len(body)).encode() + b"\r\nConnection: close\r\n\r\n" + body)
-            s.close()
         except (OSError, ssl.SSLError):
             pass
+        finally:
+            if s is not None:
+                s.close()
+            c.close()
 
     def close(self):
         self._stop = True
@@ -211,6 +215,7 @@ class _Drip:
         threading.Thread(target=self._serve, daemon=True).start()
 
     def _serve(self):
+        c = None
         try:
             c, _ = self.sock.accept()
             c.recv(4096)
@@ -224,6 +229,9 @@ class _Drip:
                 time.sleep(0.3)
         except OSError:
             pass
+        finally:
+            if c is not None:
+                c.close()
 
     def close(self):
         self.sock.close()
@@ -384,6 +392,36 @@ for i in range(int(sys.argv[2])):
 print("bad", bad)
 """
 
+_SOCKETIO_INIT_RACE = r"""
+import gc, signal, socket, sys, threading, time
+sys.path.insert(0, sys.argv[1])
+from aegis.workers import http_probe as hp
+class SlowSocketIO(hp._SafeSocketIO):
+    def __init__(self, sock, mode):
+        time.sleep(0.03)  # SIGALRM interrupts before _sock is assigned
+        super().__init__(sock, mode)
+hp._SafeSocketIO = SlowSocketIO
+sock = socket.socket()
+original_socketio = socket.SocketIO
+threading.Thread(target=lambda: time.sleep(0.1), daemon=True).start()
+previous = signal.signal(signal.SIGALRM, lambda signum, frame: (_ for _ in ()).throw(hp.DeadlineExceeded()))
+try:
+    signal.setitimer(signal.ITIMER_REAL, 0.005)
+    try:
+        hp._Response(sock)
+    except hp.DeadlineExceeded:
+        pass
+    else:
+        raise AssertionError("deadline did not interrupt SocketIO initialization")
+    signal.setitimer(signal.ITIMER_REAL, 0)
+    gc.collect()
+    print("quiet", signal.getitimer(signal.ITIMER_REAL), sock._io_refs, socket.SocketIO is original_socketio)
+finally:
+    signal.setitimer(signal.ITIMER_REAL, 0)
+    signal.signal(signal.SIGALRM, previous)
+    sock.close()
+"""
+
 
 _SWALLOWED = r"""
 import argparse, gc, socket, sys, threading, time
@@ -478,6 +516,7 @@ class _FiniteDrip:
         threading.Thread(target=self._serve, daemon=True).start()
 
     def _serve(self):
+        c = None
         try:
             c, _ = self.sock.accept()
             c.recv(4096)
@@ -486,9 +525,11 @@ class _FiniteDrip:
                 c.sendall(b"a")
                 time.sleep(self.gap)
             c.sendall(b"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-            c.close()
         except OSError:
             pass
+        finally:
+            if c is not None:
+                c.close()
 
     def close(self):
         self.sock.close()
@@ -598,6 +639,12 @@ class TestAlarmRaces(unittest.TestCase):
             self.assertEqual(p.stdout.strip().splitlines()[-1], "bad 0", (overall, p.stdout[-2000:]))
             self.assertEqual(p.stderr, "", overall)
 
+    def test_socketio_finalizer_is_quiet_if_deadline_interrupts_its_constructor(self):
+        p = self.py(_SOCKETIO_INIT_RACE)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(p.stdout.strip(), "quiet (0.0, 0.0) 0 True")
+        self.assertEqual(p.stderr, "")
+
     def test_a_previous_python_handler_is_restored(self):
         import signal
         from aegis.workers import http_probe as hp
@@ -685,7 +732,9 @@ class TestManagedEdgeServerHeader(unittest.TestCase):
         for url in ("https://svc.example/", "http://svc.example/"):
             fs = analyze_l1_service_response(res, {"evidence_id": "ev_t"}, url)
             self.assertTrue(fs)
-            self.assertEqual({f["verdict"] for f in fs}, {"detected"}, url)
+            self.assertNotIn("proven", {f["verdict"] for f in fs}, url)
+            self.assertEqual(next(f for f in fs if f["id"] == "f_l1_cookies")["verdict"], "candidate")
+            self.assertEqual({f["verdict"] for f in fs if f["id"] != "f_l1_cookies"}, {"detected"})
 
 
 class TestProvenIsOnlyAnL2Reproduction(unittest.TestCase):

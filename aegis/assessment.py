@@ -8,6 +8,8 @@ launches is a real confined process that the emergency stop can kill.
 from __future__ import annotations
 
 import copy
+import contextlib
+import atexit
 import hashlib
 import hmac
 import ipaddress
@@ -24,16 +26,17 @@ import time
 import urllib.parse
 import weakref
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_FLOOR
 from pathlib import Path
 
 from . import cve
 from .audit import AuditLog
-from .authz import ApprovalStore, Engagement, Target, TokenAuthority
+from .authz import ApprovalStore, AuthzError, Engagement, Target, TokenAuthority
 from .events import EventBus
 from .evidence import (EVIDENCE_LABELS, enforce_verdict, evidence_status,
                        evidence_summary, reproduction_note, reproduction_verdict)
 from .gateway import (LAB_REPRODUCTION_CHECKS, Gateway, State, http_probe_tool,
-                      reproduction_probe_tool)
+                      reproduction_probe_tool, status_marker_tool)
 from .lab import get_lab_mode, set_lab_mode
 from .network import EgressGuard, NetworkError, system_resolver
 from .ownership import (PROHIBITED_ACTIONS_SUMMARY, fetch_proof_file_pinned, proof_file_matches, public_address,
@@ -46,22 +49,62 @@ from .remotion_export import build_remotion_export
 from .router import (AbliterationBackend, ArtexEngine, ArtexplannerBackend,
                      ArtexSubprocessBackend, HttpModelBackend, ProposalRouter,
                      verify_planner_connections, redact_verification_report)
-from .artex_bridge import (CATALOG_BY_ID, ArtexBridgeError, command_from_env, reconstruct,
+from .artex_bridge import (CATALOG_BY_ID, ArtexBridgeError, anonymous_real_site_request,
+                           command_from_env, reconstruct, reviewed_real_site_l1,
                            run_artex_planner)
 from .runtime import WorkerPool
 from .secrets_store import EncryptedSecretStore
 from .l2_rules import BUILTIN_PROFILE_DIR, L2RuleSet, site_profile_dirs
-from .service_diag import analyze_l1_service_response, build_l2_candidates, clean_target_text
-from .google_ownership import METHOD as GOOGLE_METHOD
+from .service_diag import (analyze_l1_service_response, analyze_status_marker_report,
+                           build_l2_candidates, clean_target_text, compute_finding_risk_score,
+                           sanitize_http_probe_payload)
+from .google_ownership import METHOD as GOOGLE_METHOD, covering_property
 
 SEVERITY_WEIGHT = {"critical": 40, "high": 25, "medium": 10, "low": 3, "info": 0}
-VERDICT_FACTOR = {"proven": 1.0, "detected": 0.6, "unverified": 0.6, "aborted": 0.6,
+VERDICT_FACTOR = {"proven": 1.0, "detected": 0.6, "candidate": 0.0, "unverified": 0.0, "aborted": 0.0,
                   "not_reproduced": 0.0}
 
 EXECUTOR = {
-    "agent": "ARTEX 実行エンジン（ProposalRouter 制御）",
-    "model": "提案元は診断コンテキストを参照（実行権限なし）",
+    "agent": "Vulnix 診断エンジン",
+    "model": "内蔵の検査ルール（実行権限なし）",
 }
+
+
+def _has_lab_account_resource_link(value: object) -> bool:
+    """Accept only the fixed local-lab resource relation, despite Link formatting."""
+    if not isinstance(value, str) or len(value) > 4096:
+        return False
+    entries = []
+    start = 0
+    quoted = escaped = False
+    for index, char in enumerate(value):
+        if quoted:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                quoted = False
+        elif char == '"':
+            quoted = True
+        elif char == ",":
+            entries.append(value[start:index])
+            start = index + 1
+    if quoted:
+        return False
+    entries.append(value[start:])
+    token = r'(?:"(?:[^"\\]|\\.)*"|[A-Za-z0-9._-]+)'
+    parameter = rf';\s*([A-Za-z][A-Za-z0-9_-]*)\s*=\s*({token})\s*'
+    candidate = re.compile(rf'\s*</api/accounts/B/secret>\s*((?:{parameter})+)\s*')
+    for entry in entries:
+        match = candidate.fullmatch(entry)
+        if not match:
+            continue
+        relations = [m.group(2).strip('"') for m in re.finditer(parameter, match.group(1))
+                     if m.group(1).lower() == "rel"]
+        if relations == ["account-resource"]:
+            return True
+    return False
 
 
 def demo_verify_tool(seconds: float) -> Tool:
@@ -85,6 +128,9 @@ class Assessment:
     activity: dict | None = None
     stop_report: dict | None = None
     chat_messages: list[dict] = field(default_factory=list)
+    # Display-only provenance of the most recent plan in this workspace.
+    # Executable ARTEX items are deliberately never restored after a restart.
+    plan_source: dict | None = None
     defense_comparison: dict | None = None
     # completed runs, newest first: {"at", "asset", "score", "label", "counts", "findings"}
     run_history: list[dict] = field(default_factory=list)
@@ -168,6 +214,18 @@ class ApproverRequired(PermissionError):
 
 _DATA_DIR_LOCKS: dict[str, object] = {}
 
+
+def _close_data_dir_locks_at_exit() -> None:
+    # The claims stay held for the entire process lifetime. Closing explicitly at
+    # interpreter shutdown avoids leaking file handles in long test processes.
+    for handle in _DATA_DIR_LOCKS.values():
+        if handle is not None:
+            handle.close()
+    _DATA_DIR_LOCKS.clear()
+
+
+atexit.register(_close_data_dir_locks_at_exit)
+
 # The service object that last used each data directory IN THIS PROCESS (tests open
 # several in a row; production opens one). Lets a new instance ask the previous one
 # directly whether it ended with everything committed.
@@ -243,8 +301,12 @@ class AssessmentService:
                  l2_profile_dirs: list[Path] | None = None,
                  separate_l2_approver: bool | None = None,
                  l2_confinement=None,
-                 revocation_marker_dirs: list[Path] | None = None):
+                 revocation_marker_dirs: list[Path] | None = None,
+                 real_site_read_only: bool = True):
         self.data_dir = Path(data_dir)
+        # A service used outside the HTTP server still refuses real-site L2 and
+        # re-checks by default. The trusted caller must explicitly select legacy mode.
+        self.real_site_read_only = bool(real_site_read_only)
         # Kernel confinement of the worker that carries test-account tokens to a real
         # service. The default is the real thing (Linux only); it can be replaced only
         # here, in code - there is no environment variable or API for it.
@@ -327,6 +389,7 @@ class AssessmentService:
             workers=self.workers, audit=self.audit,
             tools={
                 "http_probe": http_probe_tool(),
+                "status_marker": status_marker_tool(),
                 "reproduction_probe": reproduction_probe_tool(self.l2),
                 "demo_verify": demo_verify_tool(verify_seconds),
             },
@@ -335,6 +398,7 @@ class AssessmentService:
             secret_redactor=self.secrets.redact,
             confinement_provider=self._worker_confinement,
             launch_guard=self._launch_guard,
+            late_launch_guard=self._late_launch_guard,
             on_unstopped=self._note_deadline_survivor)
 
         # Wire ARTEX (in-process + optional external CLI subprocess) + Abliteration ProposalRouter
@@ -352,6 +416,12 @@ class AssessmentService:
             backends.append(ext_model)
         self._external_model_configured = ext_model is not None
         self._chat_backend = AbliterationBackend.from_env()
+        # Explicit operator opt-in; the real-site explanation path sends only the
+        # advisor's fixed enum payload, never the ordinary chat question or context.
+        self._real_site_safe_ai = os.environ.get("VULNIX_REAL_SITE_SAFE_AI", "0") == "1"
+        # A real-site planner can only receive the anonymous input and a local model.
+        # This remains off unless the operator has explicitly provisioned one.
+        self._real_site_local_artex = os.environ.get("VULNIX_REAL_SITE_LOCAL_ARTEX", "0") == "1"
         # Configured is not connected: only an answer actually received from the
         # external model marks it verified; a failed call marks it failed.
         self._model_conn: dict = {"state": "configured" if self._chat_backend else "unconfigured",
@@ -1101,11 +1171,19 @@ class AssessmentService:
         except ConfinementError as e:
             raise PolicyError(f"実サービスのL2検証はカーネル隔離を確認できる Linux ホストでのみ実行します: {e}") from None
 
+    def _late_launch_guard(self):
+        request_authorized = getattr(self._tls, "request_authorized", None)
+        if request_authorized is not None and not request_authorized():
+            raise PolicyError("要求者の権限が失効したため、新しいWorkerは起動しません")
+        lease = getattr(request_authorized, "lease", None)
+        return lease() if lease is not None else None
+
     def _launch_guard(self, tool_name: str, args: dict, dest) -> None:
         """Gateway hook, the last step before a worker starts. Between the first
         checks and this point the request may have waited in name resolution or a
         proof re-check; whatever was revoked, deleted, stopped or switched in the
         meantime is seen here."""
+        self._late_launch_guard()
         host = (urllib.parse.urlsplit(str(args.get("url") or "")).hostname or "").rstrip(".").lower()
         with self._lock:
             if self._stale_runner():
@@ -1123,6 +1201,119 @@ class AssessmentService:
                 raise PolicyError(f"{host} の送信先 {dest.ip} は所有確認済みのアドレスではありません")
             if self._persist_error:
                 raise PolicyError("状態を保存できないため、送信を中止しました")
+            if tool_name == "status_marker" and not self.real_site_read_only:
+                raise PolicyError("追加の固定検査は読み取り専用の診断だけに許可されます")
+            if self.real_site_read_only:
+                # Reserve only a consented fixed request in signed state before
+                # launch. Failed, stopped, and interrupted requests are not refunded.
+                usage = self.ledger.scan_usage.get(host)
+                if (not isinstance(usage, dict)
+                        or usage.get("asset_id") != self.a.asset.get("id")
+                        or usage.get("authorization_ref") != ext.get("authorization_ref")
+                        or usage.get("scope_generation") != self._scope_generation(ext)
+                        or not usage.get("run_nonce")):
+                    raise PolicyError("この診断の通信枠が確認できません。再診断を開始してください")
+                paths = usage.get("paths")
+                root = (tool_name == "http_probe"
+                        and str(args.get("method", "GET")).upper() == "GET"
+                        and dest.path == "/" and paths == [])
+                marker = (tool_name == "status_marker" and set(args) == {"url"}
+                          and dest.path == "/server-status?auto" and paths == ["/"]
+                          and usage.get("status_probe_allowed") is True
+                          and ext.get("allow_status_probe") is True
+                          and self._root_probe_observed_locked())
+                if not (root or marker):
+                    raise PolicyError("この診断で許可された読み取りは既に実行済みです")
+                usage["paths"] = ["/"] if root else ["/", "/server-status?auto"]
+                if not self.ledger.commit():
+                    self._persist_error = self.ledger.error or "LedgerError"
+                    raise PolicyError("通信枠を保存できないため、送信を中止しました")
+                self.audit.record("scan.request_reserved", host=host, run_nonce=usage["run_nonce"],
+                                  check="root_l1" if root else "apache_mod_status")
+
+    @staticmethod
+    def _scope_generation(ext: dict) -> str:
+        """Bind a scan to one signed scope grant, including legacy grants."""
+        nonce = ext.get("scope_nonce")
+        if isinstance(nonce, str) and nonce:
+            return nonce
+        return f"legacy:{ext.get('confirmed_at')}:{ext.get('proof_verified_at')}"
+
+    def _new_scan_usage_locked(self) -> None:
+        """Grant exactly one root GET to a newly started, owned public-beta run."""
+        if not (self.real_site_read_only and self._is_external_service_asset()):
+            return
+        host = (self.a.asset.get("name") or "").lower()
+        ext = self._external_entry(host)
+        if ext is None:
+            raise ValueError("有効な診断範囲がないため、通信枠を作成できません")
+        before = self.ledger.snapshot()
+        self.ledger.scan_usage[host] = {
+            "asset_id": self.a.asset.get("id"),
+            "authorization_ref": ext.get("authorization_ref"),
+            "scope_generation": self._scope_generation(ext),
+            "run_nonce": secrets.token_hex(16),
+            "status_probe_allowed": ext.get("allow_status_probe") is True,
+            "paths": [],
+        }
+        self._commit_grant_locked(before, "診断の通信枠")
+        if self.ledger.error:
+            self._persist_error = self.ledger.error
+            raise ValueError("通信枠を保存できないため、診断を開始できません")
+
+    def _record_root_result_locked(self, evidence: dict, response: dict, url: str) -> bool:
+        """Bind a successful root response to its signed scan run, even if clean."""
+        if not self.real_site_read_only:
+            return True
+        host = (self.a.asset.get("name") or "").lower()
+        ext = self._external_entry(host)
+        if (ext is None or self.gateway.state is State.STOPPED
+                or self._stale_runner()):
+            self._fail("診断許可が終了したため、この応答は採用しません")
+            return False
+        usage = self.ledger.scan_usage.get(host)
+        if (not isinstance(usage, dict) or usage.get("paths") != ["/"]
+                or usage.get("scope_generation") != self._scope_generation(ext)
+                or evidence.get("tool") != "http_probe" or not evidence.get("audit_hash")):
+            self._fail("診断の監査証拠を通信枠と照合できません")
+            return False
+        from .artex_bridge import safe_public_fingerprint
+        try:
+            fingerprint = safe_public_fingerprint(response, scheme=urllib.parse.urlsplit(url).scheme)
+        except ValueError:
+            self._fail("診断の初期観測を安全な特徴に変換できません")
+            return False
+        usage["result_audit_hash"] = evidence["audit_hash"]
+        usage["root_fingerprint"] = fingerprint
+        if not self.ledger.commit():
+            self._persist_error = self.ledger.error or "LedgerError"
+            self._fail("診断の監査証拠を保存できません")
+            return False
+        return True
+
+    def _record_status_result_locked(self, evidence: dict) -> bool:
+        """Adopt a fixed marker report only for the same signed scope and run."""
+        if not self.real_site_read_only:
+            return True
+        host = (self.a.asset.get("name") or "").lower()
+        ext = self._external_entry(host)
+        usage = self.ledger.scan_usage.get(host)
+        if (ext is None or not isinstance(usage, dict)
+                or usage.get("asset_id") != self.a.asset.get("id")
+                or usage.get("authorization_ref") != ext.get("authorization_ref")
+                or usage.get("scope_generation") != self._scope_generation(ext)
+                or usage.get("paths") != ["/", "/server-status?auto"]
+                or evidence.get("tool") != "status_marker"
+                or not evidence.get("audit_hash") or self._stale_runner()
+                or self.gateway.state is State.STOPPED):
+            self._fail("追加検査の監査証拠を現在の診断許可と照合できません")
+            return False
+        usage["status_result_audit_hash"] = evidence["audit_hash"]
+        if not self.ledger.commit():
+            self._persist_error = self.ledger.error or "LedgerError"
+            self._fail("追加検査の監査証拠を保存できません")
+            return False
+        return True
 
     def _require_working_store(self) -> None:
         """Nothing that looks up, fetches from, or grants authority over a real
@@ -1359,6 +1550,7 @@ class AssessmentService:
                 "activity": self.a.activity,
                 "stop_report": self.a.stop_report,
                 "chat_messages": self.a.chat_messages,
+                "plan_source": self.a.plan_source,
                 "defense_comparison": self.a.defense_comparison,
                 "run_history": self.a.run_history,
                 "failure": self.a.failure,
@@ -1524,6 +1716,14 @@ class AssessmentService:
         self._state_had_ledger_flag = bool(data.get("authority_ledger"))
         if isinstance(data.get("chat_messages"), list):
             self.a.chat_messages = [dict(m) for m in data["chat_messages"] if isinstance(m, dict)]
+        source = data.get("plan_source")
+        if (isinstance(source, dict) and source.get("engine") in ("artex-binary", "unverified")
+                and type(source.get("pinned")) is bool
+                and (source.get("model") is None
+                     or (isinstance(source.get("model"), str) and len(source["model"]) <= 120))):
+            self.a.plan_source = {"engine": source["engine"],
+                                  "pinned": source["pinned"] if source["engine"] == "artex-binary" else False,
+                                  "model": source.get("model")}
         if isinstance(data.get("stop_report"), dict):
             self.a.stop_report = dict(data["stop_report"])
         if isinstance(data.get("defense_comparison"), dict):
@@ -1531,16 +1731,16 @@ class AssessmentService:
         if isinstance(data.get("run_history"), list):
             self.a.run_history = [dict(h) for h in data["run_history"] if isinstance(h, dict)][:MAX_RUN_HISTORY]
         saved_state = str(data.get("state", "idle"))
-        if saved_state in ("idle", "completed", "stopped", "failed", "paused"):
+        if saved_state in ("idle", "completed", "stopped", "failed"):
             self.a.state = saved_state
             if saved_state == "stopped":
                 self.gateway._state = State.STOPPED
-            elif saved_state == "paused":
-                self.gateway._state = State.PAUSED
-        elif saved_state == "running":
-            # A process restart interrupted an in-flight thread; preserve progress as paused
-            self.a.state = "paused"
-            self.gateway._state = State.PAUSED
+        elif saved_state in ("running", "paused"):
+            # No runner survives a process restart. Preserve its partial evidence,
+            # but show a failed run so the existing one-click restart is available.
+            self.a.state = "failed"
+            self.a.failure = {"reason": "診断処理が中断されました。再診断を開始してください",
+                              "kind": "interrupted"}
         if self._stop_flag().exists():
             # an emergency stop was begun and never ended by a new run - whatever
             # state.json managed to record about it
@@ -1552,8 +1752,8 @@ class AssessmentService:
             self._last_planner_verification = redact_verification_report(data["last_planner_verification"])
 
     def verify_planner_connections(self, actor: str = "operator") -> dict:
-        """Run a live end-to-end connection verification of external ARTEX CLI and
-        Abliteration OpenAI-compatible API, recording the cryptographic proof in audit."""
+        """Verify the configured ARTEX CLI and a local model adapter round trip.
+        An external model evaluation requires its separate approval and budget."""
         rep = verify_planner_connections()
         with self._lock:
             self._artex_cli_verified = bool(rep["artex_cli"]["verified"])
@@ -1580,12 +1780,76 @@ class AssessmentService:
         return [{"asset_id": 1, "target_id": "lab", "url": self.a.target_url}]
 
     def _refuse_artex_on_real_service_locked(self) -> None:
-        if self._is_external_service_asset() or self._in_ownership_flow(self.a.asset.get("name")):
+        scoped_real_site = self._is_external_service_asset()
+        if ((self._in_ownership_flow(self.a.asset.get("name")) and not scoped_real_site)
+                or (scoped_real_site and not self._real_site_local_artex)):
             raise ValueError("ARTEX 計画は登録済みのローカル検証ラボでのみ使用できます"
                              "（実サービスの情報は ARTEX に渡しません）")
 
+    def _root_probe_observed_locked(self) -> bool:
+        """Only an audited successful probe in this signed run can satisfy a plan item."""
+        if (not self.real_site_read_only or self.a.state not in ("running", "completed")
+                or self._persist_error or self.ledger.error or self.ledger.dirty()):
+            return False
+        host = (self.a.asset.get("name") or "").lower()
+        usage = self.ledger.scan_usage.get(host) or {}
+        ext = self._external_entry(host)
+        if (ext is None or usage.get("asset_id") != self.a.asset.get("id")
+                or usage.get("authorization_ref") != ext.get("authorization_ref")
+                or usage.get("scope_generation") != self._scope_generation(ext)
+                or usage.get("paths") not in (["/"], ["/", "/server-status?auto"])):
+            return False
+        entries, valid = self.audit.verified_entries()
+        if not valid:
+            return False
+        result_hash = usage.get("result_audit_hash")
+        return isinstance(result_hash, str) and any(
+            e["hash"] == result_hash for e in entries
+            if e.get("event") == "result"
+            and e.get("fields", {}).get("tool") == "http_probe"
+            and e.get("fields", {}).get("rc") == 0
+            and not e.get("fields", {}).get("killed")
+        )
+
     def plan_with_artex(self, actor: str, *, llm_approval: dict | None = None, roles=None,
-                        llm_mode: str | None = None) -> dict:
+                        llm_mode: str | None = None, request_authorized=None) -> dict:
+        fingerprint = None
+        root_observation = None
+        with self._lock:
+            if self.real_site_read_only and self._is_external_service_asset():
+                host = (self.a.asset.get("name") or "").lower()
+                usage = self.ledger.scan_usage.get(host)
+                if self._root_probe_observed_locked():
+                    fingerprint = usage.get("root_fingerprint")
+                    root_observation = (usage.get("run_nonce"), usage.get("result_audit_hash"))
+                    from .artex_bridge import anonymous_real_site_request, initial_real_site_extra_checks
+                    try:
+                        anonymous_real_site_request([], fingerprint=fingerprint)
+                        ext = self._external_entry(host) or {}
+                        eligible = initial_real_site_extra_checks(
+                            fingerprint,
+                            status_consent=(ext.get("allow_status_probe") is True
+                                            and usage.get("status_probe_allowed") is True
+                                            and usage.get("paths") == ["/"]),
+                            root_observed=True)
+                    except ValueError:
+                        raise ValueError("初期観測の記録が不正なため、追加確認を計画できません") from None
+                    if not eligible:
+                        raise ValueError("実行できる追加確認がないため、ARTEX計画を省略しました")
+                elif usage or self._in_ownership_flow(host):
+                    # A real registered site, including an older restored one,
+                    # cannot spend a model call without an audited root. The
+                    # synthetic lab branch still exercises legacy plan tests.
+                    raise ValueError("初回診断の監査済み初期観測がないため、追加確認を計画できません")
+        return self._plan_with_artex(actor, llm_approval=llm_approval, roles=roles,
+                                     llm_mode=llm_mode, fingerprint=fingerprint,
+                                     root_observation=root_observation,
+                                     request_authorized=request_authorized)
+
+    def _plan_with_artex(self, actor: str, *, llm_approval: dict | None = None, roles=None,
+                         llm_mode: str | None = None, fingerprint: dict | None = None,
+                         root_observation: tuple[str, str] | None = None,
+                         request_authorized=None) -> dict:
         """Ask the real ARTEX planner for a plan, then rebuild every item from Vulnix's
         own registered targets and allowed catalog. Nothing is executed here.
 
@@ -1597,16 +1861,46 @@ class AssessmentService:
         with self._lock:
             self._refuse_after_stop_locked()
             self._refuse_artex_on_real_service_locked()
+            real_site = self._is_external_service_asset()
+            if real_site and (llm_mode or os.environ.get("VULNIX_ARTEX_LLM_MODE", "direct")) not in (
+                    "direct", "gateway-preview", "gateway-forward"):
+                raise ValueError("実サイトのARTEX計画はローカルモデルだけで作成できます")
             if self._unstopped_now_locked():
                 # while anything is not confirmed stopped, nothing new launches
                 raise ValueError("停止を確認できていないプロセスがあるため、ARTEX を起動しません")
-            self._ensure_active_window_locked()
-            targets = self._artex_targets_locked()
-            observations = [{"title": clean_target_text(f["title"], 200), "detail": clean_target_text(f.get("summary", ""), 400)}
-                            for f in self.a.findings.values() if f.get("id") in ("f_banner", "f_idor", "f_sqli")]
+            if real_site:
+                self._ensure_artex_authority_locked()
+            else:
+                self._ensure_active_window_locked()
+            if real_site and self.real_site_read_only and root_observation is not None:
+                host = (self.a.asset.get("name") or "").lower()
+                usage = self.ledger.scan_usage.get(host) or {}
+                if (not self._root_probe_observed_locked()
+                        or root_observation != (usage.get("run_nonce"), usage.get("result_audit_hash"))
+                        or fingerprint != usage.get("root_fingerprint")):
+                    raise ValueError("初期観測が現在の診断に属さないため、ARTEX計画を中止しました")
+            if real_site and self.a.state != "completed":
+                if (fingerprint is None or self.a.state != "running"
+                        or not self._root_probe_observed_locked()):
+                    raise ValueError("初回診断が完了してから、実測結果に基づく追加確認を計画してください")
+            if real_site:
+                targets = [{"asset_id": 1, "target_id": "lab", "url": self.a.target_url}]
+                request = anonymous_real_site_request(list(self.a.findings.values()),
+                                                      fingerprint=fingerprint)
+            else:
+                targets = self._artex_targets_locked()
+                observations = [{"title": clean_target_text(f["title"], 200),
+                                 "detail": clean_target_text(f.get("summary", ""), 400)}
+                                for f in self.a.findings.values()
+                                if f.get("id") in ("f_banner", "f_idor", "f_sqli")
+                                and evidence_status(f) in ("detected", "proven")]
+                if getattr(self, "_lab_account_resource_observed", None) is not None:
+                    surface = "present" if self._lab_account_resource_observed else "absent"
+                    observations.append({"title": f"Measured account resource link: {surface}",
+                                         "detail": surface})
+                request = {"goal": "登録済みの検証対象について、許可された非破壊の検証で確認すべき脆弱性の方向を計画する",
+                           "targets": targets, "observations": observations, "max_turns": 6}
             gen = self._run_generation
-        request = {"goal": "登録済みの検証対象について、許可された非破壊の検証で確認すべき脆弱性の方向を計画する",
-                   "targets": targets, "observations": observations, "max_turns": 6}
         canary = os.environ.get("VULNIX_ARTEX_EGRESS_CANARY", "")
         if re.fullmatch(r"127\.0\.0\.1:\d{1,5}", canary):
             request["egress_canary"] = canary      # proves the confinement around ARTEX itself
@@ -1632,7 +1926,7 @@ class AssessmentService:
         if st.get("ok"):
             confinement = self._l2_confinement
             protected = sorted(str(p) for p in self.data_dir.iterdir() if p.is_file())
-        elif (os.environ.get("VULNIX_ARTEX_ALLOW_UNCONFINED") == "1"
+        elif (not real_site and os.environ.get("VULNIX_ARTEX_ALLOW_UNCONFINED") == "1"
               and os.environ.get("AEGIS_ENV", "").strip().lower() in ("development", "dev")):
             confinement, protected = None, ()
             self.audit.record("artex.unconfined_dev_run", actor=actor, reason=str(st.get("reason", ""))[:200])
@@ -1640,8 +1934,11 @@ class AssessmentService:
             self.audit.record("artex.plan_refused", actor=actor, reason="no OS-level confinement")
             raise ValueError("ARTEX プランナーを OS レベルで隔離して起動できないため実行しません"
                              f"（{str(st.get('reason', ''))[:200]}）")
+        if request_authorized is not None and not request_authorized():
+            raise ValueError("要求者の権限が失効したため、ARTEX 計画を開始しません")
         self.audit.record("artex.plan_requested", actor=actor, targets=len(targets), confined=confinement is not None)
-        gateway = self._planner_gateway(actor, llm_approval, roles, gen, llm_mode)
+        gateway = self._planner_gateway(actor, llm_approval, roles, gen, llm_mode,
+                                        real_site=real_site, request_authorized=request_authorized)
         llm_url, llm_key = self._artex_llm_url, ""
         if gateway is not None:
             try:
@@ -1667,7 +1964,8 @@ class AssessmentService:
                                     on_leftover=self._note_leftover_session,
                                     on_started=lambda sess: self._artex_session_started(sess, gen),
                                     on_finished=self._artex_session_finished,
-                                    may_start=lambda: self._artex_may_start(gen),
+                                    may_start=lambda: self._artex_may_start(gen) and
+                                    (request_authorized is None or request_authorized()),
                                     data_dirs=(str(self.data_dir),))
         except ArtexBridgeError as e:
             self.audit.record("artex.plan_failed", actor=actor, reason=str(e)[:200])
@@ -1687,8 +1985,11 @@ class AssessmentService:
             self.audit.record("artex.plan_failed", actor=actor,
                               reason=f"upstream_http_{status}" if status else "upstream_failure")
             raise ValueError(f"Planner LLM の上流 API がエラーを返したため、計画を破棄しました（HTTP {status}）")
+        if request_authorized is not None and not request_authorized():
+            raise ValueError("要求者の権限が失効したため、ARTEX 計画を破棄しました")
         run_id = "ax" + secrets.token_hex(4)
-        rec = reconstruct(run.intents, targets, run_id)
+        rec = reconstruct(run.intents, targets, run_id,
+                          allowed_levels=frozenset({"L1"}) if real_site else frozenset({"L1", "L2"}))
         # The rebuilt proposals still pass ProposalRouter (sanitized, audited) and appear
         # as tasks in the existing plan view; the Gateway alone decides what may run.
         router = ProposalRouter(self.gateway, self.audit, [_StaticProposals("artex-oss", [i.proposal for i in rec.items])])
@@ -1696,6 +1997,8 @@ class AssessmentService:
             if gen != self._run_generation:
                 raise ValueError("停止またはリセットされたため、ARTEX 計画を破棄しました")
             self._refuse_after_stop_locked()
+            if real_site:
+                self._ensure_artex_authority_locked()
             if any(r["item"].status == "running" for r in self._artex_items.values()):
                 raise ValueError("ARTEX 計画の項目を実行中です。完了してから再計画してください")
             # the previous plan's tasks leave the plan view with it
@@ -1705,13 +2008,35 @@ class AssessmentService:
         with self._lock:
             if gen != self._run_generation:
                 raise ValueError("停止またはリセットされたため、ARTEX 計画を破棄しました")
+            if real_site:
+                self._ensure_artex_authority_locked()
             # a new plan replaces the previous one: its items can no longer run
             self._artex_items = {}
+            root_observed = real_site and self._root_probe_observed_locked()
             for item in rec.items:
                 tk = next((t for t in tasks if t.routed.proposal["tool"] == item.proposal["tool"]
                            and t.routed.proposal["args"] == item.proposal["args"]), None)
                 if tk is None or tk.status == "unsupported":
                     item.status = "unsupported"      # the router or Gateway catalog refused it
+                elif (real_site and self.real_site_read_only and item.catalog_id == "l1_http_probe"
+                      and self._in_ownership_flow(self.a.asset.get("name"))):
+                    # A complete baseline satisfies this one catalog item. An
+                    # old or inconsistent run without auditable evidence must
+                    # not advertise another GET that the signed cap will reject.
+                    item.status = "observed" if root_observed else "unsupported"
+                elif real_site and self.real_site_read_only and item.catalog_id == "l1_apache_mod_status":
+                    host = (self.a.asset.get("name") or "").lower()
+                    ext = self._external_entry(host) or {}
+                    usage = self.ledger.scan_usage.get(host) or {}
+                    if (not root_observed or (fingerprint or {}).get("server_family") != "apache"
+                            or ext.get("allow_status_probe") is not True
+                            or usage.get("status_probe_allowed") is not True
+                            or usage.get("paths") != ["/"]):
+                        item.status = "unsupported"
+                elif real_site and item.catalog_id == "l1_apache_mod_status":
+                    item.status = "unsupported"
+                elif real_site and not reviewed_real_site_l1(item.catalog_id):
+                    item.status = "unsupported"
                 if tk is not None:
                     tk.id = item.id                  # unique across plans
                     tk.status = item.status
@@ -1727,6 +2052,7 @@ class AssessmentService:
                            "artex_module": prov.get("artex_module"), "artex_commit": prov.get("artex_commit"),
                            "go_version": prov.get("go_version"), "norma_version": prov.get("norma_version"),
                            "label": label},
+                "llm_model": gateway.model if gateway is not None else self._artex_llm_model,
                 "llm_gateway": ({k: v for k, v in (self._artex_llm_last or {}).get("report", {}).items()
                                  if k not in ("records", "failed_upstream")} if gateway is not None else None),
                 "isolation": {**_artex_isolation_view(prov.get("isolation") or {}),
@@ -1737,28 +2063,49 @@ class AssessmentService:
                 "advisories": [{"intent_id": a.intent_id, "summary": clean_target_text(a.intent_summary, 500),
                                 "reason": a.reason} for a in rec.advisories],
             }
-        self.audit.record("artex.plan_received", actor=actor, run_id=run_id, engine_kind=prov.get("kind"),
-                          engine_pinned=bool(prov.get("pinned")), engine_sha256=prov.get("sha256"),
-                          artex_commit=prov.get("artex_commit"), intents=len(run.intents), items=len(rec.items),
-                          advisories=len(rec.advisories), denied_tool_calls=len(run.denied_tool_calls))
-        for a in rec.advisories:
-            self.audit.record("artex.intent_advisory", run_id=run_id, intent=a.intent_id, reason=a.reason)
+        try:
+            self.audit.record("artex.plan_received", actor=actor, run_id=run_id, engine_kind=prov.get("kind"),
+                              engine_pinned=bool(prov.get("pinned")), engine_sha256=prov.get("sha256"),
+                              artex_commit=prov.get("artex_commit"), intents=len(run.intents), items=len(rec.items),
+                              advisories=len(rec.advisories), denied_tool_calls=len(run.denied_tool_calls))
+            for a in rec.advisories:
+                self.audit.record("artex.intent_advisory", run_id=run_id, intent=a.intent_id, reason=a.reason)
+        except Exception:
+            with self._lock:
+                if (self._artex_plan or {}).get("run_id") == run_id:
+                    self._artex_plan = None
+                    self._artex_items = {}
+                    self.artex.tasks = [task for task in self.artex.tasks if task.phase != "artex"]
+            raise
+        model_report = gateway.report() if gateway is not None else {}
+        used_model = (model_report.get("model") if model_report.get("mode") == "forward"
+                      and model_report.get("calls", 0) > 0 and not model_report.get("failed") else None)
+        with self._lock:
+            if gen != self._run_generation or (self._artex_plan or {}).get("run_id") != run_id:
+                raise ValueError("停止またはリセットされたため、ARTEX 計画を破棄しました")
+            self.a.plan_source = {"engine": kind, "pinned": bool(prov.get("pinned")),
+                                  "model": str(used_model)[:120] if used_model else None}
+            if self.a.state != "running":
+                self._save_state_locked()
         self.bus.publish(self.a.id, "artex.plan", artex_plan=self.artex_plan_view())
         return self.snapshot()
 
     PREVIEW_TTL_S = 30 * 60
 
-    def _planner_gateway(self, actor: str, approval: dict | None, roles, gen: int, mode: str | None):
+    def _planner_gateway(self, actor: str, approval: dict | None, roles, gen: int, mode: str | None,
+                         *, real_site: bool = False, request_authorized=None):
         """The Planner LLM Gateway for this run. Mode: the request's `llm_mode`, else
         VULNIX_ARTEX_LLM_MODE: direct (none) | gateway-preview | gateway-forward."""
         configured = os.environ.get("VULNIX_ARTEX_LLM_MODE", "direct").strip()
         mode = (mode or configured).strip()
+        if real_site and mode == "gateway-forward" and configured != "gateway-forward":
+            raise ValueError("実サイトのモデル転送はサーバー設定で明示された場合だけ許可します")
         if mode == "direct" and configured != "direct":
             # a request may narrow the mode (to preview), never bypass the gateway
             raise ValueError("Planner LLM Gateway が設定されているため、direct には切り替えられません")
         if mode == "direct":
             return None
-        from .planner_llm_gateway import FORCEABLE_FIRST_TOOLS, Budget, PlannerLLMGateway
+        from .planner_llm_gateway import FORCEABLE_FIRST_TOOLS, Budget, GatewayRefused, PlannerLLMGateway
         first_tool = os.environ.get("VULNIX_PLANNER_FIRST_TOOL", "").strip() or None
         if first_tool is not None and first_tool not in FORCEABLE_FIRST_TOOLS:
             # checked before any approval is taken, so a bad setting never uses one up
@@ -1778,21 +2125,45 @@ class AssessmentService:
 
         def denied():                                   # looked up on every request
             with self._lock:
+                # The original synthetic lab moves to _extra_assets when a real
+                # site becomes active. If it was ever registered as a real service,
+                # _real_service_hosts still denies it.
                 return set(self._real_service_hosts) | {
-                    str(x.get("name") or "").lower() for x in self._extra_assets if x.get("name")}
+                    str(x.get("name") or "").lower() for x in self._extra_assets
+                    if x.get("name") and str(x.get("name")).lower() != "lab.test"}
         with self._lock:
             allowed = set(self._allowed_hosts) | {"lab.test"}
         model = os.environ.get("VULNIX_ARTEX_LLM_MODEL") or os.environ.get("VULNIX_ABLITERATION_MODEL") or "mock"
-        may_forward = (lambda: self._artex_may_start(gen))
+        may_forward = (lambda: self._artex_may_start(gen) and
+                       (request_authorized is None or request_authorized()))
+        @contextlib.contextmanager
+        def send_scope():
+            # The HTTP request lease takes account then tenant locks. Never call
+            # request_authorized() inside it: those locks are not reentrant.
+            lease = getattr(request_authorized, "lease", None)
+            try:
+                with (lease() if callable(lease) else contextlib.nullcontext()):
+                    with self._lock:
+                        if not self._artex_may_start_locked(gen):
+                            raise GatewayRefused("stopped", "the planner run was stopped")
+                        yield
+            except PolicyError:
+                raise GatewayRefused("stopped", "the planner request authority expired") from None
         common = dict(model=model, budget=budget, allowed_hosts=allowed, denied_hosts=denied, audit=self.audit,
-                      may_forward=may_forward, first_turn_tool=first_tool)
+                      may_forward=may_forward, first_turn_tool=first_tool, send_scope=send_scope)
         if mode == "gateway-preview":
             return PlannerLLMGateway(mode="preview", responder=_preview_responder,
                                      api_key=os.environ.get("VULNIX_ABLITERATION_KEY", ""), **common)
         if mode != "gateway-forward":
             raise ValueError("llm_mode は direct / gateway-preview / gateway-forward のいずれかです")
-        upstream = os.environ.get("VULNIX_ARTEX_LLM_UPSTREAM_URL") or os.environ.get("VULNIX_ABLITERATION_URL", "")
+        upstream = os.environ.get("VULNIX_ARTEX_LLM_UPSTREAM_URL", "")
+        if not real_site:
+            upstream = upstream or os.environ.get("VULNIX_ABLITERATION_URL", "")
+        if real_site and not upstream:
+            raise ValueError("実サイトのモデル転送には専用のローカルURL設定が必要です")
         host = (urllib.parse.urlsplit(upstream).hostname or "")
+        if real_site and host not in ("127.0.0.1", "::1"):
+            raise ValueError("実サイトのARTEX計画はローカルモデルだけで作成できます（ループバックIP必須）")
         real = host not in ("127.0.0.1", "::1", "localhost")
         bound = None
         if real:
@@ -1885,8 +2256,13 @@ class AssessmentService:
 
     def artex_plan_view(self) -> dict | None:
         with self._lock:
+            real_site = self._in_ownership_flow(self.a.asset.get("name"))
+            configured = bool(self._artex_real_cmd) and (
+                not real_site or (self._real_site_local_artex and self._is_external_service_asset()))
+            if not configured:
+                return {"configured": False, "plan": None}
             if self._artex_plan is None:
-                return {"configured": bool(self._artex_real_cmd), "plan": None}
+                return {"configured": True, "plan": None}
             items = []
             for rec in self._artex_items.values():
                 it = rec["item"]
@@ -1894,7 +2270,7 @@ class AssessmentService:
                               "intent_summary": clean_target_text(it.intent_summary, 500),
                               "catalog_id": it.catalog_id, "label": it.label, "level": it.level,
                               "target_id": it.target_id, "tool": it.proposal["tool"], "status": it.status})
-            return {"configured": bool(self._artex_real_cmd), "plan": {**self._artex_plan, "items": items}}
+            return {"configured": True, "plan": {**self._artex_plan, "items": items}}
 
     def _artex_session_started(self, sess, gen: int) -> None:
         """Registered before anything runs in the session; refused after a stop."""
@@ -1904,8 +2280,33 @@ class AssessmentService:
             self._artex_live.add(sess)
 
     def _artex_may_start_locked(self, gen: int) -> bool:
-        return (gen == self._run_generation and self.gateway.state is not State.STOPPED
-                and self.a.state != "stopped" and not self._unstopped_now_locked())
+        if not (gen == self._run_generation and self.gateway.state is State.RUNNING
+                and self.a.state not in ("stopped", "paused") and not self._unstopped_now_locked()):
+            return False
+        try:
+            self._ensure_artex_authority_locked()
+        except ValueError:
+            return False
+        return True
+
+    def _ensure_artex_authority_locked(self) -> None:
+        name = self.a.asset.get("name")
+        if not self._in_ownership_flow(name):
+            return
+        # Planning must recheck authority without replenishing Gateway's Worker
+        # budget. _ensure_active_window_locked updates that budget for a new run.
+        if self._persist_error:
+            raise ValueError("状態を保存できないため、ARTEX 計画を破棄しました")
+        ext = self._external_entry(name)
+        if ext is None:
+            raise ValueError("診断範囲の確認が失効または取り消されたため、ARTEX 計画を破棄しました")
+        e = self.a.engagement
+        effective = Engagement(e.id, True, e.authorization_ref, e.not_before,
+                               min(e.not_after, float(ext["not_after"])), e.targets, e.allowed_actions)
+        try:
+            effective.check_active(time.time())
+        except AuthzError:
+            raise ValueError("診断範囲の確認が失効したため、ARTEX 計画を破棄しました") from None
 
     def _artex_may_start(self, gen: int) -> bool:
         with self._lock:
@@ -1961,19 +2362,34 @@ class AssessmentService:
             raise ValueError("診断を一時停止中です。再開または停止してから実行してください")
         return rec
 
-    def execute_artex_item(self, item_id: str, actor: str, *, roles=None) -> dict:
+    def execute_artex_item(self, item_id: str, actor: str, *, roles=None,
+                           request_authorized=None) -> dict:
         """Run ONE item of the ARTEX plan. The operation is rebuilt from Vulnix's catalog
         (never from what ARTEX or the stored proposal says); L1 goes through the Gateway
         under the L1 policy, L2 needs an approver and runs in the isolated worker."""
         self._begin_operation()          # from here the active asset cannot be switched
         prev = getattr(self._tls, "gen", None)
+        previous_authorized = getattr(self._tls, "request_authorized", None)
+        if request_authorized is None:
+            request_authorized = previous_authorized
+        self._tls.request_authorized = request_authorized
         claimed = False
         try:
+            if request_authorized is not None and not request_authorized():
+                raise ApproverRequired("要求者の権限が失効したため、検査を開始しません")
             with self._lock:
-                self._refuse_read_only_real_locked()
                 rec = self._claim_artex_item_locked(item_id)
                 item = rec["item"]
                 entry = CATALOG_BY_ID[item.catalog_id]
+                # The opt-in real-site path permits only the catalog's one read-only
+                # GET. Every L2 item remains blocked even if stored state is changed.
+                if self._is_external_service_asset():
+                    if not self._real_site_local_artex or entry.level != "L1":
+                        raise ValueError("実サイトのARTEX計画からL2検証は実行できません")
+                    if not reviewed_real_site_l1(entry.id):
+                        raise ValueError("実サイトの未審査L1検査は実行できません")
+                else:
+                    self._refuse_read_only_real_locked()
                 if entry.level == "L2":
                     if not actor or str(actor).startswith("policy:"):
                         raise ValueError("L2 検証には人間の個別承認が必要です（自動承認不可）")
@@ -2002,12 +2418,23 @@ class AssessmentService:
                 ok = _proofs() > before          # this run recorded evidence for this finding
             else:
                 with self._lock:
-                    self._ensure_active_window_locked()
+                    if self._is_external_service_asset():
+                        # An ARTEX item belongs to the current run. Rechecking its
+                        # authority must not refill the Gateway's spent Worker budget.
+                        self._ensure_artex_authority_locked()
+                    else:
+                        self._ensure_active_window_locked()
                 res, ev = self._exec(entry.tool, entry.action, entry.args_for(url),
                                      approval_actor=f"artex-L1:{actor}")
                 if res is not None:
                     with self._lock:
-                        self._analyze(res, ev)
+                        if entry.tool == "status_marker":
+                            if self._record_status_result_locked(ev):
+                                self._upsert_finding(analyze_status_marker_report(res, ev))
+                            else:
+                                res = None
+                        else:
+                            self._analyze(res, ev)
                 ok = res is not None
             self._set_artex_item_status(item_id, "completed" if ok else "failed")
             claimed = False
@@ -2026,6 +2453,7 @@ class AssessmentService:
             raise
         finally:
             self._tls.gen = prev
+            self._tls.request_authorized = previous_authorized
             self._end_operation()
 
     def _sync_artex_item(self, item_id: str) -> None:
@@ -2407,6 +2835,29 @@ class AssessmentService:
         self._authority_reduced_locked(gone)
         self._l2_requests = {k: v for k, v in self._l2_requests.items() if v.get("host") != gone}
 
+    def _covering_google_domain_proof_locked(self, host: str, scheme: str, port: int) -> tuple[str, float] | None:
+        """Reuse only a fresh signed Google Domain proof in this organization's ledger."""
+        now = time.time()
+        for source, proof in self._ownership_proofs.items():
+            if not isinstance(proof, dict) or proof.get("method") != GOOGLE_METHOD or proof.get("verified") is not True:
+                continue
+            prop = str(proof.get("checked_target") or "")
+            if not prop.startswith("sc-domain:") or not covering_property([prop], host, scheme, port):
+                continue
+            source_asset = self._asset_record(source)
+            if (source not in self._real_service_hosts or source_asset is None
+                    or proof.get("host") != source or proof.get("held_since")
+                    or (source_asset.get("scheme"), source_asset.get("port")) !=
+                    (proof.get("scheme"), proof.get("port"))):
+                continue
+            verified_at = proof.get("verified_at")
+            if not isinstance(verified_at, (int, float)) or not 0 <= now - verified_at <= OWNERSHIP_PROOF_MAX_AGE_S:
+                continue
+            expected = hashlib.sha256(challenge_for_host(source, self._ownership_secret)["token"].encode()).hexdigest()
+            if hmac.compare_digest(str(proof.get("token_sha256") or ""), expected):
+                return prop, float(verified_at)
+        return None
+
     def issue_ownership_challenge(
         self,
         *,
@@ -2415,6 +2866,7 @@ class AssessmentService:
         approver: str = "operator",
         kind: str = "Webアプリケーション",
         environment: str = "ステージング環境",
+        grant_guard=None,
     ) -> dict:
         """Step 1 & 2 of the 5-step registration flow: parse target URL, generate
         DNS TXT / .well-known challenge, and create an unverified asset record.
@@ -2433,8 +2885,13 @@ class AssessmentService:
         if parsed["is_local_lab"] or host in ("lab.test", "api.lab.test", "localhost"):
             raise ValueError("模擬ラボの対象は、実サービスの所有確認フローでは登録できません")
 
-        with self._lock:
+        # This registration can inherit a signed Google domain proof. Hold the
+        # live HTTP authority through that nested grant as well as registration.
+        with (grant_guard() if grant_guard else contextlib.nullcontext()) as current_roles, self._lock:
             existing = self._asset_record(host)        # active asset or not: same handling
+            if (current_roles is not None and "approver" not in current_roles
+                    and (host in self._ownership_proofs or host in self._verified_external_hosts)):
+                raise ApproverRequired("所有確認済みの対象の再登録には承認責任者の権限が必要です")
             if existing is not None and not self._in_ownership_flow(host):
                 raise ValueError("この名前は模擬ラボの対象として登録されています。先に削除してから実サービスとして登録してください")
             if existing is self.a.asset and self.a.state in ("running", "paused"):
@@ -2510,6 +2967,20 @@ class AssessmentService:
                         self._extra_assets = [x for x in self._extra_assets if x is not asset_rec]
                     raise
                 self._save_state_locked()
+            # A display flag can be stale. Never refresh an existing signed grant
+            # through this registration shortcut; re-verification has its own role gate.
+            if (not asset_rec.get("ownership_verified") and host not in self._ownership_proofs
+                    and host not in self._verified_external_hosts):
+                covering = self._covering_google_domain_proof_locked(host, parsed["scheme"], parsed["port"])
+                if covering is not None:
+                    prop, original_verified_at = covering
+                    inherited = self.verify_asset_ownership(
+                        url_or_host=host, method=GOOGLE_METHOD, actor=approver,
+                        roles=current_roles,
+                        google_property=prop, google_endpoint=(parsed["scheme"], parsed["port"]),
+                        google_verified_at=original_verified_at,
+                    )
+                    asset_rec = inherited["asset"] or asset_rec
 
         self.audit.record(
             "asset.challenge_issued",
@@ -2541,6 +3012,8 @@ class AssessmentService:
         roles=None,
         google_property: str | None = None,
         google_endpoint: tuple[str, int] | None = None,
+        google_verified_at: float | None = None,
+        grant_guard=None,
     ) -> dict:
         """Step 2 of the 5-step registration flow: verify ownership via DNS TXT,
         /.well-known/vulnix-verify.txt, or (method ``google_search_console``) a Google
@@ -2560,13 +3033,18 @@ class AssessmentService:
         ch = challenge_for_host(host, self._ownership_secret)
 
         if method == GOOGLE_METHOD:
+            now = time.time()
+            if (google_verified_at is not None and
+                    (not isinstance(google_verified_at, (int, float))
+                     or not 0 <= now - google_verified_at <= OWNERSHIP_PROOF_MAX_AGE_S)):
+                raise ValueError("Google の所有確認記録の有効期限が切れています")
             # Google's answer was obtained by the HTTP layer (OAuth, server side); the
             # site itself is not contacted. The result is recorded like the others.
             ok_g = bool(google_property)
             res = {
                 "verified": ok_g, "method": GOOGLE_METHOD,
                 "checked_target": google_property or "Google Search Console",
-                "verified_at": time.time() if ok_g else None,
+                "verified_at": (google_verified_at if google_verified_at is not None else now) if ok_g else None,
                 "detail": (f"Google Search Console で所有者として確認されています（{google_property}）。"
                            if ok_g else
                            "Google Search Console で、このサイトの所有者として確認されたプロパティが見つかりませんでした。"),
@@ -2583,14 +3061,18 @@ class AssessmentService:
         if method == GOOGLE_METHOD and not verified:
             # Google not confirming is "not proven this way", not a failed re-check: an
             # existing proof (DNS / file) or scope is left as it is
-            self.audit.record("asset.ownership_failed", actor=actor, host=host, method=method,
-                              verified=False, detail=res["detail"])
-            with self._lock:
-                asset = self._asset_record(host)
+            with (grant_guard() if grant_guard else contextlib.nullcontext()):
+                self.audit.record("asset.ownership_failed", actor=actor, host=host, method=method,
+                                  verified=False, detail=res["detail"])
+                with self._lock:
+                    asset = self._asset_record(host)
             return {"host": host, "verified": False, "verification": res, "l2_auto_approved": False,
                     "asset": dict(asset) if asset else None}
 
-        with self._lock:
+        # The lookup may have taken seconds. The HTTP caller holds its live session and
+        # organization membership through the signed ledger commit, so a mid-flight
+        # removal or logout cannot grant ownership from an old role snapshot.
+        with (grant_guard() if grant_guard else contextlib.nullcontext(roles)) as current_roles, self._lock:
             target_asset = next(
                 (x for x in self._extra_assets if x.get("name", "").lower() == host),
                 None,
@@ -2604,7 +3086,7 @@ class AssessmentService:
                 # the registration changed while Google was being asked: the property was
                 # checked against the old scheme / port, so nothing is recorded
                 raise ValueError("確認中にサイトの登録内容が変わりました。もう一度お試しください")
-            if (not verified and roles is not None and "approver" not in roles
+            if (current_roles is not None and "approver" not in current_roles
                     and (host in self._ownership_proofs or host in self._verified_external_hosts)):
                 # Decided now, under the lock, and BEFORE anything is changed: someone
                 # else may have verified or confirmed this host while our lookup was
@@ -2682,6 +3164,8 @@ class AssessmentService:
         sow_id: str = "",
         activate_workspace: bool = False,
         allow_loopback_test: bool = False,
+        allow_status_probe: bool = False,
+        grant_guard=None,
     ) -> dict:
         """Step 3 of the 5-step flow: confirm target scope & prohibited actions
         after ownership verification, enabling safe L1 diagnosis (while keeping
@@ -2692,7 +3176,7 @@ class AssessmentService:
         host = parsed["host"]
 
         self._require_working_store()
-        with self._lock:
+        with (grant_guard() if grant_guard else contextlib.nullcontext()), self._lock:
             target_asset = next(
                 (x for x in self._extra_assets if x.get("name", "").lower() == host),
                 None,
@@ -2769,9 +3253,11 @@ class AssessmentService:
                 "l2_auto_approved": False,
                 "approver": approver,
                 "authorization_ref": auth_ref,
+                "scope_nonce": secrets.token_hex(16),
                 "not_before": now - 60,
                 "not_after": now + 30 * 86400,
                 "allow_loopback_test": bool(allow_loopback_test),
+                "allow_status_probe": allow_status_probe is True,
                 "confirmed_at": now,
                 "proof_method": proof["method"],
                 "proof_verified_at": proof["verified_at"],
@@ -2797,12 +3283,14 @@ class AssessmentService:
             host=host,
             authorization_ref=auth_ref,
             l2_auto_approved=False,
+            allow_status_probe=allow_status_probe is True,
         )
         return {
             "host": host,
             "scope_confirmed": True,
             "authorization_ref": auth_ref,
             "l2_auto_approved": False,
+            "allow_status_probe": allow_status_probe is True,
             "asset": dict(target_asset),
         }
 
@@ -2914,6 +3402,7 @@ class AssessmentService:
         # an ARTEX plan belongs to the workspace it was made in
         self._artex_items = {}
         self._artex_plan = None
+        self.a.plan_source = None
         self._set_state("stopped" if stays_stopped else "idle")
 
     def planner_status(self) -> dict:
@@ -2939,9 +3428,9 @@ class AssessmentService:
             "artex_engine": "ready",
             "autonomous_execution": False,
             "note": _PLANNER_NOTES[conn["state"]] if self._external_model_configured
-                    else (f"提案は内蔵 ARTEX プランナー（外部モデルからの提案は無効）。AI解説に "
+                    else (f"提案はVulnixの内蔵プランナーから生成します。AI解説に "
                           f"{self._chat_backend._model or '外部モデル'} を使用します。" if self._chat_backend is not None
-                          else "内蔵 ARTEX プランナーで動作中。外部 AI モデルは未設定です。"),
+                          else "Vulnixの内蔵プランナーで動作中。外部 AI モデルは未設定です。"),
         }
 
     def _note_model_outcome_locked(self, ok: bool, error: str | None = None) -> None:
@@ -2972,6 +3461,7 @@ class AssessmentService:
                 "lab_endpoint": self.a.target_url if is_ext else f"127.0.0.1:{self.lab_port}",
                 "planner": self.planner_status(),
                 "artex_plan": self.artex_plan_view(),
+                "plan_source": dict(self.a.plan_source) if self.a.plan_source else None,
                 "secrets_status": self.secrets_status(),
                 "prohibited_actions": PROHIBITED_ACTIONS_SUMMARY,
                 "evidence_summary": evidence_summary(list(self.a.findings.values())),
@@ -3007,7 +3497,10 @@ class AssessmentService:
                 # the open site's runs only: nothing of another site follows into this view
                 "run_history": [h for h in self.a.run_history
                                 if h.get("asset_id") == self.a.asset.get("id")],
-                "defense_comparison": self.a.defense_comparison,
+                "defense_comparison": (self.a.defense_comparison if is_ext
+                                       or (getattr(self, "_may_switch_lab", True)
+                                           and self.a.defense_comparison
+                                           and self.a.defense_comparison.get("lab_mode") == "patched") else None),
                 "cve_status": self.cve_monitor.status(),
                 "artex_tasks": [
                     {"id": tk.id, "phase": tk.phase, "title": clean_target_text(tk.title, 200),
@@ -3019,7 +3512,8 @@ class AssessmentService:
             }
 
     def logs(self) -> dict:
-        return {"entries": self.audit.entries(), "chain_valid": self.audit.verify()}
+        entries, valid = self.audit.verified_entries()
+        return {"entries": entries, "chain_valid": valid}
 
     # ---- commands -----------------------------------------------------------
     def set_verify_seconds(self, seconds: float) -> None:
@@ -3030,6 +3524,7 @@ class AssessmentService:
             if self.a.state != "idle":
                 raise ValueError(f"cannot start from {self.a.state}")
             self._ensure_active_window_locked()
+            self._new_scan_usage_locked()
             if getattr(self, "_may_switch_lab", True):
                 set_lab_mode("vulnerable")
             self._set_state("running")
@@ -3059,6 +3554,7 @@ class AssessmentService:
                 # (an emergency stop, if there was one, is still in force)
                 raise ValueError("前の診断のWorkerの停止を確認できなかったため、新しい診断は開始できません")
             self._ensure_active_window_locked()
+            self._new_scan_usage_locked()
             if getattr(self, "_may_switch_lab", True):
                 set_lab_mode("vulnerable")
             self._set_state("running")
@@ -3079,6 +3575,12 @@ class AssessmentService:
         with self._lock:
             if self.a.state != "paused":
                 raise ValueError(f"cannot resume from {self.a.state}")
+            runner = getattr(self, "_thread", None)
+            if runner is None or not runner.is_alive():
+                # A process restart restores a running scan as paused, but its
+                # runner thread is gone. Resume would otherwise report running
+                # forever without executing or completing any remaining work.
+                raise ValueError("中断された診断の処理は復元できません。再診断を開始してください")
             self._ensure_active_window_locked()
             self.gateway.resume(actor)   # re-validates engagement window
             self._set_state("running")
@@ -3203,7 +3705,8 @@ class AssessmentService:
             return (self.l2.has_check(f.get("reproduce_check"))
                     or self._l2_check_for_finding(finding_id) is not None)
 
-    def verify_finding(self, finding_id: str, actor: str, *, roles=None) -> dict:
+    def verify_finding(self, finding_id: str, actor: str, *, roles=None,
+                       request_authorized=None) -> dict:
         """Execute a real Gateway + Worker probe for a specific finding on demand
         and attach the live HTTP response and SHA-256 audit hash.
 
@@ -3214,7 +3717,13 @@ class AssessmentService:
         caller that vouches for the actor itself.)"""
         self._begin_operation()        # the active asset cannot be switched while this runs
         prev = getattr(self._tls, "gen", None)
+        previous_authorized = getattr(self._tls, "request_authorized", None)
+        if request_authorized is None:
+            request_authorized = previous_authorized
+        self._tls.request_authorized = request_authorized
         try:
+            if request_authorized is not None and not request_authorized():
+                raise ApproverRequired("要求者の権限が失効したため、検査を開始しません")
             with self._lock:
                 self._refuse_read_only_real_locked()
             return self._verify_finding(finding_id, actor, roles)
@@ -3222,6 +3731,7 @@ class AssessmentService:
             raise ValueError("停止またはリセットされたため、検証を中止しました") from None
         finally:
             self._tls.gen = prev
+            self._tls.request_authorized = previous_authorized
             self._end_operation()
 
     def _verify_finding(self, finding_id: str, actor: str, roles=None) -> dict:
@@ -3617,6 +4127,8 @@ class AssessmentService:
             self._ensure_active_window_locked()
             before_risk = self._risk()
             is_ext = self._is_external_service_asset()
+            if not is_ext and not getattr(self, "_may_switch_lab", True):
+                raise ValueError("共有の模擬ラボを安全に切り替えられないため、修正後の比較は実行できません")
             url = self.a.target_url        # decided together with is_ext, under the same lock
             before_verdicts = {
                 f["id"]: {"title": f["title"], "severity": f["severity"], "verdict": f["verdict"]}
@@ -3710,17 +4222,49 @@ class AssessmentService:
             headers = (res or {}).get("headers")
             valid_headers = isinstance(headers, dict) and (res or {}).get("status") is not None
             h = {k.lower(): v for k, v in headers.items()} if valid_headers else {}
+            profile = self._l2_profile() if is_ext and valid_headers else None
+            current_l1 = ({f["id"]: f for f in analyze_l1_service_response(
+                res, ev_http or {}, url, self.cve_monitor,
+                cookie_policy=profile.get("cookie_policy") if profile else None,
+            )} if is_ext and valid_headers else {})
             for fid in ("f_headers", "f_powered", "f_l1_cors", "f_l1_cookies"):
                 if fid not in self.a.findings:
                     continue
                 finding = self.a.findings[fid]
+                if is_ext and valid_headers:
+                    # Rechecks use the first run's evidence thresholds for all
+                    # header findings. This covers Server as well as X-Powered-By,
+                    # credentialed CORS and approved Cookie purposes.
+                    observed = current_l1.get(fid)
+                    verdict = observed["verdict"] if observed else "not_reproduced"
+                    note = (observed["verdict_note"] if observed and observed.get("verdict_note") else
+                            observed["what_was_established"] if observed and observed.get("what_was_established") else
+                            "最新のHTTP応答では、以前の設定不備を再現できませんでした。")
+                    risk_score, risk_rationale = compute_finding_risk_score(
+                        finding["severity"], verdict,
+                        internet_facing=urllib.parse.urlsplit(url).scheme == "https",
+                    )
+                    latest_ids[fid] = ev_http["evidence_id"] if ev_http else None
+                    self._upsert_finding({
+                        **finding, **(observed or {}), "verdict": verdict,
+                        "summary": (observed or {}).get("summary", note),
+                        "risk_score": (observed or {}).get("risk_score", risk_score),
+                        "risk_rationale": (observed or {}).get("risk_rationale", risk_rationale),
+                        "verdict_basis": (observed or {}).get("verdict_basis", "l1_recheck_observation"),
+                        "why_detected": (observed or {}).get("why_detected") or note,
+                        "impact": (observed or {}).get("impact"),
+                        "caveat": (observed or {}).get(
+                            "caveat", "今回の確認では以前の条件を再現できませんでした。対象全体の安全性は未確認です。"),
+                        "what_was_established": observed.get("what_was_established") if observed else None,
+                        "verdict_note": note,
+                        "cookie_checks": (observed or {}).get("cookie_checks", []) if fid == "f_l1_cookies" else finding.get("cookie_checks"),
+                        "evidence": finding["evidence"] + ([ev_http] if ev_http else []),
+                    })
+                    continue
                 if fid == "f_headers":
                     remains = any(not h.get(k) for k in ("content-security-policy", "x-content-type-options", "strict-transport-security"))
                 elif fid == "f_powered":
                     remains = bool(h.get("x-powered-by"))
-                elif fid == "f_l1_cors":
-                    acao = h.get("access-control-allow-origin", "")
-                    remains = acao in ("*", "https://untrusted-origin.example")
                 else:
                     sc = " ".join((res or {}).get("set_cookies") or [h.get("set-cookie", "")]).lower()
                     remains = bool(sc.strip()) and any(flag not in sc for flag in ("secure", "httponly", "samesite"))
@@ -3824,11 +4368,11 @@ class AssessmentService:
         self._phase("scope", "done", f"{url} は許可範囲内（{scope_desc}）")
 
         self._checkpoint()
-        self._phase("config", "running", "ARTEX が公開設定の非破壊プローブを提案・実行しています")
+        self._phase("config", "running", "内蔵の診断手順で公開設定を確認しています")
         self._activity("公開設定を検査（GET 1回・非破壊）", "http_probe", "L1")
         self._think(
             "非破壊HTTPプローブの計画とサニタイズ",
-            "ARTEX プランナーが公開設定・応答ヘッダー取得のため http_probe (GET) を提案し、ProposalRouter で安全性を検証しました。",
+            "診断プランナーが公開設定・応答ヘッダー取得のため http_probe (GET) を提案し、ProposalRouter で安全性を検証しました。",
             phase="config",
             tool="http_probe",
             level="L1",
@@ -3852,6 +4396,10 @@ class AssessmentService:
                              approval_actor="policy:auto-L1")
         if res is None:
             return
+        if is_ext:
+            with self._lock:
+                if not self._record_root_result_locked(ev, res, url):
+                    return
         for tk in tasks_l1:
             if tk.status == "running":
                 tk.status = "completed"
@@ -3868,10 +4416,70 @@ class AssessmentService:
             tool="cve_engine",
             level="L1",
         )
+        try:
+            local_planner_host = urllib.parse.urlsplit(
+                os.environ.get("VULNIX_ARTEX_LLM_UPSTREAM_URL", "")).hostname in ("127.0.0.1", "::1")
+        except ValueError:
+            local_planner_host = False
+            if is_ext and os.environ.get("VULNIX_REAL_SITE_INITIAL_ARTEX", "0") == "1":
+                self.audit.record("artex.initial_fallback", reason="bad_local_upstream")
+        if (is_ext and self.real_site_read_only and self._real_site_local_artex
+                and os.environ.get("VULNIX_REAL_SITE_INITIAL_ARTEX", "0") == "1"
+                and self._artex_real_cmd
+                and os.environ.get("VULNIX_ARTEX_LLM_MODE", "").strip() == "gateway-forward"
+                and local_planner_host):
+            # The first observation is already signed. The planner sees only
+            # allowlisted enums; it cannot launch a Worker or add a target GET.
+            from .artex_bridge import initial_real_site_extra_checks, safe_public_fingerprint
+            fingerprint = safe_public_fingerprint(res, scheme=urllib.parse.urlsplit(url).scheme)
+            self._checkpoint()
+            with self._lock:
+                self._ensure_artex_authority_locked()
+                host = (self.a.asset.get("name") or "").lower()
+                ext = self._external_entry(host) or {}
+                usage = self.ledger.scan_usage.get(host) or {}
+                status_consent = (ext.get("allow_status_probe") is True
+                                  and usage.get("status_probe_allowed") is True
+                                  and usage.get("paths") == ["/"])
+                root_observed = self._root_probe_observed_locked()
+                root_observation = (usage.get("run_nonce"), usage.get("result_audit_hash"))
+            try:
+                eligible_extra = initial_real_site_extra_checks(
+                    fingerprint, status_consent=status_consent,
+                    root_observed=root_observed)
+            except ValueError:
+                eligible_extra = set()
+                self.audit.record("artex.initial_fallback", reason="unreviewed_extra_catalog")
+            if not eligible_extra:
+                # The initial real-site catalog has exactly one useful extra L1
+                # operation: Apache mod_status. Avoid a model call when Gateway
+                # would reject that operation, or the signed root observation
+                # cannot justify it. The fixed root finding remains authoritative.
+                self.audit.record("artex.initial_skipped", reason="no_allowed_extra_check")
+            else:
+                try:
+                    planned = self._plan_with_artex("policy:initial", llm_mode="gateway-forward",
+                                                    fingerprint=fingerprint,
+                                                    root_observation=root_observation)
+                except ValueError:
+                    # A local model failure keeps the measured L1 result. Revocation,
+                    # stop, or persistence failure must still stop the diagnosis.
+                    self._checkpoint()
+                    with self._lock:
+                        self._ensure_artex_authority_locked()
+                    self.audit.record("artex.initial_fallback", reason="planner_failure")
+                else:
+                    for item in ((planned.get("artex_plan") or {}).get("plan") or {}).get("items", []):
+                        if (item.get("catalog_id") in eligible_extra
+                                and item.get("status") == "planned"):
+                            self._checkpoint()
+                            self.execute_artex_item(item["id"], "policy:initial")
         if "AI agent:" in res.get("body_prefix", ""):
             self.bus.publish(self.a.id, "agent.note",
                              message="ページ内にAI向けの指示文を検出しました。ProposalRouterにより無害化され実行権限には影響しません。")
-        self._phase("analysis", "done", f"{len(self._real_findings())} 件を検出")
+        observed = [evidence_status(f) for f in self._real_findings()]
+        self._phase("analysis", "done",
+                    f"検出 {observed.count('detected')} 件・候補 {observed.count('candidate')} 件")
 
         self._checkpoint()
         if is_ext:
@@ -3882,7 +4490,7 @@ class AssessmentService:
                 # public beta: nothing beyond this read-only run ever reaches a real site
                 self._think(
                     "実在するサイトの読み取り専用診断が完了しました",
-                    "公開されているページを1回読み取って調べた結果を確定しました。侵入できるかどうかの実証（L2）は、このサービスでは実在するサイトに対して行いません。",
+                    "許可された公開情報を読み取り専用で調べた結果を確定しました。侵入できるかどうかの実証（L2）は、このサービスでは実在するサイトに対して行いません。",
                     phase="verification",
                     tool="Gateway",
                     level="L1",
@@ -3906,7 +4514,7 @@ class AssessmentService:
             self._activity("脆弱性の検証（侵入成立の実証）", "reproduction_probe", "L2")
             self._think(
                 "L2 侵入成立実証の人間承認リクエスト",
-                "CVE-2021-41773・IDOR・SQLi の再現試験は L2 操作のため、承認責任者による実行許可（単一使用トークン発行）を待機しています。",
+                "CVE候補・IDOR候補・SQLi候補の再現試験は承認が必要なため、承認責任者による実行許可を待機しています。",
                 phase="verification",
                 tool="reproduction_probe",
                 level="L2",
@@ -3918,8 +4526,8 @@ class AssessmentService:
                 if tk.status != "unsupported":
                     tk.status = "awaiting_approval"
             ap_id = self._request_approval(
-                "safe_reproduction", "L2", "検出された問題（未実証）が成立するかのL2実証（CVE-2021-41773 / IDOR / SQLi）",
-                "検出したバージョン表示（CVE-2021-41773）、テストアカウント間の認可境界（IDOR）、および検索APIのSQLインジェクション境界が"
+                "safe_reproduction", "L2", "候補が実際に成立するか確認（CVE-2021-41773 / IDOR / SQLi）",
+                "バージョン表示（CVE-2021-41773候補）、テストアカウント間の認可境界（IDOR）、および検索APIのSQLインジェクション境界が"
                 "実際に成立するかを、egress_sentinel 隔離Worker（reproduction_probe）で非破壊実証します。")
             if self.a.approvals[ap_id]["status"] != "approved":
                 for tk in tasks_l2:
@@ -3927,7 +4535,7 @@ class AssessmentService:
                         tk.status = "skipped"
                 self._think(
                     "L2 再現試験をスキップ",
-                    "承認責任者により却下されたため、L2 再現試験は実施せず検出段階の結果でレポートを作成します。",
+                    "承認責任者により却下されたため、再現試験は実施せず、未計測の候補は候補のままレポートを作成します。",
                     phase="verification",
                     tool="Gateway",
                     level="L2",
@@ -4053,7 +4661,16 @@ class AssessmentService:
                 for tk in tasks_l2:
                     if tk.status != "unsupported":
                         tk.status = "completed"
-                self._phase("verification", "done", "結果: 侵入成立を実証（証拠・監査ハッシュ保存済み）")
+                verdicts = [evidence_status(self.a.findings[fid]) for fid in (banner_id, "f_idor", "f_sqli")
+                            if fid in self.a.findings]
+                proven_count = verdicts.count("proven")
+                not_reproduced_count = verdicts.count("not_reproduced")
+                self._phase(
+                    "verification", "done",
+                    f"実証済み {proven_count} 件・再現せず {not_reproduced_count} 件"
+                    + (f"・未完了 {len(verdicts) - proven_count - not_reproduced_count} 件"
+                       if len(verdicts) > proven_count + not_reproduced_count else ""),
+                )
 
         self._checkpoint()
         self._phase("report", "running", "結果をまとめています")
@@ -4065,9 +4682,22 @@ class AssessmentService:
             level="L1",
         )
         self._phase("report", "done", "診断が完了しました")
-        with self._lock:
-            self.a.activity = None
-            self._set_state("completed")
+        while True:
+            self._checkpoint()
+            with self._lock:
+                if self.gateway.state is State.STOPPED or self._stale_runner():
+                    raise _Stopped()
+                if self.a.state == "paused" or self.gateway.state is State.PAUSED:
+                    continue
+                if self.a.state != "running":
+                    raise _Stopped()
+                if is_ext:
+                    # A local planner may have taken time after the Worker returned.
+                    # Recheck ownership and scope in the same lock as final adoption.
+                    self._ensure_artex_authority_locked()
+                self.a.activity = None
+                self._set_state("completed")
+                break
 
     def _exec(self, tool, action, args, approval_actor=None, approval_id=None):
         self._checkpoint()
@@ -4124,7 +4754,19 @@ class AssessmentService:
             self._fail(self._worker_failure_text(tool, d.result))
             return None, None
         entry = next(e for e in reversed(self.audit.entries()) if e["event"] == "result")
-        clean_stdout = self.secrets.redact(d.result.stdout.strip())
+        try:
+            clean_stdout = self.secrets.redact(d.result.stdout.strip())
+            if not isinstance(clean_stdout, str):
+                raise ValueError("secret redactor returned non-string")
+            parsed_out = json.loads(clean_stdout)
+            if tool == "http_probe":
+                parsed_out = sanitize_http_probe_payload(parsed_out)
+                clean_stdout = self.secrets.redact(json.dumps(parsed_out, ensure_ascii=False))
+                if not isinstance(clean_stdout, str):
+                    raise ValueError("secret redactor returned non-string")
+        except Exception:
+            self._fail("Worker 出力の秘密値マスキングに失敗したため、結果を記録しません")
+            return None, None
         evidence = {
             "evidence_id": "ev_" + entry["hash"][:12],
             "kind": f"{tool} 出力",
@@ -4137,14 +4779,19 @@ class AssessmentService:
             "audit_hash": entry["hash"],
             "content": clean_stdout,
         }
-        return json.loads(clean_stdout), evidence
+        return parsed_out, evidence
 
     def _analyze(self, res: dict, ev: dict) -> str:
         if self._stale_runner():
             raise _Stopped()
         if self._is_external_service_asset():
+            profile = self._l2_profile()
+            root_contract = (profile.get("root_access") if profile and
+                             urllib.parse.urlsplit(self.a.target_url).path in ("", "/") else None)
             l1_findings = analyze_l1_service_response(
-                res, ev, self.a.target_url, self.cve_monitor
+                res, ev, self.a.target_url, self.cve_monitor,
+                root_access=root_contract,
+                cookie_policy=profile.get("cookie_policy") if profile else None,
             )
             for f in l1_findings:
                 self._upsert_finding(f)
@@ -4155,6 +4802,9 @@ class AssessmentService:
             return "f_powered" if "f_powered" in self.a.findings else ""
 
         h = {k.lower(): v for k, v in res["headers"].items()}
+        # Only the presence of this fixed, observed link reaches the local ARTEX
+        # planner. The response body, owner specification and truth labels do not.
+        self._lab_account_resource_observed = _has_lab_account_resource_link(h.get("link"))
         banner = h.get("server", "")
         bid = "f_banner"
         # CVE candidates come from the catalog engine (detection only, not proof).
@@ -4173,33 +4823,34 @@ class AssessmentService:
                 "why_detected": "応答ヘッダーのバージョン文字列が、NVD / CISA KEV フィードの影響バージョンと一致したためです。",
                 "caveat": "バナー段階では「検出（未実証）」です。L2再現試験を承認すると、隔離ラボで実際に到達可能か検証します。",
                 "evidence": [ev],
-                "remediation": {"steps": ["Apache HTTP Server を最新の安定版（2.4.62以降）に更新する",
+                "remediation": {"steps": ["Apache HTTP Server の公式セキュリティ情報を確認し、サポート中の修正版へ更新する",
                                           "Server ヘッダーのバージョン表示を抑制する（ServerTokens Prod）"],
                                 "how_to_verify": "「防御パッチ適用・再検証」を実行し、再現試験の結果が「再現せず」に変わることを確認します。"},
                 "executor": {**EXECUTOR, "tool": "http_probe"}, "demo_fixture": False})
 
-        # Candidate IDOR check queued for L2 verification
+        # The root page says nothing about authorization on another endpoint. Keep
+        # this as an unmeasured candidate until its own approved probe has evidence.
         self._upsert_finding({
-            "id": "f_idor", "title": "他アカウントの保護リソースへのアクセス制御不備（IDOR）",
-            "severity": "high", "verdict": "detected", "category": "アクセス制御", "cve": [],
+            "id": "f_idor", "title": "他アカウントの保護リソースへのアクセス制御確認（IDOR）",
+            "severity": "high", "verdict": "candidate", "category": "アクセス制御", "cve": [],
             "risk_level": "L2", "help_term": "idor",
-            "summary": "APIエンドポイント /api/accounts/B/secret においてオブジェクト単位の所有者検証が必要と判定されました。",
-            "why_detected": "ARTEX のエンドポイント分析により、アカウントID指定型リソースが検出されたためです（L2承認後に2アカウント間で実証試験を行います）。",
-            "caveat": "L2承認前は「検出（未実証）」として扱います。",
-            "evidence": [ev],
+            "summary": "模擬ラボの /api/accounts/B/secret は、承認後にアカウント間のアクセス制御を確認する候補です。現時点では未計測です。",
+            "why_detected": "模擬ラボに用意された確認対象です。ルートページの応答から、このAPIの認可不備は判断できません。",
+            "caveat": "承認済みの再現試験でこのAPIの応答を測るまで、脆弱性として検出したとは扱いません。",
+            "evidence": [],
             "remediation": {"steps": ["サーバー側でセッション主体とリソース所有者を必ず照合し、不一致時は 403 Forbidden を返す"],
                             "how_to_verify": "修正後に同じ2アカウント間の試験を実行し、HTTP 403 が返ることを確認します。"},
             "executor": {**EXECUTOR, "tool": "http_probe"}, "demo_fixture": False})
 
-        # Candidate SQLi check queued for L2 verification
+        # Likewise, a root-page response cannot establish the query boundary.
         self._upsert_finding({
-            "id": "f_sqli", "title": "検索欄のSQLインジェクション境界不備（/api/search）",
-            "severity": "critical", "verdict": "detected", "category": "インジェクション", "cve": [],
+            "id": "f_sqli", "title": "検索欄のSQLインジェクション境界確認（/api/search）",
+            "severity": "critical", "verdict": "candidate", "category": "インジェクション", "cve": [],
             "risk_level": "L2", "help_term": "sqli",
-            "summary": "検索エンドポイント /api/search のクエリパラメータ q において、SQL構文差分の検証が必要と判定されました。",
-            "why_detected": "ARTEX のパラメータ境界分析により、未バインドクエリの可能性が検出されたためです（L2承認後に非破壊エラー差分検証を行います）。",
-            "caveat": "L2承認前は「検出（未実証）」として扱います。",
-            "evidence": [ev],
+            "summary": "模擬ラボの /api/search は、承認後に入力処理を確認する候補です。現時点では未計測です。",
+            "why_detected": "模擬ラボに用意された確認対象です。ルートページの応答から、このAPIのSQL処理は判断できません。",
+            "caveat": "承認済みの再現試験で検索APIの応答を測るまで、脆弱性として検出したとは扱いません。",
+            "evidence": [],
             "remediation": {"steps": ["プリペアドステートメント（プレースホルダー付きクエリ）を使用し文字列連結を廃止する"],
                             "how_to_verify": "修正後に同じ試験を実行し、SQLエラー差分が発生しないことを確認します。"},
             "executor": {**EXECUTOR, "tool": "http_probe"}, "demo_fixture": False})
@@ -4271,7 +4922,7 @@ class AssessmentService:
         while True:
             if self.gateway.state is State.STOPPED or self.a.state == "stopped" or self._stale_runner():
                 raise _Stopped()
-            if self.a.state != "paused" or allow_pause:
+            if (self.a.state != "paused" and self.gateway.state is not State.PAUSED) or allow_pause:
                 return
             time.sleep(0.2)
 
@@ -4418,27 +5069,209 @@ class AssessmentService:
         # not matching the rule) says nothing about the boundary, so it does not
         # move the score either; such an item counts only once it is proven.
         fs = [f for f in self._real_findings()
-              if evidence_status(f) != "candidate"
+              if evidence_status(f) in ("detected", "proven")
               and not (self.l2.has_check(f.get("reproduce_check")) and f.get("verdict") != "proven")]
         score = min(100, round(sum(SEVERITY_WEIGHT[f["severity"]] * VERDICT_FACTOR[f["verdict"]]
                                    for f in fs)))
-        label = "高リスク" if score >= 70 else "中リスク" if score >= 40 else "低リスク"
+        unknown = any(evidence_status(f) in ("candidate", "incomplete") for f in self._real_findings())
+        label = ("高リスク" if score >= 70 else "中リスク" if score >= 40
+                 else "未計測項目あり" if score == 0 and unknown
+                 else "確認範囲で検出なし" if score == 0 else "低リスク")
         return {"score": score, "label": label,
                 "provisional": self.a.state != "completed",
-                "basis": "架空データ・未計測の候補・判定できなかったL2検証を除く検出結果の深刻度 × 判定（実証=1.0, 検出・未検証=0.6, 再現せず=0）の合計（上限100）"}
+                "basis": "架空データ・未計測の候補・判定できなかった検証を除く実測結果の深刻度 × 判定（実証=1.0, 検出・未実証=0.6, 再現せず=0）の合計（上限100）。0点はサイト全体の安全を保証しません。"}
 
     def _on_audit(self, entry: dict) -> None:
         self.bus.publish(self.a.id if hasattr(self, "a") else "scan_001", "audit.recorded",
                          entry={k: entry[k] for k in ("ts", "event", "fields", "prev", "hash")})
 
     # ---- P1: AI chat with assessment context (read-only, zero authority) ----
+    def _safe_real_ai_explanation(self, finding_id: str | None, actor: str, outcome: dict,
+                                  request_authorized=None) -> str | None:
+        """Explain one real-site finding from fixed enums only. The user's question,
+        title, evidence and target URL never enter the advisor request."""
+        from .ai_advisor import AbliterationAdvisor, ExternalAbliterationAdvisor, AdvisorError
+        from .chat_guard import verdict_note
+
+        if request_authorized is not None and not request_authorized():
+            return None
+        with self._lock:
+            if (not self._real_site_safe_ai or self._chat_backend is None or not finding_id
+                    or self.a.state != "completed" or self.gateway.state is State.STOPPED
+                    or not self._is_external_service_asset()
+                    or self._external_entry(self.a.asset.get("name")) is None):
+                return None
+            finding = self.a.findings.get(finding_id)
+            if not isinstance(finding, dict) or evidence_status(finding) not in ("candidate", "detected", "proven"):
+                return None
+            finding = copy.deepcopy(finding)
+            backend = self._chat_backend
+            generation = self._run_generation
+            asset_id = self.a.asset.get("id")
+            host_name = self.a.asset.get("name")
+
+        url = backend._url
+        host = (urllib.parse.urlsplit(url).hostname or "").lower()
+        try:
+            if host in ("127.0.0.1", "::1"):
+                advisor = AbliterationAdvisor(url, model=backend._model or "mock")
+            else:
+                advisor = ExternalAbliterationAdvisor(url, model=backend._model, api_key=backend._key or "")
+            # Construct and inspect the exact allow-listed shape before any network call.
+            body, _ = advisor.build_request([finding])
+            external = host not in ("127.0.0.1", "::1")
+            if external:
+                if os.environ.get("VULNIX_ADVISOR_PRICE_MODEL", "") != backend._model:
+                    raise AdvisorError("advisor model price is not configured")
+                def positive_usd(name: str) -> Decimal:
+                    try:
+                        value = Decimal(os.environ.get(name, ""))
+                    except InvalidOperation:
+                        raise AdvisorError("advisor cost configuration missing") from None
+                    if not value.is_finite() or value <= 0:
+                        raise AdvisorError("advisor cost configuration invalid")
+                    return value
+
+                cap = positive_usd("VULNIX_ADVISOR_MAX_COST_USD")
+                input_price = positive_usd("VULNIX_ADVISOR_USD_PER_1K_INPUT")
+                output_price = positive_usd("VULNIX_ADVISOR_USD_PER_1K_OUTPUT")
+                output_limit = json.loads(body).get("max_tokens")
+                if not isinstance(output_limit, int) or not 0 < output_limit <= 2048:
+                    raise AdvisorError("advisor output cap missing")
+                # UTF-8 bytes are a conservative bound for prompt tokens. Reserve
+                # the full completion even if the upstream fails after receiving it.
+                reserve_micro_usd = int(((Decimal(len(body)) * input_price
+                                          + Decimal(output_limit) * output_price) * 1000)
+                                        .to_integral_value(rounding=ROUND_CEILING))
+                cap_micro_usd = int((cap * 1_000_000).to_integral_value(rounding=ROUND_FLOOR))
+                platform_cap = getattr(self, "_platform_advisor_cap", None)
+                if platform_cap is not None:
+                    # shared by every organization: a new organization brings no fresh budget
+                    platform_cap_micro_usd = int((positive_usd("VULNIX_ADVISOR_PLATFORM_MAX_COST_USD")
+                                                  * 1_000_000).to_integral_value(rounding=ROUND_FLOOR))
+            if request_authorized is not None and not request_authorized():
+                return None
+            with self._lock:
+                if (generation != self._run_generation or not self._is_external_service_asset()
+                        or self.a.state != "completed" or not self._real_site_safe_ai
+                        or self.gateway.state is State.STOPPED or self._chat_backend is not backend
+                        or self.a.asset.get("id") != asset_id
+                        or self._external_entry(host_name) is None):
+                    return None
+                audit_fields = {"actor": actor, "finding_id": finding_id, "model": backend._model,
+                                "payload_sha256": hashlib.sha256(body).hexdigest(),
+                                "endpoint_kind": "external" if external else "loopback_mock"}
+                if external:
+                    if platform_cap is not None:
+                        from .spend_cap import SpendRefused
+                        try:
+                            platform_cap.reserve(reserve_micro_usd, cap_micro_usd=platform_cap_micro_usd)
+                        except SpendRefused:
+                            raise AdvisorError("advisor platform budget refused") from None
+                    try:
+                        self.audit.record_with_budget("advisor.safe_send_requested",
+                                                      reserve_micro_usd=reserve_micro_usd,
+                                                      cap_micro_usd=cap_micro_usd, **audit_fields)
+                    except ValueError:
+                        raise AdvisorError("advisor budget refused") from None
+                else:
+                    self.audit.record("advisor.safe_send_requested", **audit_fields)
+            # The audit reservation can block. A revoked session, withdrawn scope,
+            # switched workspace or emergency stop must prevent the transport.
+            if request_authorized is not None and not request_authorized():
+                return None
+            with self._lock:
+                if (generation != self._run_generation or self.gateway.state is State.STOPPED
+                        or self.a.state != "completed" or not self._real_site_safe_ai
+                        or self._chat_backend is not backend or not self._is_external_service_asset()
+                        or self.a.asset.get("id") != asset_id
+                        or self._external_entry(host_name) is None):
+                    return None
+            def before_send() -> None:
+                # Building the advisor's request can also take time. Recheck at
+                # its transport boundary, outside the service lock to avoid an
+                # account/tenant -> service lock inversion.
+                if request_authorized is not None and not request_authorized():
+                    raise AdvisorError("request authority expired before advisor send")
+                with self._lock:
+                    if (generation != self._run_generation or self.gateway.state is State.STOPPED
+                            or self.a.state != "completed" or not self._real_site_safe_ai
+                            or self._chat_backend is not backend or not self._is_external_service_asset()
+                            or self.a.asset.get("id") != asset_id
+                            or self._external_entry(host_name) is None):
+                        raise AdvisorError("advisor scope expired before send")
+            @contextlib.contextmanager
+            def send_scope():
+                # The HTTP route supplies an account -> tenant lease. Hold it
+                # only while the HTTPS request bytes are written, then release
+                # before waiting for the model's reply.
+                lease = getattr(request_authorized, "lease", None)
+                if not callable(lease) and request_authorized is not None and not request_authorized():
+                    raise AdvisorError("request authority expired before advisor write")
+                with (lease() if callable(lease) else contextlib.nullcontext()):
+                    with self._lock:
+                        if (generation != self._run_generation or self.gateway.state is State.STOPPED
+                                or self.a.state != "completed" or not self._real_site_safe_ai
+                                or self._chat_backend is not backend or not self._is_external_service_asset()
+                                or self.a.asset.get("id") != asset_id
+                                or self._external_entry(host_name) is None):
+                            raise AdvisorError("advisor scope expired before request write")
+                        yield
+            outcome["model_attempted"] = True
+            result = advisor.advise([finding], before_send=before_send,
+                                    send_scope=send_scope if external else None)
+        except AdvisorError as exc:
+            outcome["model_error"] = type(exc).__name__
+            with self._lock:
+                if self._chat_backend is backend:
+                    self._note_model_outcome_locked(False, "advisor_refused")
+                self.audit.record("advisor.safe_failed", actor=actor, finding_id=finding_id, reason="advisor_refused")
+            return None
+        accepted = next((a for a in result.advice if a.finding_id == finding_id), None)
+        with self._lock:
+            if self._chat_backend is backend:
+                self._note_model_outcome_locked(accepted is not None, None if accepted else "no_valid_advice")
+            self.audit.record("advisor.safe_reply", actor=actor, finding_id=finding_id,
+                              accepted=accepted is not None, rejected=len(result.rejected),
+                              endpoint_kind=result.endpoint_kind)
+        if accepted is None:
+            outcome["model_error"] = "no_valid_advice"
+            return None
+        outcome["model_name"] = backend._model
+        if finding.get("verdict") != "proven":
+            outcome["verdict_note"] = verdict_note(finding.get("verdict"))
+        return self._safe_advice_text(accepted)
+
+    @staticmethod
+    def _safe_advice_text(accepted) -> str:
+        """The text shown for one accepted advice. The steps are the approved fixes from the
+        catalog, never the model's own words: a free-text check that misses one dangerous
+        phrase must not put it in front of the user. The model's part is the (already
+        checked) explanation of the risk."""
+        from .advisor_catalog import REMEDIATION_ACTIONS
+        labels = []
+        for step in accepted.remediation:
+            spec = REMEDIATION_ACTIONS.get(step.fix)
+            if spec is not None and spec[0] not in labels:
+                labels.append(spec[0])
+        steps = "\n".join(f"・{label}" for label in labels) or "・設定を人が見直してください"
+        return (f"{accepted.risk_explanation}\n\n改善案：\n{steps}\n\n"
+                "実際の応答と監査記録は問題詳細で確認してください。これらはAIに送信していません。")
+
     def ask_chat(self, question: str, actor: str, term: str | None = None,
-                 finding_id: str | None = None) -> dict:
+                 finding_id: str | None = None, safe_advice: bool = False,
+                 request_authorized=None) -> dict:
         q = question.strip()[:500]
         if not q:
             raise ValueError("question must not be empty")
+        if request_authorized is not None and not request_authorized():
+            raise ValueError("要求者の権限が失効したため、解説を開始しません")
         now = time.time()
         with self._lock:
+            chat_generation = self._run_generation
+            chat_asset_id = self.a.asset.get("id")
+            chat_external = safe_advice and self._is_external_service_asset()
+            chat_host = self.a.asset.get("name") if chat_external else None
             user_msg = {
                 "id": "msg_" + secrets.token_hex(4),
                 "role": "user",
@@ -4451,16 +5284,30 @@ class AssessmentService:
         # Inference can be slow. Never hold the control-plane lock while waiting:
         # snapshots, worker updates and emergency stop must remain responsive.
         outcome: dict = {"model_attempted": False, "model_error": None}
-        source, answer_text = self._answer_question(q, term=term, finding_id=finding_id, outcome=outcome)
+        safe_answer = (self._safe_real_ai_explanation(finding_id, actor, outcome,
+                                                     request_authorized=request_authorized)
+                       if safe_advice else None)
+        if request_authorized is not None and not request_authorized():
+            raise ValueError("要求者の権限が失効したため、解説を続けません")
+        source, answer_text = ("external_model", safe_answer) if safe_answer else self._answer_question(
+            q, term=term, finding_id=finding_id, outcome=outcome)
         model_attempted = outcome["model_attempted"]
         # A model's answer is outside text too: make sure it can always be stored
         # (an unpaired surrogate would otherwise make every later save fail).
         answer_text = str(answer_text).encode("utf-8", "replace").decode("utf-8")[:20000]
+        if request_authorized is not None and not request_authorized():
+            raise ValueError("要求者の権限が失効したため、解説を保存しません")
         with self._lock:
+            if (chat_generation != self._run_generation or chat_asset_id != self.a.asset.get("id")
+                    or (chat_external and (not self._is_external_service_asset()
+                                           or self._external_entry(chat_host) is None
+                                           or self.gateway.state is State.STOPPED))):
+                raise ValueError("診断対象または許可状態が変更されたため、AI解説を破棄しました")
             ai_msg = {
                 "id": "msg_" + secrets.token_hex(4),
                 "role": "assistant",
-                "actor": f"AI解説（{self._chat_backend._model}）" if source == "external_model" else "内蔵解説",
+                "actor": f"AI解説（{outcome.get('model_name') or (self._chat_backend._model if self._chat_backend else '外部モデル')}）"
+                         if source == "external_model" else "内蔵解説",
                 "source": source,
                 "text": answer_text,
                 "term": term,
@@ -4604,6 +5451,7 @@ class AssessmentService:
                 withheld = check_answer(ans, proven=proven)
                 if withheld is None:
                     if outcome is not None:
+                        outcome["model_name"] = ext._model
                         if target_f and not proven:
                             outcome["verdict_note"] = MIXED_VERDICT_NOTE if mixed else verdict_note(target_f.get("verdict"))
                         outcome["cautions"] = cautions(ans, proven=proven)
@@ -4707,7 +5555,9 @@ class AssessmentService:
             "",
             "## 証拠の概要と検証範囲",
             f"- **提案エンジン**: {s['planner']['note']}",
-            (f"- **検証環境**: 所有確認済みの実サービス ({s['target_url']})。L1は読み取り専用の実測、L2は検証用アカウントと模擬データに限定した個別承認分のみです。"
+            (f"- **検証環境**: 所有確認済みの実サービス ({s['target_url']})。L1は読み取り専用の実測、"
+             + ("L2はこの公開βで実行しません。" if self.real_site_read_only else
+                "L2は検証用アカウントと模擬データに限定した個別承認分のみです。")
              if s.get("is_external_service") else
              f"- **検証環境**: ローカル模擬ラボ ({s['lab_endpoint']})。実在する Apache や本番環境の診断結果ではありません。"),
             "- **判定の限界**: 検出は実証を意味しません。「再現せず」は今回の条件での結果であり、安全性の保証ではありません。",
@@ -4718,17 +5568,24 @@ class AssessmentService:
         for p in s["phases"]:
             lines.append(f"- **{p['label']}**: {p['status']} {('— ' + p['detail']) if p['detail'] else ''}")
         lines.append("")
-        lines.append("## 2. 検出された問題と実証結果")
+        lines.append("## 2. 診断結果と実証状況")
         real_findings = [f for f in s["findings"] if not f.get("demo_fixture")]
         if not real_findings:
             lines.append("- 実環境の検出結果はまだありません（未診断または検査前）。")
         for f in real_findings:
+            reason_label = ("再確認の結果" if f["evidence_status"] == "not_reproduced" else
+                            "確認できなかった理由" if f["evidence_status"] == "incomplete" else
+                            "なぜ確認候補か" if f["evidence_status"] == "candidate" else
+                            "なぜ検出されたか")
+            reason_text = ((f.get("verdict_note") or f["summary"])
+                           if f["evidence_status"] in ("not_reproduced", "incomplete") else
+                           (f.get("why_detected") or f["summary"]))
             lines.extend([
                 f"### [{f['severity'].upper()}] {f['title']} ({EVIDENCE_LABELS[f['evidence_status']]})",
                 f"- **カテゴリ**: {f['category']} / **危険度**: {f['risk_level']}",
                 f"- **関連CVE**: {', '.join(f['cve']) if f['cve'] else 'なし'}",
                 f"- **概要**: {f['summary']}",
-                f"- **なぜ検出されたか**: {f.get('why_detected', '—')}",
+                f"- **{reason_label}**: {reason_text}",
                 f"- **成立内容 / 検証結果**: {f.get('what_was_established') or f.get('verdict_note') or f.get('caveat') or '—'}",
                 "- **証拠**:",
             ])
@@ -4780,30 +5637,30 @@ def _fixture_findings() -> list[dict]:
     """Initial real candidate findings for the local verification lab (127.0.0.1), ready for live Gateway + Worker execution."""
     common = {"demo_fixture": False, "executor": {**EXECUTOR, "tool": "reproduction_probe"}}
     return [
-        {**common, "id": "f_banner", "title": "既知の脆弱性に該当するWebサーバーのバージョン表示（CVE-2021-41773）",
-         "severity": "high", "verdict": "detected", "category": "既知の脆弱性（CVE）",
+        {**common, "id": "f_banner", "title": "Webサーバーのバージョンと既知脆弱性の確認（CVE-2021-41773）",
+         "severity": "high", "verdict": "candidate", "category": "既知の脆弱性（CVE）",
          "cve": ["CVE-2021-41773", "CVE-2021-42013"], "risk_level": "L2", "help_term": "cve",
          "summary": "ローカル検証ラボ（127.0.0.1）の Server ヘッダーおよびパス正規化処理に CVE-2021-41773 の影響可能性があります。",
-         "why_detected": "対象エンドポイントの構成プロファイルおよび応答バナーから CVE-2021-41773 / CVE-2021-42013 の検証対象として検出されました。",
+         "why_detected": "模擬ラボに用意された確認候補です。診断を開始するまでバナーも脆弱性も測定していません。",
          "caveat": "「実機Workerで今すぐ検証」または「診断を開始」を実行すると、Gateway経由で reproduction_probe Worker が実際に検証します。",
          "evidence": [],
-         "remediation": {"steps": ["Apache HTTP Server を最新の安定版（2.4.62以降）に更新する",
+         "remediation": {"steps": ["Apache HTTP Server の公式セキュリティ情報を確認し、サポート中の修正版へ更新する",
                                    "Server ヘッダーのバージョン表示を抑制する（ServerTokens Prod）"],
                          "how_to_verify": "「防御パッチ適用・再検証」または「実機Workerで今すぐ検証」を実行し、結果が「再現せず」に変わることを確認します。"}},
-        {**common, "id": "f_idor", "title": "他アカウントの保護リソースへのアクセス制御不備（IDOR）",
-         "severity": "high", "verdict": "detected", "category": "アクセス制御", "cve": [],
+        {**common, "id": "f_idor", "title": "他アカウントの保護リソースへのアクセス制御確認（IDOR）",
+         "severity": "high", "verdict": "candidate", "category": "アクセス制御", "cve": [],
          "risk_level": "L2", "help_term": "idor",
          "summary": "検証用アカウント acct_A のトークンで、別アカウント acct_B の保護リソース（/api/accounts/B/secret）へアクセスできるか検証します。",
-         "why_detected": "APIエンドポイント /api/accounts/B/secret においてオブジェクト単位の所有者検証が必要と判定されたためです。",
+         "why_detected": "模擬ラボに用意された確認候補です。承認済みの再現試験までアクセス制御は測定していません。",
          "caveat": "「実機Workerで今すぐ検証」または「診断を開始」を実行すると、Gateway経由で reproduction_probe Worker が2アカウント間の実通信で実証します。",
          "evidence": [],
          "remediation": {"steps": ["サーバー側でセッション主体とリソース所有者を必ず照合し、不一致時は 403 Forbidden を返す"],
                          "how_to_verify": "修正後に同じ手順で再試験し、HTTP 403 が返ることを確認します。"}},
-        {**common, "id": "f_sqli", "title": "検索欄のSQLインジェクション境界不備（/api/search）",
-         "severity": "critical", "verdict": "detected", "category": "インジェクション",
+        {**common, "id": "f_sqli", "title": "検索欄のSQLインジェクション境界確認（/api/search）",
+         "severity": "critical", "verdict": "candidate", "category": "インジェクション",
          "cve": [], "risk_level": "L2", "help_term": "sqli",
          "summary": "検索エンドポイント /api/search?q=test' に対し、未バインドのSQL構文解釈が発生するかを非破壊プローブで検証します。",
-         "why_detected": "検索パラメータ q において未エスケープのクエリ連結が行われている可能性が検出されたためです。",
+         "why_detected": "模擬ラボに用意された確認候補です。承認済みの再現試験まで検索APIの入力処理は測定していません。",
          "caveat": "「実機Workerで今すぐ検証」または「診断を開始」を実行すると、Gateway経由で reproduction_probe Worker が実際のHTTP応答と監査ハッシュを記録します。",
          "evidence": [],
          "remediation": {"steps": ["プリペアドステートメント（プレースホルダー付きクエリ）を使用し文字列連結を廃止する"],

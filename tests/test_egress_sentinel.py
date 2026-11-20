@@ -50,9 +50,11 @@ class TestInstall(unittest.TestCase):
         s.connect((self.ip, self.port)); s.close()
         # A different port is blocked before any packet leaves.
         with self.assertRaises(PermissionError):
-            socket.socket().connect((self.ip, self.port + 1))
+            with socket.socket() as blocked:
+                blocked.connect((self.ip, self.port + 1))
         # connect_ex reports EACCES rather than raising.
-        self.assertEqual(socket.socket().connect_ex((self.ip, self.port + 1)), errno.EACCES)
+        with socket.socket() as blocked:
+            self.assertEqual(blocked.connect_ex((self.ip, self.port + 1)), errno.EACCES)
 
 
 class TestBootstrap(unittest.TestCase):

@@ -71,7 +71,7 @@ function CopyRow({ label, value }: { label: string; value: string }) {
 
 export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, notice }: Props) {
   const router = useRouter();
-  const { googleOwnership } = useSession();
+  const { googleOwnership, optionalStatusCheck } = useSession();
   const [otherWays, setOtherWays] = useState(Boolean(notice));
   const resumeAt = initialAsset?.challenge ? (initialAsset.ownership_verified ? 2 : 1) : 0;
   const [step, setStep] = useState(resumeAt);
@@ -82,6 +82,7 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
   const [method, setMethod] = useState<Method>("dns_txt");
   const [verifyDetail, setVerifyDetail] = useState<string | null>(null);
   const [confirmed, setConfirmed] = useState(false);
+  const [statusCheckConsent, setStatusCheckConsent] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -105,13 +106,29 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
       setChallenge(res.challenge);
       setTargetUrl((res.asset as { target_url?: string }).target_url ?? url.trim());
       onAssetsChanged(res.assets);
-      // An already-verified asset keeps its proof; skip straight to scope confirmation.
-      setStep(res.asset.ownership_verified ? 2 : 1);
+      // An existing proof (including a stored Google Domain proof for a subdomain)
+      // needs no repeated OAuth. Otherwise one click registers and starts Google.
+      if (res.asset.ownership_verified) {
+        setStep(2);
+      } else {
+        setStep(1);
+        if (googleOwnership) {
+          try {
+            const next = await postJSON<{ url: string }>("/api/assets/google/start", { url: url.trim() });
+            try { sessionStorage.setItem("vulnix_google_pending_host", res.asset.name); } catch { /* ignore */ }
+            window.location.assign(next.url);
+          } catch {
+            setOtherWays(true);
+            setVerifyDetail("Google での確認を開始できませんでした。DNS または確認用ファイルでお試しください。");
+          }
+        }
+      }
     });
 
   const viaGoogle = () =>
     run(async () => {
       const res = await postJSON<{ url: string }>("/api/assets/google/start", { url: url.trim() });
+      try { sessionStorage.setItem("vulnix_google_pending_host", new URL(url.trim()).hostname); } catch { /* ignore */ }
       window.location.assign(res.url);       // Google, then back to /verify/google
     });
 
@@ -129,6 +146,7 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
       const res = await postJSON<ScopeResponse>("/api/assets/confirm-scope", {
         url: url.trim(),
         confirmed_prohibited: confirmed,
+        allow_status_probe: optionalStatusCheck && statusCheckConsent,
         activate_workspace: true,
       });
       onAssetsChanged(res.assets);
@@ -150,7 +168,7 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
           <div>
             <h2 id="ownership-wizard-title" className="text-lg font-bold">サイトを診断する</h2>
             <p className="mt-0.5 text-xs text-zinc-500">
-              あなたが管理しているサイトだけを診断できます。所有確認が終わるまで、サイトへは一切アクセスしません。
+              あなたが管理しているサイトだけを診断できます。所有確認には、利用可能なGoogle連携、DNS、確認用ファイルを使います。診断は所有確認と範囲の確定後に始まります。
             </p>
           </div>
           <button type="button" onClick={onClose} className="shrink-0 whitespace-nowrap rounded-lg px-2.5 py-1 text-xs text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800">
@@ -198,7 +216,7 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
             </div>
             <div className="flex justify-end">
               <button type="submit" disabled={busy || !url.trim()} className="rounded-lg bg-zinc-900 px-4 py-2 text-xs font-semibold text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-white dark:text-zinc-900">
-                {busy ? "準備中…" : "次へ"}
+                {busy ? "準備中…" : googleOwnership ? "Google で所有確認" : "所有確認へ"}
               </button>
             </div>
           </form>
@@ -224,7 +242,7 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
             )}
             {googleOwnership && !otherWays ? (
               <button type="button" onClick={() => setOtherWays(true)} className="text-xs text-zinc-500 underline hover:text-zinc-800 dark:hover:text-zinc-200">
-                ほかの方法で確認する（DNS・確認用ファイル）
+                Google で確認できない場合（DNS・確認用ファイル）
               </button>
             ) : (
               <>
@@ -283,8 +301,12 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
             <div className="rounded-xl border border-zinc-200 p-3 text-xs text-zinc-700 dark:border-zinc-800 dark:text-zinc-300">
               <p className="mb-1.5">
                 公開されているページを1回だけ読み取り、通信の暗号化・セキュリティ設定・Cookie などを調べます。
-                結果は数十秒で表示され、AI が問題点と直し方を分かりやすく説明します。
+                結果と対策を表示します。公開ページだけでは判断できない項目は、未計測の候補として区別します。
               </p>
+              {optionalStatusCheck && <p className="mb-1.5">
+                希望する場合は、AIが必要と判断したときに限り、Apacheの状態情報が公開されているか
+                <code className="mx-1">/server-status?auto</code>を追加で最大1回確認できます。
+              </p>}
               <h3 className="mb-1 mt-2 font-semibold">行わないこと</h3>
               <ul className="list-disc space-y-0.5 pl-4">
                 {prohibited.map((p) => (
@@ -296,6 +318,10 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
               <input type="checkbox" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)} className="mt-0.5 rounded border-zinc-300" />
               <span>このサイトの管理者として、上記の内容で診断することに同意します。</span>
             </label>
+            {optionalStatusCheck && <label className="flex cursor-pointer items-start gap-2.5 text-xs">
+              <input type="checkbox" checked={statusCheckConsent} onChange={(e) => setStatusCheckConsent(e.target.checked)} className="mt-0.5 rounded border-zinc-300" />
+              <span>AIが提案した場合、上記の固定パスへの追加の読み取りを最大1回許可します（任意）。</span>
+            </label>}
             <div className="flex justify-end">
               <button type="button" disabled={busy || !confirmed} onClick={confirmScope} className="rounded-lg bg-zinc-900 px-4 py-2 text-xs font-semibold text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-white dark:text-zinc-900">
                 {busy ? "開始しています…" : "診断を開始"}

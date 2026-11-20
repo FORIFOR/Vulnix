@@ -17,6 +17,7 @@ from aegis.network import EgressGuard
 from aegis.policy import Budget
 from aegis.router import (AbliterationBackend, ArtexEngine, HttpModelBackend,
                           ProposalRouter, StubBackend, sanitize_proposal)
+from tests.artex_mock_llm import MockLLM
 from aegis.runtime import WorkerPool
 
 
@@ -231,6 +232,7 @@ class TestRouterWithRealGateway(unittest.TestCase):
 
         srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
         self.addCleanup(srv.shutdown)
         url = f"http://127.0.0.1:{srv.server_port}/v1/propose"
 
@@ -313,6 +315,17 @@ class TestAbliterationBackendAndArtexEngine(unittest.TestCase):
 
 
 class TestModelEnvironmentConfig(unittest.TestCase):
+    def test_loopback_model_request_ignores_process_http_proxy(self):
+        from aegis.router import _http_transport
+        with MockLLM() as model, patch.dict(os.environ, {
+                "HTTP_PROXY": "http://127.0.0.1:1", "http_proxy": "http://127.0.0.1:1",
+                "NO_PROXY": "", "no_proxy": "",
+        }):
+            response = _http_transport(model.url + "/chat/completions",
+                                       {"Content-Type": "application/json"},
+                                       b'{"model":"mock","messages":[{"role":"user","content":"hello"}]}')
+        self.assertIn(b"choices", response)
+
     def test_all_supported_namespaces_initialize_both_adapters(self):
         for prefix in ("VULNIX_ABLITERATION", "AEGIS_MODEL", "VULNIX_MODEL"):
             for adapter in (HttpModelBackend, AbliterationBackend):

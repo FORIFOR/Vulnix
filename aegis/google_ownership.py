@@ -24,6 +24,7 @@ import hashlib
 import json
 import os
 import secrets
+import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Callable
@@ -75,6 +76,8 @@ def _http(url: str, *, data: bytes | None = None, headers: dict | None = None) -
         with urllib.request.urlopen(req, timeout=15) as r:      # noqa: S310 - fixed Google URLs only
             return json.loads(r.read(1_000_000) or b"{}")
     except Exception as e:  # noqa: BLE001 - reported without any token or body
+        if isinstance(e, urllib.error.HTTPError):
+            e.close()
         raise GoogleOwnershipError(f"Google に接続できませんでした（{type(e).__name__}）") from None
 
 

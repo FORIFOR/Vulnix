@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import os
+import tempfile
+import threading
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
@@ -72,6 +75,128 @@ class TestGoogleOwnershipOverHttp(TestPublicReadOnlyRealSites):
         with patch("aegis.google_ownership.owned_sites", return_value=sites):
             return self.req(who, "/assets/google/finish", {"code": "c", "state": state})
 
+    def _finish_while_google_waits(self, who, state, change_authority):
+        entered, release = threading.Event(), threading.Event()
+        result = []
+
+        def blocked_owned_sites(*_args):
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError("test did not release the Google response")
+            return ["sc-domain:next-standards.com"]
+
+        with patch("aegis.google_ownership.owned_sites", side_effect=blocked_owned_sites):
+            worker = threading.Thread(
+                target=lambda: result.append(self.req(who, "/assets/google/finish", {"code": "c", "state": state})),
+                daemon=True,
+            )
+            worker.start()
+            try:
+                self.assertTrue(entered.wait(5), "Google request did not start")
+                change_authority()
+            finally:
+                release.set()
+                worker.join(5)
+            self.assertFalse(worker.is_alive(), "Google finish did not return")
+        return result[0]
+
+    def test_logout_during_google_lookup_cannot_grant_ownership(self):
+        alice = self.signup("alice")
+        host = "next-standards.com"
+        self.req(alice, "/assets/challenge", {"url": f"https://{host}"})
+        state = self.start(alice, f"https://{host}")
+        code, _ = self._finish_while_google_waits(
+            alice, state, lambda: self.ops.logout(alice["cookie"].split("=", 1)[1]))
+        self.assertEqual(code, 401)
+        self.assertNotIn(host, self.reg.service(alice["orgs"][0]["id"]).ledger.ownership_proofs)
+
+    def test_org_role_removed_during_google_lookup_cannot_grant_ownership(self):
+        alice, bobby = self.signup("alice"), self.signup("bobby")
+        org = alice["orgs"][0]["id"]
+        _, invite = self.reg.store.create_invite(org, "alice", ["owner"])
+        self.reg.store.accept_invite(invite, "bobby")
+        host = "next-standards.com"
+        self.req(alice, "/assets/challenge", {"url": f"https://{host}"})
+        state = self.start(alice, f"https://{host}")
+        code, _ = self._finish_while_google_waits(
+            alice, state, lambda: self.reg.store.set_roles(org, "bobby", "alice", ["viewer"]))
+        self.assertEqual(code, 403)
+        self.assertNotIn(host, self.reg.service(org).ledger.ownership_proofs)
+
+    def test_logout_waits_until_an_already_authorized_grant_is_committed(self):
+        alice = self.signup("alice")
+        host = "next-standards.com"
+        org = alice["orgs"][0]["id"]
+        self.req(alice, "/assets/challenge", {"url": f"https://{host}"})
+        state = self.start(alice, f"https://{host}")
+        osvc = self.reg.service(org)
+        entered, release, logged_out = threading.Event(), threading.Event(), threading.Event()
+        result = []
+        original_commit = osvc._commit_grant_locked
+
+        def delayed_commit(before, what):
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError("test did not release the ledger commit")
+            return original_commit(before, what)
+
+        def logout():
+            self.ops.logout(alice["cookie"].split("=", 1)[1])
+            logged_out.set()
+
+        with patch.object(osvc, "_commit_grant_locked", side_effect=delayed_commit):
+            finish = threading.Thread(target=lambda: result.append(self.finish(
+                alice, state, ["sc-domain:next-standards.com"])), daemon=True)
+            revoked = None
+            finish.start()
+            try:
+                self.assertTrue(entered.wait(5))
+                revoked = threading.Thread(target=logout, daemon=True)
+                revoked.start()
+                self.assertFalse(logged_out.wait(0.1), "logout bypassed the grant lock")
+            finally:
+                release.set()
+                finish.join(5)
+            if revoked is not None:
+                revoked.join(5)
+            self.assertFalse(finish.is_alive())
+            self.assertIsNotNone(revoked)
+            self.assertFalse(revoked.is_alive())
+        self.assertEqual(result[0][0], 200)
+        self.assertIn(host, osvc.ledger.ownership_proofs)
+
+    def test_logout_before_domain_inheritance_cannot_grant_a_subdomain(self):
+        alice = self.signup("alice")
+        domain, subdomain = "next-standards.com", "shop.next-standards.com"
+        org = alice["orgs"][0]["id"]
+        self.req(alice, "/assets/challenge", {"url": f"https://{domain}"})
+        state = self.start(alice, f"https://{domain}")
+        self.assertTrue(self.finish(alice, state, [f"sc-domain:{domain}"])[1]["verified"])
+        osvc = self.reg.service(org)
+        entered, release = threading.Event(), threading.Event()
+        result = []
+        original = osvc.issue_ownership_challenge
+
+        def delayed_registration(**kwargs):
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError("test did not release registration")
+            return original(**kwargs)
+
+        with patch.object(osvc, "issue_ownership_challenge", side_effect=delayed_registration):
+            worker = threading.Thread(target=lambda: result.append(self.req(
+                alice, "/assets/challenge", {"url": f"https://{subdomain}"})), daemon=True)
+            worker.start()
+            try:
+                self.assertTrue(entered.wait(5))
+                self.ops.logout(alice["cookie"].split("=", 1)[1])
+            finally:
+                release.set()
+                worker.join(5)
+            self.assertFalse(worker.is_alive())
+        self.assertEqual(result[0][0], 401)
+        self.assertNotIn(subdomain, osvc.ledger.ownership_proofs)
+
     def test_google_proof_then_start_the_diagnosis(self):
         a = self.signup("alice")
         self.req(a, "/assets/challenge", {"url": "https://wonder.next-standards.com"})
@@ -84,6 +209,59 @@ class TestGoogleOwnershipOverHttp(TestPublicReadOnlyRealSites):
         self.assertEqual(code, 200, body)
         with patch("aegis.assessment.AssessmentService.start", return_value={"ok": True}):
             self.assertEqual(self.req(a, f"/assessments/{body['snapshot']['id']}/start", {})[0], 200)
+
+    def test_domain_property_proves_later_registered_subdomains_in_same_org(self):
+        a, b = self.signup("alice"), self.signup("bobby")
+        self.req(a, "/assets/challenge", {"url": "https://next-standards.com"})
+        st = self.start(a, "https://next-standards.com")
+        self.assertTrue(self.finish(a, st, ["sc-domain:next-standards.com"])[1]["verified"])
+        osvc = self.reg.service(a["orgs"][0]["id"])
+        source_verified_at = osvc._ownership_proofs["next-standards.com"]["verified_at"]
+
+        code, inherited = self.req(a, "/assets/challenge", {"url": "https://wonder.next-standards.com"})
+        self.assertEqual(code, 200, inherited)
+        self.assertTrue(inherited["asset"]["ownership_verified"])
+        self.assertEqual(inherited["asset"]["ownership_proof"]["method"], g.METHOD)
+        self.assertEqual(osvc._ownership_proofs["wonder.next-standards.com"]["verified_at"],
+                         source_verified_at)
+        self.assertEqual(self.req(a, "/assets/confirm-scope", {
+            "host": "wonder.next-standards.com", "confirmed_prohibited": True})[0], 200)
+
+        code, other = self.req(b, "/assets/challenge", {"url": "https://wonder.next-standards.com"})
+        self.assertEqual(code, 200, other)
+        self.assertFalse(other["asset"]["ownership_verified"])
+
+    def test_domain_property_reuse_requires_a_fresh_source_proof(self):
+        a = self.signup("alice")
+        self.req(a, "/assets/challenge", {"url": "https://next-standards.com"})
+        st = self.start(a, "https://next-standards.com")
+        self.assertTrue(self.finish(a, st, ["sc-domain:next-standards.com"])[1]["verified"])
+        osvc = self.reg.service(a["orgs"][0]["id"])
+        osvc._ownership_proofs["next-standards.com"]["verified_at"] = 0
+        code, sub = self.req(a, "/assets/challenge", {"url": "https://wonder.next-standards.com"})
+        self.assertEqual(code, 200, sub)
+        self.assertFalse(sub["asset"]["ownership_verified"])
+
+    def test_registration_does_not_refresh_an_existing_signed_proof(self):
+        a = self.signup("alice")
+        self.req(a, "/assets/challenge", {"url": "https://next-standards.com"})
+        st = self.start(a, "https://next-standards.com")
+        self.assertTrue(self.finish(a, st, ["sc-domain:next-standards.com"])[1]["verified"])
+        self.req(a, "/assets/challenge", {"url": "https://wonder.next-standards.com"})
+        osvc = self.reg.service(a["orgs"][0]["id"])
+        before = osvc._ownership_proofs["wonder.next-standards.com"]["verified_at"]
+        osvc._asset_record("wonder.next-standards.com")["ownership_verified"] = False
+        self.req(a, "/assets/challenge", {"url": "https://wonder.next-standards.com"})
+        self.assertEqual(osvc._ownership_proofs["wonder.next-standards.com"]["verified_at"], before)
+
+    def test_url_prefix_property_does_not_prove_a_subdomain(self):
+        a = self.signup("alice")
+        self.req(a, "/assets/challenge", {"url": "https://next-standards.com"})
+        st = self.start(a, "https://next-standards.com")
+        self.assertTrue(self.finish(a, st, ["https://next-standards.com/"])[1]["verified"])
+        code, sub = self.req(a, "/assets/challenge", {"url": "https://wonder.next-standards.com"})
+        self.assertEqual(code, 200, sub)
+        self.assertFalse(sub["asset"]["ownership_verified"])
 
     def test_a_property_for_another_host_does_not_prove_this_one(self):
         a = self.signup("alice")
@@ -138,6 +316,43 @@ class TestGoogleOwnershipReview(TestGoogleOwnershipOverHttp):
                      "https://u:p@shared.example.edu/", "https://shared.example.edu:bad/"):
             self.assertIsNone(g.covering_property([site], "shared.example.edu", "https", 443), site)
         self.assertIsNone(g.covering_property(["sc-domain:com"], "example.com", "https", 443))
+
+    def test_google_domain_proof_survives_a_clean_restart_for_a_later_subdomain(self):
+        from aegis.assessment import AssessmentService
+
+        with tempfile.TemporaryDirectory() as directory:
+            first = AssessmentService(Path(directory), 18094, verify_seconds=30)
+            first.issue_ownership_challenge(url="https://next-standards.com")
+            self.assertTrue(first.verify_asset_ownership(
+                url_or_host="next-standards.com", method=g.METHOD,
+                google_property="sc-domain:next-standards.com",
+                google_endpoint=("https", 443))["verified"])
+            first.close()
+            second = AssessmentService(Path(directory), 18094, verify_seconds=30)
+            self.addCleanup(second.close)
+            result = second.issue_ownership_challenge(url="https://wonder.next-standards.com")
+            self.assertTrue(result["asset"]["ownership_verified"])
+            self.assertEqual(result["asset"]["ownership_proof"]["checked_target"],
+                             "sc-domain:next-standards.com")
+
+    def test_inherited_domain_proof_cannot_extend_the_original_expiry(self):
+        from aegis.assessment import AssessmentService, OWNERSHIP_PROOF_MAX_AGE_S
+
+        with tempfile.TemporaryDirectory() as directory:
+            svc = AssessmentService(Path(directory), 18094, verify_seconds=30)
+            self.addCleanup(svc.close)
+            svc.issue_ownership_challenge(url="https://next-standards.com")
+            svc.verify_asset_ownership(
+                url_or_host="next-standards.com", method=g.METHOD,
+                google_property="sc-domain:next-standards.com", google_endpoint=("https", 443))
+            original_at = svc._ownership_proofs["next-standards.com"]["verified_at"]
+            with patch("aegis.assessment.time.time", return_value=original_at + OWNERSHIP_PROOF_MAX_AGE_S - 1):
+                sub = svc.issue_ownership_challenge(url="https://one.next-standards.com")
+            self.assertTrue(sub["asset"]["ownership_verified"])
+            self.assertEqual(svc._ownership_proofs["one.next-standards.com"]["verified_at"], original_at)
+            with patch("aegis.assessment.time.time", return_value=original_at + OWNERSHIP_PROOF_MAX_AGE_S + 1):
+                deeper = svc.issue_ownership_challenge(url="https://two.one.next-standards.com")
+            self.assertFalse(deeper["asset"]["ownership_verified"])
 
     def _proven_by_google(self, who, host):
         self.req(who, "/assets/challenge", {"url": f"https://{host}"})
@@ -239,7 +454,8 @@ class TestGoogleOwnershipWithoutTenancy(unittest.TestCase):
                 with urllib.request.urlopen(r) as x:
                     return x.status, json.loads(x.read()), x.headers.get("Set-Cookie", "")
             except urllib.error.HTTPError as e:
-                return e.code, json.loads(e.read()), ""
+                with e:
+                    return e.code, json.loads(e.read()), ""
         import urllib.error
         _, _, ck = post("/auth/login", {"name": "owner", "password": "owner-pw-123"})
         cookie = ck.split(";")[0]

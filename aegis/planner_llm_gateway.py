@@ -33,11 +33,14 @@ request must match the approved fingerprint (a refused request does not unlock i
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import hmac
+import http.client
 import http.server
 import ipaddress
 import json
+import math
 import re
 import secrets
 import socket
@@ -56,6 +59,8 @@ FORCEABLE_FIRST_TOOLS = frozenset({"add_intent"})
 MAX_REQUEST_BYTES = 256 * 1024
 MAX_RESPONSE_BYTES = 1 << 20
 MAX_COMPLETION_TOKENS = 2048
+LOCAL_REASONING_EFFORTS = {"abliterated-model": frozenset({"none", "low"})}
+LOCAL_REASONING_TOKEN_CAP = {"abliterated-model": 256}
 
 # Unmistakable key formats: checked in EVERY message (also the model's own turns).
 STRONG_SECRET_PATTERNS = [re.compile(p) for p in (
@@ -93,6 +98,15 @@ class Budget:
     usd_per_1k_input: float = 0.0
     usd_per_1k_output: float = 0.0
 
+    def __post_init__(self) -> None:
+        if (not isinstance(self.max_calls, int) or isinstance(self.max_calls, bool)
+                or self.max_calls <= 0 or not isinstance(self.max_total_tokens, int)
+                or isinstance(self.max_total_tokens, bool) or self.max_total_tokens <= 0):
+            raise ValueError("model call and token budgets must be positive integers")
+        for value in (self.max_cost_usd, self.usd_per_1k_input, self.usd_per_1k_output):
+            if not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+                raise ValueError("model cost budget and prices must be finite and nonnegative")
+
     def estimate(self, prompt_tokens: int, completion_tokens: int) -> float:
         return round(max(0, prompt_tokens) / 1000 * self.usd_per_1k_input
                      + max(0, completion_tokens) / 1000 * self.usd_per_1k_output, 6)
@@ -113,16 +127,17 @@ class CallRecord:
 
 
 def estimate_tokens(text: str) -> int:
-    """A conservative estimate (no tokenizer here): ~1 token per 3 characters."""
+    """A rough token estimate for the run cap; provider usage is checked after each call."""
     return max(1, len(text) // 3)
 
 
 class _BadResponse(Exception):
     """A 200 whose body is not a usable completion; `read` gives (part of) it."""
 
-    def __init__(self, body: bytes):
+    def __init__(self, body: bytes, code: int | None = None):
         super().__init__("bad upstream response")
         self._body = body
+        self.code = code
 
     def read(self, n=-1):
         return self._body[:n] if n and n > 0 else self._body
@@ -370,7 +385,7 @@ class PlannerLLMGateway:
     def __init__(self, *, mode: str, model: str, upstream_url: str = "", api_key: str = "",
                  budget: Budget | None = None, allowed_hosts=(), denied_hosts=(),
                  responder=None, transport=None, audit=None, approval: dict | None = None,
-                 may_forward=None, first_turn_tool: str | None = None):
+                 may_forward=None, first_turn_tool: str | None = None, send_scope=None):
         if mode not in ("preview", "forward"):
             raise ValueError("mode must be preview or forward")
         if first_turn_tool is not None and first_turn_tool not in FORCEABLE_FIRST_TOOLS:
@@ -407,6 +422,7 @@ class PlannerLLMGateway:
         self._transport = transport
         self._audit = audit
         self._may_forward = may_forward
+        self._send_scope = send_scope
         self.token = secrets.token_urlsafe(24)
         self.calls: list[CallRecord] = []
         self.preview_requests: list[dict] = []
@@ -458,6 +474,36 @@ class PlannerLLMGateway:
         for k in ("temperature", "top_p"):
             if isinstance(body.get(k), (int, float)):
                 out[k] = body[k]
+        if "response_format" in body:
+            response_format = body["response_format"]
+            if type(response_format) is not dict or response_format != {"type": "json_object"}:
+                raise GatewayRefused("response_format", "only plain JSON object output is allowed")
+            out["response_format"] = {"type": "json_object"}
+        # Official docs (docs.abliteration.ai/capabilities/thinking & compatibility-matrix)
+        # confirm `reasoning_effort` ("none", "low") on Chat Completions for
+        # `abliterated-model`. Forward it to a real upstream only when the run's
+        # approval explicitly binds the exact `reasoning_effort`. Keep OpenRouter-style
+        # `reasoning.max_tokens` local-only.
+        if "reasoning_effort" in body or "reasoning" in body:
+            if self.model not in LOCAL_REASONING_EFFORTS \
+                    or ("reasoning_effort" in body and "reasoning" in body):
+                raise GatewayRefused("reasoning_config", "reasoning control is not approved for this model and upstream")
+            if "reasoning_effort" in body:
+                effort = body["reasoning_effort"]
+                if type(effort) is not str or effort not in LOCAL_REASONING_EFFORTS[self.model]:
+                    raise GatewayRefused("reasoning_config", "unsupported reasoning effort")
+                if self.real and self.approval.get("reasoning_effort") != effort:
+                    raise GatewayRefused("reasoning_config", "reasoning control is not approved for this model and upstream")
+                out["reasoning_effort"] = effort
+            else:
+                if self.real:
+                    raise GatewayRefused("reasoning_config", "reasoning control is not approved for this model and upstream")
+                config = body["reasoning"]
+                if type(config) is not dict or set(config) != {"max_tokens"} \
+                        or type(config["max_tokens"]) is not int \
+                        or not 1 <= config["max_tokens"] <= LOCAL_REASONING_TOKEN_CAP[self.model]:
+                    raise GatewayRefused("reasoning_config", "unsupported reasoning token cap")
+                out["reasoning"] = {"max_tokens": config["max_tokens"]}
         tools = self._tools(body.get("tools"))
         if tools:
             out["tools"] = tools
@@ -562,7 +608,10 @@ class PlannerLLMGateway:
             sha = hashlib.sha256(payload).hexdigest()
             prompt_tokens = estimate_tokens(payload.decode())
             worst_tokens = prompt_tokens + clean["max_tokens"]
-            worst_cost = self.budget.estimate(prompt_tokens, clean["max_tokens"])
+            # The coarse token estimate is not a safe monetary reserve for dense
+            # Unicode or punctuation. Charge at least one input token per UTF-8
+            # byte for the cost gate. The provider's usage can still differ.
+            worst_cost = self.budget.estimate(max(prompt_tokens, len(payload)), clean["max_tokens"])
             tools_sha = hashlib.sha256(json.dumps(clean.get("tools") or [], sort_keys=True,
                                                   ensure_ascii=False).encode()).hexdigest()
             # asked OUTSIDE the gateway lock (it takes the service lock; an emergency stop
@@ -635,15 +684,19 @@ class PlannerLLMGateway:
         except GatewayRefused:
             self._release(rec, "no_audit")
             raise
+        # The audit can block. An emergency stop or failed run during that write
+        # must still prevent the transport from starting.
+        if self._failed.is_set():
+            self._release(rec, "run_failed")
+            raise GatewayRefused("run_failed", "the run failed upstream: nothing more is sent")
+        if self._closed.is_set() or not self._may():
+            self._release(rec, "stopped")
+            raise GatewayRefused("stopped", "the planner run was stopped")
         headers = {"Content-Type": "application/json"}
         if self._key:
             headers["Authorization"] = f"Bearer {self._key}"
-        transport = self._transport
-        if transport is None:
-            from .router import _http_transport
-            transport = _http_transport
         try:
-            data = transport(self.upstream_url, headers, payload)
+            data = self._send_upstream(headers, payload)
             if len(data) > MAX_RESPONSE_BYTES:
                 raise ValueError("upstream response too large")
             resp = json.loads(data)
@@ -652,6 +705,27 @@ class PlannerLLMGateway:
                 raise _BadResponse(json.dumps(resp, ensure_ascii=False)[:4096].encode()
                                    if isinstance(resp, (dict, list)) else b"")
             self._settle(rec, clean, resp, prompt_tokens)
+            if not self._failed.is_set():
+                incomplete = any(
+                    ch.get("finish_reason") not in ("stop", "tool_calls")
+                    or (ch.get("finish_reason") == "tool_calls"
+                        and not ch["message"].get("tool_calls"))
+                    or (ch.get("finish_reason") == "stop"
+                        and bool(ch["message"].get("tool_calls")))
+                    or not ((isinstance(ch["message"].get("content"), str)
+                             and ch["message"]["content"].strip())
+                            or ch["message"].get("tool_calls"))
+                    for ch in resp["choices"])
+                if incomplete:
+                    # Return the response so a caller can classify its exact
+                    # failure; the run is terminal and ARTEX discards its plan.
+                    self._failed.set()
+                    rec.decision = "failed"
+                    rec.reason = "incomplete_completion"
+                    self.failure = {"index": rec.index, "error_type": "IncompleteCompletion"}
+        except GatewayRefused as e:
+            self._release(rec, e.code)
+            raise
         except Exception as e:  # noqa: BLE001 - sent (maybe): the reserve stays charged
             self._failed.set()                           # first: the run is over, no retry reaches upstream
             status, raw = _error_details(e)
@@ -675,7 +749,46 @@ class PlannerLLMGateway:
             if self._tools_sha is None and clean.get("tools"):
                 self._tools_sha = tools_sha
         self._record("planner_llm.call", rec, extra=_response_shape(resp, clean.get("tools") or []))
+        if (self._failed.is_set() and (self.failure or {}).get("error_type")
+                in ("UsageExceededBudget", "InvalidUsage")):
+            # Provider usage exceeded the reserved budget. Do not expose a
+            # syntactically valid answer as an adoptable planner result.
+            return 409, {"error": {"message": "upstream usage exceeded the run budget"}}
         return 200, resp
+
+    def _send_upstream(self, headers: dict, payload: bytes) -> bytes:
+        """Keep live authority across the request write, not the model response wait."""
+        scope = self._send_scope() if self._send_scope is not None else contextlib.nullcontext()
+        if self.real and self._transport is None and self._send_scope is not None:
+            parts = urllib.parse.urlsplit(self.upstream_url)
+            conn = http.client.HTTPSConnection(parts.hostname, parts.port or 443, timeout=30)
+            try:
+                conn.connect()
+                with scope:
+                    if self._closed.is_set() or self._failed.is_set():
+                        raise GatewayRefused("stopped", "the planner run was stopped")
+                    path = urllib.parse.urlunsplit(("", "", parts.path or "/", parts.query, ""))
+                    # The service lock also serializes emergency stop and role
+                    # revocation. Bound each socket write before holding it.
+                    if conn.sock is not None:
+                        conn.sock.settimeout(1.0)
+                    conn.request("POST", path, body=payload, headers=headers)
+                if conn.sock is not None:
+                    conn.sock.settimeout(30.0)
+                response = conn.getresponse()
+                if not 200 <= response.status < 300:
+                    raise _BadResponse(response.read(4096), response.status)
+                return response.read(MAX_RESPONSE_BYTES + 1)
+            finally:
+                conn.close()
+        transport = self._transport
+        if transport is None:
+            from .router import _http_transport
+            transport = _http_transport
+        with scope:
+            if self._closed.is_set() or self._failed.is_set():
+                raise GatewayRefused("stopped", "the planner run was stopped")
+            return transport(self.upstream_url, headers, payload)
 
     def _settle(self, rec: CallRecord, clean: dict, resp, prompt_tokens: int) -> None:
         usage = resp.get("usage") if isinstance(resp, dict) else None
@@ -688,16 +801,35 @@ class PlannerLLMGateway:
                     except GatewayRefused:
                         continue
                     self._model_turns[_turn_digest(turn)] = turn
-            if isinstance(usage, dict) and isinstance(usage.get("completion_tokens"), int):
-                completion = max(0, min(int(usage["completion_tokens"]), clean["max_tokens"]))
-                pt = usage.get("prompt_tokens")
-                prompt_real = max(0, pt) if isinstance(pt, int) else 0
+            details = usage.get("completion_tokens_details") if isinstance(usage, dict) else None
+            if usage is not None and (type(usage) is not dict or
+                    any(k in usage and (type(usage[k]) is not int or usage[k] < 0)
+                        for k in ("prompt_tokens", "completion_tokens", "total_tokens")) or
+                    (details is not None and (type(details) is not dict or
+                        ("reasoning_tokens" in details and (type(details["reasoning_tokens"]) is not int
+                                                            or details["reasoning_tokens"] < 0))))):
+                self._failed.set()
+                rec.decision = "failed"
+                rec.reason = "invalid_usage"
+                self.failure = {"index": rec.index, "error_type": "InvalidUsage"}
+            elif isinstance(usage, dict) and usage:
+                # A reported half of usage still counts. Missing completion
+                # retains the reserved output cap; missing prompt retains the
+                # conservative input estimate. Never clamp reported usage.
+                completion = usage.get("completion_tokens", clean["max_tokens"])
+                prompt_real = usage.get("prompt_tokens", 0)
                 actual_tokens = max(prompt_real, prompt_tokens) + completion
-                actual_cost = self.budget.estimate(max(prompt_real, prompt_tokens), completion)
+                actual_cost = self.budget.estimate(max(prompt_real, prompt_tokens, rec.request_bytes), completion)
                 # settle against actual usage (never below zero)
                 self._tokens_used += actual_tokens - rec.charged_tokens
                 self._cost_used += actual_cost - rec.est_cost_usd
                 rec.completion_tokens, rec.charged_tokens, rec.est_cost_usd = completion, actual_tokens, actual_cost
+                if (self._tokens_used > self.budget.max_total_tokens
+                        or self._cost_used > self.budget.max_cost_usd):
+                    self._failed.set()
+                    rec.decision = "failed"
+                    rec.reason = "usage_exceeded_budget"
+                    self.failure = {"index": rec.index, "error_type": "UsageExceededBudget"}
             # no usage figures: the reserved worst case stays charged
 
     def _release(self, rec: CallRecord, code: str) -> None:

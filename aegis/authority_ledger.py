@@ -7,6 +7,7 @@ One object, one file, one commit point. The ledger holds
   * `verified_external_hosts` confirmed scopes: scheme, port, window, addresses
   * `real_service_hosts`      names that are real services (a restriction: never a lab alias)
   * `accepted_profiles`       site L2 profiles an admin accepted (id -> sha256)
+  * `scan_usage`              consumed read-only requests in the current explicit run
 
 and a generation token `"<counter>:<random>"` that changes with every commit.
 Nothing else in the data directory grants authority; `state.json` is display
@@ -55,7 +56,8 @@ from pathlib import Path
 LEDGER_FILE = "authority.ledger"
 EPOCH_FILE = "authority.epoch"
 _GENERATION = re.compile(r"\d{1,12}:[0-9a-f]{32}")
-TABLES = ("assets", "ownership_proofs", "verified_external_hosts", "real_service_hosts", "accepted_profiles")
+TABLES = ("assets", "ownership_proofs", "verified_external_hosts", "real_service_hosts",
+          "accepted_profiles", "scan_usage")
 
 
 class LedgerError(Exception):
@@ -114,6 +116,7 @@ class AuthorityLedger:
         self.verified_external_hosts: dict[str, dict] = {}
         self.real_service_hosts: set[str] = set()
         self.accepted_profiles: dict[str, str] = {}
+        self.scan_usage: dict[str, dict] = {}
         self.generation = ""             # of the tables in memory, once committed
         self.error: str | None = None    # set while what is in memory is not what is on disk
         self.notice: str | None = None   # why saved authority was not restored at startup
@@ -136,6 +139,7 @@ class AuthorityLedger:
                 "verified_external_hosts": self.verified_external_hosts,
                 "real_service_hosts": sorted(self.real_service_hosts),
                 "accepted_profiles": self.accepted_profiles,
+                "scan_usage": self.scan_usage,
                 **({"names_unknown": True} if self.names_unknown else {})}
 
     def _set_tables(self, t: dict) -> None:
@@ -147,6 +151,8 @@ class AuthorityLedger:
                                         if isinstance(v, dict)}
         self.real_service_hosts = {str(h).lower() for h in (t.get("real_service_hosts") or []) if isinstance(h, str)}
         self.accepted_profiles = {str(k): str(v) for k, v in (t.get("accepted_profiles") or {}).items()}
+        self.scan_usage = {str(k).lower(): dict(v) for k, v in (t.get("scan_usage") or {}).items()
+                           if isinstance(v, dict)}
         self.names_unknown = self.names_unknown or t.get("names_unknown") is True      # never switched back
 
     def digest(self) -> str:
@@ -276,7 +282,9 @@ class AuthorityLedger:
                     candidate, cand_generation = tables, generation
                     self.assets_known = True
         elif isinstance(legacy, dict) and ("authority_mac" in legacy or "authority_epoch" in legacy):
-            tables = {k: legacy.get(k) for k in TABLES if k != "assets"}
+            # The legacy MAC predates scan_usage. Keep its original signed shape
+            # during import; new scans receive their own signed record at start.
+            tables = {k: legacy.get(k) for k in TABLES if k not in ("assets", "scan_usage")}
             tables = {"ownership_proofs": tables["ownership_proofs"] if isinstance(tables["ownership_proofs"], dict) else {},
                       "verified_external_hosts": (tables["verified_external_hosts"]
                                                   if isinstance(tables["verified_external_hosts"], dict) else {}),
