@@ -96,13 +96,15 @@ def run_case(case_id: str, case: dict, method: str, harness: Harness, *, truth: 
     real_bin = os.environ.get("VULNIX_ARTEX_REAL_BIN") if method == "local_model" else None
     command = [real_bin] if real_bin else harness.artex_stand_in
     spec = case.get("owner_spec")
+    services: list = []       # closed in `finally`: no Worker or background thread outlives the case
+    workdir = tempfile.TemporaryDirectory()      # removed only after the services are closed
     rec = {"case_id": case_id, "method": method, "status": "ran", "previews": [], "model_rounds": [],
            "model_requests": 0, "invalid_replies": 0, "steps_offered": 0, "input_tokens": 0,
            "output_tokens": 0, "reasoning_tokens": 0, "planner_seconds": 0.0, "model_cost_usd": 0.0,
            "reserved_usd": 0.0}
     try:
-        with tempfile.TemporaryDirectory() as tmp, \
-                harness.mock_llm(lambda msgs: harness.scripted_intents(json.dumps(msgs, ensure_ascii=False))) as llm:
+        tmp = workdir.name
+        with harness.mock_llm(lambda msgs: harness.scripted_intents(json.dumps(msgs, ensure_ascii=False))) as llm:
             env = {"AEGIS_ENV": "production" if real_bin else "development",
                    "VULNIX_ARTEX_REAL_CMD": shlex.join(command),
                    "VULNIX_ARTEX_EXPECTED_SHA256": (os.environ.get("VULNIX_ARTEX_CI_BINARY_SHA256", "")
@@ -114,6 +116,7 @@ def run_case(case_id: str, case: dict, method: str, harness: Harness, *, truth: 
             with patch.dict(os.environ, env):
                 svc = AssessmentService(Path(tmp), lab.server_port, l2_confinement=harness.confinement,
                                         verify_seconds=0.1)
+                services.append(svc)
                 if real_bin and os.environ.get("VULNIX_ARTEX_CONFINE") == "1":
                     from ..confinement import KernelConfinement
                     svc._l2_confinement = KernelConfinement()
@@ -268,6 +271,12 @@ def run_case(case_id: str, case: dict, method: str, harness: Harness, *, truth: 
                     _stage_scores(rec, truth)
                 return rec
     finally:
+        for svc in services:
+            try:
+                svc.close()                   # stops Workers and the scope-expiry thread
+            except Exception:  # noqa: BLE001 - cleanup must not hide the case's own error
+                pass
+        workdir.cleanup()
         lab.shutdown()
         lab.server_close()
         thread.join(timeout=2)
