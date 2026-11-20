@@ -113,6 +113,19 @@ class TestJudge(unittest.TestCase):
             judge(s, h, "l2_idor", e)
 
 
+    def test_the_judge_refuses_a_result_from_another_check(self):
+        # the observation records which check produced it; judging it as another
+        # check's result would read an L1 status as an IDOR reproduction (or back)
+        for claim, asked, measured, result in (
+                ("other_account_read", "l2_idor", "l1_http_probe", {"status": 200}),
+                ("unauthenticated_exposure", "l1_http_probe", "l2_idor", self.idor(status=403, established=False))):
+            s, h = self.state(claim)
+            e = s.observe(kind="check_result", target_ref="T2", attrs=check_attrs(measured, result),
+                          source="check", audit_hash=H, step_id="S1", catalog_id=measured)
+            with self.assertRaises(ValueError, msg=(claim, asked)):
+                judge(s, h, asked, e)
+
+
 class LoopBase(unittest.TestCase):
     mode = "idor_vulnerable"
     spec = "authentication_required"
@@ -367,6 +380,50 @@ class TestLoopStopsAndRevocation(LoopBase):
         self.assertEqual({h["state"] for h in self.state.hypotheses()}, {"open"})
         # the unaudited check result cannot be cited later either
         self.assertEqual([o for o in self.state.observations() if o["source"] == "check"], [])
+
+    def test_a_step_whose_evidence_cannot_be_recorded_changes_no_hypothesis(self):
+        # S1 (L1, contradicted) is recorded; recording S2's evidence (the L2 IDOR) fails
+        original = self.svc.audit.record
+        seen = {"n": 0}
+
+        def fail_second_evidence(event, **fields):
+            if event == "adaptive_plan.transition" and fields.get("to") == PlanState.EVIDENCE_RECORDED.value:
+                seen["n"] += 1
+                if seen["n"] == 2:
+                    raise OSError("disk full")
+            return original(event, **fields)
+        with patch.object(self.svc.audit, "record", side_effect=fail_second_evidence):
+            plan = self.runner().run()
+        self.assertEqual(plan.state, PlanState.FAILED)
+        self.assertIn("audit_failed", plan.reason)
+        # the plan lists only the step whose evidence was recorded
+        self.assertEqual([s["step_id"] for s in plan.executed], ["S1"])
+        self.assertEqual(self.hyp("unauthenticated_exposure")["state"], "contradicted")
+        # the unrecorded step moved no hypothesis and left nothing to cite
+        self.assertEqual(self.hyp("other_account_read")["state"], "open")
+        self.assertEqual([o["step_id"] for o in self.state.observations() if o["source"] == "check"], ["S1"])
+        self.assertEqual([j["fields"]["step_id"] for j in self.audit("diagnosis.judged")], ["S1"])
+        # the finding rests only on the Worker's own audited result (Gateway "result"),
+        # never on the plan or the hypothesis
+        results = {e["hash"] for e in self.audit("result")}
+        with self.svc._lock:
+            finding = dict(self.svc.a.findings.get("f_idor") or {})
+        cited = {e.get("audit_hash") for e in finding.get("evidence") or [] if isinstance(e, dict)}
+        self.assertTrue(cited and cited <= results, finding)
+        self.assertTrue(self.svc.audit.verify())
+
+    def test_a_result_from_another_tool_is_not_judged(self):
+        original = self.svc.audit.verified_entries
+
+        def other_tool():
+            entries, ok = original()
+            return [{**e, "fields": {**e["fields"], "tool": "status_marker"}} if e.get("event") == "result"
+                    else e for e in entries], ok
+        with patch.object(self.svc.audit, "verified_entries", side_effect=other_tool):
+            plan = self.runner().run()
+        self.assertEqual((plan.state, plan.reason), (PlanState.FAILED, "check_mismatch"))
+        self.assertEqual(self.audit("diagnosis.judged"), [])
+        self.assertEqual({h["state"] for h in self.state.hypotheses()}, {"open"})
 
     def test_a_fix_reported_while_a_step_runs_fails_the_plan_without_a_judgement(self):
         original = self.svc.execute_artex_item

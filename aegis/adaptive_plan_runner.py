@@ -54,6 +54,7 @@ class AdaptivePlanRunner:
         self.diagnosis = diagnosis
         # (catalog_id, target_ref, frozenset(evidence_refs)) already run in this loop
         self.executed_keys: set = set()
+        self._pending = None          # (verdict, observation, judged hash, from, result hash)
 
     # ---- helpers -----------------------------------------------------------------
     def _authority_generation(self) -> str:
@@ -136,7 +137,9 @@ class AdaptivePlanRunner:
     def _judge_step(self, plan: AdaptivePlan, item: dict, step_id: str, new_results: list[str],
                     ids: dict) -> str | None:
         """Turn the step's own Worker result into an observation and let the fixed
-        judge decide. Returns a failure reason, or None."""
+        judge decide. Returns a failure reason, or None. The verdict is held, not
+        applied: it is audited and applied only after the step's evidence is recorded
+        (EVIDENCE_RECORDED), so a step whose evidence is not recorded moves nothing."""
         from .diagnosis_judge import check_attrs, judge
         state, step = self.diagnosis, item.get("step") or {}
         if state.generation != self._round_generation:
@@ -148,6 +151,11 @@ class AdaptivePlanRunner:
                 or evidence[0].get("audit_hash") not in set(new_results) & results):
             return "evidence_mismatch"
         ev = evidence[0]
+        from .artex_bridge import CATALOG_BY_ID
+        entry = CATALOG_BY_ID.get(item["catalog_id"])
+        produced = next((e for e in verified if e.get("hash") == ev["audit_hash"]), None)
+        if entry is None or produced is None or (produced.get("fields") or {}).get("tool") != entry.tool:
+            return "check_mismatch"                # the result was not produced by the step's check
         try:
             parsed = json.loads(ev.get("content") or "")
         except ValueError:
@@ -161,31 +169,44 @@ class AdaptivePlanRunner:
         except Exception as e:  # noqa: BLE001
             state.discard_unjudged(eid)
             return f"judge_failed: {type(e).__name__}"
+        self._pending = (verdict, eid, before, ev["audit_hash"], dict(ids))
+        return None
+
+    def _apply_judgement(self, plan: AdaptivePlan, item: dict, step_id: str) -> str | None:
+        """Apply the audited judgement, only after the step's evidence is recorded."""
+        state, step = self.diagnosis, item["step"]
+        verdict, eid, before, result_hash, ids = self._pending
+        self._pending = None
+        hid = verdict.hypothesis_id
         try:                                          # audited before it takes effect
             entry = self.svc.audit.record(
                 "diagnosis.judged", plan_id=plan.plan_id, step_id=step_id, item_id=item["id"],
                 hypothesis_id=hid, frm=before, to=verdict.to, rule=verdict.rule,
                 catalog_id=item["catalog_id"], target_ref=step["target_ref"],
                 cited=list(step["evidence_refs"]), evidence=list(verdict.evidence),
-                result_audit_hash=ev["audit_hash"], approval_nonce=ids["approval_nonce"])
+                result_audit_hash=result_hash, approval_nonce=ids["approval_nonce"])
             if not (isinstance(entry, dict) and entry.get("hash")):
                 raise ValueError("audit record has no hash")
         except Exception as e:  # noqa: BLE001
             state.discard_unjudged(eid)               # an unaudited judgement leaves no trace
             return f"audit_failed: {type(e).__name__}"
+        judged_hash = entry["hash"]
         try:
             changed = state.apply(verdict)
         except Exception as e:  # noqa: BLE001
             state.discard_unjudged(eid)
-            self.svc.audit.record("diagnosis.judgement_not_applied", plan_id=plan.plan_id, step_id=step_id,
-                                  judged=entry["hash"], reason=type(e).__name__)
+            try:
+                self.svc.audit.record("diagnosis.judgement_not_applied", plan_id=plan.plan_id,
+                                      step_id=step_id, judged=judged_hash, reason=type(e).__name__)
+            except Exception:  # noqa: BLE001 - the plan fails either way
+                pass
             return f"judgement_not_applied: {type(e).__name__}"
         self.executed_keys.add((item["catalog_id"], step["target_ref"], frozenset(step["evidence_refs"]),
                                 state.count()))
         plan.stalled_steps = 0 if changed else plan.stalled_steps + 1
-        self._last_judgement = {"hypothesis_id": hid, "from": before, "to": verdict.to,
+        self._last_judgement = {"hypothesis_id": verdict.hypothesis_id, "from": before, "to": verdict.to,
                                 "rule": verdict.rule, "observation": eid,
-                                "result_audit_hash": ev["audit_hash"], "judged_audit_hash": entry["hash"]}
+                                "result_audit_hash": result_hash, "judged_audit_hash": judged_hash}
         return None
 
     # ---- the loop -------------------------------------------------------------------
@@ -292,9 +313,17 @@ class AdaptivePlanRunner:
                     failure = f"judge_failed: {type(e).__name__}"
                 if failure:
                     return self._finish(plan, PlanState.FAILED, failure)
-                judgement = self._last_judgement
             if not self._move(plan, PlanState.EVIDENCE_RECORDED, evidence_ids=evidence_ids, **ids):
+                if diag and self._pending:
+                    # the step's evidence is not recorded: its judgement never takes effect
+                    self.diagnosis.discard_unjudged(self._pending[1])
+                    self._pending = None
                 return plan
+            if diag:
+                failure = self._apply_judgement(plan, item, ids["step_id"])
+                if failure:
+                    return self._finish(plan, PlanState.FAILED, failure)
+                judgement = self._last_judgement
             executed_ids.add(item["catalog_id"])
             record = {**ids, "level": item["level"], "evidence_ids": list(evidence_ids),
                       "approved_by": exec_actor}

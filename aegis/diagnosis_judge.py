@@ -95,6 +95,10 @@ def judge(state: DiagnosisState, hypothesis_id: str, catalog_id: str, evidence_i
     obs = state.observation(evidence_id)
     if obs["source"] != "check" or obs["target_ref"] != h["target_ref"]:
         raise ValueError("the judge reads a check result on the hypothesis's own target")
+    if obs.get("catalog_id") != catalog_id:
+        # the observation names the check that produced it; reading an L1 status as an
+        # IDOR reproduction (or the reverse) would decide on the wrong evidence
+        raise ValueError("the check result was produced by another check")
     a = obs["attrs"]
     status = a.get("status")
     requirement, spec_ev = _requirement(state, h["target_ref"], h["generation"])
