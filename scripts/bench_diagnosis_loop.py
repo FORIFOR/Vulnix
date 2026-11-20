@@ -78,6 +78,7 @@ def run_case(mode: str, method: str) -> dict:
     real_bin = os.environ.get("VULNIX_ARTEX_REAL_BIN") if method == "artex_planner" else None
     command = [real_bin] if real_bin else FAKE
     spec = OWNER_SPECS[mode]["account_resource_requirement"]
+    closing: list = []
     try:
         with tempfile.TemporaryDirectory() as tmp, \
                 MockLLM(intent_selector=lambda msgs: intents_from_facts(json.dumps(msgs, ensure_ascii=False))) as model:
@@ -92,6 +93,7 @@ def run_case(mode: str, method: str) -> dict:
             with patch.dict(os.environ, env):
                 svc = AssessmentService(Path(tmp), lab.server_port, l2_confinement=TEST_CONFINEMENT,
                                         verify_seconds=0.1)
+                closing.append(svc)
                 if real_bin and os.environ.get("VULNIX_ARTEX_CONFINE") == "1":
                     svc._l2_confinement = KernelConfinement()
                 original = assessment_module.run_artex_planner
@@ -172,6 +174,11 @@ def run_case(mode: str, method: str) -> dict:
                     "plan_failures": [p.reason for p in plans if p.state.value == "FAILED"],
                 }
     finally:
+        for svc in closing:
+            try:
+                svc.close()                   # no Worker or background thread outlives the case
+            except Exception:  # noqa: BLE001
+                pass
         lab.shutdown()
         lab.server_close()
         thread.join(timeout=2)

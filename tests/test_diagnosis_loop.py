@@ -150,7 +150,7 @@ class LoopBase(unittest.TestCase):
         self.addCleanup(env.stop)
         self.svc = AssessmentService(Path(tmp.name), self.lab.server_port, l2_confinement=TEST_CONFINEMENT,
                                      verify_seconds=0.1)
-        self.addCleanup(self.svc.workers.kill_all)
+        self.addCleanup(self.svc.close)              # stops Workers and the scope-expiry thread
         self.requests: list[dict] = []
         self.reply = None                         # override: request -> intents
         original = assessment_module.run_artex_planner
