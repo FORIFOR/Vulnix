@@ -38,4 +38,8 @@ test("threat feed count is unknown until status arrives, but measured zero remai
     threatFeedSummary({ cve_count: 0, kev_count: 0, last_synced_at: 0, freshness: "unfetched" }),
     /フィード未取得/,
   );
+  // never synced: the bundled data is shown as such, not as a sync time
+  const bundled = threatFeedSummary({ cve_count: 2, kev_count: 2, last_synced_at: null, freshness: "unfetched", stale: true });
+  assert.match(bundled, /最終同期: 未同期（同梱データのみ）/);
+  assert.doesNotMatch(bundled, /1970/);
 });

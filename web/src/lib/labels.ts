@@ -85,7 +85,7 @@ export function threatFeedSummary(
   status: Pick<CveStatus, "cve_count" | "kev_count" | "last_synced_at" | "freshness" | "stale" | "last_sync_error"> | null | undefined,
 ): string {
   if (!status) return "脅威情報の件数を取得できていません。";
-  const base = `NVD 登録 ${status.cve_count} 件 / CISA KEV 悪用確認 ${status.kev_count} 件（最終同期: ${fmtTime(status.last_synced_at)}）`;
+  const base = `NVD 登録 ${status.cve_count} 件 / CISA KEV 悪用確認 ${status.kev_count} 件（最終同期: ${status.last_synced_at ? fmtTime(status.last_synced_at) : "未同期（同梱データのみ）"}）`;
   const freshNote =
     status.freshness === "unfetched" ? "・フィード未取得" :
     status.stale || status.freshness === "stale" ? "・更新期限超過（要同期）" : "";

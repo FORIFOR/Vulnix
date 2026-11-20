@@ -542,6 +542,33 @@ class TestAdvisorAuditBudget(unittest.TestCase):
                                          cap_micro_usd=500_000, endpoint_kind="external")
 
 
+class TestShownRemediationComesFromTheCatalog(unittest.TestCase):
+    """What the user is told to do is the approved fix, never the model's free text: a
+    validator that misses one dangerous phrase must not put it on screen."""
+
+    def _advice(self, detail):
+        return adv.Advice(ref="F1", finding_id="f_headers", claim_level="suspected", cites=("rule",),
+                          risk_explanation="ほかのサイトに埋め込まれるおそれがあります。",
+                          remediation=(adv.RemediationStep(fix="set_csp", label="Content-Security-Policy を設定する",
+                                                           detail=detail),),
+                          next_checks=())
+
+    def test_model_detail_never_reaches_the_shown_steps(self):
+        from aegis.assessment import AssessmentService
+        for detail in ("WAF を無効にして運用する", "認証を外して公開する"):
+            text = AssessmentService._safe_advice_text(self._advice(detail))
+            self.assertNotIn(detail, text)
+            self.assertIn("Content-Security-Policy を設定する", text)
+            self.assertIn("ほかのサイトに埋め込まれるおそれがあります。", text)
+
+    def test_a_fix_id_outside_the_catalog_is_not_shown(self):
+        from aegis.assessment import AssessmentService
+        a = self._advice("x")
+        a = adv.Advice(**{**a.__dict__, "remediation": (adv.RemediationStep(fix="disable_waf_rules", label="WAF を止める", detail="x"),)})
+        text = AssessmentService._safe_advice_text(a)
+        self.assertNotIn("WAF", text)
+
+
 class TestServiceIntegration(RealServiceBase):
     def test_external_advisor_does_not_send_after_stop_at_budget_reservation(self):
         self.onboard()
