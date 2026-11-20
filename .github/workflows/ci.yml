@@ -261,7 +261,7 @@ jobs:
         run: |
           VULNIX_NO_ENV_LOCAL=1 python3 -m scripts.run_model_evaluation freeze
           VULNIX_NO_ENV_LOCAL=1 python3 -m scripts.run_model_evaluation compare --out "$RUNNER_TEMP/eval" > /dev/null
-          python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(json.dumps({m: {k: s[k] for k in ('correct','tp','fp','fn','undecided','precision','recall','unnecessary_checks','worker_launches','target_gets')} for m, s in d['summary'].items()}, indent=1)); sys.exit(1 if d['external_connection_attempts'] or d['checks_failed'] else 0)" \
+          python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(json.dumps({m: {k: s[k] for k in ('outcomes','tp','fp','fn','tn','precision','recall','unnecessary_checks','worker_launches','target_gets')} for m, s in d['summary'].items()}, indent=1)); sys.exit(1 if d['external_connection_attempts'] or d['checks_failed'] else 0)" \
             "$RUNNER_TEMP/eval/comparison_ci.json"
 
       - name: Same-lab status precision and cost comparison with real ARTEX

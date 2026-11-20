@@ -128,6 +128,59 @@ class TestBudgetLedger(unittest.TestCase):
         with self.assertRaises(LedgerError):
             live.authorize_send(r, approval=None, config_sha256="c" * 64, request_sha256=SHA)
 
+    def test_a_restart_keeps_every_reservation_and_send(self):
+        r = self.reserve()
+        again = BudgetLedger(self.path)                     # a new process reading the same file
+        self.assertEqual(again.summary()["counted_usd"], CLAUDE_SONNET.max_cost_usd())
+        with self.assertRaises(LedgerError) as e:
+            again.reserve(model=CLAUDE_SONNET, case_id="holdout-001", round_no=1, request_sha256=SHA)
+        self.assertEqual(e.exception.code, "no_retry")
+        approval = {"model": r["model"], "request_sha256": SHA, "max_input_tokens": 2000,
+                    "max_output_tokens": 2048, "config_sha256": "c" * 64, "max_cost_usd": 0.03}
+        live = BudgetLedger(self.path, dry_run=False, external_calls_enabled=True)
+        live.authorize_send(r, approval=approval, config_sha256="c" * 64, request_sha256=SHA)
+        restarted = BudgetLedger(self.path, dry_run=False, external_calls_enabled=True)
+        with self.assertRaises(LedgerError) as e:           # the same request is never sent twice
+            restarted.authorize_send(r, approval=approval, config_sha256="c" * 64, request_sha256=SHA)
+        self.assertEqual(e.exception.code, "already_sent")
+
+    def test_a_forged_or_settled_reservation_cannot_be_sent(self):
+        r = self.reserve()
+        approval = {"model": r["model"], "request_sha256": SHA, "max_input_tokens": 2000,
+                    "max_output_tokens": 2048, "config_sha256": "c" * 64, "max_cost_usd": 0.03}
+        live = BudgetLedger(self.path, dry_run=False, external_calls_enabled=True)
+        forged = {**r, "max_cost_usd": 0.0}
+        forged_hash = {**r, "hash": "f" * 64}
+        for bad in (forged_hash, {**r, "reservation_id": "r99"}):
+            with self.assertRaises(LedgerError):
+                live.authorize_send(bad, approval=approval, config_sha256="c" * 64, request_sha256=SHA)
+        self.assertEqual(forged["hash"], r["hash"])          # the hash binds the stored entry, not the copy
+        self.ledger.settle(r["reservation_id"], outcome="timeout")
+        with self.assertRaises(LedgerError) as e:
+            live.authorize_send(r, approval=approval, config_sha256="c" * 64, request_sha256=SHA)
+        self.assertEqual(e.exception.code, "already_settled")
+
+    def test_concurrent_sends_of_one_reservation_send_once(self):
+        r = self.reserve()
+        approval = {"model": r["model"], "request_sha256": SHA, "max_input_tokens": 2000,
+                    "max_output_tokens": 2048, "config_sha256": "c" * 64, "max_cost_usd": 0.03}
+        results = []
+
+        def go():
+            try:
+                BudgetLedger(self.path, dry_run=False, external_calls_enabled=True).authorize_send(
+                    r, approval=approval, config_sha256="c" * 64, request_sha256=SHA)
+                results.append("sent")
+            except LedgerError as e:
+                results.append(e.code)
+        threads = [threading.Thread(target=go) for _ in range(12)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(results.count("sent"), 1)
+        self.assertEqual(results.count("already_sent"), 11)
+
 
 if __name__ == "__main__":
     unittest.main()

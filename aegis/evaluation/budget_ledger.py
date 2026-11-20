@@ -185,8 +185,9 @@ class BudgetLedger:
 
     def authorize_send(self, reservation: dict, *, approval: dict | None, config_sha256: str,
                        request_sha256: str) -> None:
-        """Permission to send one reserved request. Raises LedgerError unless every
-        condition holds. A dry-run ledger refuses unconditionally."""
+        """Permission to send one reserved request, once. Raises LedgerError unless every
+        condition holds; on success a `send` entry is written first, so a second call (in
+        this process or after a restart) is refused. A dry-run ledger refuses unconditionally."""
         if self.dry_run or not self.external_calls_enabled:
             raise LedgerError("dry_run", "external calls are disabled")
         if not isinstance(approval, dict):
@@ -204,6 +205,19 @@ class BudgetLedger:
         cap = approval.get("max_cost_usd")
         if not (isinstance(cap, (int, float)) and reservation["max_cost_usd"] <= cap):
             raise LedgerError("approval_mismatch", "cost cap")
+        with self._locked() as fd:                      # one send per reservation, across restarts
+            entries = self._read(fd)
+            st = self._state(entries)
+            rid = reservation.get("reservation_id")
+            stored = st["reserved"].get(rid)
+            if stored is None or stored["hash"] != reservation.get("hash"):
+                raise LedgerError("unknown_reservation", "not the reservation this ledger recorded")
+            if rid in st["settled"]:
+                raise LedgerError("already_settled")
+            if any(e["kind"] == "send" and e["reservation_id"] == rid for e in entries):
+                raise LedgerError("already_sent")
+            self._append(fd, entries, {"kind": "send", "reservation_id": rid,
+                                       "request_sha256": request_sha256, "approval_id": approval.get("id")})
 
 
 __all__ = ["BudgetLedger", "LedgerError", "LedgerLimits"]

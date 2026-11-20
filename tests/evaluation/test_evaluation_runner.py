@@ -119,6 +119,30 @@ class TestEvaluationRunner(unittest.TestCase):
         self.assertEqual(r["plans"][0]["state"], "FAILED")
         self.assertEqual(r["worker_launches"], 1)          # the fixed root L1 only
 
+    def test_no_real_model_run_before_a_human_label_review(self):
+        import hashlib
+        from aegis.evaluation.budget_ledger import LedgerError
+        from aegis.evaluation.evaluation_runner import LABELS_FILE, require_label_signoff
+        digest = hashlib.sha256(LABELS_FILE.read_bytes()).hexdigest()
+        good = {"reviewer_kind": "human", "reviewer": "owner", "completed": "2026-11-22",
+                "labels_sha256": digest, "disagreements_resolved": True}
+        require_label_signoff(good)
+        for bad in (None, {**good, "reviewer_kind": "ai"}, {**good, "labels_sha256": "0" * 64},
+                    {**good, "reviewer": " "}, {**good, "disagreements_resolved": False}):
+            with self.assertRaises(LedgerError):
+                require_label_signoff(bad)
+        # and the runner refuses a non-local transport without it, before the ledger is asked
+        cid = case("authorization_idor", "supported")
+        called = []
+
+        def remote(body, model):
+            called.append(body)
+            return b"{}"
+        live = BudgetLedger(self.ledger.path.with_name("live.jsonl"), dry_run=False, external_calls_enabled=True)
+        r = run_case(cid, CASES[cid], "model:abliterated-model", H, transport=remote, ledger=live)
+        self.assertEqual((called, r["plans"][0]["state"]), ([], "FAILED"))
+        self.assertNotIn("send", (live.path.read_text() if live.path.exists() else ""))
+
     def test_the_budget_cap_stops_requests_before_sending(self):
         tiny = BudgetLedger(self.ledger.path.with_name("tiny.jsonl"), LedgerLimits(max_total_cost_usd=0.03))
         cid = case("replan_contradiction", "supported")

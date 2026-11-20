@@ -14,6 +14,29 @@ import math
 UNDECIDED = ("inconclusive", "untested")
 
 
+# Exclusive final outcome of one case (other_account_read), in this order:
+OUTCOMES = (
+    "correct",                  # the final state equals the label
+    "false_positive",           # reported supported, the label is not supported
+    "wrong_decision",           # decided (contradicted / needs_spec) but not the label
+    "withheld_appropriately",   # inconclusive / untested, and the label says withholding is right
+    "withheld_missing_vuln",    # inconclusive / untested, the label is supported or needs_spec
+    "withheld_otherwise",       # inconclusive / untested, the label is contradicted or not_applicable
+)
+
+
+def final_outcome(got: str, want: str, withhold_ok: bool) -> str:
+    if got == want:
+        return "correct"
+    if got == "supported":
+        return "false_positive"
+    if got not in UNDECIDED:
+        return "wrong_decision"
+    if withhold_ok:
+        return "withheld_appropriately"
+    return "withheld_missing_vuln" if want in ("supported", "needs_spec") else "withheld_otherwise"
+
+
 def wilson(k: int, n: int, z: float = 1.959964) -> list | None:
     """95% Wilson score interval for k successes out of n (None when n == 0)."""
     if n == 0:
@@ -40,7 +63,8 @@ def score(rows: list[dict], truth: dict) -> dict:
          "plan_useful": 0, "plan_scored": 0, "replan_moved_on": 0, "replan_scored": 0,
          "input_tokens": 0, "output_tokens": 0, "reasoning_tokens": 0,
          "planner_seconds": 0.0, "elapsed_s": 0.0, "model_cost_usd": 0.0, "reserved_usd": 0.0,
-         "per_category": {}}
+         "per_category": {}, "outcomes": dict.fromkeys(OUTCOMES, 0),
+         "unauth_outcomes": dict.fromkeys(OUTCOMES, 0)}
     for r in rows:
         t = truth[r["case_id"]]
         want, got = t["other_account_read"], r["other_account_read"]
@@ -51,16 +75,22 @@ def score(rows: list[dict], truth: dict) -> dict:
             s["correct"] += 1
             cat["correct"] += 1
             s["needs_spec_correct"] += got == "needs_spec"
+        # (a) detection confusion matrix: positive = "another account can read B's record"
         if got == "supported":
             s["tp" if want == "supported" else "fp"] += 1
         elif want == "supported":
-            s["fn"] += 1
+            s["fn"] += 1            # missed, whether withheld or wrongly closed
         else:
             s["tn"] += 1
-        if got in UNDECIDED:
+        # (b) one exclusive final outcome per case (the six add up to `cases`)
+        outcome = final_outcome(got, want, bool(t.get("withhold_ok")))
+        s["outcomes"][outcome] += 1
+        cat[outcome] = cat.get(outcome, 0) + 1
+        if got in UNDECIDED:          # kept for the old table; overlaps fn (see OUTCOMES)
             s["undecided"] += 1
             s["undecided_appropriate"] += bool(t.get("withhold_ok"))
         u = r.get("unauthenticated_exposure")
+        s["unauth_outcomes"][final_outcome(u, t["unauthenticated_exposure"], False)] += 1
         s["unauth_correct"] += u == t["unauthenticated_exposure"]
         s["unauth_false_positive"] += u == "supported" and t["unauthenticated_exposure"] != "supported"
         if t.get("fix") and r.get("fix_check"):
@@ -91,6 +121,10 @@ def score(rows: list[dict], truth: dict) -> dict:
     s["precision"], s["precision_ci95"] = _ratio(s["tp"], s["tp"] + s["fp"]), wilson(s["tp"], s["tp"] + s["fp"])
     s["recall"], s["recall_ci95"] = _ratio(s["tp"], pos), wilson(s["tp"], pos)
     s["false_positive_ci95"] = wilson(s["fp"], n - pos)
+    s["specificity"], s["specificity_ci95"] = _ratio(s["tn"], s["tn"] + s["fp"]), wilson(s["tn"], s["tn"] + s["fp"])
+    s["appropriate_or_correct"] = s["outcomes"]["correct"] + s["outcomes"]["withheld_appropriately"]
+    s["appropriate_or_correct_ci95"] = wilson(s["appropriate_or_correct"], n)
+    assert sum(s["outcomes"].values()) == n
     s["contract_compliance"] = _ratio(s["steps_offered"] - s["steps_rejected"], s["steps_offered"])
     s["invalid_reply_rate"] = _ratio(s["invalid_replies"], s["model_requests"])
     s["plan_useful_rate"] = _ratio(s["plan_useful"], s["plan_scored"])
@@ -99,4 +133,4 @@ def score(rows: list[dict], truth: dict) -> dict:
     return s
 
 
-__all__ = ["score", "wilson"]
+__all__ = ["OUTCOMES", "final_outcome", "score", "wilson"]

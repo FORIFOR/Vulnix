@@ -36,8 +36,25 @@ class TestHoldoutSet(unittest.TestCase):
 
     def test_no_diagnosis_code_reads_the_labels(self):
         for path in (ROOT / "aegis").rglob("*.py"):
-            self.assertNotIn("holdout_truth", path.read_text(), path)
+            if path.parent.name != "evaluation":
+                self.assertNotIn("holdout_truth", path.read_text(), path)
+        # the evaluation package only hashes the label file for the human sign-off gate
+        for path in (ROOT / "aegis/evaluation").glob("*.py"):
+            text = path.read_text()
+            if "holdout_truth" in text:
+                self.assertEqual(path.name, "evaluation_runner.py")
+                self.assertIn("hashlib.sha256(LABELS_FILE.read_bytes())", text)
+                self.assertNotIn("json.loads(LABELS_FILE", text)
         self.assertNotIn("holdout_truth", (FIX / "holdout_lab.py").read_text())
+
+    def test_the_sign_off_template_does_not_open_the_gate(self):
+        from aegis.evaluation.budget_ledger import LedgerError
+        from aegis.evaluation.evaluation_runner import require_label_signoff
+        template = json.loads((ROOT / "docs/evaluation/label_signoff.template.json").read_text())
+        with self.assertRaises(LedgerError):
+            require_label_signoff(template)
+        self.assertFalse((ROOT / "docs/evaluation/label_signoff.json").exists(),
+                         "the sign-off is written by a human reviewer, never generated")
 
     def test_the_regression_conditions_are_frozen(self):
         manifest = json.loads((ROOT / "docs/evaluation/regression_manifest.json").read_text())

@@ -127,7 +127,7 @@ def do_compare(out: Path) -> int:
               "summary": summary, "cases": rows, "checks_failed": bad}
     name = "comparison_ci.json" if real else "comparison.json"
     (out / name).write_text(json.dumps(result, indent=2, ensure_ascii=False, default=str) + "\n")
-    cols = ("correct", "tp", "fp", "fn", "undecided", "undecided_appropriate", "precision", "recall",
+    cols = ("outcomes", "tp", "fp", "fn", "tn", "precision", "recall",
             "unnecessary_checks", "forbidden_checks_run", "target_gets", "worker_launches", "planner_calls",
             "fix_correct", "elapsed_s")
     for m in NO_MODEL_METHODS:
