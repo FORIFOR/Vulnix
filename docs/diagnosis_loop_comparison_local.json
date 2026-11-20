@@ -40,7 +40,7 @@
       "target_gets": 16,
       "worker_launches": 16,
       "planner_calls": 0,
-      "elapsed_s": 0.999,
+      "elapsed_s": 1.047,
       "planner_cost_usd": 0.0,
       "fix_checks": 0,
       "fix_confirmed": 0
@@ -57,7 +57,7 @@
       "target_gets": 48,
       "worker_launches": 44,
       "planner_calls": 30,
-      "elapsed_s": 4.605,
+      "elapsed_s": 4.617,
       "planner_cost_usd": 0.0,
       "fix_checks": 2,
       "fix_confirmed": 2
@@ -74,7 +74,7 @@
       "target_gets": 48,
       "worker_launches": 44,
       "planner_calls": 30,
-      "elapsed_s": 4.472,
+      "elapsed_s": 4.684,
       "planner_cost_usd": 0.0,
       "fix_checks": 2,
       "fix_confirmed": 2
@@ -99,13 +99,15 @@
         "target_gets_with_fix_check": 1,
         "worker_launches": 1,
         "planner_calls": 0,
-        "elapsed_s": 0.081,
+        "elapsed_s": 0.064,
         "planner_cost_usd": 0,
         "fix_check": null,
         "audit_chain_valid": true,
         "every_judgement_cites_an_audited_result": true,
         "planner_saw_lab_label_or_secret": false,
-        "engine_kind": null
+        "engine_kind": null,
+        "model_saw_facts": [],
+        "plan_failures": []
       },
       {
         "mode": "auth_required_json",
@@ -124,13 +126,15 @@
         "target_gets_with_fix_check": 1,
         "worker_launches": 1,
         "planner_calls": 0,
-        "elapsed_s": 0.06,
+        "elapsed_s": 0.063,
         "planner_cost_usd": 0,
         "fix_check": null,
         "audit_chain_valid": true,
         "every_judgement_cites_an_audited_result": true,
         "planner_saw_lab_label_or_secret": false,
-        "engine_kind": null
+        "engine_kind": null,
+        "model_saw_facts": [],
+        "plan_failures": []
       },
       {
         "mode": "confusing_200",
@@ -149,16 +153,45 @@
         "target_gets_with_fix_check": 1,
         "worker_launches": 1,
         "planner_calls": 0,
-        "elapsed_s": 0.063,
+        "elapsed_s": 0.065,
         "planner_cost_usd": 0,
         "fix_check": null,
         "audit_chain_valid": true,
         "every_judgement_cites_an_audited_result": true,
         "planner_saw_lab_label_or_secret": false,
-        "engine_kind": null
+        "engine_kind": null,
+        "model_saw_facts": [],
+        "plan_failures": []
       },
       {
         "mode": "denied_403",
+        "method": "fixed_l1",
+        "truth": {
+          "account_spec": "authentication_required",
+          "cross_account_access": false,
+          "other_account_read": "contradicted"
+        },
+        "other_account_read": "untested",
+        "unauthenticated_exposure": "untested",
+        "steps": [],
+        "plans": [],
+        "contradicted": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.067,
+        "planner_cost_usd": 0,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_saw_lab_label_or_secret": false,
+        "engine_kind": null,
+        "model_saw_facts": [],
+        "plan_failures": []
+      },
+      {
+        "mode": "denied_404",
         "method": "fixed_l1",
         "truth": {
           "account_spec": "authentication_required",
@@ -180,32 +213,9 @@
         "audit_chain_valid": true,
         "every_judgement_cites_an_audited_result": true,
         "planner_saw_lab_label_or_secret": false,
-        "engine_kind": null
-      },
-      {
-        "mode": "denied_404",
-        "method": "fixed_l1",
-        "truth": {
-          "account_spec": "authentication_required",
-          "cross_account_access": false,
-          "other_account_read": "contradicted"
-        },
-        "other_account_read": "untested",
-        "unauthenticated_exposure": "untested",
-        "steps": [],
-        "plans": [],
-        "contradicted": 0,
-        "target_gets": 1,
-        "target_gets_with_fix_check": 1,
-        "worker_launches": 1,
-        "planner_calls": 0,
-        "elapsed_s": 0.062,
-        "planner_cost_usd": 0,
-        "fix_check": null,
-        "audit_chain_valid": true,
-        "every_judgement_cites_an_audited_result": true,
-        "planner_saw_lab_label_or_secret": false,
-        "engine_kind": null
+        "engine_kind": null,
+        "model_saw_facts": [],
+        "plan_failures": []
       },
       {
         "mode": "idor_decoy_marker",
@@ -224,13 +234,15 @@
         "target_gets_with_fix_check": 1,
         "worker_launches": 1,
         "planner_calls": 0,
-        "elapsed_s": 0.062,
+        "elapsed_s": 0.065,
         "planner_cost_usd": 0,
         "fix_check": null,
         "audit_chain_valid": true,
         "every_judgement_cites_an_audited_result": true,
         "planner_saw_lab_label_or_secret": false,
-        "engine_kind": null
+        "engine_kind": null,
+        "model_saw_facts": [],
+        "plan_failures": []
       },
       {
         "mode": "idor_owner_missing",
@@ -249,13 +261,15 @@
         "target_gets_with_fix_check": 1,
         "worker_launches": 1,
         "planner_calls": 0,
-        "elapsed_s": 0.06,
+        "elapsed_s": 0.064,
         "planner_cost_usd": 0,
         "fix_check": null,
         "audit_chain_valid": true,
         "every_judgement_cites_an_audited_result": true,
         "planner_saw_lab_label_or_secret": false,
-        "engine_kind": null
+        "engine_kind": null,
+        "model_saw_facts": [],
+        "plan_failures": []
       },
       {
         "mode": "idor_spec_missing",
@@ -274,13 +288,15 @@
         "target_gets_with_fix_check": 1,
         "worker_launches": 1,
         "planner_calls": 0,
-        "elapsed_s": 0.061,
+        "elapsed_s": 0.063,
         "planner_cost_usd": 0,
         "fix_check": null,
         "audit_chain_valid": true,
         "every_judgement_cites_an_audited_result": true,
         "planner_saw_lab_label_or_secret": false,
-        "engine_kind": null
+        "engine_kind": null,
+        "model_saw_facts": [],
+        "plan_failures": []
       },
       {
         "mode": "idor_vulnerable",
@@ -299,13 +315,15 @@
         "target_gets_with_fix_check": 1,
         "worker_launches": 1,
         "planner_calls": 0,
-        "elapsed_s": 0.06,
+        "elapsed_s": 0.067,
         "planner_cost_usd": 0,
         "fix_check": null,
         "audit_chain_valid": true,
         "every_judgement_cites_an_audited_result": true,
         "planner_saw_lab_label_or_secret": false,
-        "engine_kind": null
+        "engine_kind": null,
+        "model_saw_facts": [],
+        "plan_failures": []
       },
       {
         "mode": "own_resource_only",
@@ -324,13 +342,15 @@
         "target_gets_with_fix_check": 1,
         "worker_launches": 1,
         "planner_calls": 0,
-        "elapsed_s": 0.06,
+        "elapsed_s": 0.065,
         "planner_cost_usd": 0,
         "fix_check": null,
         "audit_chain_valid": true,
         "every_judgement_cites_an_audited_result": true,
         "planner_saw_lab_label_or_secret": false,
-        "engine_kind": null
+        "engine_kind": null,
+        "model_saw_facts": [],
+        "plan_failures": []
       },
       {
         "mode": "protected_json_decoy",
@@ -349,13 +369,15 @@
         "target_gets_with_fix_check": 1,
         "worker_launches": 1,
         "planner_calls": 0,
-        "elapsed_s": 0.061,
+        "elapsed_s": 0.064,
         "planner_cost_usd": 0,
         "fix_check": null,
         "audit_chain_valid": true,
         "every_judgement_cites_an_audited_result": true,
         "planner_saw_lab_label_or_secret": false,
-        "engine_kind": null
+        "engine_kind": null,
+        "model_saw_facts": [],
+        "plan_failures": []
       },
       {
         "mode": "public_account_directory",
@@ -374,13 +396,15 @@
         "target_gets_with_fix_check": 1,
         "worker_launches": 1,
         "planner_calls": 0,
-        "elapsed_s": 0.061,
+        "elapsed_s": 0.067,
         "planner_cost_usd": 0,
         "fix_check": null,
         "audit_chain_valid": true,
         "every_judgement_cites_an_audited_result": true,
         "planner_saw_lab_label_or_secret": false,
-        "engine_kind": null
+        "engine_kind": null,
+        "model_saw_facts": [],
+        "plan_failures": []
       },
       {
         "mode": "public_json",
@@ -399,13 +423,15 @@
         "target_gets_with_fix_check": 1,
         "worker_launches": 1,
         "planner_calls": 0,
-        "elapsed_s": 0.062,
+        "elapsed_s": 0.069,
         "planner_cost_usd": 0,
         "fix_check": null,
         "audit_chain_valid": true,
         "every_judgement_cites_an_audited_result": true,
         "planner_saw_lab_label_or_secret": false,
-        "engine_kind": null
+        "engine_kind": null,
+        "model_saw_facts": [],
+        "plan_failures": []
       },
       {
         "mode": "public_json_marker",
@@ -424,13 +450,15 @@
         "target_gets_with_fix_check": 1,
         "worker_launches": 1,
         "planner_calls": 0,
-        "elapsed_s": 0.062,
+        "elapsed_s": 0.067,
         "planner_cost_usd": 0,
         "fix_check": null,
         "audit_chain_valid": true,
         "every_judgement_cites_an_audited_result": true,
         "planner_saw_lab_label_or_secret": false,
-        "engine_kind": null
+        "engine_kind": null,
+        "model_saw_facts": [],
+        "plan_failures": []
       },
       {
         "mode": "unauth_exposure",
@@ -449,13 +477,15 @@
         "target_gets_with_fix_check": 1,
         "worker_launches": 1,
         "planner_calls": 0,
-        "elapsed_s": 0.061,
+        "elapsed_s": 0.065,
         "planner_cost_usd": 0,
         "fix_check": null,
         "audit_chain_valid": true,
         "every_judgement_cites_an_audited_result": true,
         "planner_saw_lab_label_or_secret": false,
-        "engine_kind": null
+        "engine_kind": null,
+        "model_saw_facts": [],
+        "plan_failures": []
       },
       {
         "mode": "unknown_json",
@@ -474,13 +504,15 @@
         "target_gets_with_fix_check": 1,
         "worker_launches": 1,
         "planner_calls": 0,
-        "elapsed_s": 0.059,
+        "elapsed_s": 0.068,
         "planner_cost_usd": 0,
         "fix_check": null,
         "audit_chain_valid": true,
         "every_judgement_cites_an_audited_result": true,
         "planner_saw_lab_label_or_secret": false,
-        "engine_kind": null
+        "engine_kind": null,
+        "model_saw_facts": [],
+        "plan_failures": []
       }
     ],
     "fixed_rule": [
@@ -510,8 +542,8 @@
               "to": "contradicted",
               "rule": "denied_without_auth",
               "observation": "E4",
-              "result_audit_hash": "fdabd68fc609b0bd70ea64340cff12c0e9597b537ed54787c14e60bade282361",
-              "judged_audit_hash": "e7d1b24381292ade283b353fd67119985c9e32a3950fbe2b1acc76f0cd0ea306"
+              "result_audit_hash": "69bf51b871e152e8d9964b4df42981e4346d77f2b5281b38ad45060e956862ac",
+              "judged_audit_hash": "8a9b2bc9eaaf3bda2479f56f7d1ef619922dab363a58c41056cc9930b0f46844"
             }
           },
           {
@@ -530,8 +562,8 @@
               "to": "contradicted",
               "rule": "denied",
               "observation": "E5",
-              "result_audit_hash": "e3031ff6f6dc02cced7a97143404599d02bc453612c9edb42b5063061dff8c15",
-              "judged_audit_hash": "18dd728a752ae3344bc8e3dfab85dd5121edee0cee44c1b55bbe24dc181d9e53"
+              "result_audit_hash": "b9eeb21bee2f07514fd377643216a764928ff2b6e84f08c2b8c9cce468bbc024",
+              "judged_audit_hash": "60f5c6f38268a0e7f0886e15438eee3b3cda45a3cfe5628b8f7cc8f4a8ccba08"
             }
           }
         ],
@@ -549,13 +581,15 @@
         "target_gets_with_fix_check": 4,
         "worker_launches": 3,
         "planner_calls": 2,
-        "elapsed_s": 0.296,
+        "elapsed_s": 0.313,
         "planner_cost_usd": 0.0,
         "fix_check": null,
         "audit_chain_valid": true,
         "every_judgement_cites_an_audited_result": true,
         "planner_saw_lab_label_or_secret": false,
-        "engine_kind": "unverified"
+        "engine_kind": "unverified",
+        "model_saw_facts": [],
+        "plan_failures": []
       },
       {
         "mode": "auth_required_json",
@@ -582,13 +616,15 @@
         "target_gets_with_fix_check": 1,
         "worker_launches": 1,
         "planner_calls": 0,
-        "elapsed_s": 0.062,
+        "elapsed_s": 0.066,
         "planner_cost_usd": 0.0,
         "fix_check": null,
         "audit_chain_valid": true,
         "every_judgement_cites_an_audited_result": true,
         "planner_saw_lab_label_or_secret": false,
-        "engine_kind": null
+        "engine_kind": null,
+        "model_saw_facts": [],
+        "plan_failures": []
       },
       {
         "mode": "confusing_200",
@@ -616,8 +652,8 @@
               "to": "inconclusive",
               "rule": "answered_without_auth_unverified",
               "observation": "E4",
-              "result_audit_hash": "00a72780c4b2a1cf5f2a4c45443c1f7e2c74e7a725f50eb1038b84520d116ca1",
-              "judged_audit_hash": "025898fdfb2846432de740f7cf6f88955a03e953b97d53af5c0d39328eed8378"
+              "result_audit_hash": "e657558f18034af06f0b4ce2ce93c7bcdaa7ce2668b3729f146d2fe5602e7a5d",
+              "judged_audit_hash": "789eeaead8270d362a2fcf0203710c165bdaaa33985cc2d8b86a162dfc125912"
             }
           },
           {
@@ -636,8 +672,8 @@
               "to": "contradicted",
               "rule": "own_resource_only",
               "observation": "E5",
-              "result_audit_hash": "20b537d0c8689844e5bc61c9fc52b6d63c13dce0b9e06e28ecc492dbd5da10f5",
-              "judged_audit_hash": "697a8999225e196ed69453399ea97c357df2adb34eee69cfe5b5f568515132c0"
+              "result_audit_hash": "cf47d4c34bd41faf78ded34061c414f92b1026dfc73a372608c68ac920e7d376",
+              "judged_audit_hash": "6c0bdae077f9c54d1178fa6a89eda582c0dd9062b68ff62f26ade32d5c3684b9"
             }
           },
           {
@@ -657,8 +693,8 @@
               "to": "inconclusive",
               "rule": "answered_without_auth_unverified",
               "observation": "E6",
-              "result_audit_hash": "defd710be1d18aa3e11475a6aee131a1e08d7986cc19791ee444af012e897e9c",
-              "judged_audit_hash": "0721fe20c828f5a66fbbc5709a21a629925b0f47ae99ac64ce86bcc1b906fd31"
+              "result_audit_hash": "00f431a8c19d052535c95e7d82319d62f5f0945086a1cf5c69edd713bd3703a4",
+              "judged_audit_hash": "ed41728c00e472bb2301d5e64b485590c563bc0b5ce848581d7784fff067f17a"
             }
           }
         ],
@@ -676,13 +712,15 @@
         "target_gets_with_fix_check": 5,
         "worker_launches": 4,
         "planner_calls": 4,
-        "elapsed_s": 0.611,
+        "elapsed_s": 0.491,
         "planner_cost_usd": 0.0,
         "fix_check": null,
         "audit_chain_valid": true,
         "every_judgement_cites_an_audited_result": true,
         "planner_saw_lab_label_or_secret": false,
-        "engine_kind": "unverified"
+        "engine_kind": "unverified",
+        "model_saw_facts": [],
+        "plan_failures": []
       },
       {
         "mode": "denied_403",
@@ -710,8 +748,8 @@
               "to": "contradicted",
               "rule": "denied_without_auth",
               "observation": "E4",
-              "result_audit_hash": "c668b8d4f9386125339efa92320ce249d263b6cb3e594368f56d325bf8651bab",
-              "judged_audit_hash": "e6088f1c688f063d81f2cc38b3be389402044b594988a81fa8e067c2c337ceb3"
+              "result_audit_hash": "c1fa90da1c6af440de86db65bdea8ff738064f3d0e429c1fad0f17427da57b26",
+              "judged_audit_hash": "f7857ca8f843dd191e6f06fc978c53efd9a36d8382f9c3962b2d688de0c5b655"
             }
           },
           {
@@ -730,8 +768,8 @@
               "to": "contradicted",
               "rule": "denied",
               "observation": "E5",
-              "result_audit_hash": "c4df2965bdbe8ca87d197f325f84f10fadabf05bf5d19428006e442a33f0d616",
-              "judged_audit_hash": "fd398944ba576491321217f5b4dc57f1d2403cb4662d95ec6504c06e6ae30a03"
+              "result_audit_hash": "874433cd39aeea7f011b6aadc0b216fd9ba945eb6b7a4925ddb85532605ed6ae",
+              "judged_audit_hash": "712659e4370bd726eaf0c68457c6c608031ef30c1d132f38bb15a39e47ce81d6"
             }
           }
         ],
@@ -749,13 +787,15 @@
         "target_gets_with_fix_check": 4,
         "worker_launches": 3,
         "planner_calls": 2,
-        "elapsed_s": 0.337,
+        "elapsed_s": 0.317,
         "planner_cost_usd": 0.0,
         "fix_check": null,
         "audit_chain_valid": true,
         "every_judgement_cites_an_audited_result": true,
         "planner_saw_lab_label_or_secret": false,
-        "engine_kind": "unverified"
+        "engine_kind": "unverified",
+        "model_saw_facts": [],
+        "plan_failures": []
       },
       {
         "mode": "denied_404",
@@ -783,8 +823,8 @@
               "to": "contradicted",
               "rule": "denied_without_auth",
               "observation": "E4",
-              "result_audit_hash": "69108f8ab642a903200cf097efb0fa9671eed65ffad9a3c51be4a363d20b92a7",
-              "judged_audit_hash": "87e4df29d279bd0b4a29d4f2ea1b680f507629b135856dcb28d2c9abbfb2a767"
+              "result_audit_hash": "5a0d936e3cbc1f54af232e5512069ba9d1dc9a59191262ceb132fc32dc186b6c",
+              "judged_audit_hash": "2b028e3eb622b081a83cb92121f62125d5d1097a6e94b43cc39a69c8e81bc0be"
             }
           },
           {
@@ -803,8 +843,8 @@
               "to": "inconclusive",
               "rule": "control_failed",
               "observation": "E5",
-              "result_audit_hash": "a0e6e86c02f9e7d348c70a7c74138951585aff8663f9943ef7a97d1bcfe0e691",
-              "judged_audit_hash": "dcb518611cf6ba6aa8492452ab212fd8636b63969a3a7666b8bf4de82151119d"
+              "result_audit_hash": "74a3f208a0ca75fe243c6b18f4d3c7c597de7caff633cbe21d6966eb59ad2659",
+              "judged_audit_hash": "49057c78f654dc29e353f3a18d2db3336b919379491321beb88514e5125b8f05"
             }
           }
         ],
@@ -822,13 +862,15 @@
         "target_gets_with_fix_check": 3,
         "worker_launches": 3,
         "planner_calls": 3,
-        "elapsed_s": 0.368,
+        "elapsed_s": 0.369,
         "planner_cost_usd": 0.0,
         "fix_check": null,
         "audit_chain_valid": true,
         "every_judgement_cites_an_audited_result": true,
         "planner_saw_lab_label_or_secret": false,
-        "engine_kind": "unverified"
+        "engine_kind": "unverified",
+        "model_saw_facts": [],
+        "plan_failures": []
       },
       {
         "mode": "idor_decoy_marker",
@@ -856,8 +898,8 @@
               "to": "inconclusive",
               "rule": "answered_without_auth_unverified",
               "observation": "E4",
-              "result_audit_hash": "4e0b09f31f327333d543e650e9d9c183c496cfa48ab2eaf69af4e02f17809a2d",
-              "judged_audit_hash": "71971e01671497ef4bde5d33c40b4614b60a9553103fbc574026db896b99314b"
+              "result_audit_hash": "8b311fbafd80a7f76a01f955b966794ff0bbcd90fcbce5a902af6928cd9c82d6",
+              "judged_audit_hash": "2ac0933cca2c1dff2debdd12bba42ad6d471f7e17fcd9c40cc5969e63abccd39"
             }
           },
           {
@@ -876,8 +918,8 @@
               "to": "contradicted",
               "rule": "own_resource_only",
               "observation": "E5",
-              "result_audit_hash": "e0906377d943923f223f594aaa6fd1f6684a5b72bcaa242b30d8841bdaa6914f",
-              "judged_audit_hash": "09610ed36b0e98a6dd0187dd78a431abf6488b44fcfc572a427b7d0ddd3bff0d"
+              "result_audit_hash": "937471d77443f55723e2e249a5ceeb1ad700a8ad991d32225dcd4398d23aa182",
+              "judged_audit_hash": "722af5c6cd8311c182c99d80d132e1d134a50d74ec452e6ba81d3194e04f4cea"
             }
           },
           {
@@ -897,8 +939,8 @@
               "to": "inconclusive",
               "rule": "answered_without_auth_unverified",
               "observation": "E6",
-              "result_audit_hash": "18296e78634f21140cc1ad3f1b6df94a89f872915c26f192e7d9fa320cb77676",
-              "judged_audit_hash": "b950bb1c5c0bee80fc2ba0fec1e1af7123eb5ee68faf0d665c98f55072c90bda"
+              "result_audit_hash": "8810c363dc6be28988c76060199b139441634f53415adfcbb69dd636336192f2",
+              "judged_audit_hash": "b3cfce2660b4bab6f78d15f8871d2e44f652014f93d42f74523c2de26023052d"
             }
           }
         ],
@@ -916,13 +958,15 @@
         "target_gets_with_fix_check": 5,
         "worker_launches": 4,
         "planner_calls": 4,
-        "elapsed_s": 0.489,
+        "elapsed_s": 0.502,
         "planner_cost_usd": 0.0,
         "fix_check": null,
         "audit_chain_valid": true,
         "every_judgement_cites_an_audited_result": true,
         "planner_saw_lab_label_or_secret": false,
-        "engine_kind": "unverified"
+        "engine_kind": "unverified",
+        "model_saw_facts": [],
+        "plan_failures": []
       },
       {
         "mode": "idor_owner_missing",
@@ -950,8 +994,8 @@
               "to": "contradicted",
               "rule": "denied_without_auth",
               "observation": "E4",
-              "result_audit_hash": "b893379d72b05579d3385a5fe9159e6e399ada0bb4f29eb81c1cffb8f3454733",
-              "judged_audit_hash": "88fd74f19ff7c6e292747f5af0e0177ee93fa2339da7acaf35075570bababc71"
+              "result_audit_hash": "0783f6aca11f99f92eaa80ae6506552b3f882a13000487a2fbbb75f81bc1ca90",
+              "judged_audit_hash": "b47bdfedf553e312bd661c8f770b20d37c894d65dfd7119c271f4e04812313af"
             }
           },
           {
@@ -970,8 +1014,8 @@
               "to": "inconclusive",
               "rule": "control_failed",
               "observation": "E5",
-              "result_audit_hash": "c3fca7aed2cc2ef62d0d1b53b8c7939af8f8dc81b310f8a91a54b53a0e643534",
-              "judged_audit_hash": "2a0930f8b64c18162506799224c1926acbecabfb3306fec3ac50555d68983d13"
+              "result_audit_hash": "2eb4ab32ceb9d02df7328a27abc92e9e557c4b3e5e68e320cd7eb6e9eacb4c41",
+              "judged_audit_hash": "0dd60930aba5ce186c23370ca1a5c73b7b2d9e4f90b9bf8c2f9ecd0887922b2c"
             }
           }
         ],
@@ -989,13 +1033,15 @@
         "target_gets_with_fix_check": 3,
         "worker_launches": 3,
         "planner_calls": 3,
-        "elapsed_s": 0.36,
+        "elapsed_s": 0.358,
         "planner_cost_usd": 0.0,
         "fix_check": null,
         "audit_chain_valid": true,
         "every_judgement_cites_an_audited_result": true,
         "planner_saw_lab_label_or_secret": false,
-        "engine_kind": "unverified"
+        "engine_kind": "unverified",
+        "model_saw_facts": [],
+        "plan_failures": []
       },
       {
         "mode": "idor_spec_missing",
@@ -1023,8 +1069,8 @@
               "to": "contradicted",
               "rule": "denied_without_auth",
               "observation": "E4",
-              "result_audit_hash": "114164396896ce7241723c57fdde2e5c37db5c3c4af37091e219cb77fc163754",
-              "judged_audit_hash": "1c8a9965b5071c565167be21e368c2836aaad97aa58e8d67f920dc8a55ede7e4"
+              "result_audit_hash": "88a6b2367347797f5853c605f3d03ccaf3f0ee7a9f1fbde4a7a6e9a174bd07bb",
+              "judged_audit_hash": "abd1f5ad7c02b3a4e4350c2a9daf6cc1363398a47aab7baa0a2691ade1cab9bf"
             }
           },
           {
@@ -1043,8 +1089,8 @@
               "to": "needs_spec",
               "rule": "spec_missing",
               "observation": "E5",
-              "result_audit_hash": "deadaa45123732e346c70b9b2050f5c51c58813a41a8a94a9eb58eddee977fd9",
-              "judged_audit_hash": "4f3e3263f6064c79fc10095e38bdbb642d0bad2fd40605a352d8b5eb505e2721"
+              "result_audit_hash": "c7062d2e35f9d8d2f1285b94b01242054a059bec6db321d16f2d6d2ae8f70d5d",
+              "judged_audit_hash": "be261ed3c92b556c0fc6b2f335cdf66943118f4e822ffc7836c5e0993753047c"
             }
           }
         ],
@@ -1062,13 +1108,15 @@
         "target_gets_with_fix_check": 4,
         "worker_launches": 3,
         "planner_calls": 2,
-        "elapsed_s": 0.293,
+        "elapsed_s": 0.311,
         "planner_cost_usd": 0.0,
         "fix_check": null,
         "audit_chain_valid": true,
         "every_judgement_cites_an_audited_result": true,
         "planner_saw_lab_label_or_secret": false,
-        "engine_kind": "unverified"
+        "engine_kind": "unverified",
+        "model_saw_facts": [],
+        "plan_failures": []
       },
       {
         "mode": "idor_vulnerable",
@@ -1096,8 +1144,8 @@
               "to": "contradicted",
               "rule": "denied_without_auth",
               "observation": "E4",
-              "result_audit_hash": "1b25825e1aaa010013ace13e3cd8dbac2ad97d1621288c19613562bb0db5fea0",
-              "judged_audit_hash": "5123b244713c56ef3ff1de5e2df223b277494412cdf194f0e3554d8fa6633e34"
+              "result_audit_hash": "46ee878b9cd270e6eea22b3266b2f54a33a4a689177c7e75f7d2d16ed2ce7aca",
+              "judged_audit_hash": "f909354ca1b7881b3ee7b2673e736ff2d38edb1adff1f8ea297bb24519ba8293"
             }
           },
           {
@@ -1116,8 +1164,8 @@
               "to": "supported",
               "rule": "cross_account_read",
               "observation": "E5",
-              "result_audit_hash": "1d9c36b2ab6ed6cf6687e488b46c5c4b6356f6ba29ca7e4e4f7af70106633e3c",
-              "judged_audit_hash": "7c4e05f58e9d4f8359ab3e18ea4243691d84ad6b8613a5cba501893fc9339d95"
+              "result_audit_hash": "8a3c500ad7ae18ca5d93ea04af2d18b9751ab1e0362ad934198d11b800f730be",
+              "judged_audit_hash": "1dd7f4e53465891bd3ce3f7ffe697ca2683713e754f35ea32ac8c0f51786df0c"
             }
           },
           {
@@ -1135,8 +1183,8 @@
               "to": "contradicted",
               "rule": "denied",
               "observation": "E9",
-              "result_audit_hash": "d0f969d80e67b94d8fc50c0a53e190defc960cb1b8d9233d4cef4a9f51b15a35",
-              "judged_audit_hash": "bb2f211d9b7d969607b8cbc128f45a6a05d44402eb9d575ff4a5bc37b07aa659"
+              "result_audit_hash": "7f348bf0947071e019801755b3d64bdaf8c74f4a0ac3e20492c50a2acffc36f6",
+              "judged_audit_hash": "6a6d7db94e96d44cf7a4f218b2d2c490fd9da75e3e1e2572ddd8f95470a395d7"
             }
           }
         ],
@@ -1161,7 +1209,7 @@
         "target_gets_with_fix_check": 7,
         "worker_launches": 5,
         "planner_calls": 3,
-        "elapsed_s": 0.478,
+        "elapsed_s": 0.502,
         "planner_cost_usd": 0.0,
         "fix_check": {
           "hypotheses": [
@@ -1176,7 +1224,9 @@
         "audit_chain_valid": true,
         "every_judgement_cites_an_audited_result": true,
         "planner_saw_lab_label_or_secret": false,
-        "engine_kind": "unverified"
+        "engine_kind": "unverified",
+        "model_saw_facts": [],
+        "plan_failures": []
       },
       {
         "mode": "own_resource_only",
@@ -1204,8 +1254,8 @@
               "to": "contradicted",
               "rule": "denied_without_auth",
               "observation": "E4",
-              "result_audit_hash": "640c9fd32965ff5a4ea314cd0abb536cd059d704dbecbd3e91795326ebd4e2de",
-              "judged_audit_hash": "b173c4ed9848a8a9f8c9ed955b399779db00048420ed1754de4f447c7fa6398a"
+              "result_audit_hash": "196a66144e98f8bf7f1409353348ec9a2899da8942105b2a6371d533a29f7388",
+              "judged_audit_hash": "972e7537ddd943d0966143b9021cd8c3aba98767ad42286421907a9a4a27fd68"
             }
           },
           {
@@ -1224,8 +1274,8 @@
               "to": "contradicted",
               "rule": "own_resource_only",
               "observation": "E5",
-              "result_audit_hash": "9f65d831b6fca1a58cecb64584bb2c4f1ba3c074ce2ff6fd36d38b10b116d437",
-              "judged_audit_hash": "2ed38a80ea7f405a1fb8ef320df52292ddd49713bc5cd95ca07a84ec194d8904"
+              "result_audit_hash": "6eb8902966df61170856b4cc7ba63a4219bd59250d212386c818531de1345a12",
+              "judged_audit_hash": "4e34c8a307d1614dbe97c634a1168410f485dfce482963090263af93720869f2"
             }
           }
         ],
@@ -1243,13 +1293,15 @@
         "target_gets_with_fix_check": 4,
         "worker_launches": 3,
         "planner_calls": 2,
-        "elapsed_s": 0.297,
+        "elapsed_s": 0.31,
         "planner_cost_usd": 0.0,
         "fix_check": null,
         "audit_chain_valid": true,
         "every_judgement_cites_an_audited_result": true,
         "planner_saw_lab_label_or_secret": false,
-        "engine_kind": "unverified"
+        "engine_kind": "unverified",
+        "model_saw_facts": [],
+        "plan_failures": []
       },
       {
         "mode": "protected_json_decoy",
@@ -1282,7 +1334,9 @@
         "audit_chain_valid": true,
         "every_judgement_cites_an_audited_result": true,
         "planner_saw_lab_label_or_secret": false,
-        "engine_kind": null
+        "engine_kind": null,
+        "model_saw_facts": [],
+        "plan_failures": []
       },
       {
         "mode": "public_account_directory",
@@ -1310,8 +1364,8 @@
               "to": "contradicted",
               "rule": "intended_public",
               "observation": "E4",
-              "result_audit_hash": "7ded772cbb7d20927c1f3b4bdf69905f0bf97c749d46aaca53b5c00ab367e929",
-              "judged_audit_hash": "0eb95a6e4b448b88f85e948d8a504569f341bbe90a94ec0e0465d5c3274aa536"
+              "result_audit_hash": "1c1be43dad6dea97e82c2f197267d19dbf105dbc18d6f4d927bd96428b49b527",
+              "judged_audit_hash": "eb80ed7156b411929ad8831d4a8fabb0530723974406a97c9922ee9660646d3c"
             }
           },
           {
@@ -1330,8 +1384,8 @@
               "to": "contradicted",
               "rule": "intended_public",
               "observation": "E5",
-              "result_audit_hash": "9ada885200a70a85be783fc9156d491dbaa1e8c28622dfb295c96459d0c631c0",
-              "judged_audit_hash": "97ffa4929aef452802b461d883310a3a9d96e2d9cf29c605cb191622de08f46b"
+              "result_audit_hash": "11c5ac79acd58208bc39d0ad9d1fdbc628fb729d3ebeea9f35785db0f0814a90",
+              "judged_audit_hash": "83c3c3daa2299e37581b7b7d7c4b6c8f1abdea2c26a6812ea0a5c6617df9fc31"
             }
           }
         ],
@@ -1349,13 +1403,15 @@
         "target_gets_with_fix_check": 3,
         "worker_launches": 3,
         "planner_calls": 2,
-        "elapsed_s": 0.289,
+        "elapsed_s": 0.31,
         "planner_cost_usd": 0.0,
         "fix_check": null,
         "audit_chain_valid": true,
         "every_judgement_cites_an_audited_result": true,
         "planner_saw_lab_label_or_secret": false,
-        "engine_kind": "unverified"
+        "engine_kind": "unverified",
+        "model_saw_facts": [],
+        "plan_failures": []
       },
       {
         "mode": "public_json",
@@ -1382,13 +1438,15 @@
         "target_gets_with_fix_check": 1,
         "worker_launches": 1,
         "planner_calls": 0,
-        "elapsed_s": 0.061,
+        "elapsed_s": 0.065,
         "planner_cost_usd": 0.0,
         "fix_check": null,
         "audit_chain_valid": true,
         "every_judgement_cites_an_audited_result": true,
         "planner_saw_lab_label_or_secret": false,
-        "engine_kind": null
+        "engine_kind": null,
+        "model_saw_facts": [],
+        "plan_failures": []
       },
       {
         "mode": "public_json_marker",
@@ -1415,13 +1473,15 @@
         "target_gets_with_fix_check": 1,
         "worker_launches": 1,
         "planner_calls": 0,
-        "elapsed_s": 0.064,
+        "elapsed_s": 0.066,
         "planner_cost_usd": 0.0,
         "fix_check": null,
         "audit_chain_valid": true,
         "every_judgement_cites_an_audited_result": true,
         "planner_saw_lab_label_or_secret": false,
-        "engine_kind": null
+        "engine_kind": null,
+        "model_saw_facts": [],
+        "plan_failures": []
       },
       {
         "mode": "unauth_exposure",
@@ -1449,8 +1509,8 @@
               "to": "contradicted",
               "rule": "denied_without_auth",
               "observation": "E4",
-              "result_audit_hash": "8609c995ecdc366259949d6fb84e9d9b560635f592495a878667c6db99474987",
-              "judged_audit_hash": "8d5f18630f4f61a3bd7b3378ef740287237a35fa7d7a52987c159061db85b9c8"
+              "result_audit_hash": "bd3c0b4fd11d7fb2d154008e576f4266922632a89c3b9ee4fdfb8f71f1096665",
+              "judged_audit_hash": "881b0ce3ae65d66a36092848b16c15bc78f89764e5d29302b363a07776c30388"
             }
           },
           {
@@ -1469,8 +1529,8 @@
               "to": "supported",
               "rule": "cross_account_read",
               "observation": "E5",
-              "result_audit_hash": "7bcbb6979085956b5df86ae6d94c0e91910b4ff6fbdd4061d0c1de34bc6781bf",
-              "judged_audit_hash": "f3524870b3b25588b973ded98468989ed2a74be810fc66a6a11c7d2705463102"
+              "result_audit_hash": "05295ea1c01f42c7c0ae2b8241016caab3394dc7ae0cc7daf2c6956fa582cde5",
+              "judged_audit_hash": "f0278f7543855c8034d7c9d5a41b3d171edabf2685f46c8d005043dda370a839"
             }
           },
           {
@@ -1488,8 +1548,8 @@
               "to": "contradicted",
               "rule": "denied",
               "observation": "E9",
-              "result_audit_hash": "574c9207f22bad81c83ac0a4218be3593bba2be7a6e87793356f1bd861332270",
-              "judged_audit_hash": "aa8bc99ba04b94893486eecf334979c10399bf6a29baa99a6bba6467a3c16591"
+              "result_audit_hash": "eb2cf1927b6e97e3897a51b2dfc5c5b3d7e66db20d7624eef4d7ad25bf4ccf20",
+              "judged_audit_hash": "6acc8f6ddfc1ad7b13b6e43292719ee1d57e446a555ff69679a3305ad7739138"
             }
           }
         ],
@@ -1514,7 +1574,7 @@
         "target_gets_with_fix_check": 7,
         "worker_launches": 5,
         "planner_calls": 3,
-        "elapsed_s": 0.475,
+        "elapsed_s": 0.504,
         "planner_cost_usd": 0.0,
         "fix_check": {
           "hypotheses": [
@@ -1529,7 +1589,9 @@
         "audit_chain_valid": true,
         "every_judgement_cites_an_audited_result": true,
         "planner_saw_lab_label_or_secret": false,
-        "engine_kind": "unverified"
+        "engine_kind": "unverified",
+        "model_saw_facts": [],
+        "plan_failures": []
       },
       {
         "mode": "unknown_json",
@@ -1556,13 +1618,15 @@
         "target_gets_with_fix_check": 1,
         "worker_launches": 1,
         "planner_calls": 0,
-        "elapsed_s": 0.062,
+        "elapsed_s": 0.07,
         "planner_cost_usd": 0.0,
         "fix_check": null,
         "audit_chain_valid": true,
         "every_judgement_cites_an_audited_result": true,
         "planner_saw_lab_label_or_secret": false,
-        "engine_kind": null
+        "engine_kind": null,
+        "model_saw_facts": [],
+        "plan_failures": []
       }
     ],
     "artex_planner": [
@@ -1592,8 +1656,8 @@
               "to": "contradicted",
               "rule": "denied",
               "observation": "E4",
-              "result_audit_hash": "28629fa01619d73de9d90ab37051ddb5d312e3160086e666d891e13a16357baf",
-              "judged_audit_hash": "3a3ffb47bb1901fe25852a758dd92f56f6fe9712c2159795ec7a766acc636484"
+              "result_audit_hash": "35cff912f9689ce6e3f6c02afdd1409241d8291c5e4f6e8c3bc4847ec289fa89",
+              "judged_audit_hash": "bfe5aaa3e1b6ae2e4e1be978c7e6ceaa07a174d732df1d42f854d12a7d4c9e63"
             }
           },
           {
@@ -1612,8 +1676,8 @@
               "to": "contradicted",
               "rule": "denied_without_auth",
               "observation": "E5",
-              "result_audit_hash": "9291d39d9156102f29cec5c3594c2cf42288d25987b0c051ed71ff1e9298ce43",
-              "judged_audit_hash": "356423fdae52c4c91a990fd8078dadbd93f38323280c655ee6d4723fdc7aadc3"
+              "result_audit_hash": "74a9a2f03dc81d7cdf5226abb6d1e813e757672b03eb1f1a04e2dae0db6d677d",
+              "judged_audit_hash": "289e2dd41af6661256eba5970565a6a7b9c0c8c464b8a1f2fd738c15445aa808"
             }
           }
         ],
@@ -1631,13 +1695,15 @@
         "target_gets_with_fix_check": 4,
         "worker_launches": 3,
         "planner_calls": 2,
-        "elapsed_s": 0.294,
+        "elapsed_s": 0.314,
         "planner_cost_usd": 0.0,
         "fix_check": null,
         "audit_chain_valid": true,
         "every_judgement_cites_an_audited_result": true,
         "planner_saw_lab_label_or_secret": false,
-        "engine_kind": "unverified"
+        "engine_kind": "unverified",
+        "model_saw_facts": [],
+        "plan_failures": []
       },
       {
         "mode": "auth_required_json",
@@ -1664,13 +1730,15 @@
         "target_gets_with_fix_check": 1,
         "worker_launches": 1,
         "planner_calls": 0,
-        "elapsed_s": 0.058,
+        "elapsed_s": 0.063,
         "planner_cost_usd": 0.0,
         "fix_check": null,
         "audit_chain_valid": true,
         "every_judgement_cites_an_audited_result": true,
         "planner_saw_lab_label_or_secret": false,
-        "engine_kind": null
+        "engine_kind": null,
+        "model_saw_facts": [],
+        "plan_failures": []
       },
       {
         "mode": "confusing_200",
@@ -1698,8 +1766,8 @@
               "to": "contradicted",
               "rule": "own_resource_only",
               "observation": "E4",
-              "result_audit_hash": "5ca7b79a93ee0a4d9b74e60dd44acddd35fff3b3dd10d66365514ddaa26bc05a",
-              "judged_audit_hash": "3a5dad96afe6bc22b0d104fcfbe99177fb8922b98815fc3c2e74314a88f7a213"
+              "result_audit_hash": "327d2f3d4ad43eb8cbdffba38227a5966843c6f80602d6370ba3a68de3b36309",
+              "judged_audit_hash": "8c951a4014be8deaacd169f3e171fa5150f78e93536bab5c2d690b38f145ec15"
             }
           },
           {
@@ -1718,8 +1786,8 @@
               "to": "inconclusive",
               "rule": "answered_without_auth_unverified",
               "observation": "E5",
-              "result_audit_hash": "721df0e2e15e10c5bad25b6ebea02b398993546fe5c4de64ecee9302fef21d9b",
-              "judged_audit_hash": "72472cc317075c98dbd5b48de68319435cabc92bdae574adeb12a128eef79046"
+              "result_audit_hash": "a357ee293633c65d60c46fd845e2bded65dfaa216c1da644a547ee48b371693d",
+              "judged_audit_hash": "07e85de762ff2f178bbc9b335e495815d00456ec6dfadb071bbd085d979b5e06"
             }
           }
         ],
@@ -1737,13 +1805,15 @@
         "target_gets_with_fix_check": 4,
         "worker_launches": 3,
         "planner_calls": 3,
-        "elapsed_s": 0.35,
+        "elapsed_s": 0.369,
         "planner_cost_usd": 0.0,
         "fix_check": null,
         "audit_chain_valid": true,
         "every_judgement_cites_an_audited_result": true,
         "planner_saw_lab_label_or_secret": false,
-        "engine_kind": "unverified"
+        "engine_kind": "unverified",
+        "model_saw_facts": [],
+        "plan_failures": []
       },
       {
         "mode": "denied_403",
@@ -1771,8 +1841,8 @@
               "to": "contradicted",
               "rule": "denied",
               "observation": "E4",
-              "result_audit_hash": "3c99302700ba7db9cbaf1ab5801b2732fe1a139f533d377bccb752e8bb61ea66",
-              "judged_audit_hash": "5e400ffef17dab8e4405750b1615945ac1cb8d7d6af5b914ae4e11255add7f00"
+              "result_audit_hash": "f17c69661b395fdc232078757a29660b5458a7beba62e91132ee86314ef777d9",
+              "judged_audit_hash": "6b3eca8f85edc5e4a6d104bba42996650a23a06ce27af2246ca6ab7cdfbdf83b"
             }
           },
           {
@@ -1791,8 +1861,8 @@
               "to": "contradicted",
               "rule": "denied_without_auth",
               "observation": "E5",
-              "result_audit_hash": "23fcaf572585686bb67b78182b7ed82959c614c8e17f9ea8c785d73be4c01b2d",
-              "judged_audit_hash": "32b63e87ddb5288b5b942dbc7e2301b1faf697cffd845eb3cd9e92f0ef89bde4"
+              "result_audit_hash": "fb2c6c8ba6beef78898759bf3e8ae91ec74da8dc985a0cb4bd8d71d113e2170d",
+              "judged_audit_hash": "5ebd2024fb5b2c50f4e0f261359659131f169cde2ef59a4857cc49d40a159fd7"
             }
           }
         ],
@@ -1810,13 +1880,15 @@
         "target_gets_with_fix_check": 4,
         "worker_launches": 3,
         "planner_calls": 2,
-        "elapsed_s": 0.311,
+        "elapsed_s": 0.316,
         "planner_cost_usd": 0.0,
         "fix_check": null,
         "audit_chain_valid": true,
         "every_judgement_cites_an_audited_result": true,
         "planner_saw_lab_label_or_secret": false,
-        "engine_kind": "unverified"
+        "engine_kind": "unverified",
+        "model_saw_facts": [],
+        "plan_failures": []
       },
       {
         "mode": "denied_404",
@@ -1844,8 +1916,8 @@
               "to": "inconclusive",
               "rule": "control_failed",
               "observation": "E4",
-              "result_audit_hash": "70bb19f3facb01f3e2e484a3a653d988b69ccfee159f2399fd9f5f16a696cdcb",
-              "judged_audit_hash": "ccf2f0b160d4b95b2e536425f618a17ac2f4121deb2fe543b0a4389af206cba5"
+              "result_audit_hash": "f9a6e64d9f67c7650ecf4c11f13fa12fd20c99d36842ca3ab79a1fb583df1add",
+              "judged_audit_hash": "d1b8fd94f1416770bec8a88e7301c92da4e5d2dd497051f5121705f607968b23"
             }
           },
           {
@@ -1864,8 +1936,8 @@
               "to": "contradicted",
               "rule": "denied_without_auth",
               "observation": "E5",
-              "result_audit_hash": "28b511b7f66f7df32e4b4b602548675b5ee159a5c4120522dcbdb8926e35f5d8",
-              "judged_audit_hash": "09371a29e0a86dfca1914a0611375a97673f45101d539e154f6e2fe2aa7141af"
+              "result_audit_hash": "33b9d1f6cd6022470375e373aa80a076325a85556df24d5d13d0feec9b1b6812",
+              "judged_audit_hash": "1a70a9d8792bd9a879d7da03ba4b54042ed50ad813cc2a2c1118b577c94b4aa8"
             }
           },
           {
@@ -1885,8 +1957,8 @@
               "to": "inconclusive",
               "rule": "control_failed",
               "observation": "E6",
-              "result_audit_hash": "6cd535c3eb056631de7c38cc28e029ad28ba1e697761ea80f5dc0c86a63c924c",
-              "judged_audit_hash": "d623c91ff76c567644d8f3831aff970d5b222ef059e8a02b30007379e7e8364d"
+              "result_audit_hash": "026b97a5c65917a5dcb8188103b129e11e025dcb6ae76b3a71b3de9a483fc372",
+              "judged_audit_hash": "455a0aca2e3cf3f48a190f2b852e1b35980af48b6687fbbf6fe3380e74a81218"
             }
           }
         ],
@@ -1904,13 +1976,15 @@
         "target_gets_with_fix_check": 4,
         "worker_launches": 4,
         "planner_calls": 4,
-        "elapsed_s": 0.47,
+        "elapsed_s": 0.495,
         "planner_cost_usd": 0.0,
         "fix_check": null,
         "audit_chain_valid": true,
         "every_judgement_cites_an_audited_result": true,
         "planner_saw_lab_label_or_secret": false,
-        "engine_kind": "unverified"
+        "engine_kind": "unverified",
+        "model_saw_facts": [],
+        "plan_failures": []
       },
       {
         "mode": "idor_decoy_marker",
@@ -1938,8 +2012,8 @@
               "to": "contradicted",
               "rule": "own_resource_only",
               "observation": "E4",
-              "result_audit_hash": "075b75a20d9d1c1adb91bcdae463213b6b1febbe214a49d2c0c054bbdef7d407",
-              "judged_audit_hash": "8c30905da93288bcf99c5c41ff514b26e78eba3c76f32893e46782db887eb1d9"
+              "result_audit_hash": "bd6c1154de330e86c50e93196ecde5ea1f67fe380b763abdcbfae32aff52dbc3",
+              "judged_audit_hash": "2a4469dee75e55b3c7b081c68cb9c21537b6b6a63d68f2d30fde704fb96a00d8"
             }
           },
           {
@@ -1958,8 +2032,8 @@
               "to": "inconclusive",
               "rule": "answered_without_auth_unverified",
               "observation": "E5",
-              "result_audit_hash": "de6c05190666fbc56d819d60602779fa25ee521ac986b8c34e0d0d33629b5e13",
-              "judged_audit_hash": "d8050fc3d211fa639daef2b66e395817133b7f91be0e7b7d5b1563daa4de137d"
+              "result_audit_hash": "0723d0ec88e1ff7753b5445a5aebd24fea1800397023526ab4d392651174ca82",
+              "judged_audit_hash": "db1f6d495946a632e09fe87a335797a12f38634f0662c3c50d9108349b006389"
             }
           }
         ],
@@ -1977,13 +2051,15 @@
         "target_gets_with_fix_check": 4,
         "worker_launches": 3,
         "planner_calls": 3,
-        "elapsed_s": 0.362,
+        "elapsed_s": 0.372,
         "planner_cost_usd": 0.0,
         "fix_check": null,
         "audit_chain_valid": true,
         "every_judgement_cites_an_audited_result": true,
         "planner_saw_lab_label_or_secret": false,
-        "engine_kind": "unverified"
+        "engine_kind": "unverified",
+        "model_saw_facts": [],
+        "plan_failures": []
       },
       {
         "mode": "idor_owner_missing",
@@ -2011,8 +2087,8 @@
               "to": "inconclusive",
               "rule": "control_failed",
               "observation": "E4",
-              "result_audit_hash": "d75e71372a82c15278792f8387879aff69efd68b75ef41a6b47d46115d58f1ee",
-              "judged_audit_hash": "c4f7212baf417133db353f098a0af073685af6701243d0df5a29b5d3f7155a84"
+              "result_audit_hash": "84fe5e6bf4eaaa61b911a75141231bcd789e6afc272afda29736da4c24b78402",
+              "judged_audit_hash": "5d64bf2a104f5a7b263024f2e37cb4d09226bd19598662cb196cedb646f5b1a5"
             }
           },
           {
@@ -2031,8 +2107,8 @@
               "to": "contradicted",
               "rule": "denied_without_auth",
               "observation": "E5",
-              "result_audit_hash": "0b66024eda4c400efbe193ff0df487060b9ef43469b87ad84dec1e2b9fff75db",
-              "judged_audit_hash": "6a8aef20834e2be4a301a659fb69423ef85ff07320d0d691bec6b961db72931f"
+              "result_audit_hash": "c7bad4ca71968ed9dc040fc0bee92ab7a9cb5dabc8647ff1f22c55f54ccb193b",
+              "judged_audit_hash": "fabf1cb6f91e97c49386107d0d5d63011b2653bb0906d8e1bc6e0caa841fa65a"
             }
           },
           {
@@ -2052,8 +2128,8 @@
               "to": "inconclusive",
               "rule": "control_failed",
               "observation": "E6",
-              "result_audit_hash": "441348992a54b7cc93c33a9057270c2fbf14e93a97518943f42a2f7a2a83a151",
-              "judged_audit_hash": "59de7f74401a0ba759d60140a6869ce5e4fbf59b58e0cc5a896b4c77f2efe417"
+              "result_audit_hash": "751c94cd57e2e813b290eb7a6c9fe27c6aa0dd9b1c86197701c71ba1f0967c7c",
+              "judged_audit_hash": "c7e2d3afc094ad9515a3ce2c49eb4140a578fc863711414db6de0cdac3c12c42"
             }
           }
         ],
@@ -2077,7 +2153,9 @@
         "audit_chain_valid": true,
         "every_judgement_cites_an_audited_result": true,
         "planner_saw_lab_label_or_secret": false,
-        "engine_kind": "unverified"
+        "engine_kind": "unverified",
+        "model_saw_facts": [],
+        "plan_failures": []
       },
       {
         "mode": "idor_spec_missing",
@@ -2105,8 +2183,8 @@
               "to": "needs_spec",
               "rule": "spec_missing",
               "observation": "E4",
-              "result_audit_hash": "e313f6ae979bd6d8ed864ecf740d43fa90d8cc734f538aa6926abd06d4ecf536",
-              "judged_audit_hash": "c70f919d4854bc6b075fa2b7fe7718524c5eb2b322fbf08140a41c271d7deaba"
+              "result_audit_hash": "ca76679ff0f6b36880def873cf305693b7a0b5e08a1cb7f42b610c7c2ab893b8",
+              "judged_audit_hash": "54fe7e78017d3dcbb0a0fa6fc12d60bd78365438d992ff8766f179b745d4430f"
             }
           },
           {
@@ -2125,8 +2203,8 @@
               "to": "contradicted",
               "rule": "denied_without_auth",
               "observation": "E5",
-              "result_audit_hash": "f7d073bc143bba1451e6f4a2c5667c8e91ef7aa9fad0ddb47be2628c5b0be057",
-              "judged_audit_hash": "85b44951cbeeaa9125e1fdb3f5c369238fe348f53ca9929203fae213c4fbc253"
+              "result_audit_hash": "bea282024b53a44371ae761d6a2110cd97340c19dd7c5837802d27e61789925d",
+              "judged_audit_hash": "27567b42e0ff24ccc78c8b8739aaeecc0d5175cd2e3f47108591bf10c4254f53"
             }
           }
         ],
@@ -2144,13 +2222,15 @@
         "target_gets_with_fix_check": 4,
         "worker_launches": 3,
         "planner_calls": 2,
-        "elapsed_s": 0.299,
+        "elapsed_s": 0.32,
         "planner_cost_usd": 0.0,
         "fix_check": null,
         "audit_chain_valid": true,
         "every_judgement_cites_an_audited_result": true,
         "planner_saw_lab_label_or_secret": false,
-        "engine_kind": "unverified"
+        "engine_kind": "unverified",
+        "model_saw_facts": [],
+        "plan_failures": []
       },
       {
         "mode": "idor_vulnerable",
@@ -2178,8 +2258,8 @@
               "to": "supported",
               "rule": "cross_account_read",
               "observation": "E4",
-              "result_audit_hash": "174f0233bd87cdb9dcac4ee74e158c8be48f88ca5461b5a9fd5f6e52be30c025",
-              "judged_audit_hash": "1db691d83f6f313e161d9b4142a2f06a753d166f73c380b4eecfb94b4c35c95a"
+              "result_audit_hash": "5afb79bacd779087715312bf925e58865bfbe69d662f94b9663b310a135b7f5c",
+              "judged_audit_hash": "435cd18b493d3f8494820f1e59dba7802c6d5975c4084417770a11d101daa8b3"
             }
           },
           {
@@ -2198,8 +2278,8 @@
               "to": "contradicted",
               "rule": "denied_without_auth",
               "observation": "E5",
-              "result_audit_hash": "771d39cd5a32fcbfce0890c2ac788db19a0df547b961a2dc29e67b3a995a5165",
-              "judged_audit_hash": "8d2132bb59160e8650535c5d60476c0b68457d8e116c670c5cbb3586c45464d4"
+              "result_audit_hash": "6789aca27444d91bc29491968ccbe651debaeb7b837a6f35897e9000b9cde17a",
+              "judged_audit_hash": "9ac9d503d15af55062f2ea698d390350192c648b386e6d91171d19bc7b18ffad"
             }
           },
           {
@@ -2217,8 +2297,8 @@
               "to": "contradicted",
               "rule": "denied",
               "observation": "E9",
-              "result_audit_hash": "b78a2302e496788454a7da4a26fa975361642ee6ae6e83ef57bd02b7a72c400d",
-              "judged_audit_hash": "26a8a1734775111b17263e485f0d04c7c0d290badfd8ae14c794ca412b53698d"
+              "result_audit_hash": "eddfb542e133b48f7aff0909e9a3d567a3d41c915bfa0794aa05d4083e79e16c",
+              "judged_audit_hash": "a4416b38ecdaa3fc110efebc6ae4001ac1f0648b5c6c50dcac8c6a01b9659c42"
             }
           }
         ],
@@ -2243,7 +2323,7 @@
         "target_gets_with_fix_check": 7,
         "worker_launches": 5,
         "planner_calls": 3,
-        "elapsed_s": 0.496,
+        "elapsed_s": 0.525,
         "planner_cost_usd": 0.0,
         "fix_check": {
           "hypotheses": [
@@ -2258,7 +2338,9 @@
         "audit_chain_valid": true,
         "every_judgement_cites_an_audited_result": true,
         "planner_saw_lab_label_or_secret": false,
-        "engine_kind": "unverified"
+        "engine_kind": "unverified",
+        "model_saw_facts": [],
+        "plan_failures": []
       },
       {
         "mode": "own_resource_only",
@@ -2286,8 +2368,8 @@
               "to": "contradicted",
               "rule": "own_resource_only",
               "observation": "E4",
-              "result_audit_hash": "1075fc7f395f08142c92c97fd2876392adf16149edcc7dc4a19ed5cdc8397880",
-              "judged_audit_hash": "416b021e547691faebb6fb0bb1f87cfccb4b4ccd91bb8cd7b31de5cf08fa06cd"
+              "result_audit_hash": "a76e81c9ca385d237873c19b29e1740bac58f0785cba8937a3ebd99220d883b9",
+              "judged_audit_hash": "8abd2e8c8de26749d51801937237a0aa2db73934ba3318466f1c0472ce5913ea"
             }
           },
           {
@@ -2306,8 +2388,8 @@
               "to": "contradicted",
               "rule": "denied_without_auth",
               "observation": "E5",
-              "result_audit_hash": "51e39b0dbd6f9c20b6a784b9b40cbbce7258116daa385a5621e9ad92bcf60825",
-              "judged_audit_hash": "54724609b7affc58fc6e7f51ae05f118d5ecdeaa2e0f075cec398fd66b5c768e"
+              "result_audit_hash": "18b7a6f559c5988f3290881f14b7cfe1033b43a0cdd1b84a131010c931c39754",
+              "judged_audit_hash": "328a328646b7b0c9ca940408510989053378cdc6e32ac8def8cca5eaf83bef0f"
             }
           }
         ],
@@ -2325,13 +2407,15 @@
         "target_gets_with_fix_check": 4,
         "worker_launches": 3,
         "planner_calls": 2,
-        "elapsed_s": 0.293,
+        "elapsed_s": 0.318,
         "planner_cost_usd": 0.0,
         "fix_check": null,
         "audit_chain_valid": true,
         "every_judgement_cites_an_audited_result": true,
         "planner_saw_lab_label_or_secret": false,
-        "engine_kind": "unverified"
+        "engine_kind": "unverified",
+        "model_saw_facts": [],
+        "plan_failures": []
       },
       {
         "mode": "protected_json_decoy",
@@ -2358,13 +2442,15 @@
         "target_gets_with_fix_check": 1,
         "worker_launches": 1,
         "planner_calls": 0,
-        "elapsed_s": 0.062,
+        "elapsed_s": 0.066,
         "planner_cost_usd": 0.0,
         "fix_check": null,
         "audit_chain_valid": true,
         "every_judgement_cites_an_audited_result": true,
         "planner_saw_lab_label_or_secret": false,
-        "engine_kind": null
+        "engine_kind": null,
+        "model_saw_facts": [],
+        "plan_failures": []
       },
       {
         "mode": "public_account_directory",
@@ -2392,8 +2478,8 @@
               "to": "contradicted",
               "rule": "intended_public",
               "observation": "E4",
-              "result_audit_hash": "f9f4237f715175711b275adaa3a9ad596434f5a48765d358af980237de59273b",
-              "judged_audit_hash": "0a95f2bb24b1ccd586fbab3dc78d20e6ea31c1c5de51760b31730cdf7678f50d"
+              "result_audit_hash": "90fd3e7f9e3423f0806e0854fd8c9383f88670490b19db02804773a6361f7ad3",
+              "judged_audit_hash": "b66d14de9fd5ee1e4ee11e58cd6069f4216056d0293e7bda9ec48571e275698f"
             }
           },
           {
@@ -2412,8 +2498,8 @@
               "to": "contradicted",
               "rule": "intended_public",
               "observation": "E5",
-              "result_audit_hash": "b9aa0cdc6828ca9cd2aa9bbee00bff131e7346a9baf986913f741a58e7ad0fad",
-              "judged_audit_hash": "7b3203ae9d3b70b939abb8e17c220026ddfba298e1fbcd491317922dea9413b6"
+              "result_audit_hash": "c680e45078d0656d098c6893bd11220c7006d23881959b1b3bd23ad7a40859d1",
+              "judged_audit_hash": "b0ca2a8656b228076a77e8f76f5a4f1aee9b89bfa48197ae7ebfa53fc2d7f62f"
             }
           }
         ],
@@ -2431,13 +2517,15 @@
         "target_gets_with_fix_check": 3,
         "worker_launches": 3,
         "planner_calls": 2,
-        "elapsed_s": 0.297,
+        "elapsed_s": 0.318,
         "planner_cost_usd": 0.0,
         "fix_check": null,
         "audit_chain_valid": true,
         "every_judgement_cites_an_audited_result": true,
         "planner_saw_lab_label_or_secret": false,
-        "engine_kind": "unverified"
+        "engine_kind": "unverified",
+        "model_saw_facts": [],
+        "plan_failures": []
       },
       {
         "mode": "public_json",
@@ -2464,13 +2552,15 @@
         "target_gets_with_fix_check": 1,
         "worker_launches": 1,
         "planner_calls": 0,
-        "elapsed_s": 0.061,
+        "elapsed_s": 0.066,
         "planner_cost_usd": 0.0,
         "fix_check": null,
         "audit_chain_valid": true,
         "every_judgement_cites_an_audited_result": true,
         "planner_saw_lab_label_or_secret": false,
-        "engine_kind": null
+        "engine_kind": null,
+        "model_saw_facts": [],
+        "plan_failures": []
       },
       {
         "mode": "public_json_marker",
@@ -2497,13 +2587,15 @@
         "target_gets_with_fix_check": 1,
         "worker_launches": 1,
         "planner_calls": 0,
-        "elapsed_s": 0.061,
+        "elapsed_s": 0.064,
         "planner_cost_usd": 0.0,
         "fix_check": null,
         "audit_chain_valid": true,
         "every_judgement_cites_an_audited_result": true,
         "planner_saw_lab_label_or_secret": false,
-        "engine_kind": null
+        "engine_kind": null,
+        "model_saw_facts": [],
+        "plan_failures": []
       },
       {
         "mode": "unauth_exposure",
@@ -2531,8 +2623,8 @@
               "to": "supported",
               "rule": "cross_account_read",
               "observation": "E4",
-              "result_audit_hash": "4a44bc3e020dad68355829c262ced32c2a16638bc4b19f27d2e562b48410b22a",
-              "judged_audit_hash": "32638a85626c3e663adcda27e82d6e0a2284dbf57bcbdc6e2800c7b455e6e2bf"
+              "result_audit_hash": "01870be3df6d0f0bd28c320e0e8e7de02cfb4f528b115126b611ec624293a265",
+              "judged_audit_hash": "68f437f04ed97ac33b3caa91d31600a3f562e68be02d1500d3ae25c60f53c9c4"
             }
           },
           {
@@ -2551,8 +2643,8 @@
               "to": "contradicted",
               "rule": "denied_without_auth",
               "observation": "E5",
-              "result_audit_hash": "dc1982d7db7e88925413cca864b1e51025e6f6d3bef19d16cffdd90b3b1bd507",
-              "judged_audit_hash": "258e2026e6ce7f215b9d87b7edbb1e3b3a5b26792f84822c19f7f5c0cd254fef"
+              "result_audit_hash": "f99969763c9d037569a15a4fe1cc7a1a585d34c9fe7c93018827bb84d7155cd2",
+              "judged_audit_hash": "3e53102be336a207b524ede931d442d6f80489f1fcdded5e7329e11be7d9c241"
             }
           },
           {
@@ -2570,8 +2662,8 @@
               "to": "contradicted",
               "rule": "denied",
               "observation": "E9",
-              "result_audit_hash": "9906ceae66b43d5001eda4c72ca5fa85d3eaedf6cad0263ffcd7ba8a2689f9aa",
-              "judged_audit_hash": "16fc099c8967cf3d7f510a45d314f601a6c7bb5e1b6378a611d4230f52227d8a"
+              "result_audit_hash": "31c362489e64bb608d313ccbed37a6bf490da9f992e6c7fcf892404944280f15",
+              "judged_audit_hash": "a3ae5f6396bea2c50eabf72389e6c7f40576be5dd07d0f9c6e8e648464b67ea4"
             }
           }
         ],
@@ -2596,7 +2688,7 @@
         "target_gets_with_fix_check": 7,
         "worker_launches": 5,
         "planner_calls": 3,
-        "elapsed_s": 0.5,
+        "elapsed_s": 0.516,
         "planner_cost_usd": 0.0,
         "fix_check": {
           "hypotheses": [
@@ -2611,7 +2703,9 @@
         "audit_chain_valid": true,
         "every_judgement_cites_an_audited_result": true,
         "planner_saw_lab_label_or_secret": false,
-        "engine_kind": "unverified"
+        "engine_kind": "unverified",
+        "model_saw_facts": [],
+        "plan_failures": []
       },
       {
         "mode": "unknown_json",
@@ -2638,13 +2732,15 @@
         "target_gets_with_fix_check": 1,
         "worker_launches": 1,
         "planner_calls": 0,
-        "elapsed_s": 0.062,
+        "elapsed_s": 0.066,
         "planner_cost_usd": 0.0,
         "fix_check": null,
         "audit_chain_valid": true,
         "every_judgement_cites_an_audited_result": true,
         "planner_saw_lab_label_or_secret": false,
-        "engine_kind": null
+        "engine_kind": null,
+        "model_saw_facts": [],
+        "plan_failures": []
       }
     ]
   }

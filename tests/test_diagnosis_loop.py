@@ -203,9 +203,9 @@ class TestDiagnosisLoopEndToEnd(LoopBase):
         self.assertEqual(len(self.requests), 2)
         first, second = (_titles(r) for r in self.requests)
         self.assertNotIn('"contradicted"', first)
-        self.assertIn('"state": "contradicted"', second)
-        self.assertIn('"contradicting": ["E4"]', second)
-        self.assertIn('"kind": "check_result"', second)
+        self.assertIn('"state":"contradicted"', second)
+        self.assertIn('"contradicting":["E4"]', second)
+        self.assertIn('"kind":"check_result"', second)
         # 4. each step's Worker result is tied to its audit hash and step id, and the
         #    judgement was audited before it took effect
         results = {e["hash"] for e in self.audit("result")}
@@ -242,8 +242,8 @@ class TestDiagnosisLoopEndToEnd(LoopBase):
         # the original finding stays a supported record of what was true before the fix
         self.assertEqual(self.hyp("other_account_read")["state"], "supported")
         fix_request = _titles(self.requests[-1])
-        self.assertIn('"purpose": "confirm_fix"', fix_request)
-        self.assertIn('"generation": 2', fix_request)
+        self.assertIn('"purpose":"confirm_fix"', fix_request)
+        self.assertIn('"generation":2', fix_request)
 
     def test_the_planner_payload_carries_no_lab_label_secret_or_url(self):
         self.runner().run()
@@ -464,18 +464,20 @@ class TestRealArtexDiagnosisLoop(unittest.TestCase):
     def test_the_loop_through_the_real_planner(self):
         from scripts.bench_diagnosis_loop import run_case
         row = run_case("idor_vulnerable", "artex_planner")
-        self.assertEqual(row["engine_kind"], "artex-binary")
-        self.assertEqual(row["other_account_read"], "supported")
-        self.assertEqual(row["unauthenticated_exposure"], "contradicted")
-        self.assertTrue(row["fix_check"]["confirmed_fixed"])
-        self.assertTrue(row["audit_chain_valid"] and row["every_judgement_cites_an_audited_result"])
-        self.assertFalse(row["planner_saw_lab_label_or_secret"])
         spec = run_case("idor_spec_missing", "artex_planner")
-        self.assertEqual(spec["other_account_read"], "needs_spec")
         out = os.environ.get("VULNIX_ARTEX_DIAGNOSIS_EVIDENCE")
         if out:                       # CI checks this file exists: a skipped test is a failure there
             Path(out).write_text(json.dumps({"idor_vulnerable": row, "idor_spec_missing": spec},
                                             ensure_ascii=False, default=str))
+        why = json.dumps({k: row[k] for k in ("plans", "plan_failures", "steps", "model_saw_facts")},
+                         ensure_ascii=False, default=str)[:3000]
+        self.assertEqual(row["engine_kind"], "artex-binary", why)
+        self.assertEqual(row["other_account_read"], "supported", why)
+        self.assertEqual(row["unauthenticated_exposure"], "contradicted")
+        self.assertTrue(row["fix_check"]["confirmed_fixed"])
+        self.assertTrue(row["audit_chain_valid"] and row["every_judgement_cites_an_audited_result"])
+        self.assertFalse(row["planner_saw_lab_label_or_secret"])
+        self.assertEqual(spec["other_account_read"], "needs_spec")
 
 
 if __name__ == "__main__":

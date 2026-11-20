@@ -31,6 +31,10 @@ def view_from_text(text: str) -> dict:
             continue
         if not isinstance(value, dict):
             continue
+        need = ("evidence_id", "target_ref", "generation") if m.group(1) == "observation" else (
+            "id", "state", "claim", "target_ref", "purpose", "generation")
+        if not all(k in value for k in need):
+            continue                       # a shortened or foreign fact: not used
         if m.group(1) == "observation" and "evidence_id" in value:
             obs[value["evidence_id"]] = value
         elif m.group(1) == "hypothesis" and "id" in value:

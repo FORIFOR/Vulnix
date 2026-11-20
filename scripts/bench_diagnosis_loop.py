@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shlex
 import sys
 import tempfile
@@ -54,6 +55,7 @@ METHODS = ("fixed_l1", "fixed_rule", "artex_planner")
 LIMITS = PlanLimits(max_steps=3, max_planner_rounds=5, max_seconds=300, max_planner_cost_usd=0.10)
 APPROVER = ("approver-human", ("operator", "approver"))
 FIXED_MODE = "denied_403"
+_FACT_TEXT = re.compile(r"Vulnix (?:observation|hypothesis|plan contract)[^\n]{0,200}")
 
 
 def _fixed_rule_intents(request: dict) -> list[dict]:
@@ -163,6 +165,11 @@ def run_case(mode: str, method: str) -> dict:
                     "planner_saw_lab_label_or_secret": any(x in payload for x in (
                         f'"{mode}"', "VULNIX_LAB_IDOR_PROVEN", '"truth"', "lab-only note")),
                     "engine_kind": (view.get("engine") or {}).get("kind"),
+                    # what the model was shown (Vulnix facts only: ids and short words),
+                    # so a run with the real overlay can be checked from its evidence
+                    "model_saw_facts": sorted({m.group(0)[:160] for m in _FACT_TEXT.finditer(
+                        json.dumps(model.requests, ensure_ascii=False))})[:12],
+                    "plan_failures": [p.reason for p in plans if p.state.value == "FAILED"],
                 }
     finally:
         lab.shutdown()

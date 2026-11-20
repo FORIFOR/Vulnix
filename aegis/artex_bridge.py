@@ -662,13 +662,21 @@ def diagnosis_observations(view: dict, targets: list[dict], allowed_levels) -> l
                   "evidence_refs: observations of the same target_ref and the current generation",
                   "reason confirm_fix only for purpose confirm_fix"],
         "generation": view["generation"]}, ensure_ascii=False, sort_keys=True), "detail": ""}]
+    # compact, and the deciding fields first: a planner may see a fact shortened
+    order_o = ("evidence_id", "target_ref", "generation", "kind", "source", "attrs")
+    order_h = ("id", "state", "claim", "target_ref", "purpose", "generation",
+               "supporting", "contradicting", "inconclusive", "basis")
     for o in view["observations"]:
-        facts.append({"title": "Vulnix observation " + json.dumps(o, ensure_ascii=False, sort_keys=True),
+        facts.append({"title": "Vulnix observation " + _compact({k: o[k] for k in order_o if k in o}),
                       "detail": ""})
     for h in view["hypotheses"]:
-        facts.append({"title": "Vulnix hypothesis " + json.dumps(h, ensure_ascii=False, sort_keys=True),
+        facts.append({"title": "Vulnix hypothesis " + _compact({k: h[k] for k in order_h if k in h}),
                       "detail": ""})
     return facts
+
+
+def _compact(value) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
 def _contract_reasons():

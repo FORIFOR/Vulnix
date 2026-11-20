@@ -148,7 +148,7 @@ class TestArtexContractTransport(unittest.TestCase):
         facts = diagnosis_observations(self.s.planner_view(), self.targets, {"L1", "L2"})
         text = json.dumps(facts)
         self.assertIn("Vulnix plan contract", text)
-        self.assertIn('\\"state\\": \\"open\\"', text)
+        self.assertIn('\\"state\\":\\"open\\"', text)
         for raw in ("abc123", H, "sid="):
             self.assertNotIn(raw, text)
 
