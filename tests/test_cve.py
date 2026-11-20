@@ -170,6 +170,7 @@ class TestCisaKevAndFeedMonitor(unittest.TestCase):
 
     def test_sync_failure_preserves_previous_catalog_and_tracks_freshness(self):
         mon = cve.FeedMonitor()
+        mon.ingest_payloads(nvd_obj={"vulnerabilities": []})   # a real sync first (starting up is not one)
         prev_synced_at = mon.last_synced_at
         prev_count = len(mon.catalog)
         prev_nvd_sha = mon.nvd_sha256
@@ -194,6 +195,39 @@ class TestCisaKevAndFeedMonitor(unittest.TestCase):
         empty_mon.last_synced_at = 0.0
         unfetched_status = empty_mon.status()
         self.assertEqual(unfetched_status["freshness"], "unfetched")
+
+    def test_starting_the_process_is_not_a_sync(self):
+        # the bundled feed is whatever shipped with the code: it must not read as just fetched
+        mon = cve.FeedMonitor()
+        status = mon.status()
+        self.assertIsNone(status["last_synced_at"])
+        self.assertEqual(status["freshness"], "unfetched")
+        self.assertEqual(status["sync_count"], 0)
+
+    def test_an_empty_or_unrecognised_payload_never_makes_a_stale_feed_fresh(self):
+        mon = cve.FeedMonitor()
+        good = {"vulnerabilities": []}            # a real "nothing new" answer has the list
+        mon.ingest_payloads(nvd_obj=good)
+        synced = mon.last_synced_at
+        later = synced + cve.STALE_SECONDS + 10
+        self.assertEqual(mon.status(now=later)["freshness"], "stale")
+        before = (mon.nvd_sha256, len(mon.catalog), mon.sync_count)
+        for bad in ({}, {"totalResults": 0}, {"vulnerabilities": "x"}):
+            st = mon.ingest_payloads(nvd_obj=bad)
+            self.assertEqual(mon.last_synced_at, synced, bad)
+            self.assertEqual((mon.nvd_sha256, len(mon.catalog), mon.sync_count), before, bad)
+            self.assertEqual(st["last_sync_error"], "unrecognised_nvd_payload", bad)
+            self.assertEqual(mon.status(now=later)["freshness"], "stale", bad)
+        st = mon.ingest_payloads(kev_obj={})
+        self.assertEqual(st["last_sync_error"], "unrecognised_kev_payload")
+        self.assertEqual(mon.last_synced_at, synced)
+
+    def test_a_valid_nothing_new_answer_is_a_sync(self):
+        mon = cve.FeedMonitor()
+        st = mon.ingest_payloads(nvd_obj={"vulnerabilities": []}, kev_obj={"vulnerabilities": []})
+        self.assertEqual(st["freshness"], "fresh")
+        self.assertEqual(st["sync_count"], 1)
+        self.assertIsNone(st["last_sync_error"])
 
     def test_service_diag_three_conditions_applicable_non_applicable_and_unknown_version(self):
         from aegis.service_diag import analyze_l1_service_response

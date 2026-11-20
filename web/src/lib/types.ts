@@ -154,7 +154,8 @@ export interface ControlVerificationReport {
 export interface CveStatus {
   cve_count: number;
   kev_count: number;
-  last_synced_at: number;
+  /** null until a feed was actually fetched or ingested (bundled data only) */
+  last_synced_at: number | null;
   sync_source: string;
   freshness?: "fresh" | "stale" | "unfetched";
   stale?: boolean;

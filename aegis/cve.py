@@ -300,7 +300,9 @@ class FeedMonitor:
         self.catalog: tuple[CVE, ...] = catalog if catalog is not None else CATALOG
         self.kev: dict[str, KevEntry] = dict(kev if kev is not None else KEV_CATALOG)
         self._fetcher = fetcher or _default_fetcher
-        self.last_synced_at: float = time.time()
+        # None until a feed is actually fetched or ingested: the bundled data shipped with the
+        # code, and starting the process says nothing about how current it is
+        self.last_synced_at: float | None = None
         self.sync_source: str = "bundled_nvd_and_cisa_kev"
         self.sync_count: int = 0
         self.nvd_sha256: str | None = _file_sha256(FEED_PATH) if catalog is None else None
@@ -318,6 +320,13 @@ class FeedMonitor:
             self.last_sync_error = "invalid_kev_payload"
             self.last_error_at = time.time()
             return self.status()
+        # NVD and CISA KEV both answer with a "vulnerabilities" list (empty when nothing is new);
+        # anything else is not a feed answer and must not count as a successful sync
+        for name, obj in (("nvd", nvd_obj), ("kev", kev_obj)):
+            if obj is not None and not isinstance(obj.get("vulnerabilities"), list):
+                self.last_sync_error = f"unrecognised_{name}_payload"
+                self.last_error_at = time.time()
+                return self.status()
         if nvd_obj is not None:
             parsed = load_nvd(nvd_obj)
             if parsed:

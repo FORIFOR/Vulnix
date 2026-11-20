@@ -5229,7 +5229,21 @@ class AssessmentService:
         outcome["model_name"] = backend._model
         if finding.get("verdict") != "proven":
             outcome["verdict_note"] = verdict_note(finding.get("verdict"))
-        steps = "\n".join(f"・{step.label}：{step.detail}" for step in accepted.remediation)
+        return self._safe_advice_text(accepted)
+
+    @staticmethod
+    def _safe_advice_text(accepted) -> str:
+        """The text shown for one accepted advice. The steps are the approved fixes from the
+        catalog, never the model's own words: a free-text check that misses one dangerous
+        phrase must not put it in front of the user. The model's part is the (already
+        checked) explanation of the risk."""
+        from .advisor_catalog import REMEDIATION_ACTIONS
+        labels = []
+        for step in accepted.remediation:
+            spec = REMEDIATION_ACTIONS.get(step.fix)
+            if spec is not None and spec[0] not in labels:
+                labels.append(spec[0])
+        steps = "\n".join(f"・{label}" for label in labels) or "・設定を人が見直してください"
         return (f"{accepted.risk_explanation}\n\n改善案：\n{steps}\n\n"
                 "実際の応答と監査記録は問題詳細で確認してください。これらはAIに送信していません。")
 
