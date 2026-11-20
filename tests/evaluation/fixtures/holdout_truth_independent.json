@@ -1,0 +1,186 @@
+{
+ "_about": "Second labeller's labels, written from holdout_cases.json and holdout_lab.py only, without seeing holdout_truth.json (an independent Claude agent, 2026-11-21). Agreement is recorded in docs/evaluation/LABEL_REVIEW.md. A human confirmation is still required before a real-model run.",
+ "labeller": "independent agent (no access to the author's labels)",
+ "cases": {
+  "holdout-001": {
+   "other_account_read": "contradicted",
+   "unauthenticated_exposure": "contradicted",
+   "fix": null,
+   "withhold_ok": false
+  },
+  "holdout-002": {
+   "other_account_read": "contradicted",
+   "unauthenticated_exposure": "contradicted",
+   "fix": null,
+   "withhold_ok": false
+  },
+  "holdout-003": {
+   "other_account_read": "supported",
+   "unauthenticated_exposure": "contradicted",
+   "fix": "fixed",
+   "withhold_ok": false
+  },
+  "holdout-004": {
+   "other_account_read": "contradicted",
+   "unauthenticated_exposure": "contradicted",
+   "fix": null,
+   "withhold_ok": false
+  },
+  "holdout-005": {
+   "other_account_read": "supported",
+   "unauthenticated_exposure": "contradicted",
+   "fix": "not_fixed",
+   "withhold_ok": false
+  },
+  "holdout-006": {
+   "other_account_read": "contradicted",
+   "unauthenticated_exposure": "contradicted",
+   "fix": null,
+   "withhold_ok": false
+  },
+  "holdout-007": {
+   "other_account_read": "contradicted",
+   "unauthenticated_exposure": "contradicted",
+   "fix": null,
+   "withhold_ok": true
+  },
+  "holdout-008": {
+   "other_account_read": "contradicted",
+   "unauthenticated_exposure": "contradicted",
+   "fix": null,
+   "withhold_ok": false
+  },
+  "holdout-009": {
+   "other_account_read": "contradicted",
+   "unauthenticated_exposure": "contradicted",
+   "fix": null,
+   "withhold_ok": false
+  },
+  "holdout-010": {
+   "other_account_read": "supported",
+   "unauthenticated_exposure": "contradicted",
+   "fix": null,
+   "withhold_ok": false
+  },
+  "holdout-011": {
+   "other_account_read": "contradicted",
+   "unauthenticated_exposure": "contradicted",
+   "fix": null,
+   "withhold_ok": false
+  },
+  "holdout-012": {
+   "other_account_read": "supported",
+   "unauthenticated_exposure": "contradicted",
+   "fix": null,
+   "withhold_ok": false
+  },
+  "holdout-013": {
+   "other_account_read": "contradicted",
+   "unauthenticated_exposure": "contradicted",
+   "fix": null,
+   "withhold_ok": false
+  },
+  "holdout-014": {
+   "other_account_read": "supported",
+   "unauthenticated_exposure": "supported",
+   "fix": null,
+   "withhold_ok": false
+  },
+  "holdout-015": {
+   "other_account_read": "needs_spec",
+   "unauthenticated_exposure": "contradicted",
+   "fix": null,
+   "withhold_ok": false
+  },
+  "holdout-016": {
+   "other_account_read": "supported",
+   "unauthenticated_exposure": "contradicted",
+   "fix": null,
+   "withhold_ok": false
+  },
+  "holdout-017": {
+   "other_account_read": "contradicted",
+   "unauthenticated_exposure": "contradicted",
+   "fix": null,
+   "withhold_ok": false
+  },
+  "holdout-018": {
+   "other_account_read": "not_applicable",
+   "unauthenticated_exposure": "not_applicable",
+   "fix": null,
+   "withhold_ok": false
+  },
+  "holdout-019": {
+   "other_account_read": "not_applicable",
+   "unauthenticated_exposure": "not_applicable",
+   "fix": null,
+   "withhold_ok": false
+  },
+  "holdout-020": {
+   "other_account_read": "supported",
+   "unauthenticated_exposure": "contradicted",
+   "fix": "fixed",
+   "withhold_ok": false
+  },
+  "holdout-021": {
+   "other_account_read": "supported",
+   "unauthenticated_exposure": "contradicted",
+   "fix": null,
+   "withhold_ok": false
+  },
+  "holdout-022": {
+   "other_account_read": "not_applicable",
+   "unauthenticated_exposure": "not_applicable",
+   "fix": null,
+   "withhold_ok": false
+  },
+  "holdout-023": {
+   "other_account_read": "contradicted",
+   "unauthenticated_exposure": "contradicted",
+   "fix": null,
+   "withhold_ok": false
+  },
+  "holdout-024": {
+   "other_account_read": "contradicted",
+   "unauthenticated_exposure": "contradicted",
+   "fix": null,
+   "withhold_ok": false
+  },
+  "holdout-025": {
+   "other_account_read": "contradicted",
+   "unauthenticated_exposure": "contradicted",
+   "fix": null,
+   "withhold_ok": false
+  },
+  "holdout-026": {
+   "other_account_read": "needs_spec",
+   "unauthenticated_exposure": "contradicted",
+   "fix": null,
+   "withhold_ok": false
+  },
+  "holdout-027": {
+   "other_account_read": "contradicted",
+   "unauthenticated_exposure": "contradicted",
+   "fix": null,
+   "withhold_ok": false
+  },
+  "holdout-028": {
+   "other_account_read": "contradicted",
+   "unauthenticated_exposure": "contradicted",
+   "fix": null,
+   "withhold_ok": false
+  },
+  "holdout-029": {
+   "other_account_read": "supported",
+   "unauthenticated_exposure": "contradicted",
+   "fix": null,
+   "withhold_ok": true
+  },
+  "holdout-030": {
+   "other_account_read": "supported",
+   "unauthenticated_exposure": "contradicted",
+   "fix": null,
+   "withhold_ok": false
+  }
+ }
+}

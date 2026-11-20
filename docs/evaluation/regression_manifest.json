@@ -1,0 +1,11 @@
+{
+  "conditions": 16,
+  "files": {
+    "tests/fixtures/access_control_lab.py": "0db6cbd3929c98504bd84be6e89fa3929c2ea937d23dee707206f45e65f8c73d",
+    "tests/fixtures/access_control_truth.json": "161ba0c32b3ed8dcb75d2eaa495dc1e651f4529c357e43181b25380691b3e5e7",
+    "tests/fixtures/access_control_owner_specs.json": "33749f063ec2e8c999a13e9e280a8e3cab3fbce3dd666f8e1dd56edaf1f5fd56",
+    "tests/fixtures/access_control_loop_truth.json": "6fc4ba769b985a63bd857b24e8a7d430460cead6fe7fd13cf37e733922920adb",
+    "tests/fixtures/access_control_loop_owner_specs.json": "462fe0aa10788a6b9d25cfd7a9daef32c272d011fed4550735dae7fd31e591e6"
+  },
+  "rule": "frozen 2026-11-21: these 16 conditions are for development and regression only. A change to them needs a new manifest in its own PR."
+}
