@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import functools
 import hashlib
 import hmac
 import json
@@ -35,6 +36,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote
+
+from .grant_lease import GrantLease
 
 ROLES = ("operator", "approver", "admin")
 SESSION_TTL = 12 * 3600
@@ -166,6 +169,16 @@ class Session:
     expires: float
 
 
+def _revocation(method):
+    """Ends or narrows someone's access: waits for in-flight deliveries, and no new one
+    starts while it waits (aegis/grant_lease.py)."""
+    @functools.wraps(method)
+    def wrapped(self, *args, **kwargs):
+        with self._grant.exclusive():
+            return method(self, *args, **kwargs)
+    return wrapped
+
+
 class OperatorStore:
     """Thread-safe operator + session store backed by a JSON seed file."""
 
@@ -176,6 +189,8 @@ class OperatorStore:
         self.sessions_path = Path(sessions_path) if sessions_path else self.seed_path.with_name("sessions.json")
         self._clock = clock
         self._lock = threading.Lock()
+        # deliveries share it; a revocation is exclusive (aegis/grant_lease.py)
+        self._grant = GrantLease()
         self._ops: dict[str, Operator] = {}
         self._sessions: dict[str, Session] = {}     # keyed by session_key(token); never the token
         self._auth_failures: dict[str, list[float]] = {}
@@ -314,6 +329,7 @@ class OperatorStore:
         with self._lock:
             return sorted(self._unsaved)
 
+    @_revocation
     def revoke_all_sessions(self, reason: str) -> int:
         """Everyone signs in again (e.g. after an unclean shutdown, when a logout
         or sign-out-everywhere may not have reached the disk)."""
@@ -392,6 +408,7 @@ class OperatorStore:
             raise AuthError("変更は現在のプロセスには反映されましたが、ファイルへの保存に失敗しました。"
                             "このままでは再起動後に元へ戻ります。データディレクトリの書き込み権限を確認してください")
 
+    @_revocation
     def change_password(self, name: str, current: str, new: str, *, keep_token: str | None = None) -> None:
         """Verify the current password, set a new one, and revoke this operator's
         other sessions (the one making the change, keep_token, is kept)."""
@@ -661,10 +678,15 @@ class OperatorStore:
 
     @contextlib.contextmanager
     def locked_session(self, token: str):
-        """Hold session revocation and role changes until one short grant is saved."""
-        with self._lock:
-            yield None if self._unsaved else self._resolve_locked(token)
+        """Hold session revocation and role changes until one grant is used. Only the
+        shared delivery lease is held while the caller works: other requests (logins,
+        emergency stops) never wait for it; a revocation waits for it to end."""
+        with self._grant.shared():
+            with self._lock:
+                current = None if self._unsaved else self._resolve_locked(token)
+            yield current
 
+    @_revocation
     def logout(self, token: str | None) -> None:
         if not token:
             return
@@ -737,6 +759,7 @@ class OperatorStore:
         with self._lock:
             return list(self._ops.values())
 
+    @_revocation
     def set_roles(self, target: str, roles: list[str] | tuple[str, ...], *, actor: str,
                   session_token: str | None = None) -> tuple[tuple[str, ...], tuple[str, ...]]:
         """Replace `target`'s roles. Returns (before, after). The caller (server)
@@ -829,6 +852,7 @@ class OperatorStore:
             self._pending_totp.pop(name, None)
         self._persist_operators()
 
+    @_revocation
     def reset_totp(self, target: str, *, actor: str, session_token: str | None = None) -> bool:
         """Recovery for a lost authenticator: an admin (never the account itself)
         removes the second factor and signs the account out everywhere."""

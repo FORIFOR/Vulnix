@@ -937,6 +937,53 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
         self.assertFalse(logout_thread.is_alive())
         self.assertEqual(response[0][0], 401)
 
+    def test_a_slow_reader_does_not_hold_the_account_lock_while_its_response_is_written(self):
+        # one tenant's slow client must not delay logins or emergency stops elsewhere
+        import socketserver
+        who = self.signup("slowreader")
+        other = self.signup("someoneelse")      # before the stall: signing up needs the lock too
+        org_id, other_org = who["orgs"][0]["id"], other["orgs"][0]["id"]
+        entered, release = threading.Event(), threading.Event()
+        original_write = socketserver._SocketWriter.write
+        armed = [True]
+
+        def stalled_write(self_, b):
+            if armed[0] and threading.current_thread() is not threading.main_thread() and len(b) > 0:
+                armed[0] = False
+                entered.set()
+                release.wait(5)
+            return original_write(self_, b)
+
+        response, done = [], {}
+
+        def timed(name, fn):
+            t0 = time.monotonic()
+            done[name] = (fn(), time.monotonic() - t0)
+
+        with patch.object(socketserver._SocketWriter, "write", stalled_write):
+            thread = threading.Thread(target=lambda: response.append(
+                self.req(who, "/assessments/scan_001/logs", org=org_id)))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            do_login = lambda: self.login("someoneelse", "someoneelse-Passw0rd!")   # noqa: E731
+            do_stop = lambda: self.req(other, "/assessments/scan_001/emergency-stop", {}, org=other_org)[0]  # noqa: E731
+            workers = [threading.Thread(target=timed, args=("login", do_login)),
+                       threading.Thread(target=timed, args=("stop", do_stop))]
+            for w in workers:
+                w.start()
+            for w in workers:
+                w.join(0.5)
+            try:
+                self.assertIn("login", done, "a slow reader delayed another account's login")
+                self.assertIn("stop", done, "a slow reader delayed another organization's emergency stop")
+            finally:
+                release.set()
+                thread.join(5)
+                for w in workers:
+                    w.join(5)
+        self.assertEqual(done["stop"][0], 200)
+        self.assertEqual(response[0][0], 200)
+
     def test_snapshot_generation_does_not_block_logout(self):
         who = self.signup("slowsnapshot")
         org_id = who["orgs"][0]["id"]
@@ -1372,8 +1419,12 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
                 revocation = threading.Thread(target=logout_request)
                 revocation.start()
                 self.assertTrue(logout_entered.wait(5))
-                self.assertFalse(logout_called.wait(0.1), "logout reached revocation before worker registration")
-                self.assertFalse(logout_done.is_set())
+                # The logout may be called, but the revocation must not take effect while
+                # the worker launch still holds the grant: the session stays valid and the
+                # logout does not complete until the launch is registered.
+                self.assertFalse(logout_done.wait(0.1), "logout completed before worker registration")
+                self.assertIsNotNone(self.ops.resolve(old_cookie.split("=", 1)[1]),
+                                     "the session was revoked before worker registration")
             finally:
                 release_popen.set()
                 request.join(10)
