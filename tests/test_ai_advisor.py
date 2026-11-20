@@ -848,6 +848,54 @@ class TestServiceIntegration(RealServiceBase):
         self.assertEqual(reserved[0]["fields"]["payload_sha256"], hashlib.sha256(calls[0][2]).hexdigest())
 
 
+    def _platform_case(self, platform_env, prespent=0):
+        import tempfile
+        from pathlib import Path
+        from aegis.spend_cap import DurableSpendCap
+        self.onboard()
+        self.run_l1()
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        cap = DurableSpendCap(Path(tmp.name) / "platform-advisor-spend.json")
+        if prespent:
+            cap.reserve(prespent, cap_micro_usd=prespent)
+        self.svc._platform_advisor_cap = cap
+        calls = []
+        self.svc._chat_backend = AbliterationBackend(
+            "https://api.abliteration.ai/v1/chat/completions", model="mock", api_key="test-key")
+        self.svc._real_site_safe_ai = True
+        item = _ok_item(remediation=[_rem("CSPを適切に設定する", "set_csp")],
+                        next_checks=[_chk("confirm_fix", "l1_recheck_security_headers")])
+        reply = json.dumps({"choices": [{"message": {"content": _advice_reply([item])([])}}]}).encode()
+        env = {"VULNIX_ADVISOR_PRICE_MODEL": "mock", "VULNIX_ADVISOR_MAX_COST_USD": "0.50",
+               "VULNIX_ADVISOR_USD_PER_1K_INPUT": "0.10", "VULNIX_ADVISOR_USD_PER_1K_OUTPUT": "0.10",
+               **platform_env}
+        with patch.object(adv, "_external_transport", side_effect=lambda *a, **k: calls.append(a) or reply), \
+                patch.dict(os.environ, env):
+            if "VULNIX_ADVISOR_PLATFORM_MAX_COST_USD" not in platform_env:
+                os.environ.pop("VULNIX_ADVISOR_PLATFORM_MAX_COST_USD", None)
+            out = self.svc.ask_chat("解説", "appr", finding_id="f_headers", safe_advice=True)
+        return out, calls, cap
+
+    def test_the_platform_cap_stops_a_send_even_with_room_in_this_organization(self):
+        out, calls, cap = self._platform_case({"VULNIX_ADVISOR_PLATFORM_MAX_COST_USD": "1.00"},
+                                              prespent=1_000_000)     # other orgs used it all
+        self.assertEqual(calls, [])
+        self.assertEqual(out["message"]["source"], "builtin")
+        self.assertEqual(cap.spent(), 1_000_000)
+
+    def test_a_send_is_counted_against_the_platform_cap(self):
+        out, calls, cap = self._platform_case({"VULNIX_ADVISOR_PLATFORM_MAX_COST_USD": "1.00"})
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(out["message"]["source"], "external_model")
+        reserved = [e for e in self.svc.audit.entries() if e["event"] == "advisor.safe_send_requested"]
+        self.assertEqual(cap.spent(), reserved[0]["fields"]["reserved_micro_usd"])
+
+    def test_without_a_platform_cap_setting_a_shared_platform_sends_nothing(self):
+        out, calls, cap = self._platform_case({})
+        self.assertEqual(calls, [])
+        self.assertEqual(out["message"]["source"], "builtin")
+
     def test_real_site_uses_only_allowlisted_finding_for_requested_ai_explanation(self):
         self.onboard()
         self.run_l1()

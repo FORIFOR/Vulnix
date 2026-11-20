@@ -896,6 +896,15 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
         org_id = owner["orgs"][0]["id"]
         self.assertEqual(self.req(owner, "/assessments/scan_001/artex/llm-preview", org=org_id)[0], 200)
 
+    def test_every_organization_shares_one_platform_advisor_cap(self):
+        a, b = self.signup("capone"), self.signup("captwo")
+        sa, sb = self.reg.service(a["orgs"][0]["id"]), self.reg.service(b["orgs"][0]["id"])
+        self.assertIsNotNone(sa._platform_advisor_cap)
+        self.assertEqual({str(x._platform_advisor_cap.path) for x in (sa, sb, self.reg.default_svc)},
+                         {str(sa._platform_advisor_cap.path)})
+        sa._platform_advisor_cap.reserve(5, cap_micro_usd=10)
+        self.assertEqual(sb._platform_advisor_cap.spent(), 5)
+
     def test_report_generation_does_not_block_logout(self):
         who = self.signup("slowreport")
         org_id = who["orgs"][0]["id"]

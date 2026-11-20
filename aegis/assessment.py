@@ -5144,6 +5144,11 @@ class AssessmentService:
                                           + Decimal(output_limit) * output_price) * 1000)
                                         .to_integral_value(rounding=ROUND_CEILING))
                 cap_micro_usd = int((cap * 1_000_000).to_integral_value(rounding=ROUND_FLOOR))
+                platform_cap = getattr(self, "_platform_advisor_cap", None)
+                if platform_cap is not None:
+                    # shared by every organization: a new organization brings no fresh budget
+                    platform_cap_micro_usd = int((positive_usd("VULNIX_ADVISOR_PLATFORM_MAX_COST_USD")
+                                                  * 1_000_000).to_integral_value(rounding=ROUND_FLOOR))
             if request_authorized is not None and not request_authorized():
                 return None
             with self._lock:
@@ -5157,6 +5162,12 @@ class AssessmentService:
                                 "payload_sha256": hashlib.sha256(body).hexdigest(),
                                 "endpoint_kind": "external" if external else "loopback_mock"}
                 if external:
+                    if platform_cap is not None:
+                        from .spend_cap import SpendRefused
+                        try:
+                            platform_cap.reserve(reserve_micro_usd, cap_micro_usd=platform_cap_micro_usd)
+                        except SpendRefused:
+                            raise AdvisorError("advisor platform budget refused") from None
                     try:
                         self.audit.record_with_budget("advisor.safe_send_requested",
                                                       reserve_micro_usd=reserve_micro_usd,
