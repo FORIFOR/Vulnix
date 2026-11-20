@@ -240,6 +240,7 @@ class PlanItem:
     target_id: str
     proposal: dict           # reconstructed from Vulnix's registry + catalog only
     status: str = "planned"
+    step: dict | None = None  # the accepted plan-contract step (diagnosis loop), ids only
 
 
 @dataclass
@@ -638,6 +639,88 @@ def reconstruct(intents: list[dict], targets: list[dict], run_id: str,
                 catalog_id=entry.id, level=entry.level, label=entry.label, target_id=tgt["target_id"],
                 proposal=proposal, status="awaiting_approval" if entry.level == "L2" else "planned"))
     return out
+
+
+# ---------------------------------------------------------------------------
+# the diagnosis loop: planner view in, id-only contract steps out
+# (docs/DIAGNOSIS_LOOP_PLAN.md, aegis.plan_contract)
+# ---------------------------------------------------------------------------
+CONTRACT_TITLE = "Vulnix plan contract"
+
+
+def diagnosis_observations(view: dict, targets: list[dict], allowed_levels) -> list[dict]:
+    """The planner view as ARTEX facts. Ids, kinds and short words only: the view
+    itself already dropped raw values (DiagnosisState.planner_view)."""
+    catalog = sorted(c.id for c in CATALOG if c.level in allowed_levels)
+    refs = [t["target_id"] for t in targets]
+    facts = [{"title": CONTRACT_TITLE + " " + json.dumps({
+        "answer_with": "add_intent",
+        "intent_summary": "exactly one JSON object with keys hypothesis_id, catalog_id, "
+                          "target_ref, evidence_refs, reason",
+        "catalog_id": catalog, "target_ref": refs, "reason": sorted(_contract_reasons()),
+        "rules": ["test only hypotheses whose state is open or inconclusive",
+                  "evidence_refs: observations of the same target_ref and the current generation",
+                  "reason confirm_fix only for purpose confirm_fix"],
+        "generation": view["generation"]}, ensure_ascii=False, sort_keys=True), "detail": ""}]
+    for o in view["observations"]:
+        facts.append({"title": "Vulnix observation " + json.dumps(o, ensure_ascii=False, sort_keys=True),
+                      "detail": ""})
+    for h in view["hypotheses"]:
+        facts.append({"title": "Vulnix hypothesis " + json.dumps(h, ensure_ascii=False, sort_keys=True),
+                      "detail": ""})
+    return facts
+
+
+def _contract_reasons():
+    from .plan_contract import REASONS
+    return REASONS
+
+
+def reconstruct_contract(intents: list[dict], targets: list[dict], run_id: str, state, *,
+                         allowed_levels: frozenset[str], executed=frozenset()) -> tuple[Reconstruction, list]:
+    """Contract mode: an intent becomes an item only through aegis.plan_contract.
+    Free text is never classified here; it stays an advisory."""
+    from .plan_contract import parse_steps, step_from_summary
+    by_ref = {t["target_id"]: t for t in targets}
+    asset_ids = {t["asset_id"] for t in targets}
+    out = Reconstruction()
+    rejected_all: list[dict] = []
+    for it in intents:
+        summary, iid = it["summary"], it["id"]
+        step = step_from_summary(summary)
+        if step is None:
+            out.advisories.append(Advisory(iid, summary, "計画の契約（ID指定の検査）に従っていないため実行しません"))
+            continue
+        if it.get("unmapped") or not set(it.get("asset_ids") or []) <= asset_ids:
+            out.advisories.append(Advisory(iid, summary, "登録されていない対象を含むため実行しません"))
+            rejected_all.append({"intent_id": iid, "reason": "unmapped_asset"})
+            continue
+        accepted, rejected = parse_steps([step], state, targets=set(by_ref),
+                                         allowed_levels=allowed_levels, executed=executed)
+        if not accepted:
+            why = rejected[0]["reason"] if rejected else "rejected"
+            out.advisories.append(Advisory(iid, summary, f"計画の契約を満たさないため実行しません（{why}）"))
+            rejected_all.append({"intent_id": iid, "reason": why})
+            continue
+        st = accepted[0]
+        if any(i.catalog_id == st["catalog_id"] and i.target_id == st["target_ref"] for i in out.items):
+            # one request per check and target in a plan (the router task is keyed by it)
+            rejected_all.append({"intent_id": iid, "reason": "duplicate_step"})
+            continue
+        entry = CATALOG_BY_ID[st["catalog_id"]]
+        tgt = by_ref[st["target_ref"]]
+        proposal = {
+            # the Gateway's engagement target; target_ref names the registered URL inside it
+            "tool": entry.tool, "target_id": tgt.get("engagement_target", "lab"), "action": entry.action,
+            "args": entry.args_for(tgt["url"]),
+            "rationale": f"ARTEX contract step: {st['reason']} {st['hypothesis_id']}",
+        }
+        out.items.append(PlanItem(
+            id=f"{run_id}_{len(out.items) + 1}", intent_id=iid, intent_summary=summary[:MAX_SUMMARY],
+            catalog_id=entry.id, level=entry.level, label=entry.label, target_id=tgt["target_id"],
+            proposal=proposal, status="awaiting_approval" if entry.level == "L2" else "planned",
+            step=st))
+    return out, rejected_all
 
 
 def command_from_env() -> list[str]:

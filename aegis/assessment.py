@@ -50,8 +50,8 @@ from .router import (AbliterationBackend, ArtexEngine, ArtexplannerBackend,
                      ArtexSubprocessBackend, HttpModelBackend, ProposalRouter,
                      verify_planner_connections, redact_verification_report)
 from .artex_bridge import (CATALOG_BY_ID, ArtexBridgeError, anonymous_real_site_request,
-                           command_from_env, reconstruct, reviewed_real_site_l1,
-                           run_artex_planner)
+                           command_from_env, diagnosis_observations, reconstruct,
+                           reconstruct_contract, reviewed_real_site_l1, run_artex_planner)
 from .runtime import WorkerPool
 from .secrets_store import EncryptedSecretStore
 from .l2_rules import BUILTIN_PROFILE_DIR, L2RuleSet, site_profile_dirs
@@ -68,6 +68,10 @@ EXECUTOR = {
     "agent": "Vulnix 診断エンジン",
     "model": "内蔵の検査ルール（実行権限なし）",
 }
+
+
+# The local lab's fixed account resource (the only Link relation _has_lab_account_resource_link accepts).
+LAB_ACCOUNT_RESOURCE_PATH = "/api/accounts/B/secret"
 
 
 def _has_lab_account_resource_link(value: object) -> bool:
@@ -1779,6 +1783,26 @@ class AssessmentService:
         """What ARTEX may see: the registered local lab only - never a real service."""
         return [{"asset_id": 1, "target_id": "lab", "url": self.a.target_url}]
 
+    def _diagnosis_targets_locked(self) -> list[dict]:
+        """The diagnosis loop's targets: Vulnix's own registered lab URLs only.
+
+        T1 is the lab root. T2, the lab's fixed account resource, exists only after
+        Vulnix itself measured the root linking to it. Never a real service."""
+        if self._in_ownership_flow(self.a.asset.get("name")) or self._is_external_service_asset():
+            return []
+        root = self.a.target_url
+        out = [{"asset_id": 1, "target_id": "T1", "url": root, "engagement_target": "lab"}]
+        if (getattr(self, "_lab_account_resource_observed", None) is True
+                and getattr(self, "_lab_account_resource_gen", None) == (self._run_generation, root)):
+            # measured by Vulnix in THIS workspace, on THIS root
+            out.append({"asset_id": 2, "target_id": "T2", "engagement_target": "lab",
+                        "url": root.rstrip("/") + LAB_ACCOUNT_RESOURCE_PATH})
+        return out
+
+    def diagnosis_targets(self) -> list[dict]:
+        with self._lock:
+            return [dict(t) for t in self._diagnosis_targets_locked()]
+
     def _refuse_artex_on_real_service_locked(self) -> None:
         scoped_real_site = self._is_external_service_asset()
         if ((self._in_ownership_flow(self.a.asset.get("name")) and not scoped_real_site)
@@ -1812,7 +1836,11 @@ class AssessmentService:
         )
 
     def plan_with_artex(self, actor: str, *, llm_approval: dict | None = None, roles=None,
-                        llm_mode: str | None = None, request_authorized=None) -> dict:
+                        llm_mode: str | None = None, request_authorized=None,
+                        diagnosis=None) -> dict:
+        """`diagnosis`: (DiagnosisState, executed) for the diagnosis loop - the planner
+        then sees the planner view and only id-only contract steps become items.
+        Registered local lab only."""
         fingerprint = None
         root_observation = None
         with self._lock:
@@ -1844,12 +1872,12 @@ class AssessmentService:
         return self._plan_with_artex(actor, llm_approval=llm_approval, roles=roles,
                                      llm_mode=llm_mode, fingerprint=fingerprint,
                                      root_observation=root_observation,
-                                     request_authorized=request_authorized)
+                                     request_authorized=request_authorized, diagnosis=diagnosis)
 
     def _plan_with_artex(self, actor: str, *, llm_approval: dict | None = None, roles=None,
                          llm_mode: str | None = None, fingerprint: dict | None = None,
                          root_observation: tuple[str, str] | None = None,
-                         request_authorized=None) -> dict:
+                         request_authorized=None, diagnosis=None) -> dict:
         """Ask the real ARTEX planner for a plan, then rebuild every item from Vulnix's
         own registered targets and allowed catalog. Nothing is executed here.
 
@@ -1862,6 +1890,8 @@ class AssessmentService:
             self._refuse_after_stop_locked()
             self._refuse_artex_on_real_service_locked()
             real_site = self._is_external_service_asset()
+            if diagnosis is not None and (real_site or self._in_ownership_flow(self.a.asset.get("name"))):
+                raise ValueError("診断ループ（仮説と追加検査）は登録済みのローカル検証ラボでのみ使用できます")
             if real_site and (llm_mode or os.environ.get("VULNIX_ARTEX_LLM_MODE", "direct")) not in (
                     "direct", "gateway-preview", "gateway-forward"):
                 raise ValueError("実サイトのARTEX計画はローカルモデルだけで作成できます")
@@ -1887,6 +1917,13 @@ class AssessmentService:
                 targets = [{"asset_id": 1, "target_id": "lab", "url": self.a.target_url}]
                 request = anonymous_real_site_request(list(self.a.findings.values()),
                                                       fingerprint=fingerprint)
+            elif diagnosis is not None:
+                targets = self._diagnosis_targets_locked()
+                request = {"goal": "未解決の仮説ごとに、許可された検査カタログから次の検査を ID だけで選ぶ",
+                           "targets": [{k: t[k] for k in ("asset_id", "target_id", "url")} for t in targets],
+                           "observations": diagnosis_observations(diagnosis[0].planner_view(), targets,
+                                                                  frozenset({"L1", "L2"})),
+                           "max_turns": 6}
             else:
                 targets = self._artex_targets_locked()
                 observations = [{"title": clean_target_text(f["title"], 200),
@@ -1988,8 +2025,14 @@ class AssessmentService:
         if request_authorized is not None and not request_authorized():
             raise ValueError("要求者の権限が失効したため、ARTEX 計画を破棄しました")
         run_id = "ax" + secrets.token_hex(4)
-        rec = reconstruct(run.intents, targets, run_id,
-                          allowed_levels=frozenset({"L1"}) if real_site else frozenset({"L1", "L2"}))
+        contract_rejected = None
+        if diagnosis is not None:
+            rec, contract_rejected = reconstruct_contract(run.intents, targets, run_id, diagnosis[0],
+                                                          allowed_levels=frozenset({"L1", "L2"}),
+                                                          executed=frozenset(diagnosis[1]))
+        else:
+            rec = reconstruct(run.intents, targets, run_id,
+                              allowed_levels=frozenset({"L1"}) if real_site else frozenset({"L1", "L2"}))
         # The rebuilt proposals still pass ProposalRouter (sanitized, audited) and appear
         # as tasks in the existing plan view; the Gateway alone decides what may run.
         router = ProposalRouter(self.gateway, self.audit, [_StaticProposals("artex-oss", [i.proposal for i in rec.items])])
@@ -2062,6 +2105,7 @@ class AssessmentService:
                 "elapsed_ms": run.elapsed_ms, "intents": len(run.intents),
                 "advisories": [{"intent_id": a.intent_id, "summary": clean_target_text(a.intent_summary, 500),
                                 "reason": a.reason} for a in rec.advisories],
+                "contract": ({"rejected": contract_rejected[:50]} if contract_rejected is not None else None),
             }
         try:
             self.audit.record("artex.plan_received", actor=actor, run_id=run_id, engine_kind=prov.get("kind"),
@@ -2269,7 +2313,8 @@ class AssessmentService:
                 items.append({"id": it.id, "intent_id": it.intent_id,
                               "intent_summary": clean_target_text(it.intent_summary, 500),
                               "catalog_id": it.catalog_id, "label": it.label, "level": it.level,
-                              "target_id": it.target_id, "tool": it.proposal["tool"], "status": it.status})
+                              "target_id": it.target_id, "tool": it.proposal["tool"], "status": it.status,
+                              "step": dict(it.step) if it.step else None})
             return {"configured": True, "plan": {**self._artex_plan, "items": items}}
 
     def _artex_session_started(self, sess, gen: int) -> None:
@@ -2405,6 +2450,20 @@ class AssessmentService:
                 claimed = True
                 self._tls.gen = self._run_generation
                 url = self.a.target_url
+                if item.target_id not in ("lab", "T1"):
+                    # a diagnosis-loop target: only a URL Vulnix itself registered for
+                    # this lab, looked up again now (never the stored proposal's args)
+                    # (an L2 item still runs only its fixed catalog probe on the lab root)
+                    target_url = next((t["url"] for t in self._diagnosis_targets_locked()
+                                       if t["target_id"] == item.target_id), None)
+                    if target_url is None:
+                        raise ValueError("この計画項目の対象は、現在の登録済み対象にありません")
+                    if entry.level == "L1":
+                        if entry.tool != "http_probe":
+                            # e.g. the status marker keeps its own gate on the lab root only
+                            raise ValueError("この対象では、この検査は実行できません")
+                        url = target_url
+                rec["evidence"] = []
             self._sync_artex_item(item_id)
             if entry.level == "L2":
                 self.audit.record("artex.item_approved", item=item_id, approver=actor, check=entry.check,
@@ -2412,10 +2471,13 @@ class AssessmentService:
                 def _proofs():
                     with self._lock:
                         f = self.a.findings.get(entry.finding_id) or {}
-                        return sum(1 for e in f.get("evidence") or [] if e.get("audit_hash"))
-                before = _proofs()
+                        return [dict(e) for e in f.get("evidence") or [] if e.get("audit_hash")]
+                before = {e["audit_hash"] for e in _proofs()}
                 self.verify_finding(entry.finding_id, actor, roles=roles)
-                ok = _proofs() > before          # this run recorded evidence for this finding
+                gained = [e for e in _proofs() if e["audit_hash"] not in before]
+                ok = bool(gained)                # this run recorded evidence for this finding
+                with self._lock:
+                    rec["evidence"] = gained
             else:
                 with self._lock:
                     if self._is_external_service_asset():
@@ -2426,13 +2488,19 @@ class AssessmentService:
                         self._ensure_active_window_locked()
                 res, ev = self._exec(entry.tool, entry.action, entry.args_for(url),
                                      approval_actor=f"artex-L1:{actor}")
-                if res is not None:
+                if res is not None and url != self.a.target_url:
+                    # not the root: the root analyzers do not apply; the loop judges it
                     with self._lock:
+                        rec["evidence"] = [dict(ev)]
+                elif res is not None:
+                    with self._lock:
+                        rec["evidence"] = [dict(ev)]
                         if entry.tool == "status_marker":
                             if self._record_status_result_locked(ev):
                                 self._upsert_finding(analyze_status_marker_report(res, ev))
                             else:
                                 res = None
+                                rec["evidence"] = []
                         else:
                             self._analyze(res, ev)
                 ok = res is not None
@@ -2455,6 +2523,12 @@ class AssessmentService:
             self._tls.gen = prev
             self._tls.request_authorized = previous_authorized
             self._end_operation()
+
+    def artex_item_evidence(self, item_id: str) -> list[dict]:
+        """The evidence this item's own run recorded (audit hash + redacted output)."""
+        with self._lock:
+            rec = self._artex_items.get(item_id) or {}
+            return [dict(e) for e in rec.get("evidence") or []]
 
     def _sync_artex_item(self, item_id: str) -> None:
         with self._lock:
@@ -4742,6 +4816,12 @@ class AssessmentService:
         if not d.allowed:
             self._fail(f"Gateway が拒否しました: {d.reason}")
             return None, None
+        requester_alive = getattr(self._tls, "request_authorized", None)
+        if requester_alive is not None and not requester_alive():
+            # The person who asked for this check logged out or lost the organization
+            # while the worker ran: what it brought back is not adopted on their behalf.
+            self.audit.record("result.discarded", tool=tool, reason="requester_authority_revoked")
+            raise ApproverRequired("要求者の権限が失効したため、この検査の結果は記録しません")
         if origin == "real_service":
             with self._lock:
                 still = self._external_entry(self.a.asset.get("name")) is not None
@@ -4805,6 +4885,7 @@ class AssessmentService:
         # Only the presence of this fixed, observed link reaches the local ARTEX
         # planner. The response body, owner specification and truth labels do not.
         self._lab_account_resource_observed = _has_lab_account_resource_link(h.get("link"))
+        self._lab_account_resource_gen = (self._run_generation, self.a.target_url)
         banner = h.get("server", "")
         bid = "f_banner"
         # CVE candidates come from the catalog engine (detection only, not proof).

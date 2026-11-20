@@ -1,0 +1,4 @@
+{
+  "own_resource_only": {"root_requirement": "public", "account_resource_requirement": "authentication_required"},
+  "idor_spec_missing": {"root_requirement": "public", "account_resource_requirement": "unspecified"}
+}
