@@ -1,5 +1,20 @@
 # Vulnix Goal 完了判定表
 
+## 2026-11-19 追記：AIの価値の測定、多段階ARTEX、日本語解説、A2B（ブランチ `claude/ai-value-eval`、PR #85の`fb676e0`から分岐、未コミット）
+
+| 要件 | 判定 | 根拠と限界 | 次のアクション |
+| --- | --- | --- | --- |
+| 未知条件での検査選択評価の基盤 | PASS（基盤） | [ADAPTIVE_HOLDOUT_V2.md](ADAPTIVE_HOLDOUT_V2.md)・[監査](ADAPTIVE_HOLDOUT_V2_AUDIT.md)。既存14条件とは別に作成した60条件（5分類×12、作成者が規則を知った上で設計）。正解ラベルと規則はSHA-256で固定し、モデルの入力から切り離している。<br>**暫定値（作成者のラベルによる。独立判定は未完了）**：F1 A 0.000／B 0.471／B2 0.723／E 0.793。重大な見逃し 15／11／5／2件（重大条件15件中）。<br>メモを読まない規則は、7条件を必ず誤る（上限0.883）。<br>C（実ARTEX＋模擬モデル）はB2と完全一致し、経路での損失は0件。60回すべて、固定ハッシュのバイナリをカーネル隔離下で実行した（Colima Linux VM）。<br>評価者と規則の作成者が同じという限界がある | 人間によるラベルの再判定。CIの `--check` ステップで実行を確認する |
+| 独立ラベル判定の準備 | 準備完了・未実施 | 判定者向けの資料：`docs/adaptive_holdout_v2_relabel/`（全60件版と40件版。判定基準、項目の意味、判断不能 `unsure` の扱いを記載）。実施する人向けの手順：[RELABEL_PROTOCOL](ADAPTIVE_HOLDOUT_V2_RELABEL_PROTOCOL.md)（判定者2人以上、全員一致で確定、それ以外は作成者ではない裁定者が決める、`ambiguous` は除外）。<br>`compare` と `adjudicate` を実装し、テストした。資料に正解・規則・予測が含まれないことをテストで確認済み | 判定者と裁定者を決めて実施する |
+| 実AI送信の安全ゲート | PASS（ローカル模擬のみ） | [AI_EVAL_APPROVAL_REQUEST.md](AI_EVAL_APPROVAL_REQUEST.md)。`run_approved` を2つ実装した。SHAの照合、1回限りの消費（`O_EXCL`）、予算の予約、監査、再送禁止を備える。14件のテストと、変異試験で確認した。実APIへの送信は0回 | 承認があれば送信できる |
+| 実AIが固定ルールを上回るか | NOT_TESTED（AI性能未測定） | 方式Dの要求SHA `e8eb6ecb…`（60条件、最悪の予約額US$0.0546）は作成しただけで、送信していない。比較の基準は、最も強い非AI規則であるE | 所有者の1回限りの承認を得て送信し、同じ採点器でEと比べる |
+| 多段階ARTEXの状態機械 | PASS（模擬ラボ・実ARTEX＋模擬モデル） | [ARTEX_MULTISTEP_E2E.md](ARTEX_MULTISTEP_E2E.md)。異常系15条件を含む21件。未承認の操作、失効後の新規起動、停止後の結果採用、証拠と判定の不一致は、いずれも0件。<br>別エージェントの読み取りレビュー（第三者ではない）で「ログアウト後に戻った結果が所見に反映される」P2を見つけ、`_exec` で修正した（403を保つ） | API・UIへの接続（組織分離のテストを含む） |
+| 日本語AI解説の安全ゲート | PASS（模擬回答・内蔵解説） | [JAPANESE_ADVICE_QUALITY.md](JAPANESE_ADVICE_QUALITY.md)。182件の回答で、危険な採用、根拠のない断定、誤った断定、秘密情報、スキーマ違反がいずれも0件。正しい回答の誤拒否も0件。<br>製品の検査に「証拠のない被害の断定」と「防御を弱める修正」の規則を追加した（否定と留保は除外）。内蔵解説の矛盾2件を修正した | 人間による分かりやすさの評価。実モデルの評価（SHA `4a2b188a…`、承認が必要） |
+| 実モデルによる日本語解説 | NOT_TESTED | 送信していない | 承認が必要 |
+| A2B静的診断（初期版） | PASS（検証用アプリ） | [A2B_DIAGNOSTIC_DESIGN.md](A2B_DIAGNOSTIC_DESIGN.md)。26件。外部通信0件、秘密値の出力0件（パスに含まれる秘密も置き換える）、自動接続0件、候補のみ、悪意ある入力への耐性あり | API・UI、隔離Worker、実際のアプリでの精度 |
+| 正式レビューの準備、実環境E2Eの条件 | 準備のみ | [REVIEW_PACKET_AND_REAL_SITE_E2E.md](REVIEW_PACKET_AND_REAL_SITE_E2E.md)。正式なApproveは0件のまま | 第三者のレビュー。実DNSとL1の承認 |
+
+
 更新基点：[Draft PR #85](https://github.com/FORIFOR/Vulnix/pull/85)のpush済みコード`c84963a`（[Linux CI #44430481911](https://github.com/FORIFOR/Vulnix/actions/runs/44430481911) 3/3成功、Python 1,901件成功・17件スキップ・1,617.987秒）および`fb25f9b`（[Linux CI #44419117701](https://github.com/FORIFOR/Vulnix/actions/runs/44419117701) 3/3成功、Python 1,896件成功・17件スキップ・1,708.349秒）、`origin/main` `5ecfc51`。さらに今回の作業で以下を追加実装・検証した：
 1. **実Abliteration AI 固定14条件の1回限定承認済み評価（候補B：`7a527a487a309962867f7d02096e527259946f2b62fdbf802a450d386e3803e5`）と製品への反映**：公式ドキュメント（`https://docs.abliteration.ai/capabilities/thinking.md`）で `abliterated-model` の推論停止が確認された `reasoning_effort: "none"` + `response_format: {"type":"json_object"}` を選定し、21条件のローカル異常系検証を経て1回だけ実送信。**HTTP 200、`finish_reason="stop"`、入力610 / 出力44 / 推論0 / 総654トークン、1.022秒、JSON採用 1/1（通算1/3）、検査選択 `TP=8, FP=0, FN=0, TN=6`（Precision 1.000, Recall 1.000, F1 1.000、不要検査率 0.000、見逃し率 0.000）** を実証（[ABLITERATION_SELECTION_REAL_RESULT.md](ABLITERATION_SELECTION_REAL_RESULT.md)）。同設定を `ExternalAbliterationAdvisor`（`aegis/ai_advisor.py`）にも反映した。
 2. **未修正P2候補（対象サイトが新規発行した `Set-Cookie` 秘密値の漏えい）の解消**：`http_probe` Worker・Gateway・`AssessmentService`・`enforce_verdict` の4境界で `Set-Cookie` 生値を除去し、Cookie名と保護属性のみを保持（[COOKIE_PURPOSE_LAB.md](COOKIE_PURPOSE_LAB.md)）。

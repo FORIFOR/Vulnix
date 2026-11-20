@@ -1,0 +1,2100 @@
+[
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l2_idor"
+  ],
+  "blind_id": "A01",
+  "category": "cookie",
+  "observation": {
+   "account_resource_link_observed": false,
+   "body_shape": "public_content",
+   "content_type": "application/json",
+   "cookies": [
+    {
+     "duplicate_conflicting": false,
+     "httponly": false,
+     "purpose": "preference",
+     "samesite": "none",
+     "secure": false
+    }
+   ],
+   "cors": {
+    "acao": "none",
+    "credentials": false,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": null,
+   "scheme": "https",
+   "server_family": "nginx",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "none",
+   "lab_l2_allowed": true,
+   "note_ja": "",
+   "root_access_requirement": "public",
+   "status_probe_consent": false
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l2_idor"
+  ],
+  "blind_id": "A02",
+  "category": "idor_bola",
+  "observation": {
+   "account_resource_link_observed": true,
+   "body_shape": "public_content",
+   "content_type": "application/json",
+   "cookies": [],
+   "cors": {
+    "acao": "none",
+    "credentials": false,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": null,
+   "scheme": "https",
+   "server_family": "nginx",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "unspecified",
+   "lab_l2_allowed": true,
+   "note_ja": "これはオープンデータAPIで、利用者IDは公開の投稿者IDです。",
+   "root_access_requirement": "public",
+   "status_probe_consent": false
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l2_idor"
+  ],
+  "blind_id": "A03",
+  "category": "auth_session",
+  "observation": {
+   "account_resource_link_observed": true,
+   "body_shape": "account_fields",
+   "content_type": "application/json",
+   "cookies": [],
+   "cors": {
+    "acao": "none",
+    "credentials": false,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": null,
+   "scheme": "https",
+   "server_family": "nginx",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "unspecified",
+   "lab_l2_allowed": true,
+   "note_ja": "会員一覧は社内向けデモで、すべて架空データ。誰でも全件閲覧してよい。",
+   "root_access_requirement": "unspecified",
+   "status_probe_consent": false
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l1_apache_mod_status",
+   "l2_idor"
+  ],
+  "blind_id": "A04",
+  "category": "info_tls",
+  "observation": {
+   "account_resource_link_observed": false,
+   "body_shape": "public_content",
+   "content_type": "application/json",
+   "cookies": [],
+   "cors": {
+    "acao": "none",
+    "credentials": false,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": null,
+   "scheme": "https",
+   "server_family": "apache",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "none",
+   "lab_l2_allowed": true,
+   "note_ja": "server-status は社内IPからのみ許可しているはず。",
+   "root_access_requirement": "public",
+   "status_probe_consent": true
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l2_idor"
+  ],
+  "blind_id": "A05",
+  "category": "auth_session",
+  "observation": {
+   "account_resource_link_observed": false,
+   "body_shape": "login_form",
+   "content_type": "text/html",
+   "cookies": [],
+   "cors": {
+    "acao": "none",
+    "credentials": false,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": null,
+   "scheme": "https",
+   "server_family": "nginx",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "unspecified",
+   "lab_l2_allowed": true,
+   "note_ja": "管理画面はログイン必須。トップはログインフォームを返すだけ。",
+   "root_access_requirement": "unspecified",
+   "status_probe_consent": false
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l2_idor"
+  ],
+  "blind_id": "A06",
+  "category": "info_tls",
+  "observation": {
+   "account_resource_link_observed": false,
+   "body_shape": "public_content",
+   "content_type": "application/json",
+   "cookies": [],
+   "cors": {
+    "acao": "none",
+    "credentials": false,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": null,
+   "scheme": "https",
+   "server_family": "apache",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "none",
+   "lab_l2_allowed": true,
+   "note_ja": "",
+   "root_access_requirement": "public",
+   "status_probe_consent": false
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l2_idor"
+  ],
+  "blind_id": "A07",
+  "category": "cors",
+  "observation": {
+   "account_resource_link_observed": false,
+   "body_shape": "public_content",
+   "content_type": "application/json",
+   "cookies": [],
+   "cors": {
+    "acao": "reflected",
+    "credentials": true,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": false,
+   "scheme": "https",
+   "server_family": "nginx",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "none",
+   "lab_l2_allowed": true,
+   "note_ja": "先月の設定変更以降、反射は止まっているはず。",
+   "root_access_requirement": "authentication_required",
+   "status_probe_consent": false
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l2_idor"
+  ],
+  "blind_id": "A08",
+  "category": "cookie",
+  "observation": {
+   "account_resource_link_observed": false,
+   "body_shape": "public_content",
+   "content_type": "application/json",
+   "cookies": [
+    {
+     "duplicate_conflicting": false,
+     "httponly": true,
+     "purpose": "session",
+     "samesite": "none",
+     "secure": true
+    }
+   ],
+   "cors": {
+    "acao": "none",
+    "credentials": false,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": null,
+   "scheme": "https",
+   "server_family": "nginx",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "none",
+   "lab_l2_allowed": true,
+   "note_ja": "",
+   "root_access_requirement": "authentication_required",
+   "status_probe_consent": false
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l2_idor"
+  ],
+  "blind_id": "A09",
+  "category": "cookie",
+  "observation": {
+   "account_resource_link_observed": false,
+   "body_shape": "public_content",
+   "content_type": "application/json",
+   "cookies": [
+    {
+     "duplicate_conflicting": false,
+     "httponly": true,
+     "purpose": "session",
+     "samesite": "lax",
+     "secure": false
+    }
+   ],
+   "cors": {
+    "acao": "none",
+    "credentials": false,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": false,
+   "scheme": "https",
+   "server_family": "nginx",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "none",
+   "lab_l2_allowed": true,
+   "note_ja": "",
+   "root_access_requirement": "authentication_required",
+   "status_probe_consent": false
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe"
+  ],
+  "blind_id": "A10",
+  "category": "idor_bola",
+  "observation": {
+   "account_resource_link_observed": true,
+   "body_shape": "public_content",
+   "content_type": "application/json",
+   "cookies": [],
+   "cors": {
+    "acao": "none",
+    "credentials": false,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": null,
+   "scheme": "https",
+   "server_family": "nginx",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "authentication_required",
+   "lab_l2_allowed": false,
+   "note_ja": "",
+   "root_access_requirement": "public",
+   "status_probe_consent": false
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l2_idor"
+  ],
+  "blind_id": "A11",
+  "category": "idor_bola",
+  "observation": {
+   "account_resource_link_observed": true,
+   "body_shape": "public_content",
+   "content_type": "application/json",
+   "cookies": [],
+   "cors": {
+    "acao": "none",
+    "credentials": false,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": null,
+   "scheme": "https",
+   "server_family": "nginx",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "unspecified",
+   "lab_l2_allowed": true,
+   "note_ja": "マイページの各ユーザー設定（通知先メールなど）は他のユーザーから見えてはならない。",
+   "root_access_requirement": "public",
+   "status_probe_consent": false
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l1_apache_mod_status",
+   "l2_idor"
+  ],
+  "blind_id": "A12",
+  "category": "info_tls",
+  "observation": {
+   "account_resource_link_observed": false,
+   "body_shape": "public_content",
+   "content_type": "application/json",
+   "cookies": [],
+   "cors": {
+    "acao": "none",
+    "credentials": false,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": null,
+   "scheme": "https",
+   "server_family": "nginx",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "none",
+   "lab_l2_allowed": true,
+   "note_ja": "Apache から nginx へ完全移行済みで、Apache は停止している。",
+   "root_access_requirement": "public",
+   "status_probe_consent": true
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l2_idor"
+  ],
+  "blind_id": "A13",
+  "category": "auth_session",
+  "observation": {
+   "account_resource_link_observed": false,
+   "body_shape": "account_fields",
+   "content_type": "application/json",
+   "cookies": [],
+   "cors": {
+    "acao": "none",
+    "credentials": false,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": null,
+   "scheme": "https",
+   "server_family": "nginx",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "none",
+   "lab_l2_allowed": true,
+   "note_ja": "先週からCDNのキャッシュ設定を切り替え中で、ログイン前に他人のキャッシュが返る報告がある。",
+   "root_access_requirement": "authentication_required",
+   "status_probe_consent": false
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l2_idor"
+  ],
+  "blind_id": "A14",
+  "category": "info_tls",
+  "observation": {
+   "account_resource_link_observed": false,
+   "body_shape": "login_form",
+   "content_type": "text/html",
+   "cookies": [],
+   "cors": {
+    "acao": "none",
+    "credentials": false,
+    "vary_origin": false
+   },
+   "hsts_present": false,
+   "initial_gets_consistent": null,
+   "scheme": "http",
+   "server_family": "nginx",
+   "status": 200,
+   "tls_verified": false,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "none",
+   "lab_l2_allowed": true,
+   "note_ja": "",
+   "root_access_requirement": "authentication_required",
+   "status_probe_consent": false
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l2_idor"
+  ],
+  "blind_id": "A15",
+  "category": "cookie",
+  "observation": {
+   "account_resource_link_observed": false,
+   "body_shape": "public_content",
+   "content_type": "application/json",
+   "cookies": [
+    {
+     "duplicate_conflicting": false,
+     "httponly": true,
+     "purpose": "session",
+     "samesite": "lax",
+     "secure": true
+    }
+   ],
+   "cors": {
+    "acao": "none",
+    "credentials": false,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": null,
+   "scheme": "https",
+   "server_family": "nginx",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "none",
+   "lab_l2_allowed": true,
+   "note_ja": "",
+   "root_access_requirement": "authentication_required",
+   "status_probe_consent": false
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l1_apache_mod_status",
+   "l2_idor"
+  ],
+  "blind_id": "A16",
+  "category": "info_tls",
+  "observation": {
+   "account_resource_link_observed": false,
+   "body_shape": "public_content",
+   "content_type": "application/json",
+   "cookies": [],
+   "cors": {
+    "acao": "none",
+    "credentials": false,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": null,
+   "scheme": "https",
+   "server_family": "apache",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": true
+  },
+  "owner_spec": {
+   "account_resource_requirement": "none",
+   "lab_l2_allowed": true,
+   "note_ja": "",
+   "root_access_requirement": "public",
+   "status_probe_consent": true
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l2_idor"
+  ],
+  "blind_id": "A17",
+  "category": "auth_session",
+  "observation": {
+   "account_resource_link_observed": true,
+   "body_shape": "account_fields",
+   "content_type": "application/json",
+   "cookies": [],
+   "cors": {
+    "acao": "none",
+    "credentials": false,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": true,
+   "scheme": "https",
+   "server_family": "nginx",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "authentication_required",
+   "lab_l2_allowed": true,
+   "note_ja": "",
+   "root_access_requirement": "authentication_required",
+   "status_probe_consent": false
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l2_idor"
+  ],
+  "blind_id": "A18",
+  "category": "idor_bola",
+  "observation": {
+   "account_resource_link_observed": true,
+   "body_shape": "public_content",
+   "content_type": "application/json",
+   "cookies": [],
+   "cors": {
+    "acao": "none",
+    "credentials": false,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": null,
+   "scheme": "https",
+   "server_family": "nginx",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "unspecified",
+   "lab_l2_allowed": true,
+   "note_ja": "注文詳細は購入者本人と店舗スタッフだけが見られる。",
+   "root_access_requirement": "public",
+   "status_probe_consent": false
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l2_idor"
+  ],
+  "blind_id": "A19",
+  "category": "cookie",
+  "observation": {
+   "account_resource_link_observed": false,
+   "body_shape": "public_content",
+   "content_type": "application/json",
+   "cookies": [
+    {
+     "duplicate_conflicting": false,
+     "httponly": true,
+     "purpose": "session",
+     "samesite": "lax",
+     "secure": false
+    }
+   ],
+   "cors": {
+    "acao": "none",
+    "credentials": false,
+    "vary_origin": false
+   },
+   "hsts_present": false,
+   "initial_gets_consistent": null,
+   "scheme": "http",
+   "server_family": "nginx",
+   "status": 200,
+   "tls_verified": false,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "none",
+   "lab_l2_allowed": true,
+   "note_ja": "",
+   "root_access_requirement": "authentication_required",
+   "status_probe_consent": false
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l2_idor"
+  ],
+  "blind_id": "A20",
+  "category": "cookie",
+  "observation": {
+   "account_resource_link_observed": false,
+   "body_shape": "public_content",
+   "content_type": "application/json",
+   "cookies": [
+    {
+     "duplicate_conflicting": false,
+     "httponly": false,
+     "purpose": "analytics",
+     "samesite": "lax",
+     "secure": false
+    }
+   ],
+   "cors": {
+    "acao": "none",
+    "credentials": false,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": null,
+   "scheme": "https",
+   "server_family": "nginx",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "none",
+   "lab_l2_allowed": true,
+   "note_ja": "",
+   "root_access_requirement": "public",
+   "status_probe_consent": false
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l2_idor"
+  ],
+  "blind_id": "A21",
+  "category": "cors",
+  "observation": {
+   "account_resource_link_observed": false,
+   "body_shape": "public_content",
+   "content_type": "application/json",
+   "cookies": [],
+   "cors": {
+    "acao": "wildcard",
+    "credentials": true,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": true,
+   "scheme": "https",
+   "server_family": "nginx",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "none",
+   "lab_l2_allowed": true,
+   "note_ja": "",
+   "root_access_requirement": "public",
+   "status_probe_consent": false
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l2_idor"
+  ],
+  "blind_id": "A22",
+  "category": "info_tls",
+  "observation": {
+   "account_resource_link_observed": false,
+   "body_shape": "public_content",
+   "content_type": "application/json",
+   "cookies": [],
+   "cors": {
+    "acao": "none",
+    "credentials": false,
+    "vary_origin": false
+   },
+   "hsts_present": false,
+   "initial_gets_consistent": false,
+   "scheme": "https",
+   "server_family": "nginx",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "none",
+   "lab_l2_allowed": true,
+   "note_ja": "",
+   "root_access_requirement": "public",
+   "status_probe_consent": false
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l1_apache_mod_status",
+   "l2_idor"
+  ],
+  "blind_id": "A23",
+  "category": "info_tls",
+  "observation": {
+   "account_resource_link_observed": false,
+   "body_shape": "public_content",
+   "content_type": "application/json",
+   "cookies": [],
+   "cors": {
+    "acao": "none",
+    "credentials": false,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": null,
+   "scheme": "https",
+   "server_family": "unknown",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "none",
+   "lab_l2_allowed": true,
+   "note_ja": "",
+   "root_access_requirement": "public",
+   "status_probe_consent": true
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l2_idor"
+  ],
+  "blind_id": "A24",
+  "category": "idor_bola",
+  "observation": {
+   "account_resource_link_observed": true,
+   "body_shape": "public_content",
+   "content_type": "application/json",
+   "cookies": [],
+   "cors": {
+    "acao": "none",
+    "credentials": false,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": null,
+   "scheme": "https",
+   "server_family": "nginx",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "public",
+   "lab_l2_allowed": true,
+   "note_ja": "以前は公開していたが、2026年9月から各ユーザーの請求書は本人だけが見られるよう変更した。",
+   "root_access_requirement": "public",
+   "status_probe_consent": false
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l2_idor"
+  ],
+  "blind_id": "A25",
+  "category": "auth_session",
+  "observation": {
+   "account_resource_link_observed": false,
+   "body_shape": "auth_error",
+   "content_type": "application/json",
+   "cookies": [],
+   "cors": {
+    "acao": "none",
+    "credentials": false,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": null,
+   "scheme": "https",
+   "server_family": "nginx",
+   "status": 401,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "none",
+   "lab_l2_allowed": true,
+   "note_ja": "",
+   "root_access_requirement": "authentication_required",
+   "status_probe_consent": false
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l1_apache_mod_status",
+   "l2_idor"
+  ],
+  "blind_id": "A26",
+  "category": "info_tls",
+  "observation": {
+   "account_resource_link_observed": false,
+   "body_shape": "public_content",
+   "content_type": "application/json",
+   "cookies": [],
+   "cors": {
+    "acao": "none",
+    "credentials": false,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": null,
+   "scheme": "https",
+   "server_family": "nginx",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "none",
+   "lab_l2_allowed": true,
+   "note_ja": "",
+   "root_access_requirement": "public",
+   "status_probe_consent": true
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l2_idor"
+  ],
+  "blind_id": "A27",
+  "category": "cors",
+  "observation": {
+   "account_resource_link_observed": false,
+   "body_shape": "public_content",
+   "content_type": "application/json",
+   "cookies": [],
+   "cors": {
+    "acao": "none",
+    "credentials": false,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": null,
+   "scheme": "https",
+   "server_family": "nginx",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "none",
+   "lab_l2_allowed": true,
+   "note_ja": "CORSは使っていない。",
+   "root_access_requirement": "public",
+   "status_probe_consent": false
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l2_idor"
+  ],
+  "blind_id": "A28",
+  "category": "cors",
+  "observation": {
+   "account_resource_link_observed": false,
+   "body_shape": "public_content",
+   "content_type": "application/json",
+   "cookies": [],
+   "cors": {
+    "acao": "reflected",
+    "credentials": true,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": null,
+   "scheme": "https",
+   "server_family": "nginx",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "none",
+   "lab_l2_allowed": true,
+   "note_ja": "CORSの許可オリジンは固定リストで、反射はしていないはず。",
+   "root_access_requirement": "authentication_required",
+   "status_probe_consent": false
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l2_idor"
+  ],
+  "blind_id": "A29",
+  "category": "idor_bola",
+  "observation": {
+   "account_resource_link_observed": true,
+   "body_shape": "public_content",
+   "content_type": "application/json",
+   "cookies": [],
+   "cors": {
+    "acao": "none",
+    "credentials": false,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": null,
+   "scheme": "https",
+   "server_family": "nginx",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "authentication_required",
+   "lab_l2_allowed": true,
+   "note_ja": "",
+   "root_access_requirement": "public",
+   "status_probe_consent": false
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l2_idor"
+  ],
+  "blind_id": "A30",
+  "category": "cookie",
+  "observation": {
+   "account_resource_link_observed": false,
+   "body_shape": "public_content",
+   "content_type": "application/json",
+   "cookies": [
+    {
+     "duplicate_conflicting": false,
+     "httponly": false,
+     "purpose": "unknown",
+     "samesite": "lax",
+     "secure": false
+    }
+   ],
+   "cors": {
+    "acao": "none",
+    "credentials": false,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": null,
+   "scheme": "https",
+   "server_family": "nginx",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "none",
+   "lab_l2_allowed": true,
+   "note_ja": "vx_t はログイン用トークン。ロードバランサーの片系だけ Secure 属性を付け忘れている可能性がある。",
+   "root_access_requirement": "authentication_required",
+   "status_probe_consent": false
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l2_idor"
+  ],
+  "blind_id": "A31",
+  "category": "auth_session",
+  "observation": {
+   "account_resource_link_observed": false,
+   "body_shape": "login_form",
+   "content_type": "text/html",
+   "cookies": [],
+   "cors": {
+    "acao": "none",
+    "credentials": false,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": false,
+   "scheme": "https",
+   "server_family": "nginx",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "none",
+   "lab_l2_allowed": true,
+   "note_ja": "ログインページはA/Bテスト中でデザインが2種類ある。",
+   "root_access_requirement": "authentication_required",
+   "status_probe_consent": false
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l2_idor"
+  ],
+  "blind_id": "A32",
+  "category": "cors",
+  "observation": {
+   "account_resource_link_observed": false,
+   "body_shape": "public_content",
+   "content_type": "application/json",
+   "cookies": [],
+   "cors": {
+    "acao": "reflected",
+    "credentials": true,
+    "vary_origin": true
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": false,
+   "scheme": "https",
+   "server_family": "nginx",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "none",
+   "lab_l2_allowed": true,
+   "note_ja": "",
+   "root_access_requirement": "authentication_required",
+   "status_probe_consent": false
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l2_idor"
+  ],
+  "blind_id": "A33",
+  "category": "idor_bola",
+  "observation": {
+   "account_resource_link_observed": true,
+   "body_shape": "public_content",
+   "content_type": "application/json",
+   "cookies": [],
+   "cors": {
+    "acao": "none",
+    "credentials": false,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": null,
+   "scheme": "https",
+   "server_family": "nginx",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "public",
+   "lab_l2_allowed": true,
+   "note_ja": "公開ディレクトリ。掲載内容は本人が公開に同意した項目のみ。",
+   "root_access_requirement": "public",
+   "status_probe_consent": false
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l2_idor"
+  ],
+  "blind_id": "A34",
+  "category": "auth_session",
+  "observation": {
+   "account_resource_link_observed": false,
+   "body_shape": "auth_error",
+   "content_type": "application/json",
+   "cookies": [],
+   "cors": {
+    "acao": "none",
+    "credentials": false,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": false,
+   "scheme": "https",
+   "server_family": "nginx",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "none",
+   "lab_l2_allowed": true,
+   "note_ja": "",
+   "root_access_requirement": "authentication_required",
+   "status_probe_consent": false
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l2_idor"
+  ],
+  "blind_id": "A35",
+  "category": "auth_session",
+  "observation": {
+   "account_resource_link_observed": true,
+   "body_shape": "account_fields",
+   "content_type": "application/json",
+   "cookies": [],
+   "cors": {
+    "acao": "none",
+    "credentials": false,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": null,
+   "scheme": "https",
+   "server_family": "nginx",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "unspecified",
+   "lab_l2_allowed": true,
+   "note_ja": "/api/me と /api/orders は本人のアカウントでのみ参照できる設計です。",
+   "root_access_requirement": "unspecified",
+   "status_probe_consent": false
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l2_idor"
+  ],
+  "blind_id": "A36",
+  "category": "cookie",
+  "observation": {
+   "account_resource_link_observed": false,
+   "body_shape": "public_content",
+   "content_type": "application/json",
+   "cookies": [
+    {
+     "duplicate_conflicting": true,
+     "httponly": true,
+     "purpose": "session",
+     "samesite": "lax",
+     "secure": true
+    },
+    {
+     "duplicate_conflicting": false,
+     "httponly": false,
+     "purpose": "analytics",
+     "samesite": "lax",
+     "secure": false
+    }
+   ],
+   "cors": {
+    "acao": "none",
+    "credentials": false,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": null,
+   "scheme": "https",
+   "server_family": "nginx",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "none",
+   "lab_l2_allowed": true,
+   "note_ja": "",
+   "root_access_requirement": "authentication_required",
+   "status_probe_consent": false
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l2_idor"
+  ],
+  "blind_id": "A37",
+  "category": "auth_session",
+  "observation": {
+   "account_resource_link_observed": true,
+   "body_shape": "account_fields",
+   "content_type": "application/json",
+   "cookies": [],
+   "cors": {
+    "acao": "none",
+    "credentials": false,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": null,
+   "scheme": "https",
+   "server_family": "nginx",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "public",
+   "lab_l2_allowed": true,
+   "note_ja": "公開プロフィールは表示名だけを公開。メールアドレスと住所を含む詳細は本人のみ。",
+   "root_access_requirement": "public",
+   "status_probe_consent": false
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l1_apache_mod_status",
+   "l2_idor"
+  ],
+  "blind_id": "A38",
+  "category": "info_tls",
+  "observation": {
+   "account_resource_link_observed": false,
+   "body_shape": "public_content",
+   "content_type": "application/json",
+   "cookies": [],
+   "cors": {
+    "acao": "none",
+    "credentials": false,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": null,
+   "scheme": "https",
+   "server_family": "apache",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "none",
+   "lab_l2_allowed": true,
+   "note_ja": "mod_status は先月無効化した。本当に無効になっているか確認したい。",
+   "root_access_requirement": "public",
+   "status_probe_consent": true
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l2_idor"
+  ],
+  "blind_id": "A39",
+  "category": "cors",
+  "observation": {
+   "account_resource_link_observed": false,
+   "body_shape": "public_content",
+   "content_type": "application/json",
+   "cookies": [],
+   "cors": {
+    "acao": "wildcard",
+    "credentials": false,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": null,
+   "scheme": "https",
+   "server_family": "nginx",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "none",
+   "lab_l2_allowed": true,
+   "note_ja": "公開の天気データAPI。どのサイトから使われても構わない。",
+   "root_access_requirement": "public",
+   "status_probe_consent": false
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l1_apache_mod_status",
+   "l2_idor"
+  ],
+  "blind_id": "A40",
+  "category": "info_tls",
+  "observation": {
+   "account_resource_link_observed": false,
+   "body_shape": "public_content",
+   "content_type": "application/json",
+   "cookies": [],
+   "cors": {
+    "acao": "none",
+    "credentials": false,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": null,
+   "scheme": "https",
+   "server_family": "apache",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "none",
+   "lab_l2_allowed": true,
+   "note_ja": "公開しているのは静的ファイルだけ。server-status を含むモジュールの設定はホスティング事業者が管理していて把握していない。",
+   "root_access_requirement": "public",
+   "status_probe_consent": true
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l2_idor"
+  ],
+  "blind_id": "A41",
+  "category": "auth_session",
+  "observation": {
+   "account_resource_link_observed": false,
+   "body_shape": "empty",
+   "content_type": "other",
+   "cookies": [],
+   "cors": {
+    "acao": "none",
+    "credentials": false,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": null,
+   "scheme": "https",
+   "server_family": "nginx",
+   "status": 302,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "none",
+   "lab_l2_allowed": true,
+   "note_ja": "",
+   "root_access_requirement": "authentication_required",
+   "status_probe_consent": false
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l2_idor"
+  ],
+  "blind_id": "A42",
+  "category": "idor_bola",
+  "observation": {
+   "account_resource_link_observed": true,
+   "body_shape": "public_content",
+   "content_type": "application/json",
+   "cookies": [],
+   "cors": {
+    "acao": "none",
+    "credentials": false,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": null,
+   "scheme": "https",
+   "server_family": "nginx",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "unspecified",
+   "lab_l2_allowed": true,
+   "note_ja": "ユーザーIDは公開URLに含まれるが、表示されるのは誰でも見てよい公開ギャラリーのみ。他人の作品を閲覧するのが本来の使い方。",
+   "root_access_requirement": "public",
+   "status_probe_consent": false
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l2_idor"
+  ],
+  "blind_id": "A43",
+  "category": "idor_bola",
+  "observation": {
+   "account_resource_link_observed": true,
+   "body_shape": "public_content",
+   "content_type": "application/json",
+   "cookies": [],
+   "cors": {
+    "acao": "none",
+    "credentials": false,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": false,
+   "scheme": "https",
+   "server_family": "nginx",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "authentication_required",
+   "lab_l2_allowed": true,
+   "note_ja": "",
+   "root_access_requirement": "public",
+   "status_probe_consent": false
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l2_idor"
+  ],
+  "blind_id": "A44",
+  "category": "cors",
+  "observation": {
+   "account_resource_link_observed": false,
+   "body_shape": "public_content",
+   "content_type": "application/json",
+   "cookies": [],
+   "cors": {
+    "acao": "fixed_origin",
+    "credentials": true,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": false,
+   "scheme": "https",
+   "server_family": "nginx",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "none",
+   "lab_l2_allowed": true,
+   "note_ja": "",
+   "root_access_requirement": "authentication_required",
+   "status_probe_consent": false
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l1_apache_mod_status",
+   "l2_idor"
+  ],
+  "blind_id": "A45",
+  "category": "info_tls",
+  "observation": {
+   "account_resource_link_observed": false,
+   "body_shape": "public_content",
+   "content_type": "application/json",
+   "cookies": [],
+   "cors": {
+    "acao": "none",
+    "credentials": false,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": null,
+   "scheme": "https",
+   "server_family": "other",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "none",
+   "lab_l2_allowed": true,
+   "note_ja": "Apache を nginx の裏で動かしている（リバースプロキシ構成）。",
+   "root_access_requirement": "public",
+   "status_probe_consent": true
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l2_idor"
+  ],
+  "blind_id": "A46",
+  "category": "idor_bola",
+  "observation": {
+   "account_resource_link_observed": false,
+   "body_shape": "public_content",
+   "content_type": "application/json",
+   "cookies": [],
+   "cors": {
+    "acao": "none",
+    "credentials": false,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": null,
+   "scheme": "https",
+   "server_family": "nginx",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "authentication_required",
+   "lab_l2_allowed": true,
+   "note_ja": "",
+   "root_access_requirement": "public",
+   "status_probe_consent": false
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l2_idor"
+  ],
+  "blind_id": "A47",
+  "category": "cookie",
+  "observation": {
+   "account_resource_link_observed": false,
+   "body_shape": "public_content",
+   "content_type": "application/json",
+   "cookies": [
+    {
+     "duplicate_conflicting": false,
+     "httponly": true,
+     "purpose": "session",
+     "samesite": "lax",
+     "secure": true
+    },
+    {
+     "duplicate_conflicting": false,
+     "httponly": false,
+     "purpose": "csrf",
+     "samesite": "strict",
+     "secure": true
+    }
+   ],
+   "cors": {
+    "acao": "none",
+    "credentials": false,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": null,
+   "scheme": "https",
+   "server_family": "nginx",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "none",
+   "lab_l2_allowed": true,
+   "note_ja": "",
+   "root_access_requirement": "authentication_required",
+   "status_probe_consent": false
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l1_apache_mod_status",
+   "l2_idor"
+  ],
+  "blind_id": "A48",
+  "category": "info_tls",
+  "observation": {
+   "account_resource_link_observed": false,
+   "body_shape": "public_content",
+   "content_type": "application/json",
+   "cookies": [],
+   "cors": {
+    "acao": "none",
+    "credentials": false,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": null,
+   "scheme": "https",
+   "server_family": "apache",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "none",
+   "lab_l2_allowed": true,
+   "note_ja": "server-status は監視チームのために意図的に公開しており、リスク受容済み。",
+   "root_access_requirement": "public",
+   "status_probe_consent": true
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l2_idor"
+  ],
+  "blind_id": "A49",
+  "category": "cors",
+  "observation": {
+   "account_resource_link_observed": false,
+   "body_shape": "public_content",
+   "content_type": "application/json",
+   "cookies": [],
+   "cors": {
+    "acao": "reflected",
+    "credentials": true,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": null,
+   "scheme": "https",
+   "server_family": "nginx",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "none",
+   "lab_l2_allowed": true,
+   "note_ja": "CORS設定はロードバランサーごとに異なり、一部の系統だけ古い設定が残っている。",
+   "root_access_requirement": "authentication_required",
+   "status_probe_consent": false
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l2_idor"
+  ],
+  "blind_id": "A50",
+  "category": "auth_session",
+  "observation": {
+   "account_resource_link_observed": true,
+   "body_shape": "account_fields",
+   "content_type": "application/json",
+   "cookies": [],
+   "cors": {
+    "acao": "none",
+    "credentials": false,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": null,
+   "scheme": "https",
+   "server_family": "nginx",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "unspecified",
+   "lab_l2_allowed": true,
+   "note_ja": "本人以外が閲覧しても問題のないランキング情報のみを返す。",
+   "root_access_requirement": "unspecified",
+   "status_probe_consent": false
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l2_idor"
+  ],
+  "blind_id": "A51",
+  "category": "cors",
+  "observation": {
+   "account_resource_link_observed": false,
+   "body_shape": "public_content",
+   "content_type": "application/json",
+   "cookies": [],
+   "cors": {
+    "acao": "wildcard",
+    "credentials": false,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": null,
+   "scheme": "https",
+   "server_family": "nginx",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "none",
+   "lab_l2_allowed": true,
+   "note_ja": "",
+   "root_access_requirement": "public",
+   "status_probe_consent": false
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l2_idor"
+  ],
+  "blind_id": "A52",
+  "category": "auth_session",
+  "observation": {
+   "account_resource_link_observed": false,
+   "body_shape": "account_fields",
+   "content_type": "application/json",
+   "cookies": [],
+   "cors": {
+    "acao": "none",
+    "credentials": false,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": false,
+   "scheme": "https",
+   "server_family": "nginx",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "none",
+   "lab_l2_allowed": true,
+   "note_ja": "",
+   "root_access_requirement": "authentication_required",
+   "status_probe_consent": false
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l2_idor"
+  ],
+  "blind_id": "A53",
+  "category": "cookie",
+  "observation": {
+   "account_resource_link_observed": false,
+   "body_shape": "public_content",
+   "content_type": "application/json",
+   "cookies": [
+    {
+     "duplicate_conflicting": false,
+     "httponly": false,
+     "purpose": "unknown",
+     "samesite": "lax",
+     "secure": true
+    }
+   ],
+   "cors": {
+    "acao": "none",
+    "credentials": false,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": null,
+   "scheme": "https",
+   "server_family": "nginx",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "none",
+   "lab_l2_allowed": true,
+   "note_ja": "このクッキーはテーマ設定（ダーク／ライト）を覚えるだけ。",
+   "root_access_requirement": "public",
+   "status_probe_consent": false
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l2_idor"
+  ],
+  "blind_id": "A54",
+  "category": "idor_bola",
+  "observation": {
+   "account_resource_link_observed": true,
+   "body_shape": "public_content",
+   "content_type": "application/json",
+   "cookies": [],
+   "cors": {
+    "acao": "none",
+    "credentials": false,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": null,
+   "scheme": "https",
+   "server_family": "nginx",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "public",
+   "lab_l2_allowed": true,
+   "note_ja": "",
+   "root_access_requirement": "public",
+   "status_probe_consent": false
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l2_idor"
+  ],
+  "blind_id": "A55",
+  "category": "cookie",
+  "observation": {
+   "account_resource_link_observed": false,
+   "body_shape": "public_content",
+   "content_type": "application/json",
+   "cookies": [
+    {
+     "duplicate_conflicting": false,
+     "httponly": true,
+     "purpose": "session",
+     "samesite": "lax",
+     "secure": false
+    }
+   ],
+   "cors": {
+    "acao": "none",
+    "credentials": false,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": true,
+   "scheme": "https",
+   "server_family": "nginx",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "none",
+   "lab_l2_allowed": true,
+   "note_ja": "本番は先週 Secure を付けて修正済み。検査結果が古いのでは？",
+   "root_access_requirement": "authentication_required",
+   "status_probe_consent": false
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l2_idor"
+  ],
+  "blind_id": "A56",
+  "category": "idor_bola",
+  "observation": {
+   "account_resource_link_observed": true,
+   "body_shape": "public_content",
+   "content_type": "application/json",
+   "cookies": [],
+   "cors": {
+    "acao": "none",
+    "credentials": false,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": null,
+   "scheme": "https",
+   "server_family": "nginx",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "authentication_required",
+   "lab_l2_allowed": true,
+   "note_ja": "本人以外のデータは返さない設計だが、管理者ロールは全件見られる。",
+   "root_access_requirement": "public",
+   "status_probe_consent": false
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l2_idor"
+  ],
+  "blind_id": "A57",
+  "category": "cors",
+  "observation": {
+   "account_resource_link_observed": false,
+   "body_shape": "public_content",
+   "content_type": "application/json",
+   "cookies": [],
+   "cors": {
+    "acao": "reflected",
+    "credentials": true,
+    "vary_origin": true
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": true,
+   "scheme": "https",
+   "server_family": "nginx",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "none",
+   "lab_l2_allowed": true,
+   "note_ja": "",
+   "root_access_requirement": "authentication_required",
+   "status_probe_consent": false
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l2_idor"
+  ],
+  "blind_id": "A58",
+  "category": "cors",
+  "observation": {
+   "account_resource_link_observed": false,
+   "body_shape": "public_content",
+   "content_type": "application/json",
+   "cookies": [],
+   "cors": {
+    "acao": "reflected",
+    "credentials": true,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": null,
+   "scheme": "https",
+   "server_family": "nginx",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "none",
+   "lab_l2_allowed": true,
+   "note_ja": "",
+   "root_access_requirement": "authentication_required",
+   "status_probe_consent": false
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l2_idor"
+  ],
+  "blind_id": "A59",
+  "category": "cookie",
+  "observation": {
+   "account_resource_link_observed": false,
+   "body_shape": "public_content",
+   "content_type": "application/json",
+   "cookies": [
+    {
+     "duplicate_conflicting": false,
+     "httponly": true,
+     "purpose": "session",
+     "samesite": "lax",
+     "secure": false
+    }
+   ],
+   "cors": {
+    "acao": "none",
+    "credentials": false,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": true,
+   "scheme": "https",
+   "server_family": "nginx",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "none",
+   "lab_l2_allowed": true,
+   "note_ja": "",
+   "root_access_requirement": "authentication_required",
+   "status_probe_consent": false
+  }
+ },
+ {
+  "allowed_catalog_ids": [
+   "l1_http_probe",
+   "l2_idor"
+  ],
+  "blind_id": "A60",
+  "category": "cors",
+  "observation": {
+   "account_resource_link_observed": false,
+   "body_shape": "public_content",
+   "content_type": "application/json",
+   "cookies": [],
+   "cors": {
+    "acao": "reflected",
+    "credentials": false,
+    "vary_origin": false
+   },
+   "hsts_present": true,
+   "initial_gets_consistent": true,
+   "scheme": "https",
+   "server_family": "nginx",
+   "status": 200,
+   "tls_verified": true,
+   "version_disclosed": false
+  },
+  "owner_spec": {
+   "account_resource_requirement": "none",
+   "lab_l2_allowed": true,
+   "note_ja": "",
+   "root_access_requirement": "public",
+   "status_probe_consent": false
+  }
+ }
+]

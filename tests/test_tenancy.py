@@ -1322,6 +1322,7 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
         old_cookie = who["cookie"]
         org_id = who["orgs"][0]["id"]
         svc = self.reg.service(org_id)
+        evidence_before = {fid: len(f.get("evidence") or []) for fid, f in svc.a.findings.items()}
         at_popen, release_popen = threading.Event(), threading.Event()
         logout_entered, logout_called, logout_done = threading.Event(), threading.Event(), threading.Event()
         response, logout_response = [], []
@@ -1378,6 +1379,10 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
         self.assertEqual(response[0][0], 403)
         self.assertIn("権限", str(response[0][1]))
         self.assertTrue(any(e["event"] == "result" for e in svc.audit.entries()))
+        # the worker's result is audited but not adopted for a requester who logged out
+        self.assertEqual({fid: len(f.get("evidence") or []) for fid, f in svc.a.findings.items()},
+                         evidence_before)
+        self.assertTrue(any(e["event"] == "result.discarded" for e in svc.audit.entries()))
         self.assertEqual(self.req({"cookie": old_cookie}, "/assessments/scan_001", org=org_id)[0], 401)
 
     def req(self, who, path, body=None, org=None):

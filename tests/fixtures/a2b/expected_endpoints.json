@@ -1,0 +1,77 @@
+{
+ "owner_endpoints": [
+  [
+   "GET",
+   "api.shop-a2b.test",
+   "/internal/admin/stats"
+  ],
+  [
+   "UNKNOWN",
+   "api.shop-a2b.test",
+   "/v1/images/proxy"
+  ],
+  [
+   "GET",
+   "api.shop-a2b.test",
+   "/v1/me/profile"
+  ],
+  [
+   "POST",
+   "api.shop-a2b.test",
+   "/v1/orders"
+  ],
+  [
+   "GET",
+   "api.shop-a2b.test",
+   "/v1/orders/{param}"
+  ],
+  [
+   "GET",
+   "api.shop-a2b.test",
+   "/v1/products"
+  ],
+  [
+   "GET",
+   "api.shop-a2b.test",
+   "/v1/users/{param}/orders"
+  ],
+  [
+   "DELETE",
+   "api.shop-a2b.test",
+   "/v1/users/{param}/sessions"
+  ],
+  [
+   "POST",
+   "legacy.shop-a2b.test",
+   "/api/coupons/redeem"
+  ]
+ ],
+ "third_party_hosts": [
+  "firebaseinstallations.googleapis.com"
+ ],
+ "secret_kinds": [
+  "assigned_secret"
+ ],
+ "risk_classes": [
+  [
+   "auth_candidate",
+   "/internal/admin/stats"
+  ],
+  [
+   "bola_candidate",
+   "/v1/orders/{param}"
+  ],
+  [
+   "bola_candidate",
+   "/v1/users/{param}/orders"
+  ],
+  [
+   "bola_candidate",
+   "/v1/users/{param}/sessions"
+  ],
+  [
+   "ssrf_candidate",
+   "/v1/images/proxy"
+  ]
+ ]
+}

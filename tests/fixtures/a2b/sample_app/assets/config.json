@@ -1,0 +1,7 @@
+{
+  "apiBase": "https://api.shop-a2b.test/v1",
+  "imageProxy": "https://api.shop-a2b.test/v1/images/proxy?url=https://cdn.shop-a2b.test/a.png",
+  "maps_key": "set-at-build-time",
+  "analytics": "https://firebaseinstallations.googleapis.com/v1/projects",
+  "client_secret": "fixture-not-a-real-secret-0001"
+}

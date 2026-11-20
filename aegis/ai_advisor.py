@@ -191,7 +191,52 @@ _OVERCLAIM_RE = re.compile(r"実証済み|実証され|確定(?:済み|した(?:
 _REMEDIATION_FORBIDDEN = [
     ("approval_bypass", _APPROVAL_BYPASS_RE),
     ("destroy_real_data", re.compile(r"(?:本番|実|顧客|利用者)(?:の)?データを(?:削除|消去|破棄|作り直|初期化|書き換え|上書き)", re.I)),
+    # A "fix" that switches a protection off makes things worse, whatever catalog id it hangs on.
+    ("weaken_security_control", None),          # filled in below (needs the guard class)
 ]
+
+
+class _Guarded:
+    """A text rule whose matches are ignored when the words right after them negate or
+    hedge them ("…を外さないでください", "…が流出している可能性があります")."""
+
+    def __init__(self, pattern: re.Pattern, after: re.Pattern):
+        self.rx, self.after, self.pattern = pattern, after, pattern.pattern
+
+    def search(self, text: str):
+        for m in self.rx.finditer(text):
+            if self.after.search(text[m.end():m.end() + 16]):
+                continue
+            return m
+        return None
+
+
+_WEAKEN_RE = re.compile(
+    r"(?:証明書|tls|ssl)\s*(?:の)?\s*検証を\s*(?:無効|オフ|省略|スキップ|止め)"
+    r"|access-control-allow-origin\s*(?:[:：]\s*\*|(?:を|に|は)\s*[\"'「]?\*)"
+    r"|(?:すべて|全て)のオリジンを(?:許可|受け入れ)"
+    r"|(?:httponly|secure)\s*(?:属性)?\s*を\s*(?:外(?!部)|削除|無効|やめ|付けない|つけない)"
+    r"|認証を\s*(?:外(?!部)|無効|不要に|オフ|止め)"
+    r"|認証なし(?:で|のまま)[^。]{0,12}?公開(?:する|して|しても|します)"
+    r"|(?:waf|ファイアウォール|csp|content-security-policy|hsts)\s*を\s*(?:無効|停止|オフ|外(?!部)|止め)"
+    r"|verify\s*=\s*false|insecureskipverify\s*[:=]\s*true|rejectunauthorized\s*[:=]\s*false",
+    re.I)
+# "…を使わず", "…しないでください", "…にしている設定を見直す", "…をやめる": the advice is the opposite
+_WEAKEN_NEGATED = re.compile(
+    r"^.{0,2}?(?:ない|ず|ません)|^\s*(?:を|は|の)?\s*(?:使わ|用いず|使用せず|設定せ|許可せ|返さ)"
+    r"|^.{0,4}?している[^。、]{0,8}?(?:設定|箇所|状態|場合|もの|部分)|^.{0,6}?(?:をやめ|を見直|は避け|は禁止|を禁止|を廃止)")
+_REMEDIATION_FORBIDDEN[-1] = ("weaken_security_control", _Guarded(_WEAKEN_RE, _WEAKEN_NEGATED))
+# What Vulnix never observes: a breach, theft or attack that already happened. Even an L2
+# reproduction in the lab only shows that access was possible, so these are refused always.
+_UNSUPPORTED_IMPACT_PATTERN = re.compile(
+    r"(?:情報|データ|個人情報|顧客情報|資格情報|パスワード|cookie|セッション)(?:が|は)?\s*(?:すでに|既に)?[^。、]{0,8}?"
+    r"(?:漏えい|漏洩|流出|窃取|盗ま?れ)(?:し|され)?(?:ました|ています|ていました|ている|た(?:状態|ため))"
+    r"|(?:情報)?(?:漏えい|漏洩|流出)が(?:発生|起き)(?:し|て)?(?:ました|ています|ている|た)"
+    r"|不正(?:アクセス|ログイン)(?:され|が発生し|を受け)(?:ました|ています|ている)"
+    r"|侵害され(?:ました|ています|ている)|攻撃を受け(?:ました|ています|ている)|被害が(?:発生し|出て)(?:ました|います|いる)"
+    r"|(?:already|has been|have been|was|were)\s+(?:leaked|breached|compromised|stolen)", re.I)
+_IMPACT_HEDGED = re.compile(r"^.{0,8}?(?:可能性|おそれ|恐れ|かもしれ|ものとして|か(?:どうか|否か)|と仮定|前提)|^.{0,3}?(?:か[、。？?]|かを)")
+_UNSUPPORTED_IMPACT_RE = _Guarded(_UNSUPPORTED_IMPACT_PATTERN, _IMPACT_HEDGED)
 
 
 # ---- output schema (v2: structured, catalog-checked) -----------------------------------
@@ -294,6 +339,8 @@ def _text_problem(text: str, *, overclaim_ok: bool, rules) -> str | None:
         return "text: commands or attack tools"
     if not overclaim_ok and _OVERCLAIM_RE.search(n):
         return "overclaim: a detected finding described as proven or exploited"
+    if _UNSUPPORTED_IMPACT_RE.search(n):
+        return "unsupported_impact: a breach or attack that no evidence shows"
     hit = next((name for name, rx in rules if rx.search(n)), None)
     return f"text_misproposal: {hit}" if hit else None
 

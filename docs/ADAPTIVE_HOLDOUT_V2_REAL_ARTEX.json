@@ -1,0 +1,1545 @@
+{
+  "C_vs_B2_identical_selections": true,
+  "D_real_model": {
+    "budget": {
+      "max_calls": 1,
+      "max_cost_usd": 0.2,
+      "max_total_tokens": 80000,
+      "usd_per_1k_input": 0.001,
+      "usd_per_1k_output": 0.003
+    },
+    "case_count": 60,
+    "est_tokens": 17621,
+    "first_request_sha256": "e8eb6ecbcc82df53c8fdc997622d7152b4dfffb14df5bc618a017f96733eab87",
+    "gateway_mode": "preview",
+    "gateway_worst_case_reservation_usd": 0.054563,
+    "model": "abliterated-model",
+    "note": "Request fixed and hashed locally; never sent. A real-model score needs a new, explicit owner approval bound to first_request_sha256.",
+    "preview_dropped_not_allowed": 0,
+    "preview_round_trip_ok": true,
+    "previewed_calls": 1,
+    "request_bytes": 43539,
+    "sent": false,
+    "status": "AI性能未測定"
+  },
+  "ai_invocation_gate": {
+    "cases_gated_to_model": 28,
+    "cases_total": 60,
+    "rule": "B2 decides; the model is asked only when the owner's note is non-empty or a structured requirement is 'unspecified'"
+  },
+  "conclusion": {
+    "ai_quality": "AI性能未測定（実モデル未送信。C は模擬モデルで AI の性能ではない）",
+    "paid_model_calls": 0,
+    "target_get": 0
+  },
+  "dataset": {
+    "baseline_rules_sha256": {
+      "scripts/adaptive_baselines.py": "9c67fea76dafbdf35afd8d5fa7bfc5c4dbfd3ec32c219e3c1182a0326f0da931"
+    },
+    "cases": 60,
+    "files_sha256": {
+      "cases.json": "288eee7c83ae8004a9d5a8331d57484a2c0be34376c724678b2348ba2ab77e32",
+      "owner_specs.json": "8aad30a96f2752d2923f8a308e53438f4b66080cbb7702c860619a2e8e54f590",
+      "truth.json": "36cda80d79de5442232bed64bbfca3ace73a0780650276aa9513b0242cfcae2f"
+    },
+    "id": "adaptive_holdout_v2",
+    "smoke": false,
+    "version": "2.0.0"
+  },
+  "paired_vs_B": {
+    "B2_strong_rule": {
+      "exact_accuracy_diff": 0.0833,
+      "exact_accuracy_diff_ci95": [
+        -0.0333,
+        0.2
+      ],
+      "f1_diff": 0.2528,
+      "f1_diff_ci95": [
+        0.0627,
+        0.4673
+      ],
+      "iterations": 4000,
+      "seed": 20261119
+    }
+  },
+  "paired_vs_B2": {
+    "B_fixed_rule": {
+      "exact_accuracy_diff": -0.0833,
+      "exact_accuracy_diff_ci95": [
+        -0.2,
+        0.0333
+      ],
+      "f1_diff": -0.2528,
+      "f1_diff_ci95": [
+        -0.4673,
+        -0.0627
+      ],
+      "iterations": 4000,
+      "seed": 20261119
+    },
+    "C_artex_mock": {
+      "exact_accuracy_diff": 0.0,
+      "exact_accuracy_diff_ci95": [
+        0.0,
+        0.0
+      ],
+      "f1_diff": 0.0,
+      "f1_diff_ci95": [
+        0.0,
+        0.0
+      ],
+      "iterations": 4000,
+      "seed": 20261119
+    },
+    "E_keyword_rule": {
+      "exact_accuracy_diff": 0.05,
+      "exact_accuracy_diff_ci95": [
+        -0.05,
+        0.15
+      ],
+      "f1_diff": 0.069,
+      "f1_diff_ci95": [
+        -0.0668,
+        0.221
+      ],
+      "iterations": 4000,
+      "seed": 20261119
+    }
+  },
+  "strategies": {
+    "A_fixed_l1": {
+      "elapsed_ms": 0.007,
+      "est_model_cost_usd": 0.0,
+      "model_calls": 0,
+      "planner_calls": 0,
+      "score": {
+        "by_category": {
+          "auth_session": {
+            "exact": 7,
+            "f1": 0.0,
+            "fn": 5,
+            "fp": 0,
+            "n": 12,
+            "tp": 0
+          },
+          "cookie": {
+            "exact": 8,
+            "f1": 0.0,
+            "fn": 4,
+            "fp": 0,
+            "n": 12,
+            "tp": 0
+          },
+          "cors": {
+            "exact": 8,
+            "f1": 0.0,
+            "fn": 4,
+            "fp": 0,
+            "n": 12,
+            "tp": 0
+          },
+          "idor_bola": {
+            "exact": 6,
+            "f1": 0.0,
+            "fn": 6,
+            "fp": 0,
+            "n": 12,
+            "tp": 0
+          },
+          "info_tls": {
+            "exact": 6,
+            "f1": 0.0,
+            "fn": 6,
+            "fp": 0,
+            "n": 12,
+            "tp": 0
+          }
+        },
+        "critical_cases_missed": 15,
+        "critical_cases_total": 15,
+        "errors": [
+          {
+            "case_id": "H002",
+            "missed": [
+              "l2_idor"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H004",
+            "missed": [
+              "l2_idor"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H006",
+            "missed": [
+              "l2_idor"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H009",
+            "missed": [
+              "l1_http_probe"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H010",
+            "missed": [
+              "l1_http_probe"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H013",
+            "missed": [
+              "l2_idor"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H016",
+            "missed": [
+              "l2_idor"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H018",
+            "missed": [
+              "l2_idor"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H019",
+            "missed": [
+              "l2_idor"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H021",
+            "missed": [
+              "l2_idor"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H024",
+            "missed": [
+              "l2_idor"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H026",
+            "missed": [
+              "l1_http_probe"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H028",
+            "missed": [
+              "l1_http_probe"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H033",
+            "missed": [
+              "l1_http_probe"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H035",
+            "missed": [
+              "l1_http_probe"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H039",
+            "missed": [
+              "l1_http_probe"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H040",
+            "missed": [
+              "l1_http_probe"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H041",
+            "missed": [
+              "l1_http_probe"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H047",
+            "missed": [
+              "l1_http_probe"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H049",
+            "missed": [
+              "l1_apache_mod_status"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H053",
+            "missed": [
+              "l1_apache_mod_status"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H054",
+            "missed": [
+              "l1_apache_mod_status"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H058",
+            "missed": [
+              "l1_http_probe"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H059",
+            "missed": [
+              "l1_apache_mod_status"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H060",
+            "missed": [
+              "l1_apache_mod_status"
+            ],
+            "unnecessary": []
+          }
+        ],
+        "exact_case_accuracy": 0.5833,
+        "exact_case_accuracy_wilson95": [
+          0.4573,
+          0.6994
+        ],
+        "f1": 0.0,
+        "fn": 25,
+        "fp": 0,
+        "precision": null,
+        "recall": 0.0,
+        "recall_wilson95": [
+          0.0,
+          0.1332
+        ],
+        "selected_outside_allowed": 0,
+        "tn": 103,
+        "tp": 0,
+        "unnecessary_worker_launches": 0
+      },
+      "selections": {
+        "H001": [],
+        "H002": [],
+        "H003": [],
+        "H004": [],
+        "H005": [],
+        "H006": [],
+        "H007": [],
+        "H008": [],
+        "H009": [],
+        "H010": [],
+        "H011": [],
+        "H012": [],
+        "H013": [],
+        "H014": [],
+        "H015": [],
+        "H016": [],
+        "H017": [],
+        "H018": [],
+        "H019": [],
+        "H020": [],
+        "H021": [],
+        "H022": [],
+        "H023": [],
+        "H024": [],
+        "H025": [],
+        "H026": [],
+        "H027": [],
+        "H028": [],
+        "H029": [],
+        "H030": [],
+        "H031": [],
+        "H032": [],
+        "H033": [],
+        "H034": [],
+        "H035": [],
+        "H036": [],
+        "H037": [],
+        "H038": [],
+        "H039": [],
+        "H040": [],
+        "H041": [],
+        "H042": [],
+        "H043": [],
+        "H044": [],
+        "H045": [],
+        "H046": [],
+        "H047": [],
+        "H048": [],
+        "H049": [],
+        "H050": [],
+        "H051": [],
+        "H052": [],
+        "H053": [],
+        "H054": [],
+        "H055": [],
+        "H056": [],
+        "H057": [],
+        "H058": [],
+        "H059": [],
+        "H060": []
+      }
+    },
+    "B2_strong_rule": {
+      "elapsed_ms": 0.066,
+      "est_model_cost_usd": 0.0,
+      "model_calls": 0,
+      "planner_calls": 0,
+      "score": {
+        "by_category": {
+          "auth_session": {
+            "exact": 8,
+            "f1": 0.6,
+            "fn": 2,
+            "fp": 2,
+            "n": 12,
+            "tp": 3
+          },
+          "cookie": {
+            "exact": 10,
+            "f1": 0.6667,
+            "fn": 2,
+            "fp": 0,
+            "n": 12,
+            "tp": 2
+          },
+          "cors": {
+            "exact": 10,
+            "f1": 0.6667,
+            "fn": 2,
+            "fp": 0,
+            "n": 12,
+            "tp": 2
+          },
+          "idor_bola": {
+            "exact": 9,
+            "f1": 0.7692,
+            "fn": 1,
+            "fp": 2,
+            "n": 12,
+            "tp": 5
+          },
+          "info_tls": {
+            "exact": 10,
+            "f1": 0.8333,
+            "fn": 1,
+            "fp": 1,
+            "n": 12,
+            "tp": 5
+          }
+        },
+        "critical_cases_missed": 5,
+        "critical_cases_total": 15,
+        "errors": [
+          {
+            "case_id": "H005",
+            "missed": [],
+            "unnecessary": [
+              "l2_idor"
+            ]
+          },
+          {
+            "case_id": "H006",
+            "missed": [
+              "l2_idor"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H007",
+            "missed": [],
+            "unnecessary": [
+              "l2_idor"
+            ]
+          },
+          {
+            "case_id": "H010",
+            "missed": [
+              "l1_http_probe"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H017",
+            "missed": [],
+            "unnecessary": [
+              "l2_idor"
+            ]
+          },
+          {
+            "case_id": "H018",
+            "missed": [
+              "l2_idor"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H022",
+            "missed": [],
+            "unnecessary": [
+              "l2_idor"
+            ]
+          },
+          {
+            "case_id": "H028",
+            "missed": [
+              "l1_http_probe"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H033",
+            "missed": [
+              "l1_http_probe"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H041",
+            "missed": [
+              "l1_http_probe"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H047",
+            "missed": [
+              "l1_http_probe"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H052",
+            "missed": [],
+            "unnecessary": [
+              "l1_apache_mod_status"
+            ]
+          },
+          {
+            "case_id": "H054",
+            "missed": [
+              "l1_apache_mod_status"
+            ],
+            "unnecessary": []
+          }
+        ],
+        "exact_case_accuracy": 0.7833,
+        "exact_case_accuracy_wilson95": [
+          0.6638,
+          0.8688
+        ],
+        "f1": 0.7234,
+        "fn": 8,
+        "fp": 5,
+        "precision": 0.7727,
+        "recall": 0.68,
+        "recall_wilson95": [
+          0.4841,
+          0.828
+        ],
+        "selected_outside_allowed": 0,
+        "tn": 98,
+        "tp": 17,
+        "unnecessary_worker_launches": 5
+      },
+      "selections": {
+        "H001": [],
+        "H002": [
+          "l2_idor"
+        ],
+        "H003": [],
+        "H004": [
+          "l2_idor"
+        ],
+        "H005": [
+          "l2_idor"
+        ],
+        "H006": [],
+        "H007": [
+          "l2_idor"
+        ],
+        "H008": [],
+        "H009": [
+          "l1_http_probe"
+        ],
+        "H010": [],
+        "H011": [],
+        "H012": [],
+        "H013": [
+          "l2_idor"
+        ],
+        "H014": [],
+        "H015": [],
+        "H016": [
+          "l2_idor"
+        ],
+        "H017": [
+          "l2_idor"
+        ],
+        "H018": [],
+        "H019": [
+          "l2_idor"
+        ],
+        "H020": [],
+        "H021": [
+          "l2_idor"
+        ],
+        "H022": [
+          "l2_idor"
+        ],
+        "H023": [],
+        "H024": [
+          "l2_idor"
+        ],
+        "H025": [],
+        "H026": [
+          "l1_http_probe"
+        ],
+        "H027": [],
+        "H028": [],
+        "H029": [],
+        "H030": [],
+        "H031": [],
+        "H032": [],
+        "H033": [],
+        "H034": [],
+        "H035": [
+          "l1_http_probe"
+        ],
+        "H036": [],
+        "H037": [],
+        "H038": [],
+        "H039": [
+          "l1_http_probe"
+        ],
+        "H040": [
+          "l1_http_probe"
+        ],
+        "H041": [],
+        "H042": [],
+        "H043": [],
+        "H044": [],
+        "H045": [],
+        "H046": [],
+        "H047": [],
+        "H048": [],
+        "H049": [
+          "l1_apache_mod_status"
+        ],
+        "H050": [],
+        "H051": [],
+        "H052": [
+          "l1_apache_mod_status"
+        ],
+        "H053": [
+          "l1_apache_mod_status"
+        ],
+        "H054": [],
+        "H055": [],
+        "H056": [],
+        "H057": [],
+        "H058": [
+          "l1_http_probe"
+        ],
+        "H059": [
+          "l1_apache_mod_status"
+        ],
+        "H060": [
+          "l1_apache_mod_status"
+        ]
+      }
+    },
+    "B_fixed_rule": {
+      "elapsed_ms": 0.051,
+      "est_model_cost_usd": 0.0,
+      "model_calls": 0,
+      "planner_calls": 0,
+      "score": {
+        "by_category": {
+          "auth_session": {
+            "exact": 8,
+            "f1": 0.3333,
+            "fn": 4,
+            "fp": 0,
+            "n": 12,
+            "tp": 1
+          },
+          "cookie": {
+            "exact": 8,
+            "f1": 0.0,
+            "fn": 4,
+            "fp": 0,
+            "n": 12,
+            "tp": 0
+          },
+          "cors": {
+            "exact": 8,
+            "f1": 0.0,
+            "fn": 4,
+            "fp": 0,
+            "n": 12,
+            "tp": 0
+          },
+          "idor_bola": {
+            "exact": 9,
+            "f1": 0.6667,
+            "fn": 3,
+            "fp": 0,
+            "n": 12,
+            "tp": 3
+          },
+          "info_tls": {
+            "exact": 9,
+            "f1": 0.7273,
+            "fn": 2,
+            "fp": 1,
+            "n": 12,
+            "tp": 4
+          }
+        },
+        "critical_cases_missed": 11,
+        "critical_cases_total": 15,
+        "errors": [
+          {
+            "case_id": "H004",
+            "missed": [
+              "l2_idor"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H006",
+            "missed": [
+              "l2_idor"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H009",
+            "missed": [
+              "l1_http_probe"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H010",
+            "missed": [
+              "l1_http_probe"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H016",
+            "missed": [
+              "l2_idor"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H018",
+            "missed": [
+              "l2_idor"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H021",
+            "missed": [
+              "l2_idor"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H026",
+            "missed": [
+              "l1_http_probe"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H028",
+            "missed": [
+              "l1_http_probe"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H033",
+            "missed": [
+              "l1_http_probe"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H035",
+            "missed": [
+              "l1_http_probe"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H039",
+            "missed": [
+              "l1_http_probe"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H040",
+            "missed": [
+              "l1_http_probe"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H041",
+            "missed": [
+              "l1_http_probe"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H047",
+            "missed": [
+              "l1_http_probe"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H052",
+            "missed": [],
+            "unnecessary": [
+              "l1_apache_mod_status"
+            ]
+          },
+          {
+            "case_id": "H054",
+            "missed": [
+              "l1_apache_mod_status"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H058",
+            "missed": [
+              "l1_http_probe"
+            ],
+            "unnecessary": []
+          }
+        ],
+        "exact_case_accuracy": 0.7,
+        "exact_case_accuracy_wilson95": [
+          0.5749,
+          0.801
+        ],
+        "f1": 0.4706,
+        "fn": 17,
+        "fp": 1,
+        "precision": 0.8889,
+        "recall": 0.32,
+        "recall_wilson95": [
+          0.172,
+          0.5159
+        ],
+        "selected_outside_allowed": 0,
+        "tn": 102,
+        "tp": 8,
+        "unnecessary_worker_launches": 1
+      },
+      "selections": {
+        "H001": [],
+        "H002": [
+          "l2_idor"
+        ],
+        "H003": [],
+        "H004": [],
+        "H005": [],
+        "H006": [],
+        "H007": [],
+        "H008": [],
+        "H009": [],
+        "H010": [],
+        "H011": [],
+        "H012": [],
+        "H013": [
+          "l2_idor"
+        ],
+        "H014": [],
+        "H015": [],
+        "H016": [],
+        "H017": [],
+        "H018": [],
+        "H019": [
+          "l2_idor"
+        ],
+        "H020": [],
+        "H021": [],
+        "H022": [],
+        "H023": [],
+        "H024": [
+          "l2_idor"
+        ],
+        "H025": [],
+        "H026": [],
+        "H027": [],
+        "H028": [],
+        "H029": [],
+        "H030": [],
+        "H031": [],
+        "H032": [],
+        "H033": [],
+        "H034": [],
+        "H035": [],
+        "H036": [],
+        "H037": [],
+        "H038": [],
+        "H039": [],
+        "H040": [],
+        "H041": [],
+        "H042": [],
+        "H043": [],
+        "H044": [],
+        "H045": [],
+        "H046": [],
+        "H047": [],
+        "H048": [],
+        "H049": [
+          "l1_apache_mod_status"
+        ],
+        "H050": [],
+        "H051": [],
+        "H052": [
+          "l1_apache_mod_status"
+        ],
+        "H053": [
+          "l1_apache_mod_status"
+        ],
+        "H054": [],
+        "H055": [],
+        "H056": [],
+        "H057": [],
+        "H058": [],
+        "H059": [
+          "l1_apache_mod_status"
+        ],
+        "H060": [
+          "l1_apache_mod_status"
+        ]
+      }
+    },
+    "C_artex_mock": {
+      "advisories": 0,
+      "all_runs_confined": true,
+      "all_runs_pinned": true,
+      "blocked_by_authority": 0,
+      "elapsed_ms": 30761.1,
+      "engine_kind": "artex-binary",
+      "engine_sha256": [
+        "e15e7526352f24b547dd5545e1220416e984f376378ebd5bd294f03d248071fd"
+      ],
+      "est_model_cost_usd": 0.0,
+      "gateway_policy_rejected": 0,
+      "model_calls": 142,
+      "note": "real ARTEX overlay binary + local mock model applying rule B2",
+      "planner_calls": 60,
+      "router_rejected": 0,
+      "score": {
+        "by_category": {
+          "auth_session": {
+            "exact": 8,
+            "f1": 0.6,
+            "fn": 2,
+            "fp": 2,
+            "n": 12,
+            "tp": 3
+          },
+          "cookie": {
+            "exact": 10,
+            "f1": 0.6667,
+            "fn": 2,
+            "fp": 0,
+            "n": 12,
+            "tp": 2
+          },
+          "cors": {
+            "exact": 10,
+            "f1": 0.6667,
+            "fn": 2,
+            "fp": 0,
+            "n": 12,
+            "tp": 2
+          },
+          "idor_bola": {
+            "exact": 9,
+            "f1": 0.7692,
+            "fn": 1,
+            "fp": 2,
+            "n": 12,
+            "tp": 5
+          },
+          "info_tls": {
+            "exact": 10,
+            "f1": 0.8333,
+            "fn": 1,
+            "fp": 1,
+            "n": 12,
+            "tp": 5
+          }
+        },
+        "critical_cases_missed": 5,
+        "critical_cases_total": 15,
+        "errors": [
+          {
+            "case_id": "H005",
+            "missed": [],
+            "unnecessary": [
+              "l2_idor"
+            ]
+          },
+          {
+            "case_id": "H006",
+            "missed": [
+              "l2_idor"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H007",
+            "missed": [],
+            "unnecessary": [
+              "l2_idor"
+            ]
+          },
+          {
+            "case_id": "H010",
+            "missed": [
+              "l1_http_probe"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H017",
+            "missed": [],
+            "unnecessary": [
+              "l2_idor"
+            ]
+          },
+          {
+            "case_id": "H018",
+            "missed": [
+              "l2_idor"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H022",
+            "missed": [],
+            "unnecessary": [
+              "l2_idor"
+            ]
+          },
+          {
+            "case_id": "H028",
+            "missed": [
+              "l1_http_probe"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H033",
+            "missed": [
+              "l1_http_probe"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H041",
+            "missed": [
+              "l1_http_probe"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H047",
+            "missed": [
+              "l1_http_probe"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H052",
+            "missed": [],
+            "unnecessary": [
+              "l1_apache_mod_status"
+            ]
+          },
+          {
+            "case_id": "H054",
+            "missed": [
+              "l1_apache_mod_status"
+            ],
+            "unnecessary": []
+          }
+        ],
+        "exact_case_accuracy": 0.7833,
+        "exact_case_accuracy_wilson95": [
+          0.6638,
+          0.8688
+        ],
+        "f1": 0.7234,
+        "fn": 8,
+        "fp": 5,
+        "precision": 0.7727,
+        "recall": 0.68,
+        "recall_wilson95": [
+          0.4841,
+          0.828
+        ],
+        "selected_outside_allowed": 0,
+        "tn": 98,
+        "tp": 17,
+        "unnecessary_worker_launches": 5
+      },
+      "selections": {
+        "H001": [],
+        "H002": [
+          "l2_idor"
+        ],
+        "H003": [],
+        "H004": [
+          "l2_idor"
+        ],
+        "H005": [
+          "l2_idor"
+        ],
+        "H006": [],
+        "H007": [
+          "l2_idor"
+        ],
+        "H008": [],
+        "H009": [
+          "l1_http_probe"
+        ],
+        "H010": [],
+        "H011": [],
+        "H012": [],
+        "H013": [
+          "l2_idor"
+        ],
+        "H014": [],
+        "H015": [],
+        "H016": [
+          "l2_idor"
+        ],
+        "H017": [
+          "l2_idor"
+        ],
+        "H018": [],
+        "H019": [
+          "l2_idor"
+        ],
+        "H020": [],
+        "H021": [
+          "l2_idor"
+        ],
+        "H022": [
+          "l2_idor"
+        ],
+        "H023": [],
+        "H024": [
+          "l2_idor"
+        ],
+        "H025": [],
+        "H026": [
+          "l1_http_probe"
+        ],
+        "H027": [],
+        "H028": [],
+        "H029": [],
+        "H030": [],
+        "H031": [],
+        "H032": [],
+        "H033": [],
+        "H034": [],
+        "H035": [
+          "l1_http_probe"
+        ],
+        "H036": [],
+        "H037": [],
+        "H038": [],
+        "H039": [
+          "l1_http_probe"
+        ],
+        "H040": [
+          "l1_http_probe"
+        ],
+        "H041": [],
+        "H042": [],
+        "H043": [],
+        "H044": [],
+        "H045": [],
+        "H046": [],
+        "H047": [],
+        "H048": [],
+        "H049": [
+          "l1_apache_mod_status"
+        ],
+        "H050": [],
+        "H051": [],
+        "H052": [
+          "l1_apache_mod_status"
+        ],
+        "H053": [
+          "l1_apache_mod_status"
+        ],
+        "H054": [],
+        "H055": [],
+        "H056": [],
+        "H057": [],
+        "H058": [
+          "l1_http_probe"
+        ],
+        "H059": [
+          "l1_apache_mod_status"
+        ],
+        "H060": [
+          "l1_apache_mod_status"
+        ]
+      },
+      "would_launch_workers": 22
+    },
+    "E_keyword_rule": {
+      "elapsed_ms": 0.122,
+      "est_model_cost_usd": 0.0,
+      "model_calls": 0,
+      "planner_calls": 0,
+      "score": {
+        "by_category": {
+          "auth_session": {
+            "exact": 10,
+            "f1": 0.8333,
+            "fn": 0,
+            "fp": 2,
+            "n": 12,
+            "tp": 5
+          },
+          "cookie": {
+            "exact": 11,
+            "f1": 0.8571,
+            "fn": 1,
+            "fp": 0,
+            "n": 12,
+            "tp": 3
+          },
+          "cors": {
+            "exact": 10,
+            "f1": 0.6667,
+            "fn": 2,
+            "fp": 0,
+            "n": 12,
+            "tp": 2
+          },
+          "idor_bola": {
+            "exact": 9,
+            "f1": 0.8,
+            "fn": 0,
+            "fp": 3,
+            "n": 12,
+            "tp": 6
+          },
+          "info_tls": {
+            "exact": 10,
+            "f1": 0.7692,
+            "fn": 1,
+            "fp": 2,
+            "n": 12,
+            "tp": 5
+          }
+        },
+        "critical_cases_missed": 2,
+        "critical_cases_total": 15,
+        "errors": [
+          {
+            "case_id": "H005",
+            "missed": [],
+            "unnecessary": [
+              "l2_idor"
+            ]
+          },
+          {
+            "case_id": "H007",
+            "missed": [],
+            "unnecessary": [
+              "l2_idor"
+            ]
+          },
+          {
+            "case_id": "H017",
+            "missed": [],
+            "unnecessary": [
+              "l2_idor"
+            ]
+          },
+          {
+            "case_id": "H022",
+            "missed": [],
+            "unnecessary": [
+              "l2_idor"
+            ]
+          },
+          {
+            "case_id": "H023",
+            "missed": [],
+            "unnecessary": [
+              "l2_idor"
+            ]
+          },
+          {
+            "case_id": "H028",
+            "missed": [
+              "l1_http_probe"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H033",
+            "missed": [
+              "l1_http_probe"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H041",
+            "missed": [
+              "l1_http_probe"
+            ],
+            "unnecessary": []
+          },
+          {
+            "case_id": "H055",
+            "missed": [],
+            "unnecessary": [
+              "l1_apache_mod_status",
+              "l1_http_probe"
+            ]
+          },
+          {
+            "case_id": "H059",
+            "missed": [
+              "l1_apache_mod_status"
+            ],
+            "unnecessary": []
+          }
+        ],
+        "exact_case_accuracy": 0.8333,
+        "exact_case_accuracy_wilson95": [
+          0.7197,
+          0.9069
+        ],
+        "f1": 0.7925,
+        "fn": 4,
+        "fp": 7,
+        "precision": 0.75,
+        "recall": 0.84,
+        "recall_wilson95": [
+          0.6535,
+          0.936
+        ],
+        "selected_outside_allowed": 0,
+        "tn": 96,
+        "tp": 21,
+        "unnecessary_worker_launches": 7
+      },
+      "selections": {
+        "H001": [],
+        "H002": [
+          "l2_idor"
+        ],
+        "H003": [],
+        "H004": [
+          "l2_idor"
+        ],
+        "H005": [
+          "l2_idor"
+        ],
+        "H006": [
+          "l2_idor"
+        ],
+        "H007": [
+          "l2_idor"
+        ],
+        "H008": [],
+        "H009": [
+          "l1_http_probe"
+        ],
+        "H010": [
+          "l1_http_probe"
+        ],
+        "H011": [],
+        "H012": [],
+        "H013": [
+          "l2_idor"
+        ],
+        "H014": [],
+        "H015": [],
+        "H016": [
+          "l2_idor"
+        ],
+        "H017": [
+          "l2_idor"
+        ],
+        "H018": [
+          "l2_idor"
+        ],
+        "H019": [
+          "l2_idor"
+        ],
+        "H020": [],
+        "H021": [
+          "l2_idor"
+        ],
+        "H022": [
+          "l2_idor"
+        ],
+        "H023": [
+          "l2_idor"
+        ],
+        "H024": [
+          "l2_idor"
+        ],
+        "H025": [],
+        "H026": [
+          "l1_http_probe"
+        ],
+        "H027": [],
+        "H028": [],
+        "H029": [],
+        "H030": [],
+        "H031": [],
+        "H032": [],
+        "H033": [],
+        "H034": [],
+        "H035": [
+          "l1_http_probe"
+        ],
+        "H036": [],
+        "H037": [],
+        "H038": [],
+        "H039": [
+          "l1_http_probe"
+        ],
+        "H040": [
+          "l1_http_probe"
+        ],
+        "H041": [],
+        "H042": [],
+        "H043": [],
+        "H044": [],
+        "H045": [],
+        "H046": [],
+        "H047": [
+          "l1_http_probe"
+        ],
+        "H048": [],
+        "H049": [
+          "l1_apache_mod_status"
+        ],
+        "H050": [],
+        "H051": [],
+        "H052": [],
+        "H053": [
+          "l1_apache_mod_status"
+        ],
+        "H054": [
+          "l1_apache_mod_status"
+        ],
+        "H055": [
+          "l1_apache_mod_status",
+          "l1_http_probe"
+        ],
+        "H056": [],
+        "H057": [],
+        "H058": [
+          "l1_http_probe"
+        ],
+        "H059": [],
+        "H060": [
+          "l1_apache_mod_status"
+        ]
+      }
+    }
+  },
+  "structured_ceiling": {
+    "cases_unreachable_without_note": 7,
+    "conflicting_groups": [
+      [
+        "H004",
+        "H005",
+        "H007"
+      ],
+      [
+        "H014",
+        "H018",
+        "H023"
+      ],
+      [
+        "H016",
+        "H017",
+        "H021",
+        "H022"
+      ],
+      [
+        "H028",
+        "H033",
+        "H034"
+      ],
+      [
+        "H038",
+        "H047"
+      ],
+      [
+        "H052",
+        "H053",
+        "H059",
+        "H060"
+      ]
+    ],
+    "max_exact_case_accuracy_without_note": 0.8833
+  }
+}

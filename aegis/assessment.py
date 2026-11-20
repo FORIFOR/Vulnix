@@ -4742,6 +4742,12 @@ class AssessmentService:
         if not d.allowed:
             self._fail(f"Gateway が拒否しました: {d.reason}")
             return None, None
+        requester_alive = getattr(self._tls, "request_authorized", None)
+        if requester_alive is not None and not requester_alive():
+            # The person who asked for this check logged out or lost the organization
+            # while the worker ran: what it brought back is not adopted on their behalf.
+            self.audit.record("result.discarded", tool=tool, reason="requester_authority_revoked")
+            raise ApproverRequired("要求者の権限が失効したため、この検査の結果は記録しません")
         if origin == "real_service":
             with self._lock:
                 still = self._external_entry(self.a.asset.get("name")) is not None
