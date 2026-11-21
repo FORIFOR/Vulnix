@@ -8,14 +8,15 @@
 
 | PR | ブランチ | base | 先頭 |
 | --- | --- | --- | --- |
-| #97 診断ループ | `claude/diagnosis-loop-integration` | `main` | `9db3a83`（main の最新 `eb998fd` を含む） |
-| #99 画面設計 | `claude/diagnosis-ui-design` | #97 | `0432704` |
-| #100 PR-A 読み取り API | `claude/diagnosis-read-api` | #99 | `2c5e33c` |
-| #98 評価の基盤 | `claude/diagnosis-eval-harness` | #100 | `39b2b28` |
+| #97 診断ループ | `claude/diagnosis-loop-integration` | `main` | `d388c45`（main の最新 `eb998fd` を含む） |
+| #99 画面設計 | `claude/diagnosis-ui-design` | #97 | `52b419a` |
+| #100 PR-A 読み取り API | `claude/diagnosis-read-api` | #99 | `34e09bd` |
+| #98 評価の基盤 | `claude/diagnosis-eval-harness` | #100 | `1917f3a` |
 | PR-B 画面 | `claude/diagnosis-ui-panel` | #98 | （PR-B） |
 
 - CI（`.github/workflows/ci.yml`）は、`main` と `feat/**` に向けた PR と push でだけ自動で動きます。#97 に重ねた PR では自動で動かないため、`workflow_dispatch` で実行しています。
 - 一列に重ねたので、ある PR の先頭での CI は、それより前の PR をすべて含んだ状態の確認になります。
+- テストがサービスを閉じない問題の修正（`test: close the services ...`、テストだけの変更）は、#100 から #97 へ移しました。#97・#99 の先頭では、この修正がないために CI のランナーが資源不足で応答しなくなりました（"The hosted runner lost communication with the server"、テストのログなし）。
 
 ## 2. 統合の順序（推奨）
 
@@ -33,7 +34,7 @@ PR-C（操作）は、PR-B の後に作ります。
 
 1. **マージの方法を確かめる。**
    - 通常のマージ（merge commit）の場合：`git rebase origin/main` で済みます。
-   - squash の場合：前の PR の元のコミットが main に残らないため、`git rebase --onto origin/main <前の PR の先頭>` として、前の PR のコミットを除いて載せ直します（#99 なら `9db3a83`、#100 なら `0432704`、#98 なら `2c5e33c`）。
+   - squash の場合：前の PR の元のコミットが main に残らないため、`git rebase --onto origin/main <前の PR の先頭>` として、前の PR のコミットを除いて載せ直します（#99 なら `d388c45`、#100 なら `52b419a`、#98 なら `34e09bd`、PR-B なら `1917f3a`）。
 2. **base を main に変える。** `gh pr edit <番号> --base main`。#97 のブランチを消すと GitHub が自動で変えますが、**base の変更だけでは CI は動きません**（`pull_request` の既定の契機は opened・synchronize・reopened です）。
 3. **載せ直したブランチを push する。** これが `synchronize` になり、main 向けの PR として3ジョブが自動で動きます。push しない場合は `gh workflow run ci.yml --ref <ブランチ>` で実行します。
 4. **確かめる対象のコミットを固定する。** `gh pr checks <番号>` に加え、`gh api repos/FORIFOR/Vulnix/commits/<SHA>/check-runs` で、**今の先頭の SHA** で3ジョブ（Python 全件＋Linux 隔離、実 ARTEX、Web）がすべて成功していることを確かめます。古い SHA の成功は数えません。
