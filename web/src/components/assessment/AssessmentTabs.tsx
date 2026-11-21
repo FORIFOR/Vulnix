@@ -178,7 +178,7 @@ export function AssessmentTabs({ id }: { id: string }) {
         )}
 
         {/* lab only: the API answers 404 for a real site, and the panel is never shown there */}
-        {tab === "assessment" && !snap.is_external_service && <DiagnosisLoopPanel slot={diagnosis} />}
+        {tab === "assessment" && !snap.is_external_service && <DiagnosisLoopPanel slot={diagnosis} findings={snap.findings} />}
 
         {tab === "assessment" && (
           <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_18rem]">
