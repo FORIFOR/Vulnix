@@ -353,3 +353,107 @@ export interface RunHistoryEntry {
   counts: { detected?: number; proven?: number; not_reproduced?: number; incomplete?: number };
   findings: number;
 }
+
+// ---- diagnosis loop (GET /api/assessments/{id}/diagnosis, SSE diagnosis.updated) ----
+// docs/DIAGNOSIS_READ_API.md. Every text is a fixed id; the screen turns it into words.
+export type DiagnosisStatus = "not_started" | "ok" | "unverified";
+export type HypothesisState = "open" | "supported" | "contradicted" | "inconclusive" | "needs_spec";
+export type DiagnosisAttrs = Record<string, string | number | boolean>;
+
+export interface DiagnosisHypothesis {
+  id: string;
+  claim: string;
+  target_ref: string;
+  state: HypothesisState;
+  purpose: "diagnose" | "confirm_fix";
+  generation: number;
+  supersedes: string | null;
+  basis: string[];
+  supporting: string[];
+  contradicting: string[];
+  inconclusive: string[];
+}
+
+export interface DiagnosisStep {
+  plan_id: string | null;
+  step_id: string | null;
+  catalog_id: string;
+  level: string | null;
+  hypothesis_id: string;
+  target_ref: string | null;
+  reason: string | null;
+  evidence_refs: string[];
+  approved_by: string | null;
+  generation: number;
+  observation: { evidence_id: string; attrs: DiagnosisAttrs };
+  judgement: { from: string | null; to: HypothesisState; rule: string };
+  result_audit_hash: string;
+  judged_audit_hash: string;
+  at: string | null;
+}
+
+export interface DiagnosisEvidence {
+  evidence_id: string;
+  kind: string;
+  source: string;
+  target_ref: string;
+  generation: number;
+  attrs: DiagnosisAttrs;
+  step_id: string | null;
+  catalog_id: string | null;
+  audit_hash: string | null;
+  recorded_by: string | null;
+  journal_hash: string | null;
+  at: string | null;
+}
+
+export interface DiagnosisFixSide {
+  generation: number;
+  to: HypothesisState;
+  rule: string;
+  judged_audit_hash: string;
+}
+
+export interface DiagnosisFix {
+  hypothesis_id: string;
+  supersedes: string;
+  catalog_id: string | null;
+  before: DiagnosisFixSide | null;
+  after: DiagnosisFixSide | null;
+  result: "fixed" | "not_fixed" | "pending";
+}
+
+export interface DiagnosisPlan {
+  plan_id: string;
+  state: string;
+  reason: string | null;
+  steps_used: number;
+  steps_max: number | null;
+}
+
+export interface DiagnosisNext {
+  kind: string;
+  item_id?: string;
+  hypothesis_id?: string;
+  target_ref?: string;
+  state?: string;
+  reason?: string | null;
+}
+
+export interface DiagnosisView {
+  schema_version: number;
+  lab_only: boolean;
+  assessment_id: string;
+  status: DiagnosisStatus;
+  reason?: string;
+  restored: boolean;
+  persisted: boolean;
+  diag_id?: string;
+  generation: number | null;
+  plan: DiagnosisPlan | null;
+  hypotheses: DiagnosisHypothesis[];
+  steps: DiagnosisStep[];
+  evidence: DiagnosisEvidence[];
+  fix_comparison: DiagnosisFix[];
+  next: DiagnosisNext;
+}

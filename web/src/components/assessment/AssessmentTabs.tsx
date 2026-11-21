@@ -15,6 +15,7 @@ import { EventTimeline } from "../logs/EventTimeline";
 import { RawLogViewer } from "../logs/RawLogViewer";
 import { Card } from "../ui";
 import { ArtexPlanPanel } from "./ArtexPlanPanel";
+import { DiagnosisLoopPanel } from "./DiagnosisLoopPanel";
 import { AgentActivity } from "./AgentActivity";
 import { PhaseTimeline } from "./PhaseTimeline";
 import { RealServicePanel } from "./RealServicePanel";
@@ -34,7 +35,7 @@ export function AssessmentTabs({ id }: { id: string }) {
   const tabParam = params.get("tab");
   const tab = TABS.find((t) => t.key === tabParam)?.key ?? "assessment";
   const evidenceFilter = EVIDENCE_STATES.find((s) => s.key === params.get("evidence"))?.key ?? "all";
-  const { snap, setSnap, error, conn, audit, chainValid, notes, refetch } = useAssessment(id);
+  const { snap, setSnap, error, conn, audit, chainValid, notes, diagnosis, refetch } = useAssessment(id);
   const { multiTenant } = useSession();
   const [reportMd, setReportMd] = useState<string | null>(null);
   const [reportBusy, setReportBusy] = useState(false);
@@ -175,6 +176,9 @@ export function AssessmentTabs({ id }: { id: string }) {
           && (!snap.is_external_service || snap.state === "completed") && (
           <ArtexPlanPanel snap={snap} onUpdate={setSnap} />
         )}
+
+        {/* lab only: the API answers 404 for a real site, and the panel is never shown there */}
+        {tab === "assessment" && !snap.is_external_service && <DiagnosisLoopPanel slot={diagnosis} />}
 
         {tab === "assessment" && (
           <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_18rem]">

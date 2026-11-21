@@ -43,3 +43,19 @@ export function heartbeatDecision(serverSeq: unknown, seenSeq: number): "healthy
   }
   return serverSeq > seenSeq ? "refresh" : "healthy";
 }
+
+// The event sequence lives in the server process: after a restart it starts again from
+// zero, so every newer snapshot would look older than what the browser has seen and the
+// screen would freeze. The model status carries an id made at each start (`boot_id`);
+// a different one means the browser must forget its sequence and reconnect the stream.
+export function serverRestarted(seenBootId: string | null, bootId: unknown): boolean {
+  return typeof bootId === "string" && bootId !== "" && seenBootId !== null && bootId !== seenBootId;
+}
+
+/** What to do with a streamed event, given the newest sequence already applied:
+ *  "drop" a duplicate or a stale replay (a reconnect replays from the first `after`),
+ *  "refetch" when one or more events were missed, else "apply". */
+export function eventDecision(seq: unknown, seenSeq: number): "drop" | "refetch" | "apply" {
+  if (typeof seq !== "number" || !Number.isSafeInteger(seq) || seq <= seenSeq) return "drop";
+  return seq > seenSeq + 1 ? "refetch" : "apply";
+}
