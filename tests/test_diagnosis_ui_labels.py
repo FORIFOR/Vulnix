@@ -10,7 +10,7 @@ import re
 import unittest
 from pathlib import Path
 
-from aegis import adaptive_plan_runner, diagnosis_judge, diagnosis_loop, diagnosis_view
+from aegis import adaptive_plan_runner, diagnosis_judge, diagnosis_loop, diagnosis_ops, diagnosis_view, evidence
 from aegis.adaptive_plan_state import PlanState
 from aegis.assessment import AssessmentService
 from aegis.diagnosis_state import CLAIMS, SOURCES, STATES
@@ -104,6 +104,20 @@ class TestEveryIdHasWords(unittest.TestCase):
                       diagnosis_view)
         self.assertCovered("DIAG_FIX_RESULT", {v for triple in fix for v in triple})
         self.assertCovered("DIAG_FIX_STATE", {"contradicted", "supported"})
+
+    def test_operations_pr_c(self):
+        """PR-C: every refusal reason, job state, job kind and job end reason the
+        operations can send, and every finding status the fix comparison names."""
+        self.assertCovered("DIAG_OP_REASON", strings(r'OpError\(\d+,[^)]*?"([a-z_]+)"\)', diagnosis_ops))
+        self.assertCovered("DIAG_OP_REASON", strings(r'"reason": "([a-z_]+)"', diagnosis_ops))
+        self.assertCovered("DIAG_OP_STATE", set(diagnosis_ops.ACTIVE)
+                           | strings(r'state="([a-z_]+)"', diagnosis_ops)
+                           | strings(r'_end_job\(job, "([a-z_]+)"', diagnosis_ops))
+        self.assertCovered("DIAG_OP_KIND", strings(r'_new_job_locked\("([a-z_]+)"', diagnosis_ops))
+        statuses = strings(r'return "([a-z_]+)"', evidence.evidence_status)
+        statuses |= {w for group in strings(r'verdict in \{([^}]*)\}', evidence.evidence_status)
+                     for w in re.findall(r'"([a-z_]+)"', group)}
+        self.assertCovered("DIAG_FINDING_STATUS", statuses)
 
 
 if __name__ == "__main__":

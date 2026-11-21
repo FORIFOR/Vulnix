@@ -254,3 +254,68 @@ export const DIAG_NEXT: Record<string, string> = {
   check_audit: "監査ログを確認してください。確かめられない記録は表示しません",
   none: "",
 };
+
+// ---- PR-C: the diagnosis operations (docs/DIAGNOSIS_ACTIONS.md) ------------------------
+// tests/test_diagnosis_ui_labels.py checks every kind, state and reason the server can send.
+export const DIAG_OP_KIND: Record<string, string> = {
+  start: "診断",
+  fix_check: "修正後の確認",
+};
+
+export const DIAG_OP_STATE: Record<string, string> = {
+  awaiting_spec: "所有者の仕様の入力を待っています",
+  running: "実行中です",
+  waiting_approval: "L2 検査の承認を待っています",
+  finished: "終了しました",
+  failed: "開始できませんでした",
+  interrupted: "サーバーの再起動で中断しました（自動では再開しません）",
+};
+
+// why an operation was refused, or why a job ended without a plan
+export const DIAG_OP_REASON: Record<string, string> = {
+  permission_denied: "この操作の権限がありません",
+  idempotency_key_required: "要求の識別子がありません（画面を再読み込みしてください）",
+  idempotency_key_reused: "同じ識別子で別の内容が送られました",
+  already_accepted: "同じ対象・世代への同じ操作は、すでに受け付けています",
+  loop_active: "この評価の診断ループはすでに進行中です",
+  loop_running: "診断ループの実行中は仕様を変更できません",
+  not_started: "診断ループを開始してから操作してください",
+  not_waiting: "この項目は承認を待っていません",
+  self_approval: "診断を依頼した本人は、その L2 検査を承認できません",
+  self_registered: "自己登録のアカウントは L2 検査を承認できません",
+  needs_new_generation: "この仕様に基づく判定がすでにあります。変更は修正後の確認（新しい世代）で入力してください",
+  no_proven_finding: "修正前に実証された所見がないため、修正後の確認は開始できません",
+  emergency_stopped: "緊急停止中です",
+  paused: "一時停止中です",
+  authority_revoked: "権限が失効しています。もう一度ログインしてください",
+  audit_failed: "監査ログに記録できないため、操作を受け付けませんでした",
+  request_not_persisted: "要求を保存できないため、操作を受け付けませんでした",
+  request_store_unreadable: "要求の記録を読めないため、操作を受け付けません",
+  not_a_lab: "診断ループは登録済みのローカル検証ラボでのみ使用できます",
+  closing: "サーバーを停止しています",
+  invalid_spec: "仕様は「認証必須」か「公開」のどちらかです",
+  item_id_required: "承認する項目がありません",
+  unexpected_fields: "要求の形が正しくありません",
+  unknown_target: "この対象は、現在の登録済み対象にありません",
+  history_refused: "診断の記録が監査ログと一致しないため、新しい診断を始められません",
+  // a job that ended before (or instead of) a plan
+  server_restarted: "サーバーの再起動で中断しました",
+  initial_observation_failed: "初期観測を記録できませんでした",
+  hypotheses_failed: "仮説を作成できませんでした",
+  loop_failed: "診断ループが異常終了しました",
+  stopped_or_reset: "停止またはリセットされました",
+  requester_authority_revoked: "依頼者の権限が失効しました",
+  spec_timeout: "所有者の仕様が期限内に入力されませんでした",
+  item_running: "ARTEX 計画の項目を実行中です。終わってから開始してください",
+  authority_revoked_after_request: "権限が失効したため、結果は表示しません",
+};
+
+// a finding's current status (aegis.evidence.evidence_status)
+export const DIAG_FINDING_STATUS: Record<string, string> = {
+  proven: "実証成功",
+  detected: "検出（未実証）",
+  not_reproduced: "再現せず",
+  incomplete: "未完了",
+  candidate: "未計測の候補",
+  fixture: "見本",
+};

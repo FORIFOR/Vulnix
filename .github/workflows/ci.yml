@@ -400,6 +400,13 @@ jobs:
           python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(json.dumps(d['checks'], indent=1)); sys.exit(0 if d['ok'] else 1)" \
             "$RUNNER_TEMP/diagnosis-ui.json"
 
+      - name: Diagnosis operations in a browser on the local lab (start, owner spec, L2 approval, fix check)
+        run: |
+          VULNIX_NO_ENV_LOCAL=1 python3 -m scripts.check_diagnosis_actions --production --chromium \
+            --screenshots "$RUNNER_TEMP/diagnosis-actions" > "$RUNNER_TEMP/diagnosis-actions.json"
+          python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(json.dumps(d['checks'], indent=1)); sys.exit(0 if d['ok'] else 1)" \
+            "$RUNNER_TEMP/diagnosis-actions.json"
+
       - name: Upload evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -424,4 +431,6 @@ jobs:
             ${{ runner.temp }}/real-artex-browser-flow.json
             ${{ runner.temp }}/diagnosis-ui.json
             ${{ runner.temp }}/diagnosis-ui/*.png
+            ${{ runner.temp }}/diagnosis-actions.json
+            ${{ runner.temp }}/diagnosis-actions/*.png
           if-no-files-found: warn

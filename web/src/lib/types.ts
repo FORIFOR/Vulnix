@@ -412,6 +412,9 @@ export interface DiagnosisFixSide {
   to: HypothesisState;
   rule: string;
   judged_audit_hash: string;
+  result_audit_hash?: string;
+  /** what that step's own audited result said about reproduction */
+  reproduction?: string | null;
 }
 
 export interface DiagnosisFix {
@@ -421,6 +424,28 @@ export interface DiagnosisFix {
   before: DiagnosisFixSide | null;
   after: DiagnosisFixSide | null;
   result: "fixed" | "not_fixed" | "pending";
+  /** the finding these steps are about, and its status now */
+  finding?: { finding_id: string; status: string } | null;
+}
+
+/** PR-C: the loop job (who asked, what it waits for). Never a result. */
+export interface DiagnosisOperation {
+  id: string;
+  kind: string;
+  state: string;
+  requested_by: string;
+  diag_id: string | null;
+  generation: number | null;
+  waiting_item_id: string | null;
+  needs_spec: string[];
+  result: { plan_state?: string; reason?: string; detail?: string } | null;
+  started_at: number | null;
+}
+
+/** PR-C: who reads (GET only) and what they may do. The server checks every operation again. */
+export interface DiagnosisViewer {
+  actor: string | null;
+  permissions: string[];
 }
 
 export interface DiagnosisPlan {
@@ -456,4 +481,6 @@ export interface DiagnosisView {
   evidence: DiagnosisEvidence[];
   fix_comparison: DiagnosisFix[];
   next: DiagnosisNext;
+  operation?: DiagnosisOperation | null;
+  viewer?: DiagnosisViewer;
 }

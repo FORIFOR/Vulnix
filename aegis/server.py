@@ -31,6 +31,7 @@ from urllib.parse import parse_qs, urlsplit
 from . import google_ownership
 from .assessment import ApproverRequired, AssessmentService, StopNotConfirmed
 from .control_verification import run_live_control_verification
+from .diagnosis_ops import OP_PERMISSION, member_permissions, permitted
 from .lab import set_lab_mode, start_lab
 from .operators import AuthError, LockedOut, MFAChallenge, OperatorStore
 from .ownership import parse_service_target
@@ -369,6 +370,32 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             except ApproverRequired:
                 return self._json(403, {"error": "この組織のメンバーではありません"})
 
+        def _deliver_diagnosis_op(self, sess, org, op: str, code: int, result: dict):
+            """PR-C: the operation's state is already stored (and replayed by its key); this
+            only decides what THIS answer may carry. The grant is checked again for delivery:
+            once it lapsed, the answer says only whether the request was taken - never the
+            job, the item or the evidence - and a retry with the same key cannot run it
+            again (the stored record answers, after the permission check)."""
+            committed = code < 400
+            withheld = {"error": "権限が失効したため、結果は返しません" + (
+                "。操作は受け付け済みです（同じキーで送り直しても、もう一度は実行されません）" if committed else ""),
+                "reason": "authority_revoked_after_request", "committed": committed}
+            approving = op == "approve"
+            try:
+                with live_grant_roles(sess, org, approver=approving) as roles:
+                    if not permitted(OP_PERMISSION[op], roles):
+                        return self._json(403, withheld)
+                    previous_timeout = self.connection.gettimeout()
+                    self.connection.settimeout(2.0)
+                    try:
+                        return self._json(code, result)
+                    finally:
+                        self.connection.settimeout(previous_timeout)
+            except AuthError:
+                return self._json(401, {**withheld, "error": "ログインの有効期限が切れました。もう一度ログインしてください"})
+            except ApproverRequired:
+                return self._json(403, withheld)
+
         def _authorized_platform_read(self, sess, action, *, admin=False):
             """Do not deliver a shared-platform job result after its grant expires."""
             with ops.locked_session(sess.token) as current:
@@ -526,6 +553,11 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         if payload is None:          # a real service: there is no such view
                             return self._authorized_org_read(sess, org, lambda _: self._json(
                                 404, {"error": "診断ループは登録済みのローカル検証ラボでのみ表示できます"}))
+                        # what THIS caller may do, from the roles live at delivery (the server
+                        # checks every operation again; the screen shows only these controls)
+                        return self._authorized_org_read(sess, org, lambda current: self._json(200, {
+                            **payload, "viewer": {"actor": current.operator,
+                                                  "permissions": member_permissions(current.roles)}}))
                     elif p.endswith("/report"):
                         payload = {"markdown": bound[0].report_markdown(),
                                    "filename": f"vulnix-report-{bound[0].a.id}.md"}
@@ -605,6 +637,10 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 view = svc.diagnosis_view()
                 if view is None:
                     return self._json(404, {"error": "診断ループは登録済みのローカル検証ラボでのみ表示できます"})
+                # what THIS caller may do (the screen shows only those controls; the server
+                # checks every operation again with the live roles)
+                view = {**view, "viewer": {"actor": sess.operator if sess else None,
+                                           "permissions": member_permissions(sess.roles) if sess else []}}
                 return self._json(200, view)
             if p == f"/api/assessments/{svc.a.id}/artex/llm-preview":
                 # what the planner model was (or would be) sent: approver review only
@@ -809,6 +845,15 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         return None
                     osvc, osess = bound
                     self._select_target = str(body.get("id", "")) if p == "/api/assets/select" else ""
+                    if p.startswith(f"/api/assessments/{osvc.a.id}/diagnosis/"):
+                        # the diagnosis loop exists for the registered lab only: on a real site
+                        # (or a site still in the ownership flow) the route does not exist
+                        try:
+                            not_lab = not osvc.diagnosis_targets()
+                        except Exception:   # noqa: BLE001 - when in doubt, it is not the lab
+                            not_lab = True
+                        if not_lab:
+                            return self._json(404, {"error": "診断ループは登録済みのローカル検証ラボでのみ使用できます"})
                     # Mode 0 always disables real-site traffic. Only the legacy
                     # broad switch is narrowed to L1 when tenants are present.
                     read_only_real = REAL_SITE_L1_ONLY or (tenancy is not None and REAL_SERVICE_DIAGNOSIS)
@@ -830,7 +875,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     artex_item = bool(re.fullmatch(
                         f"/api/assessments/{osvc.a.id}" + r"/artex/items/[A-Za-z0-9_]{1,80}/execute", p))
                     if read_only_real and not real_site_traffic and (
-                            p.endswith(("/start", "/restart", "/resume")) or artex_item):
+                            (p.endswith(("/start", "/restart", "/resume")) and "/diagnosis/" not in p) or artex_item):
                         # the workspace can be switched onto a proven site between this check and
                         # the run: every run of an organization holding one is counted
                         try:
@@ -842,7 +887,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                             limited = (verify_times, verify_all, OWNERSHIP_CHECKS_PER_ORG_PER_HOUR,
                                        OWNERSHIP_CHECKS_PLATFORM_PER_HOUR,
                                        "所有確認は1時間あたりの上限に達しました。DNS の設定が反映されるまで少し待ってからお試しください")
-                        elif p.endswith(("/start", "/restart", "/resume")) or artex_item:
+                        elif (p.endswith(("/start", "/restart", "/resume")) and "/diagnosis/" not in p) or artex_item:
                             limited = (real_run_times, real_run_all, REAL_SITE_RUNS_PER_ORG_PER_HOUR,
                                        REAL_SITE_RUNS_PLATFORM_PER_HOUR,
                                        "このサイトの診断は1時間あたりの上限に達しました。時間をおいてお試しください")
@@ -1480,6 +1525,20 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         sess, getattr(self, "_bound_org", DEFAULT_ORG),
                         lambda _: self._json(200, result), reader=False,
                         approver="approver" in sess.roles)
+                elif m := re.fullmatch(base + r"/diagnosis/(start|owner-spec|fix-check|approve)", p):
+                    # PR-C (docs/DIAGNOSIS_ACTIONS.md): permission, Idempotency-Key, scope and
+                    # the lab check are decided by the service, with the live roles
+                    org = getattr(self, "_bound_org", DEFAULT_ORG)
+                    approving = m.group(1) == "approve"
+                    if approving and svc.separate_l2_approver and ops.is_self_registered(actor):
+                        return self._json(403, {"error": "自己登録のアカウントは L2 検査を承認できません",
+                                                "reason": "self_registered"})
+                    code, result = svc.diagnosis_ops.run(
+                        m.group(1), key=self.headers.get("Idempotency-Key") or "", actor=actor,
+                        roles=tuple(sess.roles), body=body,
+                        request_authorized=live_request_authority(sess, org),
+                        approver_authorized=live_request_authority(sess, org, approver=True) if approving else None)
+                    return self._deliver_diagnosis_op(sess, org, m.group(1), code, result)
                 elif p == base + "/artex/plan":
                     # the REAL ARTEX planner (planner-only overlay) proposes; Vulnix rebuilds
                     approval = body.get("llm_approval") if isinstance(body.get("llm_approval"), dict) else None

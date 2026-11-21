@@ -45,9 +45,13 @@ class _Aborted(Exception):
 class AdaptivePlanRunner:
     def __init__(self, svc, *, actor: str, roles=("operator",), request_authorized=None,
                  approve=None, limits: PlanLimits | None = None, clock=time.monotonic,
-                 diagnosis=None):
-        """`approve(item) -> (approver, roles) | None` is asked for each L2 item, every time.
-        `diagnosis`: a DiagnosisState for the hypothesis-driven loop."""
+                 diagnosis=None, exec_owner: str | None = None):
+        """`approve(item) -> (approver, roles) | (approver, roles, step_authorized) | None` is
+        asked for each L2 item, every time. `step_authorized` (with an optional `.lease`)
+        replaces `request_authorized` for that one Worker: it is checked again right before
+        the Worker starts (the approver's live authority, the approval itself).
+        `diagnosis`: a DiagnosisState for the hypothesis-driven loop.
+        `exec_owner`: the diagnosis job that holds the assessment's ARTEX execution right."""
         self.svc = svc
         self.actor = actor
         self.roles = tuple(roles) if roles is not None else None
@@ -56,6 +60,8 @@ class AdaptivePlanRunner:
         self.limits = limits or PlanLimits()
         self.clock = clock
         self.diagnosis = diagnosis
+        self.exec_owner = exec_owner
+        self._owner_kw = {"exec_owner": exec_owner} if exec_owner else {}
         # (catalog_id, target_ref, frozenset(evidence_refs)) already run in this loop
         self.executed_keys: set = set()
         self._pending = None          # (verdict, observation, judged hash, from, result hash)
@@ -277,7 +283,7 @@ class AdaptivePlanRunner:
             self._round_generation = self.diagnosis.generation if diag else None
             try:
                 snap = self.svc.plan_with_artex(
-                    self.actor, roles=self.roles, request_authorized=self.request_authorized,
+                    self.actor, roles=self.roles, request_authorized=self.request_authorized, **self._owner_kw,
                     **({"diagnosis": (self.diagnosis, frozenset(self.executed_keys))} if diag else {}))
             except Exception as e:  # noqa: BLE001 - nothing from a failed plan is used
                 abort = self._abort_reason(plan)
@@ -304,11 +310,13 @@ class AdaptivePlanRunner:
                 return self._finish(plan, PlanState.EXPIRED, "max_steps")
             item = fresh[0]
             exec_actor, exec_roles = self.actor, self.roles
+            step_authorized = None
             if item["level"] == "L2":
                 granted = self.approve(dict(item)) if self.approve is not None else None
                 if not granted:
                     return self._finish(plan, PlanState.REJECTED, "l2_approval_missing")
-                exec_actor, exec_roles = granted
+                exec_actor, exec_roles = granted[0], granted[1]
+                step_authorized = granted[2] if len(granted) > 2 else None
             self._step_actor = exec_actor if item["level"] == "L2" else None
             nonce = "apv_" + secrets.token_hex(8)
             ids = {"catalog_id": item["catalog_id"], "item_id": item["id"], "approval_nonce": nonce}
@@ -325,7 +333,8 @@ class AdaptivePlanRunner:
             evidence_before = self._finding_evidence()
             try:
                 self.svc.execute_artex_item(item["id"], exec_actor, roles=exec_roles,
-                                            request_authorized=self.request_authorized)
+                                            request_authorized=step_authorized or self.request_authorized,
+                                            **self._owner_kw)
             except Exception as e:  # noqa: BLE001
                 abort = self._abort_reason(plan)
                 if abort:

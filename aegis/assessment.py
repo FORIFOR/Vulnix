@@ -212,6 +212,10 @@ class _StaticProposals:
         return [dict(p) for p in self._proposals]
 
 
+class ExecutionConflict(ValueError):
+    """Another party holds the assessment's ARTEX execution right (answered 409)."""
+
+
 class ApproverRequired(PermissionError):
     """The action needs the approver role (mapped to HTTP 403)."""
 
@@ -490,6 +494,7 @@ class AssessmentService:
         # The diagnosis loop's state (docs/DIAGNOSIS_READ_API.md): one per workspace,
         # journaled to the audit log, restored read-only after a restart.
         self._diagnosis = None
+        self._exec_owner: str | None = None     # the diagnosis job holding the ARTEX execution right
         self._diagnosis_refused: dict | None = None
         self._diagnosis_restored = False
         self._diagnosis_persist_error: str | None = None
@@ -498,6 +503,9 @@ class AssessmentService:
             self._reconcile_assets_with_ledger_locked()
             self._begin_session_locked()
             self._restore_diagnosis_locked()
+            # PR-C: start / owner spec / fix-check / L2 approval (docs/DIAGNOSIS_ACTIONS.md)
+            from .diagnosis_ops import DiagnosisOperations
+            self.diagnosis_ops = DiagnosisOperations(self)
         threading.Thread(target=AssessmentService._expiry_watch, args=(weakref.ref(self),),
                          daemon=True, name="scope-expiry").start()
         if (self._authority_notice or self._marker_pending or self.ledger.dirty()
@@ -657,6 +665,8 @@ class AssessmentService:
         leaves the record, so the next start holds all authority) otherwise."""
         with self._lock:
             self._closed = True
+            if getattr(self, "diagnosis_ops", None) is not None:
+                self.diagnosis_ops.close()       # a loop waiting for an approval gives up now
             pool = self.workers
             self.gateway.invalidate_pending()
             self._note_unstopped_locked((self.a.asset.get("name") or "").lower(),
@@ -1965,7 +1975,21 @@ class AssessmentService:
         return {"assessment_id": self.a.id, "export": st.export() if st is not None else None,
                 "refusal": (self._diagnosis_refused or {}).get("reason"), "restored": self._diagnosis_restored,
                 "persisted": st is None or self._diagnosis_persist_error is None, "l2_items": l2,
-                "catalog_levels": {k: v.level for k, v in CATALOG_BY_ID.items()}}
+                "catalog_levels": {k: v.level for k, v in CATALOG_BY_ID.items()},
+                "operation": (self.diagnosis_ops.job_view_locked()
+                              if getattr(self, "diagnosis_ops", None) is not None else None),
+                "findings": self._diagnosis_findings_locked()}
+
+    def _diagnosis_findings_locked(self) -> list[dict]:
+        """The findings and the audit hashes of their evidence: the fix comparison shows
+        which finding a before / after step is about (docs/DIAGNOSIS_ACTIONS.md)."""
+        out = []
+        for fid, f in self.a.findings.items():
+            hashes = sorted({e.get("audit_hash") for e in (f.get("evidence") or [])
+                             if isinstance(e, dict) and isinstance(e.get("audit_hash"), str)})
+            if hashes:
+                out.append({"finding_id": fid, "status": evidence_status(f), "audit_hashes": hashes})
+        return out
 
     def _diagnosis_view_from(self, inputs: dict | None) -> dict | None:
         """Read the audit log and build the view. Needs no lock: the replay is cut at the
@@ -2030,13 +2054,14 @@ class AssessmentService:
 
     def plan_with_artex(self, actor: str, *, llm_approval: dict | None = None, roles=None,
                         llm_mode: str | None = None, request_authorized=None,
-                        diagnosis=None) -> dict:
+                        diagnosis=None, exec_owner: str | None = None) -> dict:
         """`diagnosis`: (DiagnosisState, executed) for the diagnosis loop - the planner
         then sees the planner view and only id-only contract steps become items.
-        Registered local lab only."""
+        Registered local lab only. `exec_owner`: see _check_exec_owner_locked."""
         fingerprint = None
         root_observation = None
         with self._lock:
+            self._check_exec_owner_locked(exec_owner)
             if self.real_site_read_only and self._is_external_service_asset():
                 host = (self.a.asset.get("name") or "").lower()
                 usage = self.ledger.scan_usage.get(host)
@@ -2065,12 +2090,13 @@ class AssessmentService:
         return self._plan_with_artex(actor, llm_approval=llm_approval, roles=roles,
                                      llm_mode=llm_mode, fingerprint=fingerprint,
                                      root_observation=root_observation,
-                                     request_authorized=request_authorized, diagnosis=diagnosis)
+                                     request_authorized=request_authorized, diagnosis=diagnosis,
+                                     exec_owner=exec_owner)
 
     def _plan_with_artex(self, actor: str, *, llm_approval: dict | None = None, roles=None,
                          llm_mode: str | None = None, fingerprint: dict | None = None,
                          root_observation: tuple[str, str] | None = None,
-                         request_authorized=None, diagnosis=None) -> dict:
+                         request_authorized=None, diagnosis=None, exec_owner: str | None = None) -> dict:
         """Ask the real ARTEX planner for a plan, then rebuild every item from Vulnix's
         own registered targets and allowed catalog. Nothing is executed here.
 
@@ -2240,6 +2266,7 @@ class AssessmentService:
             self._refuse_after_stop_locked()
             if real_site:
                 self._ensure_artex_authority_locked()
+            self._check_exec_owner_locked(exec_owner)
             if any(r["item"].status == "running" for r in self._artex_items.values()):
                 raise ValueError("ARTEX 計画の項目を実行中です。完了してから再計画してください")
             # the previous plan's tasks leave the plan view with it
@@ -2251,6 +2278,8 @@ class AssessmentService:
                 raise ValueError("停止またはリセットされたため、ARTEX 計画を破棄しました")
             if real_site:
                 self._ensure_artex_authority_locked()
+            # checked again where the plan is installed: a loop may have started meanwhile
+            self._check_exec_owner_locked(exec_owner)
             # a new plan replaces the previous one: its items can no longer run
             self._artex_items = {}
             root_observed = real_site and self._root_probe_observed_locked()
@@ -2605,8 +2634,20 @@ class AssessmentService:
             raise ValueError("診断を一時停止中です。再開または停止してから実行してください")
         return rec
 
+    def _check_exec_owner_locked(self, exec_owner: str | None) -> None:
+        """The ARTEX execution right (docs/DIAGNOSIS_ACTIONS.md). While a diagnosis job
+        holds it, only that job's runner may plan or run items; without a job, only
+        manual (exec_owner=None) calls may. Decided under the service lock, the same lock
+        under which a job takes the right (and refuses while a manual item is running):
+        a check and the claim that follows cannot be separated by the other side."""
+        owner = self._exec_owner
+        if owner is not None and exec_owner != owner:
+            raise ExecutionConflict("診断ループの実行中です。L2 検査は診断ループの承認から行ってください")
+        if owner is None and exec_owner is not None:
+            raise ExecutionConflict("この診断ループは終了しています")
+
     def execute_artex_item(self, item_id: str, actor: str, *, roles=None,
-                           request_authorized=None) -> dict:
+                           request_authorized=None, exec_owner: str | None = None) -> dict:
         """Run ONE item of the ARTEX plan. The operation is rebuilt from Vulnix's catalog
         (never from what ARTEX or the stored proposal says); L1 goes through the Gateway
         under the L1 policy, L2 needs an approver and runs in the isolated worker."""
@@ -2621,6 +2662,7 @@ class AssessmentService:
             if request_authorized is not None and not request_authorized():
                 raise ApproverRequired("要求者の権限が失効したため、検査を開始しません")
             with self._lock:
+                self._check_exec_owner_locked(exec_owner)
                 rec = self._claim_artex_item_locked(item_id)
                 item = rec["item"]
                 entry = CATALOG_BY_ID[item.catalog_id]
@@ -3677,6 +3719,8 @@ class AssessmentService:
         self.a.plan_source = None
         # so does the diagnosis: its history is closed (audited) with the workspace
         self._close_diagnosis_locked("reset")
+        if getattr(self, "diagnosis_ops", None) is not None:
+            self.diagnosis_ops.reset()
         self._set_state("stopped" if stays_stopped else "idle")
 
     def planner_status(self) -> dict:

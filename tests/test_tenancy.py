@@ -2634,3 +2634,146 @@ class TestDiagnosisReadApiOverHttp(unittest.TestCase):
         self.assertIn(b"event: heartbeat", theirs)        # the whole backlog was delivered first
         self.assertNotIn(b"diagnosis.updated", theirs)
         self.assertNotIn(diag_id.encode(), theirs)
+
+
+class TestDiagnosisActionsOverHttp(unittest.TestCase):
+    """PR-C (docs/DIAGNOSIS_ACTIONS.md): the four diagnosis operations need a login, the
+    caller's own organization, the operation's permission and an Idempotency-Key; on a
+    real service they do not exist (404). The service-level cases are in
+    tests/test_diagnosis_actions.py."""
+    setUp = TestTenantIsolationOverHttp.setUp
+    _down = TestTenantIsolationOverHttp._down
+    req = TestTenantIsolationOverHttp.req
+    signup = TestTenantIsolationOverHttp.signup
+    BASE = "/assessments/scan_001/diagnosis"
+
+    def post(self, who, op, body=None, org=None, key="http-test-key-0000001"):
+        h = {"Content-Type": "application/json", "X-Aegis-Request": "1"}
+        if who and who.get("cookie"):
+            h["Cookie"] = who["cookie"]
+        if org:
+            h["X-Vulnix-Org"] = org
+        if key:
+            h["Idempotency-Key"] = key
+        r = urllib.request.Request(f"{self.root}{self.BASE}/{op}", json.dumps(body or {}).encode(), h)
+        try:
+            with urllib.request.urlopen(r) as resp:
+                return resp.status, json.load(resp)
+        except urllib.error.HTTPError as e:
+            with e:
+                return e.code, json.load(e)
+
+    def accepted(self, org_id):
+        return [e for e in self.reg.service(org_id).audit.entries() if e["event"] == "diagnosis.request_accepted"]
+
+    def test_login_organization_permission_and_key(self):
+        a, b = self.signup("alice"), self.signup("bobby")
+        a_org = a["orgs"][0]["id"]
+        svc = self.reg.service(a_org)
+        self.assertEqual(self.post({}, "start", org=a_org)[0], 401)
+        # another organization's member reaches nothing in this one
+        for op in ("start", "owner-spec", "fix-check", "approve"):
+            self.assertEqual(self.post(b, op, org=a_org)[0], 403, op)
+        with svc._lock:
+            self.assertIsNone(svc.diagnosis_ops.job_view_locked())
+        self.assertEqual(self.accepted(a_org), [])
+        # a viewer of this organization: may read, may not operate
+        token = self.req(a, "/orgs/invites", {"roles": ["viewer"]})[1]["token"]
+        self.assertEqual(self.req(b, "/invites/accept", {"token": token})[0], 200)
+        code, view = self.req(b, self.BASE, org=a_org)
+        self.assertEqual((code, view["viewer"]["permissions"]), (200, ["diagnosis:read"]))
+        self.assertEqual(self.post(b, "start", org=a_org)[0], 403)
+        # the owner: every permission, and every operation needs its key
+        code, view = self.req(a, self.BASE)
+        self.assertEqual(view["viewer"], {"actor": "alice", "permissions": [
+            "asset:specify", "diagnosis:approve_l2", "diagnosis:read", "diagnosis:request"]})
+        code, body = self.post(a, "start", key=None)
+        self.assertEqual((code, body["reason"]), (400, "idempotency_key_required"))
+        code, body = self.post(a, "owner-spec", {"target_ref": "T2", "requirement": "public"})
+        self.assertEqual((code, body["reason"]), (409, "not_started"))
+        code, body = self.post(a, "approve", {"item_id": "x1"}, key="http-test-key-0000002")
+        if svc.separate_l2_approver:
+            self.assertEqual((code, body["reason"]), (403, "self_registered"))
+        else:
+            self.assertEqual((code, body["reason"]), (409, "not_waiting"))
+        self.assertEqual(self.post(a, "nothing")[0], 404)
+
+    def test_the_start_route_hands_over_the_live_authority(self):
+        a = self.signup("alice")
+        a_org = a["orgs"][0]["id"]
+        svc = self.reg.service(a_org)
+        seen = {}
+
+        def fake_start(**kw):
+            seen.update(kw)
+            return 202, {"job": None}
+        with patch.object(svc.diagnosis_ops, "_start", side_effect=fake_start):
+            self.assertEqual(self.post(a, "start")[0], 202)
+        self.assertEqual(seen["actor"], "alice")
+        self.assertIn("operator", seen["roles"])
+        self.assertTrue(seen["request_authorized"]())
+        self.assertEqual(self.req(a, "/auth/logout", {})[0], 200)
+        self.assertFalse(seen["request_authorized"]())           # checked again at every step
+
+    def test_a_real_service_has_no_diagnosis_operations(self):
+        a = self.signup("alice")
+        a_org = a["orgs"][0]["id"]
+        svc = self.reg.service(a_org)
+        with patch.object(svc, "_is_external_service_asset", return_value=True):
+            for op in ("start", "owner-spec", "fix-check", "approve"):
+                code, body = self.post(a, op, {"item_id": "x1"} if op == "approve" else None)
+                self.assertEqual(code, 404, (op, body))
+        self.assertEqual(self.accepted(a_org), [])
+
+    def test_artex_items_cannot_run_beside_the_loop(self):
+        a = self.signup("alice")
+        svc = self.reg.service(a["orgs"][0]["id"])
+        with svc._lock:
+            svc._exec_owner = "dj_test"            # a diagnosis job holds the execution right
+        try:
+            code, body = self.req(a, "/assessments/scan_001/artex/items/ax1_1/execute", {})
+            self.assertEqual(code, 409, body)
+            self.assertIn("診断ループ", body["error"])
+            code, body = self.req(a, "/assessments/scan_001/artex/plan", {})
+            self.assertEqual(code, 409, body)
+            self.assertIn("診断ループ", body["error"])
+        finally:
+            with svc._lock:
+                svc._exec_owner = None
+
+    def test_authority_lost_right_after_the_operation_withholds_the_result_and_never_reruns(self):
+        a, b = self.signup("alice"), self.signup("bobby")
+        a_org = a["orgs"][0]["id"]
+        svc = self.reg.service(a_org)
+        token = self.req(a, "/orgs/invites", {"roles": ["runner"]})[1]["token"]
+        self.assertEqual(self.req(b, "/invites/accept", {"token": token})[0], 200)
+        ran = []
+        ops = svc.diagnosis_ops
+
+        def start_then_lose_membership(*, key, actor, roles, body, **kw):
+            with svc._lock:
+                rec, replay = ops._accept("start", key, actor, {}, None)
+                if replay:
+                    return ops._replay(rec)
+                ops._finish_request_locked(rec, "done", {"job": {"id": "dj_secret_result"}})
+            ran.append(actor)
+            # removed by the owner right after the operation was stored, before the answer
+            self.assertEqual(self.req(a, "/orgs/members/remove", {"name": "bobby"})[0], 200)
+            return 202, {"job": {"id": "dj_secret_result"}}
+        k = "http-revoked-after-0001"
+        with patch.object(ops, "_start", side_effect=start_then_lose_membership):
+            code, body = self.post(b, "start", org=a_org, key=k)
+            self.assertEqual(code, 403, body)
+            self.assertTrue(body["committed"])
+            self.assertNotIn("dj_secret_result", json.dumps(body))
+            # the retry with the same key: not a member any more, nothing runs again
+            self.assertEqual(self.post(b, "start", org=a_org, key=k)[0], 403)
+            self.assertEqual(ran, ["bobby"])
+            # member again: the same key returns what was stored, still without running
+            token = self.req(a, "/orgs/invites", {"roles": ["runner"]})[1]["token"]
+            self.assertEqual(self.req(b, "/invites/accept", {"token": token})[0], 200)
+            code, body = self.post(b, "start", org=a_org, key=k)
+        self.assertEqual(code, 200, body)
+        self.assertTrue(body["replayed"])
+        self.assertEqual(ran, ["bobby"])
+        self.assertEqual(len(self.accepted(a_org)), 1)

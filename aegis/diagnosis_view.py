@@ -58,22 +58,26 @@ def refused(base: dict, reason: str) -> dict:
 
 def build_view(*, assessment_id: str, export: dict | None, refusal: str | None, entries: list[dict],
                chain_valid: bool, restored: bool, persisted: bool, l2_items: list[dict],
-               catalog_levels: dict[str, str]) -> dict:
+               catalog_levels: dict[str, str], operation: dict | None = None,
+               findings: list[dict] | None = None) -> dict:
+    # a refused view carries no operation either (it offers nothing to act on)
     base = {"schema_version": SCHEMA_VERSION, "lab_only": True, "assessment_id": assessment_id,
-            "restored": bool(restored), "persisted": bool(persisted)}
+            "restored": bool(restored), "persisted": bool(persisted), "operation": None}
     if refusal:
         return refused(base, refusal)
     if not chain_valid:
         return refused(base, "audit_chain_invalid")
+    # the running operation (PR-C): who asked, and what it waits for - never a result
     if export is None:
-        return {**base, **_EMPTY, "status": "not_started", "next": {"kind": "none"}}
+        return {**base, **_EMPTY, "status": "not_started", "next": {"kind": "none"}, "operation": operation}
     try:
-        return {**base, **_build(export, entries, l2_items, catalog_levels)}
+        return {**base, **_build(export, entries, l2_items, catalog_levels, findings or []), "operation": operation}
     except _Refuse as e:
         return refused(base, e.reason)
 
 
-def _build(export: dict, entries: list[dict], l2_items: list[dict], levels: dict[str, str]) -> dict:
+def _build(export: dict, entries: list[dict], l2_items: list[dict], levels: dict[str, str],
+           findings: list[dict]) -> dict:
     diag_id = export["diag_id"]
     # The log is read after the state was copied: cut it at the state's own last journal
     # record, so a change journaled meanwhile is neither shown nor taken for a mismatch.
@@ -161,11 +165,19 @@ def _build(export: dict, entries: list[dict], l2_items: list[dict], levels: dict
             continue
         before, after = last_step(h["supersedes"]), last_step(h["id"])
         side = (lambda s: {"generation": s["generation"], "to": s["judgement"]["to"], "rule": s["judgement"]["rule"],
-                           "judged_audit_hash": s["judged_audit_hash"]} if s else None)
+                           "judged_audit_hash": s["judged_audit_hash"],
+                           "result_audit_hash": s["result_audit_hash"],
+                           # what that step's own audited result said about reproduction
+                           "reproduction": ((s.get("observation") or {}).get("attrs") or {}).get("reproduction")}
+                if s else None)
         result = {"contradicted": "fixed", "supported": "not_fixed"}.get(h["state"], "pending")
+        # the finding these steps are about: the one whose evidence is one of their results
+        own = {x["result_audit_hash"] for x in (before, after) if x}
+        finding = next(({"finding_id": f["finding_id"], "status": f["status"]} for f in findings
+                        if own & set(f["audit_hashes"])), None)
         fix.append({"hypothesis_id": h["id"], "supersedes": h["supersedes"],
                     "catalog_id": (after or before or {}).get("catalog_id"),
-                    "before": side(before), "after": side(after), "result": result})
+                    "before": side(before), "after": side(after), "result": result, "finding": finding})
 
     return {"status": "ok", "diag_id": diag_id, "generation": export["generation"], "plan": plan,
             "hypotheses": hyps, "steps": steps, "evidence": evidence, "fix_comparison": fix,
