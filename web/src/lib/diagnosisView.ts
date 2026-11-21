@@ -286,10 +286,12 @@ export type DiagnosisControl =
 
 /** Which controls this reader gets, from the view and their permissions (the server
  *  decides again on every request). A view that is not verified offers nothing. */
-export function availableControls(view: DiagnosisView): { controls: DiagnosisControl[]; notes: string[] } {
+export function availableControls(view: DiagnosisView): { controls: DiagnosisControl[]; notes: string[]; inviteApprover: boolean } {
   const controls: DiagnosisControl[] = [];
   const notes: string[] = [];
-  if (view.status === "unverified") return { controls, notes };
+  // the requester waits for someone else: say how to get an approver (settings -> invite)
+  let inviteApprover = false;
+  if (view.status === "unverified") return { controls, notes, inviteApprover };
   const can = new Set(view.viewer?.permissions ?? []);
   const actor = view.viewer?.actor ?? null;
   const op = view.operation ?? null;
@@ -306,14 +308,17 @@ export function availableControls(view: DiagnosisView): { controls: DiagnosisCon
     else notes.push("対象資産の管理者が仕様を入力するのを待っています");
   }
   if (op?.state === "waiting_approval" && op.waiting_item_id) {
-    if (actor !== null && actor === op.requested_by) notes.push("依頼者本人は承認できません。別の承認者が承認します");
+    if (actor !== null && actor === op.requested_by) {
+      notes.push("依頼者本人は承認できません。別の承認者が承認します");
+      inviteApprover = can.has("asset:specify");      // an owner / admin can invite one
+    }
     else if (can.has("diagnosis:approve_l2")) controls.push({ op: "approve", itemId: op.waiting_item_id });
     else notes.push("承認者の承認を待っています");
   }
   if (can.has("diagnosis:request") && !active && view.next.kind === "confirm_fix_available") {
     controls.push({ op: "fix-check" });
   }
-  return { controls, notes };
+  return { controls, notes, inviteApprover };
 }
 
 export function operationText(op: DiagnosisOperation): string {
