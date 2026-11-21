@@ -18,7 +18,7 @@ import {
 import { DIAG_END } from "@/lib/labels";
 import { DiagnosisControls } from "./DiagnosisControls";
 import type {
-  DiagnosisEvidence, DiagnosisFix, DiagnosisFixSide, DiagnosisHypothesis, DiagnosisNext, DiagnosisStep,
+  DiagnosisEvidence, Finding, DiagnosisFix, DiagnosisFixSide, DiagnosisHypothesis, DiagnosisNext, DiagnosisStep,
   DiagnosisView,
 } from "@/lib/types";
 import { Card, Pill } from "../ui";
@@ -94,7 +94,9 @@ function Hypotheses({ view }: { view: DiagnosisView }) {
   );
 }
 
-function Step({ s, view, evidence }: { s: DiagnosisStep; view: DiagnosisView; evidence: Map<string, DiagnosisEvidence> }) {
+function Step({ s, view, evidence, evidenceOf }: { s: DiagnosisStep; view: DiagnosisView;
+  evidence: Map<string, DiagnosisEvidence>; evidenceOf: EvidenceIndex }) {
+  const held = evidenceOf.get(s.result_audit_hash);
   const h = view.hypotheses.find((x) => x.id === s.hypothesis_id);
   const purpose = h?.purpose ?? "diagnose";
   const cited = s.evidence_refs.map((id) => evidence.get(id));
@@ -140,6 +142,12 @@ function Step({ s, view, evidence }: { s: DiagnosisStep; view: DiagnosisView; ev
           <dd className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
             <AuditRef label="検査結果" hash={s.result_audit_hash} />
             <AuditRef label="判定" hash={s.judged_audit_hash} />
+            {/* the same audited result, as the finding's evidence record (its full content) */}
+            {held && (
+              <Link href={`/findings/${encodeURIComponent(held.findingId)}#evidence-${held.evidenceId}`} className={LINK}>
+                所見の証拠を開く（{held.evidenceId}）
+              </Link>
+            )}
             <span className="text-zinc-500">{fmtIso(s.at)}</span>
           </dd>
         </dl>
@@ -224,7 +232,20 @@ function EvidenceList({ evidence }: { evidence: DiagnosisEvidence[] }) {
   );
 }
 
-function Results({ view }: { view: DiagnosisView }) {
+/** audit hash of a Worker result -> the finding and evidence record that hold it */
+type EvidenceIndex = Map<string, { findingId: string; evidenceId: string }>;
+
+function evidenceIndex(findings: Finding[]): EvidenceIndex {
+  const out: EvidenceIndex = new Map();
+  for (const f of findings) {
+    for (const e of f.evidence ?? []) {
+      if (e.audit_hash) out.set(e.audit_hash, { findingId: f.id, evidenceId: e.evidence_id });
+    }
+  }
+  return out;
+}
+
+function Results({ view, evidenceOf }: { view: DiagnosisView; evidenceOf: EvidenceIndex }) {
   const evidence = new Map(view.evidence.map((e) => [e.evidence_id, e]));
   const steps = stepsNewestFirst(view);
   return (
@@ -237,7 +258,7 @@ function Results({ view }: { view: DiagnosisView }) {
         <h3 id="diag-steps" className="mb-2 text-sm font-semibold">② 手順の記録（新しい順）</h3>
         {steps.length === 0 ? <p className="text-sm text-zinc-500">まだ検査した手順はありません。</p> : (
           <ol className="space-y-2">
-            {steps.map((s) => <Step key={s.judged_audit_hash} s={s} view={view} evidence={evidence} />)}
+            {steps.map((s) => <Step key={s.judged_audit_hash} s={s} view={view} evidence={evidence} evidenceOf={evidenceOf} />)}
           </ol>
         )}
       </section>
@@ -252,7 +273,7 @@ function Results({ view }: { view: DiagnosisView }) {
   );
 }
 
-export function DiagnosisLoopPanel({ slot }: { slot: DiagnosisSlot }) {
+export function DiagnosisLoopPanel({ slot, findings = [] }: { slot: DiagnosisSlot; findings?: Finding[] }) {
   const current = slot.kind === "view" ? slot.view : null;
   // one sentence for screen readers when a new judgement (or a refusal) arrives
   const [seen, setSeen] = useState<{ view: DiagnosisView | null; message: string | null }>({ view: null, message: null });
@@ -326,7 +347,7 @@ export function DiagnosisLoopPanel({ slot }: { slot: DiagnosisSlot }) {
               </p>
             </div>
           )}
-          {view.status === "ok" && <Results view={view} />}
+          {view.status === "ok" && <Results view={view} evidenceOf={evidenceIndex(findings)} />}
         </div>
       </section>
     </Card>
