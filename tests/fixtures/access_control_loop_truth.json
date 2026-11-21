@@ -1,0 +1,21 @@
+{
+  "_about": "Labels for the diagnosis-loop comparison (scripts/bench_diagnosis_loop.py). Written from the lab's behaviour and the owner's specification; no diagnosis code reads this file. other_account_read: the correct final state for 'another account can read B's resource' - supported (a defect under the owner's spec), contradicted (no defect), needs_spec (the behaviour exists but the owner never said who may read it), not_applicable (the root never links an account resource, so nothing is hypothesised). cross_account_access copies access_control_truth.json where the mode exists there.",
+  "modes": {
+    "public_json": {"account_spec": "none", "cross_account_access": false, "other_account_read": "not_applicable"},
+    "auth_required_json": {"account_spec": "none", "cross_account_access": false, "other_account_read": "not_applicable"},
+    "unauth_exposure": {"account_spec": "authentication_required", "cross_account_access": true, "other_account_read": "supported"},
+    "idor_vulnerable": {"account_spec": "authentication_required", "cross_account_access": true, "other_account_read": "supported"},
+    "denied_403": {"account_spec": "authentication_required", "cross_account_access": false, "other_account_read": "contradicted"},
+    "denied_404": {"account_spec": "authentication_required", "cross_account_access": false, "other_account_read": "contradicted"},
+    "confusing_200": {"account_spec": "authentication_required", "cross_account_access": false, "other_account_read": "contradicted"},
+    "public_json_marker": {"account_spec": "none", "cross_account_access": false, "other_account_read": "not_applicable"},
+    "protected_json_decoy": {"account_spec": "none", "cross_account_access": false, "other_account_read": "not_applicable"},
+    "auth_required_account_api": {"account_spec": "authentication_required", "cross_account_access": false, "other_account_read": "contradicted"},
+    "public_account_directory": {"account_spec": "public", "cross_account_access": false, "other_account_read": "contradicted"},
+    "idor_owner_missing": {"account_spec": "authentication_required", "cross_account_access": false, "other_account_read": "contradicted"},
+    "idor_decoy_marker": {"account_spec": "authentication_required", "cross_account_access": false, "other_account_read": "contradicted"},
+    "unknown_json": {"account_spec": "none", "cross_account_access": false, "other_account_read": "not_applicable"},
+    "own_resource_only": {"account_spec": "authentication_required", "cross_account_access": false, "other_account_read": "contradicted"},
+    "idor_spec_missing": {"account_spec": "unspecified", "cross_account_access": true, "other_account_read": "needs_spec"}
+  }
+}

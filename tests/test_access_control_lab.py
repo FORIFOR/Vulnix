@@ -206,3 +206,42 @@ class TestIndependentAccessControlLab(unittest.TestCase):
             self.assertNotIn("tool_calls", absent)
             missing = ask("Observed graph has no measured account resource link")
             self.assertEqual(missing["tool_calls"][0]["function"]["name"], "list_facts")
+
+
+class TestDiagnosisLoopConditions(unittest.TestCase):
+    """The two conditions added for the diagnosis loop (kept out of MODES and TRUTH)."""
+
+    def check(self, mode):
+        lab = AccessControlLab(mode)
+        thread = threading.Thread(target=lab.serve_forever, daemon=True)
+        thread.start()
+        try:
+            args = SimpleNamespace(scheme="http", host="lab.test", ip="127.0.0.1",
+                                   port=lab.server_port, check="idor")
+            return run_lab_check(args), list(lab.seen)
+        finally:
+            lab.shutdown()
+            lab.server_close()
+            thread.join(timeout=2)
+
+    def test_loop_truth_covers_every_mode_and_reads_no_diagnosis_code(self):
+        from tests.fixtures.access_control_lab import LOOP_MODES
+        loop = json.loads((Path(__file__).parent / "fixtures/access_control_loop_truth.json").read_text())
+        specs = json.loads((Path(__file__).parent / "fixtures/access_control_loop_owner_specs.json").read_text())
+        self.assertEqual(set(loop["modes"]), MODES | LOOP_MODES)
+        self.assertEqual(set(specs), set(LOOP_MODES))
+        self.assertFalse(MODES & LOOP_MODES)
+        source = (Path(__file__).parent / "fixtures/access_control_lab.py").read_text()
+        self.assertNotIn("from aegis", source)
+
+    def test_own_resource_only_serves_the_callers_own_object(self):
+        result, seen = self.check("own_resource_only")
+        self.assertEqual(result["status"], 200)
+        self.assertEqual((result["response"]["caller_account"], result["response"]["resource_owner"]),
+                         ("acct_A", "acct_A"))
+        self.assertNotEqual(reproduction_verdict(result, "idor"), "proven")
+        self.assertEqual(seen, [("/api/accounts/B/secret", "acct_B"), ("/api/accounts/B/secret", "acct_A")])
+
+    def test_idor_spec_missing_behaves_like_the_vulnerable_mode(self):
+        result, _ = self.check("idor_spec_missing")
+        self.assertEqual(reproduction_verdict(result, "idor"), "proven")

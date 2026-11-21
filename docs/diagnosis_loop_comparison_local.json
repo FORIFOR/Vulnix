@@ -1,0 +1,2747 @@
+{
+  "about": "Diagnosis loop on the independent access-control lab: three methods, same conditions.",
+  "model": "local scripted stand-in (tests/diagnosis_planner.py); not a real model",
+  "artex": "Python stand-in",
+  "limits": {
+    "max_steps": 3,
+    "max_planner_rounds": 5,
+    "max_seconds": 300,
+    "max_planner_cost_usd": 0.1,
+    "max_stalled_steps": 2
+  },
+  "modes": [
+    "auth_required_account_api",
+    "auth_required_json",
+    "confusing_200",
+    "denied_403",
+    "denied_404",
+    "idor_decoy_marker",
+    "idor_owner_missing",
+    "idor_spec_missing",
+    "idor_vulnerable",
+    "own_resource_only",
+    "protected_json_decoy",
+    "public_account_directory",
+    "public_json",
+    "public_json_marker",
+    "unauth_exposure",
+    "unknown_json"
+  ],
+  "summary": {
+    "fixed_l1": {
+      "cases": 16,
+      "correct": 5,
+      "false_positive": 0,
+      "missed": 2,
+      "undecided": 9,
+      "wrong_contradiction": 0,
+      "needs_spec_correct": 0,
+      "contradictions": 0,
+      "target_gets": 16,
+      "worker_launches": 16,
+      "planner_calls": 0,
+      "elapsed_s": 1.047,
+      "planner_cost_usd": 0.0,
+      "fix_checks": 0,
+      "fix_confirmed": 0
+    },
+    "fixed_rule": {
+      "cases": 16,
+      "correct": 14,
+      "false_positive": 0,
+      "missed": 0,
+      "undecided": 2,
+      "wrong_contradiction": 0,
+      "needs_spec_correct": 1,
+      "contradictions": 15,
+      "target_gets": 48,
+      "worker_launches": 44,
+      "planner_calls": 30,
+      "elapsed_s": 4.617,
+      "planner_cost_usd": 0.0,
+      "fix_checks": 2,
+      "fix_confirmed": 2
+    },
+    "artex_planner": {
+      "cases": 16,
+      "correct": 14,
+      "false_positive": 0,
+      "missed": 0,
+      "undecided": 2,
+      "wrong_contradiction": 0,
+      "needs_spec_correct": 1,
+      "contradictions": 15,
+      "target_gets": 48,
+      "worker_launches": 44,
+      "planner_calls": 30,
+      "elapsed_s": 4.684,
+      "planner_cost_usd": 0.0,
+      "fix_checks": 2,
+      "fix_confirmed": 2
+    }
+  },
+  "cases": {
+    "fixed_l1": [
+      {
+        "mode": "auth_required_account_api",
+        "method": "fixed_l1",
+        "truth": {
+          "account_spec": "authentication_required",
+          "cross_account_access": false,
+          "other_account_read": "contradicted"
+        },
+        "other_account_read": "untested",
+        "unauthenticated_exposure": "untested",
+        "steps": [],
+        "plans": [],
+        "contradicted": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.064,
+        "planner_cost_usd": 0,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_saw_lab_label_or_secret": false,
+        "engine_kind": null,
+        "model_saw_facts": [],
+        "plan_failures": []
+      },
+      {
+        "mode": "auth_required_json",
+        "method": "fixed_l1",
+        "truth": {
+          "account_spec": "none",
+          "cross_account_access": false,
+          "other_account_read": "not_applicable"
+        },
+        "other_account_read": "not_applicable",
+        "unauthenticated_exposure": "not_applicable",
+        "steps": [],
+        "plans": [],
+        "contradicted": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.063,
+        "planner_cost_usd": 0,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_saw_lab_label_or_secret": false,
+        "engine_kind": null,
+        "model_saw_facts": [],
+        "plan_failures": []
+      },
+      {
+        "mode": "confusing_200",
+        "method": "fixed_l1",
+        "truth": {
+          "account_spec": "authentication_required",
+          "cross_account_access": false,
+          "other_account_read": "contradicted"
+        },
+        "other_account_read": "untested",
+        "unauthenticated_exposure": "untested",
+        "steps": [],
+        "plans": [],
+        "contradicted": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.065,
+        "planner_cost_usd": 0,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_saw_lab_label_or_secret": false,
+        "engine_kind": null,
+        "model_saw_facts": [],
+        "plan_failures": []
+      },
+      {
+        "mode": "denied_403",
+        "method": "fixed_l1",
+        "truth": {
+          "account_spec": "authentication_required",
+          "cross_account_access": false,
+          "other_account_read": "contradicted"
+        },
+        "other_account_read": "untested",
+        "unauthenticated_exposure": "untested",
+        "steps": [],
+        "plans": [],
+        "contradicted": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.067,
+        "planner_cost_usd": 0,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_saw_lab_label_or_secret": false,
+        "engine_kind": null,
+        "model_saw_facts": [],
+        "plan_failures": []
+      },
+      {
+        "mode": "denied_404",
+        "method": "fixed_l1",
+        "truth": {
+          "account_spec": "authentication_required",
+          "cross_account_access": false,
+          "other_account_read": "contradicted"
+        },
+        "other_account_read": "untested",
+        "unauthenticated_exposure": "untested",
+        "steps": [],
+        "plans": [],
+        "contradicted": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.064,
+        "planner_cost_usd": 0,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_saw_lab_label_or_secret": false,
+        "engine_kind": null,
+        "model_saw_facts": [],
+        "plan_failures": []
+      },
+      {
+        "mode": "idor_decoy_marker",
+        "method": "fixed_l1",
+        "truth": {
+          "account_spec": "authentication_required",
+          "cross_account_access": false,
+          "other_account_read": "contradicted"
+        },
+        "other_account_read": "untested",
+        "unauthenticated_exposure": "untested",
+        "steps": [],
+        "plans": [],
+        "contradicted": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.065,
+        "planner_cost_usd": 0,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_saw_lab_label_or_secret": false,
+        "engine_kind": null,
+        "model_saw_facts": [],
+        "plan_failures": []
+      },
+      {
+        "mode": "idor_owner_missing",
+        "method": "fixed_l1",
+        "truth": {
+          "account_spec": "authentication_required",
+          "cross_account_access": false,
+          "other_account_read": "contradicted"
+        },
+        "other_account_read": "untested",
+        "unauthenticated_exposure": "untested",
+        "steps": [],
+        "plans": [],
+        "contradicted": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.064,
+        "planner_cost_usd": 0,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_saw_lab_label_or_secret": false,
+        "engine_kind": null,
+        "model_saw_facts": [],
+        "plan_failures": []
+      },
+      {
+        "mode": "idor_spec_missing",
+        "method": "fixed_l1",
+        "truth": {
+          "account_spec": "unspecified",
+          "cross_account_access": true,
+          "other_account_read": "needs_spec"
+        },
+        "other_account_read": "untested",
+        "unauthenticated_exposure": "untested",
+        "steps": [],
+        "plans": [],
+        "contradicted": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.063,
+        "planner_cost_usd": 0,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_saw_lab_label_or_secret": false,
+        "engine_kind": null,
+        "model_saw_facts": [],
+        "plan_failures": []
+      },
+      {
+        "mode": "idor_vulnerable",
+        "method": "fixed_l1",
+        "truth": {
+          "account_spec": "authentication_required",
+          "cross_account_access": true,
+          "other_account_read": "supported"
+        },
+        "other_account_read": "untested",
+        "unauthenticated_exposure": "untested",
+        "steps": [],
+        "plans": [],
+        "contradicted": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.067,
+        "planner_cost_usd": 0,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_saw_lab_label_or_secret": false,
+        "engine_kind": null,
+        "model_saw_facts": [],
+        "plan_failures": []
+      },
+      {
+        "mode": "own_resource_only",
+        "method": "fixed_l1",
+        "truth": {
+          "account_spec": "authentication_required",
+          "cross_account_access": false,
+          "other_account_read": "contradicted"
+        },
+        "other_account_read": "untested",
+        "unauthenticated_exposure": "untested",
+        "steps": [],
+        "plans": [],
+        "contradicted": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.065,
+        "planner_cost_usd": 0,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_saw_lab_label_or_secret": false,
+        "engine_kind": null,
+        "model_saw_facts": [],
+        "plan_failures": []
+      },
+      {
+        "mode": "protected_json_decoy",
+        "method": "fixed_l1",
+        "truth": {
+          "account_spec": "none",
+          "cross_account_access": false,
+          "other_account_read": "not_applicable"
+        },
+        "other_account_read": "not_applicable",
+        "unauthenticated_exposure": "not_applicable",
+        "steps": [],
+        "plans": [],
+        "contradicted": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.064,
+        "planner_cost_usd": 0,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_saw_lab_label_or_secret": false,
+        "engine_kind": null,
+        "model_saw_facts": [],
+        "plan_failures": []
+      },
+      {
+        "mode": "public_account_directory",
+        "method": "fixed_l1",
+        "truth": {
+          "account_spec": "public",
+          "cross_account_access": false,
+          "other_account_read": "contradicted"
+        },
+        "other_account_read": "untested",
+        "unauthenticated_exposure": "untested",
+        "steps": [],
+        "plans": [],
+        "contradicted": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.067,
+        "planner_cost_usd": 0,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_saw_lab_label_or_secret": false,
+        "engine_kind": null,
+        "model_saw_facts": [],
+        "plan_failures": []
+      },
+      {
+        "mode": "public_json",
+        "method": "fixed_l1",
+        "truth": {
+          "account_spec": "none",
+          "cross_account_access": false,
+          "other_account_read": "not_applicable"
+        },
+        "other_account_read": "not_applicable",
+        "unauthenticated_exposure": "not_applicable",
+        "steps": [],
+        "plans": [],
+        "contradicted": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.069,
+        "planner_cost_usd": 0,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_saw_lab_label_or_secret": false,
+        "engine_kind": null,
+        "model_saw_facts": [],
+        "plan_failures": []
+      },
+      {
+        "mode": "public_json_marker",
+        "method": "fixed_l1",
+        "truth": {
+          "account_spec": "none",
+          "cross_account_access": false,
+          "other_account_read": "not_applicable"
+        },
+        "other_account_read": "not_applicable",
+        "unauthenticated_exposure": "not_applicable",
+        "steps": [],
+        "plans": [],
+        "contradicted": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.067,
+        "planner_cost_usd": 0,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_saw_lab_label_or_secret": false,
+        "engine_kind": null,
+        "model_saw_facts": [],
+        "plan_failures": []
+      },
+      {
+        "mode": "unauth_exposure",
+        "method": "fixed_l1",
+        "truth": {
+          "account_spec": "authentication_required",
+          "cross_account_access": true,
+          "other_account_read": "supported"
+        },
+        "other_account_read": "untested",
+        "unauthenticated_exposure": "untested",
+        "steps": [],
+        "plans": [],
+        "contradicted": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.065,
+        "planner_cost_usd": 0,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_saw_lab_label_or_secret": false,
+        "engine_kind": null,
+        "model_saw_facts": [],
+        "plan_failures": []
+      },
+      {
+        "mode": "unknown_json",
+        "method": "fixed_l1",
+        "truth": {
+          "account_spec": "none",
+          "cross_account_access": false,
+          "other_account_read": "not_applicable"
+        },
+        "other_account_read": "not_applicable",
+        "unauthenticated_exposure": "not_applicable",
+        "steps": [],
+        "plans": [],
+        "contradicted": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.068,
+        "planner_cost_usd": 0,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_saw_lab_label_or_secret": false,
+        "engine_kind": null,
+        "model_saw_facts": [],
+        "plan_failures": []
+      }
+    ],
+    "fixed_rule": [
+      {
+        "mode": "auth_required_account_api",
+        "method": "fixed_rule",
+        "truth": {
+          "account_spec": "authentication_required",
+          "cross_account_access": false,
+          "other_account_read": "contradicted"
+        },
+        "other_account_read": "contradicted",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E4",
+              "result_audit_hash": "69bf51b871e152e8d9964b4df42981e4346d77f2b5281b38ad45060e956862ac",
+              "judged_audit_hash": "8a9b2bc9eaaf3bda2479f56f7d1ef619922dab363a58c41056cc9930b0f46844"
+            }
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied",
+              "observation": "E5",
+              "result_audit_hash": "b9eeb21bee2f07514fd377643216a764928ff2b6e84f08c2b8c9cce468bbc024",
+              "judged_audit_hash": "60f5c6f38268a0e7f0886e15438eee3b3cda45a3cfe5628b8f7cc8f4a8ccba08"
+            }
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 2,
+            "rejected_steps": 0,
+            "planner_cost_usd": 0.0
+          }
+        ],
+        "contradicted": 2,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.313,
+        "planner_cost_usd": 0.0,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_saw_lab_label_or_secret": false,
+        "engine_kind": "unverified",
+        "model_saw_facts": [],
+        "plan_failures": []
+      },
+      {
+        "mode": "auth_required_json",
+        "method": "fixed_rule",
+        "truth": {
+          "account_spec": "none",
+          "cross_account_access": false,
+          "other_account_read": "not_applicable"
+        },
+        "other_account_read": "not_applicable",
+        "unauthenticated_exposure": "not_applicable",
+        "steps": [],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "no_hypothesis",
+            "planner_rounds": 0,
+            "rejected_steps": 0,
+            "planner_cost_usd": 0.0
+          }
+        ],
+        "contradicted": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.066,
+        "planner_cost_usd": 0.0,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_saw_lab_label_or_secret": false,
+        "engine_kind": null,
+        "model_saw_facts": [],
+        "plan_failures": []
+      },
+      {
+        "mode": "confusing_200",
+        "method": "fixed_rule",
+        "truth": {
+          "account_spec": "authentication_required",
+          "cross_account_access": false,
+          "other_account_read": "contradicted"
+        },
+        "other_account_read": "contradicted",
+        "unauthenticated_exposure": "inconclusive",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "inconclusive",
+              "rule": "answered_without_auth_unverified",
+              "observation": "E4",
+              "result_audit_hash": "e657558f18034af06f0b4ce2ce93c7bcdaa7ce2668b3729f146d2fe5602e7a5d",
+              "judged_audit_hash": "789eeaead8270d362a2fcf0203710c165bdaaa33985cc2d8b86a162dfc125912"
+            }
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "own_resource_only",
+              "observation": "E5",
+              "result_audit_hash": "cf47d4c34bd41faf78ded34061c414f92b1026dfc73a372608c68ac920e7d376",
+              "judged_audit_hash": "6c0bdae077f9c54d1178fa6a89eda582c0dd9062b68ff62f26ade32d5c3684b9"
+            }
+          },
+          {
+            "step_id": "S3",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4",
+              "E5"
+            ],
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "inconclusive",
+              "to": "inconclusive",
+              "rule": "answered_without_auth_unverified",
+              "observation": "E6",
+              "result_audit_hash": "00f431a8c19d052535c95e7d82319d62f5f0945086a1cf5c69edd713bd3703a4",
+              "judged_audit_hash": "ed41728c00e472bb2301d5e64b485590c563bc0b5ce848581d7784fff067f17a"
+            }
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "no_progress",
+            "planner_rounds": 4,
+            "rejected_steps": 2,
+            "planner_cost_usd": 0.0
+          }
+        ],
+        "contradicted": 1,
+        "target_gets": 5,
+        "target_gets_with_fix_check": 5,
+        "worker_launches": 4,
+        "planner_calls": 4,
+        "elapsed_s": 0.491,
+        "planner_cost_usd": 0.0,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_saw_lab_label_or_secret": false,
+        "engine_kind": "unverified",
+        "model_saw_facts": [],
+        "plan_failures": []
+      },
+      {
+        "mode": "denied_403",
+        "method": "fixed_rule",
+        "truth": {
+          "account_spec": "authentication_required",
+          "cross_account_access": false,
+          "other_account_read": "contradicted"
+        },
+        "other_account_read": "contradicted",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E4",
+              "result_audit_hash": "c1fa90da1c6af440de86db65bdea8ff738064f3d0e429c1fad0f17427da57b26",
+              "judged_audit_hash": "f7857ca8f843dd191e6f06fc978c53efd9a36d8382f9c3962b2d688de0c5b655"
+            }
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied",
+              "observation": "E5",
+              "result_audit_hash": "874433cd39aeea7f011b6aadc0b216fd9ba945eb6b7a4925ddb85532605ed6ae",
+              "judged_audit_hash": "712659e4370bd726eaf0c68457c6c608031ef30c1d132f38bb15a39e47ce81d6"
+            }
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 2,
+            "rejected_steps": 0,
+            "planner_cost_usd": 0.0
+          }
+        ],
+        "contradicted": 2,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.317,
+        "planner_cost_usd": 0.0,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_saw_lab_label_or_secret": false,
+        "engine_kind": "unverified",
+        "model_saw_facts": [],
+        "plan_failures": []
+      },
+      {
+        "mode": "denied_404",
+        "method": "fixed_rule",
+        "truth": {
+          "account_spec": "authentication_required",
+          "cross_account_access": false,
+          "other_account_read": "contradicted"
+        },
+        "other_account_read": "inconclusive",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E4",
+              "result_audit_hash": "5a0d936e3cbc1f54af232e5512069ba9d1dc9a59191262ceb132fc32dc186b6c",
+              "judged_audit_hash": "2b028e3eb622b081a83cb92121f62125d5d1097a6e94b43cc39a69c8e81bc0be"
+            }
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "inconclusive",
+              "rule": "control_failed",
+              "observation": "E5",
+              "result_audit_hash": "74a3f208a0ca75fe243c6b18f4d3c7c597de7caff633cbe21d6966eb59ad2659",
+              "judged_audit_hash": "49057c78f654dc29e353f3a18d2db3336b919379491321beb88514e5125b8f05"
+            }
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "no_progress",
+            "planner_rounds": 3,
+            "rejected_steps": 1,
+            "planner_cost_usd": 0.0
+          }
+        ],
+        "contradicted": 1,
+        "target_gets": 3,
+        "target_gets_with_fix_check": 3,
+        "worker_launches": 3,
+        "planner_calls": 3,
+        "elapsed_s": 0.369,
+        "planner_cost_usd": 0.0,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_saw_lab_label_or_secret": false,
+        "engine_kind": "unverified",
+        "model_saw_facts": [],
+        "plan_failures": []
+      },
+      {
+        "mode": "idor_decoy_marker",
+        "method": "fixed_rule",
+        "truth": {
+          "account_spec": "authentication_required",
+          "cross_account_access": false,
+          "other_account_read": "contradicted"
+        },
+        "other_account_read": "contradicted",
+        "unauthenticated_exposure": "inconclusive",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "inconclusive",
+              "rule": "answered_without_auth_unverified",
+              "observation": "E4",
+              "result_audit_hash": "8b311fbafd80a7f76a01f955b966794ff0bbcd90fcbce5a902af6928cd9c82d6",
+              "judged_audit_hash": "2ac0933cca2c1dff2debdd12bba42ad6d471f7e17fcd9c40cc5969e63abccd39"
+            }
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "own_resource_only",
+              "observation": "E5",
+              "result_audit_hash": "937471d77443f55723e2e249a5ceeb1ad700a8ad991d32225dcd4398d23aa182",
+              "judged_audit_hash": "722af5c6cd8311c182c99d80d132e1d134a50d74ec452e6ba81d3194e04f4cea"
+            }
+          },
+          {
+            "step_id": "S3",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4",
+              "E5"
+            ],
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "inconclusive",
+              "to": "inconclusive",
+              "rule": "answered_without_auth_unverified",
+              "observation": "E6",
+              "result_audit_hash": "8810c363dc6be28988c76060199b139441634f53415adfcbb69dd636336192f2",
+              "judged_audit_hash": "b3cfce2660b4bab6f78d15f8871d2e44f652014f93d42f74523c2de26023052d"
+            }
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "no_progress",
+            "planner_rounds": 4,
+            "rejected_steps": 2,
+            "planner_cost_usd": 0.0
+          }
+        ],
+        "contradicted": 1,
+        "target_gets": 5,
+        "target_gets_with_fix_check": 5,
+        "worker_launches": 4,
+        "planner_calls": 4,
+        "elapsed_s": 0.502,
+        "planner_cost_usd": 0.0,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_saw_lab_label_or_secret": false,
+        "engine_kind": "unverified",
+        "model_saw_facts": [],
+        "plan_failures": []
+      },
+      {
+        "mode": "idor_owner_missing",
+        "method": "fixed_rule",
+        "truth": {
+          "account_spec": "authentication_required",
+          "cross_account_access": false,
+          "other_account_read": "contradicted"
+        },
+        "other_account_read": "inconclusive",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E4",
+              "result_audit_hash": "0783f6aca11f99f92eaa80ae6506552b3f882a13000487a2fbbb75f81bc1ca90",
+              "judged_audit_hash": "b47bdfedf553e312bd661c8f770b20d37c894d65dfd7119c271f4e04812313af"
+            }
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "inconclusive",
+              "rule": "control_failed",
+              "observation": "E5",
+              "result_audit_hash": "2eb4ab32ceb9d02df7328a27abc92e9e557c4b3e5e68e320cd7eb6e9eacb4c41",
+              "judged_audit_hash": "0dd60930aba5ce186c23370ca1a5c73b7b2d9e4f90b9bf8c2f9ecd0887922b2c"
+            }
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "no_progress",
+            "planner_rounds": 3,
+            "rejected_steps": 1,
+            "planner_cost_usd": 0.0
+          }
+        ],
+        "contradicted": 1,
+        "target_gets": 3,
+        "target_gets_with_fix_check": 3,
+        "worker_launches": 3,
+        "planner_calls": 3,
+        "elapsed_s": 0.358,
+        "planner_cost_usd": 0.0,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_saw_lab_label_or_secret": false,
+        "engine_kind": "unverified",
+        "model_saw_facts": [],
+        "plan_failures": []
+      },
+      {
+        "mode": "idor_spec_missing",
+        "method": "fixed_rule",
+        "truth": {
+          "account_spec": "unspecified",
+          "cross_account_access": true,
+          "other_account_read": "needs_spec"
+        },
+        "other_account_read": "needs_spec",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E4",
+              "result_audit_hash": "88a6b2367347797f5853c605f3d03ccaf3f0ee7a9f1fbde4a7a6e9a174bd07bb",
+              "judged_audit_hash": "abd1f5ad7c02b3a4e4350c2a9daf6cc1363398a47aab7baa0a2691ade1cab9bf"
+            }
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "needs_spec",
+              "rule": "spec_missing",
+              "observation": "E5",
+              "result_audit_hash": "c7062d2e35f9d8d2f1285b94b01242054a059bec6db321d16f2d6d2ae8f70d5d",
+              "judged_audit_hash": "be261ed3c92b556c0fc6b2f335cdf66943118f4e822ffc7836c5e0993753047c"
+            }
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "needs_spec",
+            "planner_rounds": 2,
+            "rejected_steps": 0,
+            "planner_cost_usd": 0.0
+          }
+        ],
+        "contradicted": 1,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.311,
+        "planner_cost_usd": 0.0,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_saw_lab_label_or_secret": false,
+        "engine_kind": "unverified",
+        "model_saw_facts": [],
+        "plan_failures": []
+      },
+      {
+        "mode": "idor_vulnerable",
+        "method": "fixed_rule",
+        "truth": {
+          "account_spec": "authentication_required",
+          "cross_account_access": true,
+          "other_account_read": "supported"
+        },
+        "other_account_read": "supported",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E4",
+              "result_audit_hash": "46ee878b9cd270e6eea22b3266b2f54a33a4a689177c7e75f7d2d16ed2ce7aca",
+              "judged_audit_hash": "f909354ca1b7881b3ee7b2673e736ff2d38edb1adff1f8ea297bb24519ba8293"
+            }
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "supported",
+              "rule": "cross_account_read",
+              "observation": "E5",
+              "result_audit_hash": "8a3c500ad7ae18ca5d93ea04af2d18b9751ab1e0362ad934198d11b800f730be",
+              "judged_audit_hash": "1dd7f4e53465891bd3ce3f7ffe697ca2683713e754f35ea32ac8c0f51786df0c"
+            }
+          },
+          {
+            "step_id": "S1",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "confirm_fix",
+            "evidence_refs": [
+              "E7",
+              "E8"
+            ],
+            "judgement": {
+              "hypothesis_id": "H3",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied",
+              "observation": "E9",
+              "result_audit_hash": "7f348bf0947071e019801755b3d64bdaf8c74f4a0ac3e20492c50a2acffc36f6",
+              "judged_audit_hash": "6a6d7db94e96d44cf7a4f218b2d2c490fd9da75e3e1e2572ddd8f95470a395d7"
+            }
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 2,
+            "rejected_steps": 0,
+            "planner_cost_usd": 0.0
+          },
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 1,
+            "rejected_steps": 0,
+            "planner_cost_usd": 0.0
+          }
+        ],
+        "contradicted": 1,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 7,
+        "worker_launches": 5,
+        "planner_calls": 3,
+        "elapsed_s": 0.502,
+        "planner_cost_usd": 0.0,
+        "fix_check": {
+          "hypotheses": [
+            "H3"
+          ],
+          "result": [
+            "contradicted"
+          ],
+          "confirmed_fixed": true,
+          "f_idor_verdict": "not_reproduced"
+        },
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_saw_lab_label_or_secret": false,
+        "engine_kind": "unverified",
+        "model_saw_facts": [],
+        "plan_failures": []
+      },
+      {
+        "mode": "own_resource_only",
+        "method": "fixed_rule",
+        "truth": {
+          "account_spec": "authentication_required",
+          "cross_account_access": false,
+          "other_account_read": "contradicted"
+        },
+        "other_account_read": "contradicted",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E4",
+              "result_audit_hash": "196a66144e98f8bf7f1409353348ec9a2899da8942105b2a6371d533a29f7388",
+              "judged_audit_hash": "972e7537ddd943d0966143b9021cd8c3aba98767ad42286421907a9a4a27fd68"
+            }
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "own_resource_only",
+              "observation": "E5",
+              "result_audit_hash": "6eb8902966df61170856b4cc7ba63a4219bd59250d212386c818531de1345a12",
+              "judged_audit_hash": "4e34c8a307d1614dbe97c634a1168410f485dfce482963090263af93720869f2"
+            }
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 2,
+            "rejected_steps": 0,
+            "planner_cost_usd": 0.0
+          }
+        ],
+        "contradicted": 2,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.31,
+        "planner_cost_usd": 0.0,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_saw_lab_label_or_secret": false,
+        "engine_kind": "unverified",
+        "model_saw_facts": [],
+        "plan_failures": []
+      },
+      {
+        "mode": "protected_json_decoy",
+        "method": "fixed_rule",
+        "truth": {
+          "account_spec": "none",
+          "cross_account_access": false,
+          "other_account_read": "not_applicable"
+        },
+        "other_account_read": "not_applicable",
+        "unauthenticated_exposure": "not_applicable",
+        "steps": [],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "no_hypothesis",
+            "planner_rounds": 0,
+            "rejected_steps": 0,
+            "planner_cost_usd": 0.0
+          }
+        ],
+        "contradicted": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.063,
+        "planner_cost_usd": 0.0,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_saw_lab_label_or_secret": false,
+        "engine_kind": null,
+        "model_saw_facts": [],
+        "plan_failures": []
+      },
+      {
+        "mode": "public_account_directory",
+        "method": "fixed_rule",
+        "truth": {
+          "account_spec": "public",
+          "cross_account_access": false,
+          "other_account_read": "contradicted"
+        },
+        "other_account_read": "contradicted",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "intended_public",
+              "observation": "E4",
+              "result_audit_hash": "1c1be43dad6dea97e82c2f197267d19dbf105dbc18d6f4d927bd96428b49b527",
+              "judged_audit_hash": "eb80ed7156b411929ad8831d4a8fabb0530723974406a97c9922ee9660646d3c"
+            }
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "intended_public",
+              "observation": "E5",
+              "result_audit_hash": "11c5ac79acd58208bc39d0ad9d1fdbc628fb729d3ebeea9f35785db0f0814a90",
+              "judged_audit_hash": "83c3c3daa2299e37581b7b7d7c4b6c8f1abdea2c26a6812ea0a5c6617df9fc31"
+            }
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 2,
+            "rejected_steps": 0,
+            "planner_cost_usd": 0.0
+          }
+        ],
+        "contradicted": 2,
+        "target_gets": 3,
+        "target_gets_with_fix_check": 3,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.31,
+        "planner_cost_usd": 0.0,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_saw_lab_label_or_secret": false,
+        "engine_kind": "unverified",
+        "model_saw_facts": [],
+        "plan_failures": []
+      },
+      {
+        "mode": "public_json",
+        "method": "fixed_rule",
+        "truth": {
+          "account_spec": "none",
+          "cross_account_access": false,
+          "other_account_read": "not_applicable"
+        },
+        "other_account_read": "not_applicable",
+        "unauthenticated_exposure": "not_applicable",
+        "steps": [],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "no_hypothesis",
+            "planner_rounds": 0,
+            "rejected_steps": 0,
+            "planner_cost_usd": 0.0
+          }
+        ],
+        "contradicted": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.065,
+        "planner_cost_usd": 0.0,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_saw_lab_label_or_secret": false,
+        "engine_kind": null,
+        "model_saw_facts": [],
+        "plan_failures": []
+      },
+      {
+        "mode": "public_json_marker",
+        "method": "fixed_rule",
+        "truth": {
+          "account_spec": "none",
+          "cross_account_access": false,
+          "other_account_read": "not_applicable"
+        },
+        "other_account_read": "not_applicable",
+        "unauthenticated_exposure": "not_applicable",
+        "steps": [],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "no_hypothesis",
+            "planner_rounds": 0,
+            "rejected_steps": 0,
+            "planner_cost_usd": 0.0
+          }
+        ],
+        "contradicted": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.066,
+        "planner_cost_usd": 0.0,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_saw_lab_label_or_secret": false,
+        "engine_kind": null,
+        "model_saw_facts": [],
+        "plan_failures": []
+      },
+      {
+        "mode": "unauth_exposure",
+        "method": "fixed_rule",
+        "truth": {
+          "account_spec": "authentication_required",
+          "cross_account_access": true,
+          "other_account_read": "supported"
+        },
+        "other_account_read": "supported",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E4",
+              "result_audit_hash": "bd3c0b4fd11d7fb2d154008e576f4266922632a89c3b9ee4fdfb8f71f1096665",
+              "judged_audit_hash": "881b0ce3ae65d66a36092848b16c15bc78f89764e5d29302b363a07776c30388"
+            }
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "supported",
+              "rule": "cross_account_read",
+              "observation": "E5",
+              "result_audit_hash": "05295ea1c01f42c7c0ae2b8241016caab3394dc7ae0cc7daf2c6956fa582cde5",
+              "judged_audit_hash": "f0278f7543855c8034d7c9d5a41b3d171edabf2685f46c8d005043dda370a839"
+            }
+          },
+          {
+            "step_id": "S1",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "confirm_fix",
+            "evidence_refs": [
+              "E7",
+              "E8"
+            ],
+            "judgement": {
+              "hypothesis_id": "H3",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied",
+              "observation": "E9",
+              "result_audit_hash": "eb2cf1927b6e97e3897a51b2dfc5c5b3d7e66db20d7624eef4d7ad25bf4ccf20",
+              "judged_audit_hash": "6acc8f6ddfc1ad7b13b6e43292719ee1d57e446a555ff69679a3305ad7739138"
+            }
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 2,
+            "rejected_steps": 0,
+            "planner_cost_usd": 0.0
+          },
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 1,
+            "rejected_steps": 0,
+            "planner_cost_usd": 0.0
+          }
+        ],
+        "contradicted": 1,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 7,
+        "worker_launches": 5,
+        "planner_calls": 3,
+        "elapsed_s": 0.504,
+        "planner_cost_usd": 0.0,
+        "fix_check": {
+          "hypotheses": [
+            "H3"
+          ],
+          "result": [
+            "contradicted"
+          ],
+          "confirmed_fixed": true,
+          "f_idor_verdict": "not_reproduced"
+        },
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_saw_lab_label_or_secret": false,
+        "engine_kind": "unverified",
+        "model_saw_facts": [],
+        "plan_failures": []
+      },
+      {
+        "mode": "unknown_json",
+        "method": "fixed_rule",
+        "truth": {
+          "account_spec": "none",
+          "cross_account_access": false,
+          "other_account_read": "not_applicable"
+        },
+        "other_account_read": "not_applicable",
+        "unauthenticated_exposure": "not_applicable",
+        "steps": [],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "no_hypothesis",
+            "planner_rounds": 0,
+            "rejected_steps": 0,
+            "planner_cost_usd": 0.0
+          }
+        ],
+        "contradicted": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.07,
+        "planner_cost_usd": 0.0,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_saw_lab_label_or_secret": false,
+        "engine_kind": null,
+        "model_saw_facts": [],
+        "plan_failures": []
+      }
+    ],
+    "artex_planner": [
+      {
+        "mode": "auth_required_account_api",
+        "method": "artex_planner",
+        "truth": {
+          "account_spec": "authentication_required",
+          "cross_account_access": false,
+          "other_account_read": "contradicted"
+        },
+        "other_account_read": "contradicted",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied",
+              "observation": "E4",
+              "result_audit_hash": "35cff912f9689ce6e3f6c02afdd1409241d8291c5e4f6e8c3bc4847ec289fa89",
+              "judged_audit_hash": "bfe5aaa3e1b6ae2e4e1be978c7e6ceaa07a174d732df1d42f854d12a7d4c9e63"
+            }
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E5",
+              "result_audit_hash": "74a9a2f03dc81d7cdf5226abb6d1e813e757672b03eb1f1a04e2dae0db6d677d",
+              "judged_audit_hash": "289e2dd41af6661256eba5970565a6a7b9c0c8c464b8a1f2fd738c15445aa808"
+            }
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 2,
+            "rejected_steps": 0,
+            "planner_cost_usd": 0.0
+          }
+        ],
+        "contradicted": 2,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.314,
+        "planner_cost_usd": 0.0,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_saw_lab_label_or_secret": false,
+        "engine_kind": "unverified",
+        "model_saw_facts": [],
+        "plan_failures": []
+      },
+      {
+        "mode": "auth_required_json",
+        "method": "artex_planner",
+        "truth": {
+          "account_spec": "none",
+          "cross_account_access": false,
+          "other_account_read": "not_applicable"
+        },
+        "other_account_read": "not_applicable",
+        "unauthenticated_exposure": "not_applicable",
+        "steps": [],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "no_hypothesis",
+            "planner_rounds": 0,
+            "rejected_steps": 0,
+            "planner_cost_usd": 0.0
+          }
+        ],
+        "contradicted": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.063,
+        "planner_cost_usd": 0.0,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_saw_lab_label_or_secret": false,
+        "engine_kind": null,
+        "model_saw_facts": [],
+        "plan_failures": []
+      },
+      {
+        "mode": "confusing_200",
+        "method": "artex_planner",
+        "truth": {
+          "account_spec": "authentication_required",
+          "cross_account_access": false,
+          "other_account_read": "contradicted"
+        },
+        "other_account_read": "contradicted",
+        "unauthenticated_exposure": "inconclusive",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "own_resource_only",
+              "observation": "E4",
+              "result_audit_hash": "327d2f3d4ad43eb8cbdffba38227a5966843c6f80602d6370ba3a68de3b36309",
+              "judged_audit_hash": "8c951a4014be8deaacd169f3e171fa5150f78e93536bab5c2d690b38f145ec15"
+            }
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "inconclusive",
+              "rule": "answered_without_auth_unverified",
+              "observation": "E5",
+              "result_audit_hash": "a357ee293633c65d60c46fd845e2bded65dfaa216c1da644a547ee48b371693d",
+              "judged_audit_hash": "07e85de762ff2f178bbc9b335e495815d00456ec6dfadb071bbd085d979b5e06"
+            }
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "no_progress",
+            "planner_rounds": 3,
+            "rejected_steps": 1,
+            "planner_cost_usd": 0.0
+          }
+        ],
+        "contradicted": 1,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 3,
+        "elapsed_s": 0.369,
+        "planner_cost_usd": 0.0,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_saw_lab_label_or_secret": false,
+        "engine_kind": "unverified",
+        "model_saw_facts": [],
+        "plan_failures": []
+      },
+      {
+        "mode": "denied_403",
+        "method": "artex_planner",
+        "truth": {
+          "account_spec": "authentication_required",
+          "cross_account_access": false,
+          "other_account_read": "contradicted"
+        },
+        "other_account_read": "contradicted",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied",
+              "observation": "E4",
+              "result_audit_hash": "f17c69661b395fdc232078757a29660b5458a7beba62e91132ee86314ef777d9",
+              "judged_audit_hash": "6b3eca8f85edc5e4a6d104bba42996650a23a06ce27af2246ca6ab7cdfbdf83b"
+            }
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E5",
+              "result_audit_hash": "fb2c6c8ba6beef78898759bf3e8ae91ec74da8dc985a0cb4bd8d71d113e2170d",
+              "judged_audit_hash": "5ebd2024fb5b2c50f4e0f261359659131f169cde2ef59a4857cc49d40a159fd7"
+            }
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 2,
+            "rejected_steps": 0,
+            "planner_cost_usd": 0.0
+          }
+        ],
+        "contradicted": 2,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.316,
+        "planner_cost_usd": 0.0,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_saw_lab_label_or_secret": false,
+        "engine_kind": "unverified",
+        "model_saw_facts": [],
+        "plan_failures": []
+      },
+      {
+        "mode": "denied_404",
+        "method": "artex_planner",
+        "truth": {
+          "account_spec": "authentication_required",
+          "cross_account_access": false,
+          "other_account_read": "contradicted"
+        },
+        "other_account_read": "inconclusive",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "inconclusive",
+              "rule": "control_failed",
+              "observation": "E4",
+              "result_audit_hash": "f9a6e64d9f67c7650ecf4c11f13fa12fd20c99d36842ca3ab79a1fb583df1add",
+              "judged_audit_hash": "d1b8fd94f1416770bec8a88e7301c92da4e5d2dd497051f5121705f607968b23"
+            }
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E5",
+              "result_audit_hash": "33b9d1f6cd6022470375e373aa80a076325a85556df24d5d13d0feec9b1b6812",
+              "judged_audit_hash": "1a70a9d8792bd9a879d7da03ba4b54042ed50ad813cc2a2c1118b577c94b4aa8"
+            }
+          },
+          {
+            "step_id": "S3",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4",
+              "E5"
+            ],
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "inconclusive",
+              "to": "inconclusive",
+              "rule": "control_failed",
+              "observation": "E6",
+              "result_audit_hash": "026b97a5c65917a5dcb8188103b129e11e025dcb6ae76b3a71b3de9a483fc372",
+              "judged_audit_hash": "455a0aca2e3cf3f48a190f2b852e1b35980af48b6687fbbf6fe3380e74a81218"
+            }
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "no_progress",
+            "planner_rounds": 4,
+            "rejected_steps": 2,
+            "planner_cost_usd": 0.0
+          }
+        ],
+        "contradicted": 1,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 4,
+        "planner_calls": 4,
+        "elapsed_s": 0.495,
+        "planner_cost_usd": 0.0,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_saw_lab_label_or_secret": false,
+        "engine_kind": "unverified",
+        "model_saw_facts": [],
+        "plan_failures": []
+      },
+      {
+        "mode": "idor_decoy_marker",
+        "method": "artex_planner",
+        "truth": {
+          "account_spec": "authentication_required",
+          "cross_account_access": false,
+          "other_account_read": "contradicted"
+        },
+        "other_account_read": "contradicted",
+        "unauthenticated_exposure": "inconclusive",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "own_resource_only",
+              "observation": "E4",
+              "result_audit_hash": "bd6c1154de330e86c50e93196ecde5ea1f67fe380b763abdcbfae32aff52dbc3",
+              "judged_audit_hash": "2a4469dee75e55b3c7b081c68cb9c21537b6b6a63d68f2d30fde704fb96a00d8"
+            }
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "inconclusive",
+              "rule": "answered_without_auth_unverified",
+              "observation": "E5",
+              "result_audit_hash": "0723d0ec88e1ff7753b5445a5aebd24fea1800397023526ab4d392651174ca82",
+              "judged_audit_hash": "db1f6d495946a632e09fe87a335797a12f38634f0662c3c50d9108349b006389"
+            }
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "no_progress",
+            "planner_rounds": 3,
+            "rejected_steps": 1,
+            "planner_cost_usd": 0.0
+          }
+        ],
+        "contradicted": 1,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 3,
+        "elapsed_s": 0.372,
+        "planner_cost_usd": 0.0,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_saw_lab_label_or_secret": false,
+        "engine_kind": "unverified",
+        "model_saw_facts": [],
+        "plan_failures": []
+      },
+      {
+        "mode": "idor_owner_missing",
+        "method": "artex_planner",
+        "truth": {
+          "account_spec": "authentication_required",
+          "cross_account_access": false,
+          "other_account_read": "contradicted"
+        },
+        "other_account_read": "inconclusive",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "inconclusive",
+              "rule": "control_failed",
+              "observation": "E4",
+              "result_audit_hash": "84fe5e6bf4eaaa61b911a75141231bcd789e6afc272afda29736da4c24b78402",
+              "judged_audit_hash": "5d64bf2a104f5a7b263024f2e37cb4d09226bd19598662cb196cedb646f5b1a5"
+            }
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E5",
+              "result_audit_hash": "c7bad4ca71968ed9dc040fc0bee92ab7a9cb5dabc8647ff1f22c55f54ccb193b",
+              "judged_audit_hash": "fabf1cb6f91e97c49386107d0d5d63011b2653bb0906d8e1bc6e0caa841fa65a"
+            }
+          },
+          {
+            "step_id": "S3",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4",
+              "E5"
+            ],
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "inconclusive",
+              "to": "inconclusive",
+              "rule": "control_failed",
+              "observation": "E6",
+              "result_audit_hash": "751c94cd57e2e813b290eb7a6c9fe27c6aa0dd9b1c86197701c71ba1f0967c7c",
+              "judged_audit_hash": "c7e2d3afc094ad9515a3ce2c49eb4140a578fc863711414db6de0cdac3c12c42"
+            }
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "no_progress",
+            "planner_rounds": 4,
+            "rejected_steps": 2,
+            "planner_cost_usd": 0.0
+          }
+        ],
+        "contradicted": 1,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 4,
+        "planner_calls": 4,
+        "elapsed_s": 0.496,
+        "planner_cost_usd": 0.0,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_saw_lab_label_or_secret": false,
+        "engine_kind": "unverified",
+        "model_saw_facts": [],
+        "plan_failures": []
+      },
+      {
+        "mode": "idor_spec_missing",
+        "method": "artex_planner",
+        "truth": {
+          "account_spec": "unspecified",
+          "cross_account_access": true,
+          "other_account_read": "needs_spec"
+        },
+        "other_account_read": "needs_spec",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "needs_spec",
+              "rule": "spec_missing",
+              "observation": "E4",
+              "result_audit_hash": "ca76679ff0f6b36880def873cf305693b7a0b5e08a1cb7f42b610c7c2ab893b8",
+              "judged_audit_hash": "54fe7e78017d3dcbb0a0fa6fc12d60bd78365438d992ff8766f179b745d4430f"
+            }
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E5",
+              "result_audit_hash": "bea282024b53a44371ae761d6a2110cd97340c19dd7c5837802d27e61789925d",
+              "judged_audit_hash": "27567b42e0ff24ccc78c8b8739aaeecc0d5175cd2e3f47108591bf10c4254f53"
+            }
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "needs_spec",
+            "planner_rounds": 2,
+            "rejected_steps": 0,
+            "planner_cost_usd": 0.0
+          }
+        ],
+        "contradicted": 1,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.32,
+        "planner_cost_usd": 0.0,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_saw_lab_label_or_secret": false,
+        "engine_kind": "unverified",
+        "model_saw_facts": [],
+        "plan_failures": []
+      },
+      {
+        "mode": "idor_vulnerable",
+        "method": "artex_planner",
+        "truth": {
+          "account_spec": "authentication_required",
+          "cross_account_access": true,
+          "other_account_read": "supported"
+        },
+        "other_account_read": "supported",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "supported",
+              "rule": "cross_account_read",
+              "observation": "E4",
+              "result_audit_hash": "5afb79bacd779087715312bf925e58865bfbe69d662f94b9663b310a135b7f5c",
+              "judged_audit_hash": "435cd18b493d3f8494820f1e59dba7802c6d5975c4084417770a11d101daa8b3"
+            }
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E5",
+              "result_audit_hash": "6789aca27444d91bc29491968ccbe651debaeb7b837a6f35897e9000b9cde17a",
+              "judged_audit_hash": "9ac9d503d15af55062f2ea698d390350192c648b386e6d91171d19bc7b18ffad"
+            }
+          },
+          {
+            "step_id": "S1",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "confirm_fix",
+            "evidence_refs": [
+              "E7",
+              "E8"
+            ],
+            "judgement": {
+              "hypothesis_id": "H3",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied",
+              "observation": "E9",
+              "result_audit_hash": "eddfb542e133b48f7aff0909e9a3d567a3d41c915bfa0794aa05d4083e79e16c",
+              "judged_audit_hash": "a4416b38ecdaa3fc110efebc6ae4001ac1f0648b5c6c50dcac8c6a01b9659c42"
+            }
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 2,
+            "rejected_steps": 0,
+            "planner_cost_usd": 0.0
+          },
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 1,
+            "rejected_steps": 0,
+            "planner_cost_usd": 0.0
+          }
+        ],
+        "contradicted": 1,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 7,
+        "worker_launches": 5,
+        "planner_calls": 3,
+        "elapsed_s": 0.525,
+        "planner_cost_usd": 0.0,
+        "fix_check": {
+          "hypotheses": [
+            "H3"
+          ],
+          "result": [
+            "contradicted"
+          ],
+          "confirmed_fixed": true,
+          "f_idor_verdict": "not_reproduced"
+        },
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_saw_lab_label_or_secret": false,
+        "engine_kind": "unverified",
+        "model_saw_facts": [],
+        "plan_failures": []
+      },
+      {
+        "mode": "own_resource_only",
+        "method": "artex_planner",
+        "truth": {
+          "account_spec": "authentication_required",
+          "cross_account_access": false,
+          "other_account_read": "contradicted"
+        },
+        "other_account_read": "contradicted",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "own_resource_only",
+              "observation": "E4",
+              "result_audit_hash": "a76e81c9ca385d237873c19b29e1740bac58f0785cba8937a3ebd99220d883b9",
+              "judged_audit_hash": "8abd2e8c8de26749d51801937237a0aa2db73934ba3318466f1c0472ce5913ea"
+            }
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E5",
+              "result_audit_hash": "18b7a6f559c5988f3290881f14b7cfe1033b43a0cdd1b84a131010c931c39754",
+              "judged_audit_hash": "328a328646b7b0c9ca940408510989053378cdc6e32ac8def8cca5eaf83bef0f"
+            }
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 2,
+            "rejected_steps": 0,
+            "planner_cost_usd": 0.0
+          }
+        ],
+        "contradicted": 2,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.318,
+        "planner_cost_usd": 0.0,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_saw_lab_label_or_secret": false,
+        "engine_kind": "unverified",
+        "model_saw_facts": [],
+        "plan_failures": []
+      },
+      {
+        "mode": "protected_json_decoy",
+        "method": "artex_planner",
+        "truth": {
+          "account_spec": "none",
+          "cross_account_access": false,
+          "other_account_read": "not_applicable"
+        },
+        "other_account_read": "not_applicable",
+        "unauthenticated_exposure": "not_applicable",
+        "steps": [],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "no_hypothesis",
+            "planner_rounds": 0,
+            "rejected_steps": 0,
+            "planner_cost_usd": 0.0
+          }
+        ],
+        "contradicted": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.066,
+        "planner_cost_usd": 0.0,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_saw_lab_label_or_secret": false,
+        "engine_kind": null,
+        "model_saw_facts": [],
+        "plan_failures": []
+      },
+      {
+        "mode": "public_account_directory",
+        "method": "artex_planner",
+        "truth": {
+          "account_spec": "public",
+          "cross_account_access": false,
+          "other_account_read": "contradicted"
+        },
+        "other_account_read": "contradicted",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "intended_public",
+              "observation": "E4",
+              "result_audit_hash": "90fd3e7f9e3423f0806e0854fd8c9383f88670490b19db02804773a6361f7ad3",
+              "judged_audit_hash": "b66d14de9fd5ee1e4ee11e58cd6069f4216056d0293e7bda9ec48571e275698f"
+            }
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "intended_public",
+              "observation": "E5",
+              "result_audit_hash": "c680e45078d0656d098c6893bd11220c7006d23881959b1b3bd23ad7a40859d1",
+              "judged_audit_hash": "b0ca2a8656b228076a77e8f76f5a4f1aee9b89bfa48197ae7ebfa53fc2d7f62f"
+            }
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 2,
+            "rejected_steps": 0,
+            "planner_cost_usd": 0.0
+          }
+        ],
+        "contradicted": 2,
+        "target_gets": 3,
+        "target_gets_with_fix_check": 3,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.318,
+        "planner_cost_usd": 0.0,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_saw_lab_label_or_secret": false,
+        "engine_kind": "unverified",
+        "model_saw_facts": [],
+        "plan_failures": []
+      },
+      {
+        "mode": "public_json",
+        "method": "artex_planner",
+        "truth": {
+          "account_spec": "none",
+          "cross_account_access": false,
+          "other_account_read": "not_applicable"
+        },
+        "other_account_read": "not_applicable",
+        "unauthenticated_exposure": "not_applicable",
+        "steps": [],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "no_hypothesis",
+            "planner_rounds": 0,
+            "rejected_steps": 0,
+            "planner_cost_usd": 0.0
+          }
+        ],
+        "contradicted": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.066,
+        "planner_cost_usd": 0.0,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_saw_lab_label_or_secret": false,
+        "engine_kind": null,
+        "model_saw_facts": [],
+        "plan_failures": []
+      },
+      {
+        "mode": "public_json_marker",
+        "method": "artex_planner",
+        "truth": {
+          "account_spec": "none",
+          "cross_account_access": false,
+          "other_account_read": "not_applicable"
+        },
+        "other_account_read": "not_applicable",
+        "unauthenticated_exposure": "not_applicable",
+        "steps": [],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "no_hypothesis",
+            "planner_rounds": 0,
+            "rejected_steps": 0,
+            "planner_cost_usd": 0.0
+          }
+        ],
+        "contradicted": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.064,
+        "planner_cost_usd": 0.0,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_saw_lab_label_or_secret": false,
+        "engine_kind": null,
+        "model_saw_facts": [],
+        "plan_failures": []
+      },
+      {
+        "mode": "unauth_exposure",
+        "method": "artex_planner",
+        "truth": {
+          "account_spec": "authentication_required",
+          "cross_account_access": true,
+          "other_account_read": "supported"
+        },
+        "other_account_read": "supported",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "supported",
+              "rule": "cross_account_read",
+              "observation": "E4",
+              "result_audit_hash": "01870be3df6d0f0bd28c320e0e8e7de02cfb4f528b115126b611ec624293a265",
+              "judged_audit_hash": "68f437f04ed97ac33b3caa91d31600a3f562e68be02d1500d3ae25c60f53c9c4"
+            }
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E5",
+              "result_audit_hash": "f99969763c9d037569a15a4fe1cc7a1a585d34c9fe7c93018827bb84d7155cd2",
+              "judged_audit_hash": "3e53102be336a207b524ede931d442d6f80489f1fcdded5e7329e11be7d9c241"
+            }
+          },
+          {
+            "step_id": "S1",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "confirm_fix",
+            "evidence_refs": [
+              "E7",
+              "E8"
+            ],
+            "judgement": {
+              "hypothesis_id": "H3",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied",
+              "observation": "E9",
+              "result_audit_hash": "31c362489e64bb608d313ccbed37a6bf490da9f992e6c7fcf892404944280f15",
+              "judged_audit_hash": "a3ae5f6396bea2c50eabf72389e6c7f40576be5dd07d0f9c6e8e648464b67ea4"
+            }
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 2,
+            "rejected_steps": 0,
+            "planner_cost_usd": 0.0
+          },
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 1,
+            "rejected_steps": 0,
+            "planner_cost_usd": 0.0
+          }
+        ],
+        "contradicted": 1,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 7,
+        "worker_launches": 5,
+        "planner_calls": 3,
+        "elapsed_s": 0.516,
+        "planner_cost_usd": 0.0,
+        "fix_check": {
+          "hypotheses": [
+            "H3"
+          ],
+          "result": [
+            "contradicted"
+          ],
+          "confirmed_fixed": true,
+          "f_idor_verdict": "not_reproduced"
+        },
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_saw_lab_label_or_secret": false,
+        "engine_kind": "unverified",
+        "model_saw_facts": [],
+        "plan_failures": []
+      },
+      {
+        "mode": "unknown_json",
+        "method": "artex_planner",
+        "truth": {
+          "account_spec": "none",
+          "cross_account_access": false,
+          "other_account_read": "not_applicable"
+        },
+        "other_account_read": "not_applicable",
+        "unauthenticated_exposure": "not_applicable",
+        "steps": [],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "no_hypothesis",
+            "planner_rounds": 0,
+            "rejected_steps": 0,
+            "planner_cost_usd": 0.0
+          }
+        ],
+        "contradicted": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.066,
+        "planner_cost_usd": 0.0,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_saw_lab_label_or_secret": false,
+        "engine_kind": null,
+        "model_saw_facts": [],
+        "plan_failures": []
+      }
+    ]
+  }
+}

@@ -13,16 +13,23 @@ MODES = frozenset({"public_json", "auth_required_json", "unauth_exposure",
                    "public_json_marker", "protected_json_decoy", "auth_required_account_api",
                    "public_account_directory", "idor_owner_missing", "idor_decoy_marker",
                    "unknown_json"})
+# Two more conditions for the diagnosis loop (docs/DIAGNOSIS_LOOP_PLAN.md, stage 4). They are
+# kept out of MODES so the earlier comparisons keep their exact condition set; their labels
+# live in access_control_loop_truth.json only.
+LOOP_MODES = frozenset({
+    "own_resource_only",   # any account asking for B's resource is served its OWN resource
+    "idor_spec_missing",   # behaves like idor_vulnerable; the owner never wrote who may read it
+})
 ACCOUNT_SURFACE = frozenset({"unauth_exposure", "idor_vulnerable", "denied_403", "denied_404",
                              "confusing_200", "auth_required_account_api", "public_account_directory",
-                             "idor_owner_missing", "idor_decoy_marker"})
+                             "idor_owner_missing", "idor_decoy_marker"}) | LOOP_MODES
 
 
 class AccessControlLab(http.server.ThreadingHTTPServer):
     daemon_threads = True
 
     def __init__(self, mode: str):
-        if mode not in MODES:
+        if mode not in MODES | LOOP_MODES:
             raise ValueError("unknown fixture mode")
         super().__init__(("127.0.0.1", 0), _Handler)
         self.mode = mode
@@ -74,7 +81,11 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                                     "caller_account": "acct_A", "resource_owner": "acct_A"})
         if mode == "public_account_directory":
             return self._send(200, {"directory": "public account listing"})
-        if mode in {"idor_vulnerable", "unauth_exposure", "idor_owner_missing"} and account == "acct_A":
+        if mode == "own_resource_only" and account == "acct_A":
+            return self._send(200, {"Check": "own_resource", "caller_account": "acct_A",
+                                    "resource_owner": "acct_A", "resource_id": "res_a_001"})
+        if mode in {"idor_vulnerable", "unauth_exposure", "idor_owner_missing",
+                    "idor_spec_missing"} and account == "acct_A":
             return self._send(200, {"Check": "idor_cross_account_access", "established": True,
                                     "caller_account": "acct_A", "resource_owner": "acct_B",
                                     "resource_id": "res_b_001",
