@@ -102,7 +102,7 @@ def main() -> None:
         base = f"http://127.0.0.1:{web_port}"
         web = subprocess.Popen([str(ROOT / "web/node_modules/.bin/next"), "start" if args.production else "dev",
                                 "-H", "127.0.0.1", "-p", str(web_port)], cwd=ROOT / "web",
-                               env={**os.environ, "AEGIS_API": f"http://127.0.0.1:{port}"},
+                               env={**os.environ, "AEGIS_API": f"http://127.0.0.1:{port}", "NEXT_TELEMETRY_DISABLED": "1"},
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         stack.callback(web.terminate)
         wait_for_web(base, web)
@@ -171,8 +171,8 @@ def main() -> None:
 
         # ---- 3. alice cannot approve her own step; the screen says how to get an approver -----
         expect(panel(alice)).to_contain_text("依頼者本人は承認できません")
-        report["checks"]["requester_has_no_approve_button"] = \
-            panel(alice).get_by_role("button", name="この L2 検査を承認する").count() == 0
+        expect(panel(alice).get_by_role("button", name="この L2 検査を承認する")).to_have_count(0)
+        report["checks"]["requester_has_no_approve_button"] = True
         invite_link = panel(alice).get_by_role("link", name="設定の「メンバーを招待」")
         expect(invite_link).to_be_visible()
         shot(alice, "03-waiting-for-an-approver")
@@ -183,7 +183,8 @@ def main() -> None:
         link_el = alice.get_by_label("招待リンク")
         expect(link_el).to_be_visible(timeout=20000)
         invite_url = link_el.input_value()
-        report["checks"]["invite_link_shown"] = "/invite#" in invite_url
+        # the link points at this (loopback) site only
+        report["checks"]["invite_link_shown"] = invite_url.startswith(base + "/invite#")
         shot(alice, "04-invite-link", whole_panel=False)
         step("invite_an_approver")
 
