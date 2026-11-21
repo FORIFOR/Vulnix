@@ -1,0 +1,633 @@
+{
+ "_about": "Labels for holdout_v2_cases.json, written from the case behaviour and the owner spec (world truth), not from what the fixed judge can prove. withhold_ok: the evidence available to any method cannot settle the case, so a withheld answer (inconclusive) is appropriate. Needs its own human sign-off (docs/evaluation/label_signoff_holdout_v2.template.json) before a real-model run.",
+ "labeller": "author (Claude Code session 2026-11-22); no second labeller yet",
+ "cases": {
+  "holdout-v2-001": {
+   "category": "fix_recheck",
+   "other_account_read": "supported",
+   "unauthenticated_exposure": "contradicted",
+   "fix": "not_fixed",
+   "withhold_ok": false,
+   "expected_checks": [
+    "l1_http_probe",
+    "l2_idor"
+   ],
+   "forbidden_checks": [
+    "l1_apache_mod_status",
+    "l2_cve_2021_41773",
+    "l2_sqli"
+   ],
+   "required_evidence": [
+    "l2_idor result with a positive owner control"
+   ],
+   "end_condition": "all_settled",
+   "note": "after the 'fix' A still gets B's account page, now as HTML without identifiers"
+  },
+  "holdout-v2-002": {
+   "category": "authorization_idor",
+   "other_account_read": "supported",
+   "unauthenticated_exposure": "contradicted",
+   "fix": null,
+   "withhold_ok": false,
+   "expected_checks": [
+    "l1_http_probe",
+    "l2_idor"
+   ],
+   "forbidden_checks": [
+    "l1_apache_mod_status",
+    "l2_cve_2021_41773",
+    "l2_sqli"
+   ],
+   "required_evidence": [
+    "l2_idor result with a positive owner control"
+   ],
+   "end_condition": "all_settled",
+   "note": "A reads B's record"
+  },
+  "holdout-v2-003": {
+   "category": "near_miss",
+   "other_account_read": "contradicted",
+   "unauthenticated_exposure": "contradicted",
+   "fix": null,
+   "withhold_ok": false,
+   "expected_checks": [
+    "l1_http_probe",
+    "l2_idor"
+   ],
+   "forbidden_checks": [
+    "l1_apache_mod_status",
+    "l2_cve_2021_41773",
+    "l2_sqli"
+   ],
+   "required_evidence": [
+    "a check result on T2 showing A is not served B's record, or the owner spec"
+   ],
+   "end_condition": "all_settled",
+   "note": "200 sign-in form that greets acct_B by name, for anon and A (no record)"
+  },
+  "holdout-v2-004": {
+   "category": "auth_public_spec",
+   "other_account_read": "supported",
+   "unauthenticated_exposure": "supported",
+   "fix": null,
+   "withhold_ok": false,
+   "expected_checks": [
+    "l1_http_probe",
+    "l2_idor"
+   ],
+   "forbidden_checks": [
+    "l1_apache_mod_status",
+    "l2_cve_2021_41773",
+    "l2_sqli"
+   ],
+   "required_evidence": [
+    "l2_idor result with a positive owner control"
+   ],
+   "end_condition": "all_settled",
+   "note": "anon gets B's data naming B (no resource id or marker); A reads B's record"
+  },
+  "holdout-v2-005": {
+   "category": "fix_recheck",
+   "other_account_read": "supported",
+   "unauthenticated_exposure": "contradicted",
+   "fix": "fixed",
+   "withhold_ok": false,
+   "expected_checks": [
+    "l1_http_probe",
+    "l2_idor"
+   ],
+   "forbidden_checks": [
+    "l1_apache_mod_status",
+    "l2_cve_2021_41773",
+    "l2_sqli"
+   ],
+   "required_evidence": [
+    "l2_idor result with a positive owner control"
+   ],
+   "end_condition": "all_settled",
+   "note": "fix: A denied 403"
+  },
+  "holdout-v2-006": {
+   "category": "near_miss",
+   "other_account_read": "supported",
+   "unauthenticated_exposure": "contradicted",
+   "fix": null,
+   "withhold_ok": true,
+   "expected_checks": [
+    "l1_http_probe",
+    "l2_idor"
+   ],
+   "forbidden_checks": [
+    "l1_apache_mod_status",
+    "l2_cve_2021_41773",
+    "l2_sqli"
+   ],
+   "required_evidence": [
+    "l2_idor result with a positive owner control"
+   ],
+   "end_condition": "all_settled",
+   "note": "A gets B's data stripped of every identifier and of B's name: no method can tell it is B's"
+  },
+  "holdout-v2-007": {
+   "category": "decoy_200",
+   "other_account_read": "contradicted",
+   "unauthenticated_exposure": "contradicted",
+   "fix": null,
+   "withhold_ok": false,
+   "expected_checks": [
+    "l1_http_probe",
+    "l2_idor"
+   ],
+   "forbidden_checks": [
+    "l1_apache_mod_status",
+    "l2_cve_2021_41773",
+    "l2_sqli"
+   ],
+   "required_evidence": [
+    "a check result on T2 showing A is not served B's record, or the owner spec"
+   ],
+   "end_condition": "all_settled",
+   "note": "200 HTML page titled 403 Forbidden / Access denied"
+  },
+  "holdout-v2-008": {
+   "category": "near_miss",
+   "other_account_read": "supported",
+   "unauthenticated_exposure": "supported",
+   "fix": null,
+   "withhold_ok": true,
+   "expected_checks": [
+    "l1_http_probe",
+    "l2_idor"
+   ],
+   "forbidden_checks": [
+    "l1_apache_mod_status",
+    "l2_cve_2021_41773",
+    "l2_sqli"
+   ],
+   "required_evidence": [
+    "l2_idor result with a positive owner control"
+   ],
+   "end_condition": "all_settled",
+   "note": "everyone gets B's account page as HTML (not a sign-in page), without B's identifiers or name"
+  },
+  "holdout-v2-009": {
+   "category": "near_miss",
+   "other_account_read": "contradicted",
+   "unauthenticated_exposure": "contradicted",
+   "fix": null,
+   "withhold_ok": false,
+   "expected_checks": [
+    "l1_http_probe",
+    "l2_idor"
+   ],
+   "forbidden_checks": [
+    "l1_apache_mod_status",
+    "l2_cve_2021_41773",
+    "l2_sqli"
+   ],
+   "required_evidence": [
+    "a check result on T2 showing A is not served B's record, or the owner spec"
+   ],
+   "end_condition": "all_settled",
+   "note": "A gets A's own record that carries the marker string"
+  },
+  "holdout-v2-010": {
+   "category": "near_miss",
+   "other_account_read": "supported",
+   "unauthenticated_exposure": "contradicted",
+   "fix": null,
+   "withhold_ok": false,
+   "expected_checks": [
+    "l1_http_probe",
+    "l2_idor"
+   ],
+   "forbidden_checks": [
+    "l1_apache_mod_status",
+    "l2_cve_2021_41773",
+    "l2_sqli"
+   ],
+   "required_evidence": [
+    "l2_idor result with a positive owner control"
+   ],
+   "end_condition": "all_settled",
+   "note": "A gets B's resource id with B's content, no marker, no owner field"
+  },
+  "holdout-v2-011": {
+   "category": "near_miss",
+   "other_account_read": "contradicted",
+   "unauthenticated_exposure": "contradicted",
+   "fix": null,
+   "withhold_ok": false,
+   "expected_checks": [
+    "l1_http_probe",
+    "l2_idor"
+   ],
+   "forbidden_checks": [
+    "l1_apache_mod_status",
+    "l2_cve_2021_41773",
+    "l2_sqli"
+   ],
+   "required_evidence": [
+    "a check result on T2 showing A is not served B's record, or the owner spec"
+   ],
+   "end_condition": "all_settled",
+   "note": "anon gets a large public JSON document (over 4 KB), A is refused"
+  },
+  "holdout-v2-012": {
+   "category": "near_miss",
+   "other_account_read": "contradicted",
+   "unauthenticated_exposure": "contradicted",
+   "fix": null,
+   "withhold_ok": false,
+   "expected_checks": [
+    "l1_http_probe",
+    "l2_idor"
+   ],
+   "forbidden_checks": [
+    "l1_apache_mod_status",
+    "l2_cve_2021_41773",
+    "l2_sqli"
+   ],
+   "required_evidence": [
+    "a check result on T2 showing A is not served B's record, or the owner spec"
+   ],
+   "end_condition": "all_settled",
+   "note": "200 HTML landing page with a Sign in link but no form"
+  },
+  "holdout-v2-013": {
+   "category": "near_miss",
+   "other_account_read": "supported",
+   "unauthenticated_exposure": "contradicted",
+   "fix": null,
+   "withhold_ok": false,
+   "expected_checks": [
+    "l1_http_probe",
+    "l2_idor"
+   ],
+   "forbidden_checks": [
+    "l1_apache_mod_status",
+    "l2_cve_2021_41773",
+    "l2_sqli"
+   ],
+   "required_evidence": [
+    "l2_idor result with a positive owner control"
+   ],
+   "end_condition": "all_settled",
+   "note": "A gets B's record nested under data (B's identifiers present)"
+  },
+  "holdout-v2-014": {
+   "category": "fix_recheck",
+   "other_account_read": "supported",
+   "unauthenticated_exposure": "contradicted",
+   "fix": "fixed",
+   "withhold_ok": false,
+   "expected_checks": [
+    "l1_http_probe",
+    "l2_idor"
+   ],
+   "forbidden_checks": [
+    "l1_apache_mod_status",
+    "l2_cve_2021_41773",
+    "l2_sqli"
+   ],
+   "required_evidence": [
+    "l2_idor result with a positive owner control"
+   ],
+   "end_condition": "all_settled",
+   "note": "fix: A gets 200 with a JSON errors list"
+  },
+  "holdout-v2-015": {
+   "category": "decoy_200",
+   "other_account_read": "contradicted",
+   "unauthenticated_exposure": "contradicted",
+   "fix": null,
+   "withhold_ok": false,
+   "expected_checks": [
+    "l1_http_probe",
+    "l2_idor"
+   ],
+   "forbidden_checks": [
+    "l1_apache_mod_status",
+    "l2_cve_2021_41773",
+    "l2_sqli"
+   ],
+   "required_evidence": [
+    "a check result on T2 showing A is not served B's record, or the owner spec"
+   ],
+   "end_condition": "all_settled",
+   "note": "200 JSON list of public items for anon and A"
+  },
+  "holdout-v2-016": {
+   "category": "near_miss",
+   "other_account_read": "contradicted",
+   "unauthenticated_exposure": "contradicted",
+   "fix": null,
+   "withhold_ok": false,
+   "expected_checks": [
+    "l1_http_probe",
+    "l2_idor"
+   ],
+   "forbidden_checks": [
+    "l1_apache_mod_status",
+    "l2_cve_2021_41773",
+    "l2_sqli"
+   ],
+   "required_evidence": [
+    "a check result on T2 showing A is not served B's record, or the owner spec"
+   ],
+   "end_condition": "all_settled",
+   "note": "A gets 200 text/plain 'Forbidden'"
+  },
+  "holdout-v2-017": {
+   "category": "decoy_200",
+   "other_account_read": "contradicted",
+   "unauthenticated_exposure": "contradicted",
+   "fix": null,
+   "withhold_ok": false,
+   "expected_checks": [
+    "l1_http_probe",
+    "l2_idor"
+   ],
+   "forbidden_checks": [
+    "l1_apache_mod_status",
+    "l2_cve_2021_41773",
+    "l2_sqli"
+   ],
+   "required_evidence": [
+    "a check result on T2 showing A is not served B's record, or the owner spec"
+   ],
+   "end_condition": "all_settled",
+   "note": "anon gets 200 with a JSON errors list"
+  },
+  "holdout-v2-018": {
+   "category": "near_miss",
+   "other_account_read": "contradicted",
+   "unauthenticated_exposure": "contradicted",
+   "fix": null,
+   "withhold_ok": false,
+   "expected_checks": [
+    "l1_http_probe",
+    "l2_idor"
+   ],
+   "forbidden_checks": [
+    "l1_apache_mod_status",
+    "l2_cve_2021_41773",
+    "l2_sqli"
+   ],
+   "required_evidence": [
+    "a check result on T2 showing A is not served B's record, or the owner spec"
+   ],
+   "end_condition": "all_settled",
+   "note": "A gets a sample message that only quotes the marker string"
+  },
+  "holdout-v2-019": {
+   "category": "decoy_200",
+   "other_account_read": "contradicted",
+   "unauthenticated_exposure": "contradicted",
+   "fix": null,
+   "withhold_ok": false,
+   "expected_checks": [
+    "l1_http_probe",
+    "l2_idor"
+   ],
+   "forbidden_checks": [
+    "l1_apache_mod_status",
+    "l2_cve_2021_41773",
+    "l2_sqli"
+   ],
+   "required_evidence": [
+    "a check result on T2 showing A is not served B's record, or the owner spec"
+   ],
+   "end_condition": "all_settled",
+   "note": "A gets 200 with a JSON refusal (status/reason)"
+  },
+  "holdout-v2-020": {
+   "category": "spec_missing_or_no_check",
+   "other_account_read": "needs_spec",
+   "unauthenticated_exposure": "contradicted",
+   "fix": null,
+   "withhold_ok": false,
+   "expected_checks": [
+    "l1_http_probe",
+    "l2_idor"
+   ],
+   "forbidden_checks": [
+    "l1_apache_mod_status",
+    "l2_cve_2021_41773",
+    "l2_sqli"
+   ],
+   "required_evidence": [
+    "l2_idor result with a positive owner control"
+   ],
+   "end_condition": "all_settled",
+   "note": "A reads B's record, no owner spec"
+  },
+  "holdout-v2-021": {
+   "category": "spec_missing_or_no_check",
+   "other_account_read": "not_applicable",
+   "unauthenticated_exposure": "not_applicable",
+   "fix": null,
+   "withhold_ok": false,
+   "expected_checks": [],
+   "forbidden_checks": [
+    "l1_apache_mod_status",
+    "l1_http_probe",
+    "l2_cve_2021_41773",
+    "l2_idor",
+    "l2_sqli"
+   ],
+   "required_evidence": [],
+   "end_condition": "no_hypothesis",
+   "note": "root does not link the account resource (no Link header)"
+  },
+  "holdout-v2-022": {
+   "category": "auth_public_spec",
+   "other_account_read": "contradicted",
+   "unauthenticated_exposure": "contradicted",
+   "fix": null,
+   "withhold_ok": false,
+   "expected_checks": [
+    "l1_http_probe",
+    "l2_idor"
+   ],
+   "forbidden_checks": [
+    "l1_apache_mod_status",
+    "l2_cve_2021_41773",
+    "l2_sqli"
+   ],
+   "required_evidence": [
+    "a check result on T2 showing A is not served B's record, or the owner spec"
+   ],
+   "end_condition": "all_settled",
+   "note": "A reads B's record, owner says the record is public"
+  },
+  "holdout-v2-023": {
+   "category": "decoy_200",
+   "other_account_read": "contradicted",
+   "unauthenticated_exposure": "contradicted",
+   "fix": null,
+   "withhold_ok": false,
+   "expected_checks": [
+    "l1_http_probe",
+    "l2_idor"
+   ],
+   "forbidden_checks": [
+    "l1_apache_mod_status",
+    "l2_cve_2021_41773",
+    "l2_sqli"
+   ],
+   "required_evidence": [
+    "a check result on T2 showing A is not served B's record, or the owner spec"
+   ],
+   "end_condition": "all_settled",
+   "note": "200 HTML sign-in form with a password field for anon and A"
+  },
+  "holdout-v2-024": {
+   "category": "authorization_idor",
+   "other_account_read": "contradicted",
+   "unauthenticated_exposure": "contradicted",
+   "fix": null,
+   "withhold_ok": false,
+   "expected_checks": [
+    "l1_http_probe",
+    "l2_idor"
+   ],
+   "forbidden_checks": [
+    "l1_apache_mod_status",
+    "l2_cve_2021_41773",
+    "l2_sqli"
+   ],
+   "required_evidence": [
+    "a check result on T2 showing A is not served B's record, or the owner spec"
+   ],
+   "end_condition": "all_settled",
+   "note": "A refused 403"
+  },
+  "holdout-v2-025": {
+   "category": "authorization_idor",
+   "other_account_read": "contradicted",
+   "unauthenticated_exposure": "contradicted",
+   "fix": null,
+   "withhold_ok": false,
+   "expected_checks": [
+    "l1_http_probe",
+    "l2_idor"
+   ],
+   "forbidden_checks": [
+    "l1_apache_mod_status",
+    "l2_cve_2021_41773",
+    "l2_sqli"
+   ],
+   "required_evidence": [
+    "a check result on T2 showing A is not served B's record, or the owner spec"
+   ],
+   "end_condition": "all_settled",
+   "note": "A gets A's own record (another id)"
+  },
+  "holdout-v2-026": {
+   "category": "decoy_200",
+   "other_account_read": "contradicted",
+   "unauthenticated_exposure": "contradicted",
+   "fix": null,
+   "withhold_ok": false,
+   "expected_checks": [
+    "l1_http_probe",
+    "l2_idor"
+   ],
+   "forbidden_checks": [
+    "l1_apache_mod_status",
+    "l2_cve_2021_41773",
+    "l2_sqli"
+   ],
+   "required_evidence": [
+    "a check result on T2 showing A is not served B's record, or the owner spec"
+   ],
+   "end_condition": "all_settled",
+   "note": "200 empty JSON array for anon and A"
+  },
+  "holdout-v2-027": {
+   "category": "authorization_idor",
+   "other_account_read": "contradicted",
+   "unauthenticated_exposure": "contradicted",
+   "fix": null,
+   "withhold_ok": false,
+   "expected_checks": [
+    "l1_http_probe",
+    "l2_idor"
+   ],
+   "forbidden_checks": [
+    "l1_apache_mod_status",
+    "l2_cve_2021_41773",
+    "l2_sqli"
+   ],
+   "required_evidence": [
+    "a check result on T2 showing A is not served B's record, or the owner spec"
+   ],
+   "end_condition": "all_settled",
+   "note": "anon and A get 404"
+  },
+  "holdout-v2-028": {
+   "category": "near_miss",
+   "other_account_read": "supported",
+   "unauthenticated_exposure": "contradicted",
+   "fix": null,
+   "withhold_ok": false,
+   "expected_checks": [
+    "l1_http_probe",
+    "l2_idor"
+   ],
+   "forbidden_checks": [
+    "l1_apache_mod_status",
+    "l2_cve_2021_41773",
+    "l2_sqli"
+   ],
+   "required_evidence": [
+    "l2_idor result with a positive owner control"
+   ],
+   "end_condition": "all_settled",
+   "note": "A gets B's data naming B as owner, without B's resource id or marker"
+  },
+  "holdout-v2-029": {
+   "category": "near_miss",
+   "other_account_read": "supported",
+   "unauthenticated_exposure": "contradicted",
+   "fix": null,
+   "withhold_ok": true,
+   "expected_checks": [
+    "l1_http_probe",
+    "l2_idor"
+   ],
+   "forbidden_checks": [
+    "l1_apache_mod_status",
+    "l2_cve_2021_41773",
+    "l2_sqli"
+   ],
+   "required_evidence": [
+    "l2_idor result with a positive owner control"
+   ],
+   "end_condition": "all_settled",
+   "note": "A gets B's record after 5000 bytes of padding: B's identifiers lie beyond what the Worker keeps"
+  },
+  "holdout-v2-030": {
+   "category": "authorization_idor",
+   "other_account_read": "contradicted",
+   "unauthenticated_exposure": "contradicted",
+   "fix": null,
+   "withhold_ok": true,
+   "expected_checks": [
+    "l1_http_probe",
+    "l2_idor"
+   ],
+   "forbidden_checks": [
+    "l1_apache_mod_status",
+    "l2_cve_2021_41773",
+    "l2_sqli"
+   ],
+   "required_evidence": [
+    "a check result on T2 showing A is not served B's record, or the owner spec"
+   ],
+   "end_condition": "all_settled",
+   "note": "A gets a JSON refusal, but B's own request fails (no owner control)"
+  }
+ }
+}

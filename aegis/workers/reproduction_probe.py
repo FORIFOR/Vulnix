@@ -201,6 +201,8 @@ def run_lab_check(a) -> dict:
         "unverified_reason": reason,
         "deny_statuses": list(LAB_DENY),
         "response": parsed_body if parsed_body is not None else raw_body,
+        # the judge may read "the owner's record is absent" only from a body it saw whole
+        "response_truncated": bool(obs.get("truncated")) or len(obs["body"]) > EXCERPT,
         "control_status": control_obs["status"] if control_obs else None,
         "control_verified": control_verified if control_obs else None,
         "control_response": control_body,

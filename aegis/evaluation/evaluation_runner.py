@@ -59,20 +59,27 @@ class Harness:
     scripted_intents: Callable     # facts text -> intents (the local scripted model)
 
 
-LABELS_FILE = Path(__file__).resolve().parents[2] / "tests/evaluation/fixtures/holdout_truth.json"
+_FIXTURES = Path(__file__).resolve().parents[2] / "tests/evaluation/fixtures"
+LABELS_FILE = _FIXTURES / "holdout_truth.json"
+# Every held-out set has its own label file and needs its own human sign-off.
+LABEL_FILES = {"holdout": LABELS_FILE, "holdout_v2": _FIXTURES / "holdout_v2_truth.json"}
 
 
-def require_label_signoff(signoff: dict | None) -> None:
+def require_label_signoff(signoff: dict | None, label_set: str = "holdout") -> None:
     """No real-model run before a human reviewed the labels it will be scored against.
     The sign-off must name a human reviewer, a completion date and the SHA-256 of the
-    exact label file; a changed label file voids it. (Only the hash is read here; the
-    labels themselves never reach a planner.)"""
+    exact label file; a changed label file voids it. A set other than the first must
+    also be named in the sign-off, so one set's sign-off never opens another.
+    (Only the hash is read here; the labels themselves never reach a planner.)"""
     import hashlib
-    want = hashlib.sha256(LABELS_FILE.read_bytes()).hexdigest() if LABELS_FILE.exists() else None
+    labels_file = LABEL_FILES.get(label_set)
+    want = (hashlib.sha256(labels_file.read_bytes()).hexdigest()
+            if labels_file is not None and labels_file.exists() else None)
     if not (isinstance(signoff, dict) and signoff.get("reviewer_kind") == "human"
             and isinstance(signoff.get("reviewer"), str) and signoff["reviewer"].strip()
             and isinstance(signoff.get("completed"), str) and signoff.get("labels_sha256") == want
-            and want is not None and signoff.get("disagreements_resolved") is True):
+            and want is not None and signoff.get("disagreements_resolved") is True
+            and (label_set == "holdout" or signoff.get("label_set") == label_set)):
         raise LedgerError("labels_not_reviewed", "a human label review is required before a real-model run")
 
 
@@ -85,7 +92,13 @@ def _outcome(state: DiagnosisState, claim: str) -> str:
 
 def run_case(case_id: str, case: dict, method: str, harness: Harness, *, truth: dict | None = None,
              transport=None, ledger: BudgetLedger | None = None, evaluation_id: str = "vulnix-eval-001",
-             limits: PlanLimits = LIMITS, label_signoff: dict | None = None) -> dict:
+             limits: PlanLimits = LIMITS, label_signoff: dict | None = None,
+             label_set: str | None = None) -> dict:
+    # the label set follows the case: a second-set case is never gated by the first set's sign-off
+    own_set = "holdout_v2" if case_id.startswith("holdout-v2-") else "holdout"
+    if label_set is not None and label_set != own_set:
+        raise ValueError("the label set does not match the case")
+    label_set = own_set
     model_key = method.split(":", 1)[1] if method.startswith("model:") else None
     if model_key is not None and model_key not in MODELS:
         raise ValueError(f"unknown model {model_key}")
@@ -153,7 +166,7 @@ def run_case(case_id: str, case: dict, method: str, harness: Harness, *, truth: 
                             return []
                         rec["reserved_usd"] = round(rec["reserved_usd"] + res["max_cost_usd"], 6)
                         if not getattr(transport, "local", False):
-                            require_label_signoff(label_signoff)
+                            require_label_signoff(label_signoff, label_set)
                             ledger.authorize_send(res, approval=getattr(transport, "approval", None),
                                                   config_sha256=config_sha256(model_key),
                                                   request_sha256=pv["body_sha256"])
