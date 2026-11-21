@@ -28,7 +28,9 @@ EXPECTED = {
     "holdout-014": ("supported", "inconclusive"),      # anon gets B's data naming B, no identifiers
     "holdout-017": ("contradicted", "inconclusive"),   # anon 200 public listing: JSON data, never closed
     "holdout-029": ("inconclusive", "contradicted"),   # no owner control: stays withheld
-    "holdout-030": ("inconclusive", "contradicted"),   # B's identifiers present: never closed (案2 not done)
+    # B's record served to A, announced as "caller=B": B's resource id and marker, measured against
+    # B's own control, decide (案2, docs/evaluation/JUDGE_IDENTITY_MATCH.md); before 案2: inconclusive
+    "holdout-030": ("supported", "contradicted"),
 }
 
 
@@ -53,7 +55,8 @@ class TestDevelopmentCases(unittest.TestCase):
         # a public JSON listing is data, not a refusal: the absence rule does not decide it
         self.assertNotIn("owner_record_absent_without_auth", rules["holdout-017"])
         self.assertIn("control_failed", rules["holdout-029"])
-        self.assertIn("unrecognised_answer", rules["holdout-030"])
+        self.assertIn("cross_account_read", rules["holdout-030"])          # 案2; was unrecognised_answer
+        self.assertNotIn("owner_record_absent", rules["holdout-030"])
 
 
 if __name__ == "__main__":

@@ -175,6 +175,10 @@ export const DIAG_ATTR_VALUE: Record<string, Record<string, string>> = {
   own_resource: { true: "本人の資源だった", false: "" },
   owner_identifiers_present: { true: "所有者 B の識別子あり", false: "所有者 B の識別子なし" },
   owner_account_present: { true: "所有者 B の名前あり", false: "所有者 B の名前なし" },
+  owner_record_match: {
+    true: "所有者 B の対照と同じ資源 ID と機密マーカーを、A への応答で確認",
+    false: "所有者 B の記録だとは確かめられない",
+  },
   body_kind: {
     json_refusal: "本文 拒否の JSON", json_data: "本文 データの JSON", html_login: "本文 ログイン画面", html_refusal: "本文 拒否の画面", html_other: "本文 その他の HTML",
     text: "本文 テキスト", empty: "本文なし", partial: "本文の一部しか読めていない",
