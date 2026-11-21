@@ -57,7 +57,7 @@ export function EventTimeline({ entries, chainValid }: { entries: AuditEntry[]; 
       ) : (
         <ol className="space-y-2">
           {[...entries].reverse().map((e) => (
-            <li key={e.hash} className="flex gap-3 rounded-lg border border-zinc-200 p-2.5 text-sm dark:border-zinc-800">
+            <li key={e.hash} id={`audit-${e.hash}`} className="flex scroll-mt-24 gap-3 rounded-lg border border-zinc-200 p-2.5 text-sm dark:border-zinc-800">
               <span className="w-36 shrink-0 text-xs tabular-nums text-zinc-500">{fmtTime(e.ts)}</span>
               <div className="min-w-0">
                 <Pill className={TONE[e.event] ?? "bg-zinc-200 text-zinc-800 dark:bg-zinc-700 dark:text-zinc-100"}>

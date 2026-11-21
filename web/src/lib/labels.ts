@@ -92,3 +92,165 @@ export function threatFeedSummary(
   const errNote = status.last_sync_error ? "・直近の同期に失敗（以前のデータを保持）" : "";
   return base + freshNote + errNote;
 }
+
+// ---- diagnosis loop (docs/DIAGNOSIS_UI_DESIGN.md §4) -----------------------------------
+// The API sends fixed ids only. Each one is turned into words here; an id without an
+// entry is shown as "未定義の値" with the raw id, never guessed. tests/test_diagnosis_ui_labels.py
+// checks that every id the backend can send has an entry.
+
+export const DIAG_CLAIM: Record<string, string> = {
+  unauthenticated_exposure: "認証なしで、アカウント資源が読めるか",
+  other_account_read: "別のアカウントが、B の資源を読めるか",
+  intended_public: "所有者が公開を意図した資源か",
+};
+
+// The colour only repeats the word; the word is always shown.
+export const DIAG_STATE: Record<string, { label: string; cls: string }> = {
+  open: { label: "確認待ち", cls: "border-zinc-400 bg-zinc-50 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-200" },
+  supported: { label: "支持（成立）", cls: "border-red-400 bg-red-50 text-red-800 dark:bg-red-950/50 dark:text-red-200" },
+  contradicted: { label: "反証（不成立）", cls: "border-emerald-400 bg-emerald-50 text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-200" },
+  inconclusive: { label: "判断不能", cls: "border-amber-400 bg-amber-50 text-amber-900 dark:bg-amber-950/50 dark:text-amber-200" },
+  needs_spec: { label: "所有者の仕様が必要", cls: "border-sky-400 bg-sky-50 text-sky-900 dark:bg-sky-950/50 dark:text-sky-200" },
+};
+
+/** A confirm-fix hypothesis reads the other way round: contradicted means fixed. */
+export const DIAG_FIX_STATE: Record<string, string> = {
+  supported: "改善されていない",
+  contradicted: "改善を確認",
+};
+
+export const DIAG_CHECK: Record<string, string> = {
+  l1_http_probe: "認証なしの GET（L1）",
+  l2_idor: "別アカウントでの読み取り検査（L2）",
+};
+
+/** `{h}` is replaced by the hypothesis id. */
+export const DIAG_REASON: Record<string, string> = {
+  test_hypothesis: "{h} を確かめるため",
+  collect_missing_evidence: "{h} の判断に足りない観測を集めるため",
+  confirm_fix: "修正の後に、同じ検査で確かめ直すため",
+};
+
+export const DIAG_RULE: Record<string, string> = {
+  cross_account_read: "所有者が「認証必須」とした資源を、別のアカウントが読めた",
+  spec_missing: "読めたが、誰が読めるべきかの仕様がない",
+  intended_public: "所有者の仕様で「公開」とされている",
+  denied: "別のアカウントの要求は拒否された（401・403・404）",
+  own_resource_only: "返ったのは、要求した本人の資源だった",
+  control_failed: "所有者本人でも資源を確認できず、比べられなかった",
+  unrecognised_answer: "応答の形が想定と違い、判断できなかった",
+  denied_without_auth: "認証なしの要求は拒否された",
+  answered_without_auth_unverified: "認証なしで 200 が返ったが、保護された資源そのものかは確かめられない",
+  check_not_relevant: "この検査では、この仮説を判断できない",
+};
+
+export const DIAG_EVIDENCE_KIND: Record<string, string> = {
+  root_response: "ラボのルートの応答",
+  account_resource_link: "ルートがアカウント資源へリンクしている",
+  owner_spec: "所有者の仕様",
+  check_result: "検査の結果",
+};
+
+export const DIAG_SOURCE: Record<string, string> = {
+  l1: "初回の L1 診断",
+  check: "検査",
+  owner_spec: "所有者の入力",
+};
+
+export const DIAG_REQUIREMENT: Record<string, string> = {
+  authentication_required: "認証必須",
+  public: "公開",
+  unspecified: "未指定",
+};
+
+/** Observation attributes (aegis.diagnosis_judge.check_attrs and the L1 observations). */
+export const DIAG_ATTR_VALUE: Record<string, Record<string, string>> = {
+  auth: { none: "認証なし", other_account: "別アカウント（A）で要求" },
+  control: { established: "所有者 B の対照 成立", missing: "所有者 B の対照 不成立" },
+  reproduction: {
+    proven: "再現 成立", not_reproduced: "再現せず", unverified: "再現 未確認", incomplete: "再現 未完了",
+  },
+  own_resource: { true: "本人の資源だった", false: "" },
+  present: { true: "リンクあり", false: "リンクなし" },
+  account_link: { true: "アカウント資源へのリンクあり", false: "アカウント資源へのリンクなし" },
+  answer: { unreadable: "応答を読めない" },
+};
+
+export const DIAG_PLAN_STATE: Record<string, string> = {
+  CREATED: "準備中",
+  OBSERVED: "観測を整理中",
+  PROPOSED: "検査を選択中",
+  AUTHORIZED: "実行を許可済み",
+  EXECUTING: "検査を実行中",
+  EVIDENCE_RECORDED: "証拠を記録済み",
+  COMPLETED: "完了",
+  REJECTED: "中止（承認・権限）",
+  CANCELLED: "中止（停止・リセット）",
+  EXPIRED: "上限で終了",
+  FAILED: "整合を確認できず終了",
+};
+
+const INTEGRITY = "記録の整合を確かめられなかったため、結果は採用していません";
+const LIMIT = "上限に達したため止めました";
+
+/** Why a plan ended (aegis.adaptive_plan_runner `_finish`). `action` is a hint only:
+ *  PR-B shows no buttons for it (starting or resuming a diagnosis is PR-C). */
+export const DIAG_END: Record<string, { text: string; action: "findings" | "approval" | "audit" | "resume" | null }> = {
+  all_settled: { text: "すべての仮説を判断しました", action: "findings" },
+  needs_spec: { text: "所有者の仕様がないため、判断を保留しました", action: null },
+  no_hypothesis: { text: "確かめる仮説がありませんでした", action: null },
+  no_progress: { text: "新しい検査で状況が変わりませんでした。条件を見直してください", action: null },
+  stalled: { text: "新しい検査で状況が変わりませんでした。条件を見直してください", action: null },
+  max_steps: { text: LIMIT, action: "resume" },
+  max_planner_rounds: { text: LIMIT, action: "resume" },
+  deadline: { text: LIMIT, action: "resume" },
+  planner_cost_limit: { text: LIMIT, action: "resume" },
+  paused: { text: "一時停止中のため止めました", action: "resume" },
+  stopped_or_reset: { text: "停止またはリセットにより、この周回の結果は採用していません", action: null },
+  requester_authority_revoked: { text: "依頼者の権限が失効したため、結果は採用していません", action: null },
+  l2_approval_missing: { text: "L2 の承認がないため止めました", action: "approval" },
+  planner_failed: { text: "計画を作れなかったため止めました", action: "audit" },
+  execute_failed: { text: "検査を実行できなかったため止めました", action: "audit" },
+  state_from_another_run: { text: INTEGRITY, action: "audit" },
+  audit_failed: { text: INTEGRITY, action: "audit" },
+  evidence_mismatch: { text: INTEGRITY, action: "audit" },
+  evidence_missing: { text: INTEGRITY, action: "audit" },
+  check_mismatch: { text: INTEGRITY, action: "audit" },
+  generation_changed: { text: INTEGRITY, action: "audit" },
+  judge_failed: { text: INTEGRITY, action: "audit" },
+  judgement_not_applied: { text: INTEGRITY, action: "audit" },
+  aborted: { text: INTEGRITY, action: "audit" },
+};
+
+/** Why the view is refused (aegis.diagnosis_view / AssessmentService._restore_diagnosis_locked). */
+export const DIAG_REFUSAL: Record<string, string> = {
+  audit_chain_invalid: "監査ログのハッシュの鎖が壊れています",
+  state_audit_mismatch: "診断の状態が、監査ログから組み立て直した内容と一致しません",
+  journal_unreadable: "監査ログの記録から、診断の状態を組み立てられません",
+  evidence_not_in_audit: "観測が指す検査結果が、検証済みの監査ログにありません",
+  judgement_not_in_audit: "手順の判定が、監査ログにありません",
+  result_not_in_audit: "手順の検査結果が、監査ログにありません",
+  observation_not_the_result: "手順の観測が、監査ログの検査結果と対応しません",
+  snapshot_missing: "再起動の前の診断の保存ファイルがありません",
+  snapshot_unreadable: "再起動の前の診断の保存ファイルを読めません",
+  snapshot_mismatch: "保存ファイルが、別の診断のものです",
+  // checked in the browser (lib/diagnosisView.ts), not sent by the server
+  invalid_response: "サーバーの応答が、確かめられる形になっていません",
+};
+
+export const DIAG_FIX_RESULT: Record<string, { label: string; cls: string }> = {
+  fixed: { label: "改善を確認", cls: DIAG_STATE.contradicted.cls },
+  not_fixed: { label: "改善されていない", cls: DIAG_STATE.supported.cls },
+  pending: { label: "確認中", cls: DIAG_STATE.open.cls },
+};
+
+/** "What is needed next" (aegis.diagnosis_view._next). */
+export const DIAG_NEXT: Record<string, string> = {
+  approve_l2: "L2 検査の承認が必要です（承認できるのは依頼者以外の承認者です）",
+  needs_spec: "資源を誰が読めるべきか、所有者の仕様が必要です",
+  prepare_accounts: "所有者のアカウントで資源を確認できるよう、検証用アカウントを準備してください",
+  confirm_fix_available: "修正したら、修正後の確認を行ってください",
+  plan_ended: "",
+  check_audit: "監査ログを確認してください。確かめられない記録は表示しません",
+  none: "",
+};

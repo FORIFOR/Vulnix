@@ -99,7 +99,7 @@ export function ArtexPlanPanel({ snap, onUpdate }: {
               const needsApprover = it.level === "L2" && !approver;
               const done = it.status === "completed" || it.status === "observed" || it.status === "unsupported" || it.status === "running";
               return (
-                <li key={it.id} className="flex flex-wrap items-center justify-between gap-2 p-3">
+                <li key={it.id} id={`artex-item-${it.id}`} className="flex scroll-mt-24 flex-wrap items-center justify-between gap-2 p-3">
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
                       {!realSite && <Pill className={it.level === "L2" ? "bg-orange-100 text-orange-900 dark:bg-orange-900/50 dark:text-orange-100" : "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300"}>{it.level}</Pill>}

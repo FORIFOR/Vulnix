@@ -393,6 +393,13 @@ jobs:
             --production --real-artex --chromium > "$RUNNER_TEMP/real-artex-browser-flow.json"
           test -s "$RUNNER_TEMP/real-artex-browser-flow.json"
 
+      - name: Diagnosis loop panel in a browser on the local lab (SSE, restart, tampering, other org)
+        run: |
+          VULNIX_NO_ENV_LOCAL=1 python3 -m scripts.check_diagnosis_ui --production --chromium \
+            --screenshots "$RUNNER_TEMP/diagnosis-ui" > "$RUNNER_TEMP/diagnosis-ui.json"
+          python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(json.dumps(d['checks'], indent=1)); sys.exit(0 if d['ok'] else 1)" \
+            "$RUNNER_TEMP/diagnosis-ui.json"
+
       - name: Upload evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -415,4 +422,6 @@ jobs:
             ${{ runner.temp }}/access-control-comparison.json
             ${{ runner.temp }}/initial-extra-selection.json
             ${{ runner.temp }}/real-artex-browser-flow.json
+            ${{ runner.temp }}/diagnosis-ui.json
+            ${{ runner.temp }}/diagnosis-ui/*.png
           if-no-files-found: warn
