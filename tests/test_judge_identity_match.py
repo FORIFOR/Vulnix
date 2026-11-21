@@ -289,3 +289,72 @@ class TestReviewFalsePositives(unittest.TestCase):
         }.items():
             with self.subTest(name):
                 self.assertTrue(matched(self.result(body)[1]), name)
+
+
+class TestFalsePositiveMatrix(TestReviewFalsePositives):
+    """PR #111 quality gate: the four families that can turn a non-vulnerable answer into
+    "supported" - nested owner data, JSON inside strings, array element correspondence and
+    escaped identifiers. Each row says whether B's record was really read by A."""
+
+    def check(self, rows):
+        from aegis.evidence import owner_record_read_by_other_account as matched
+        for name, (body, expected) in rows.items():
+            with self.subTest(name):
+                self.assertIs(matched(self.result(body)[1]), expected, name)
+
+    def test_nested_owner_information(self):
+        m, _ = self.result(None)
+        rec = {"resource_id": "res_b_001", "confidential_marker": m}
+        self.check({
+            "owner_in_a_parent_names_A": ({"owner": "acct_A", "data": rec}, False),
+            "owner_two_levels_down_names_A": ({**rec, "meta": {"owner": {"account": {"id": "acct_A"}}}}, False),
+            "owner_list_mixing_A_and_B": ({**rec, "owners": ["acct_B", "acct_A"]}, False),
+            "owner_key_case_variants": ({**rec, "OWNER_ID": "acct_A"}, False),
+            "owner_key_camel": ({**rec, "ownerAccount": "acct_A"}, False),
+            "owner_empty_object": ({**rec, "owner": {}}, False),
+            "owner_null": ({**rec, "owner": None}, False),
+            "owner_names_B_everywhere": ({"owner": "acct_B", "data": {**rec, "owner": {"id": "acct_B"}}}, True),
+        })
+
+    def test_json_inside_strings(self):
+        import json as _json
+        m, _ = self.result(None)
+        rec = {"resource_id": "res_b_001", "confidential_marker": m, "resource_owner": "acct_B"}
+        self.check({
+            "record_as_a_string_field": ({"payload": _json.dumps(rec)}, False),
+            "record_double_encoded": ({"payload": _json.dumps(_json.dumps(rec))}, False),
+            "record_string_inside_a_list": ({"items": [_json.dumps(rec)]}, False),
+            "whole_answer_is_the_json_text": (_json.dumps(rec), True),        # the body itself is the record
+        })
+
+    def test_array_element_correspondence(self):
+        m, _ = self.result(None)
+        self.check({
+            "id_and_marker_in_different_items": ({"items": [{"resource_id": "res_b_001"},
+                                                            {"confidential_marker": m}]}, False),
+            "id_and_marker_in_different_lists": ({"ids": ["res_b_001"], "markers": [m]}, False),
+            "marker_on_another_resource_in_the_list": ({"items": [{"resource_id": "res_b_001"},
+                                                                  {"resource_id": "res_a_001",
+                                                                   "confidential_marker": m}]}, False),
+            "id_field_disagrees": ({"id": "res_a_001", "resource_id": "res_b_001", "confidential_marker": m}, False),
+            "b_record_among_other_results": ({"results": [{"resource_id": "res_a_001", "note": "x"},
+                                                          {"resource_id": "res_b_001", "confidential_marker": m,
+                                                           "owner": "acct_B"}]}, True),
+        })
+
+    def test_escaped_identifiers(self):
+        m, _ = self.result(None)
+        esc = lambda t: "".join(f"\\u{ord(c):04x}" if c == "_" else c for c in t)   # noqa: E731
+        self.check({
+            # the identifiers escaped are still B's identifiers
+            "json_unicode_escapes_in_the_body": ('{"resource_id": "' + esc("res_b_001") + '", "confidential_marker": "'
+                                                 + esc(m) + '"}', True),
+            "html_entities": (f"<table><td>res&#95;b&#95;001</td><td>{m}</td></table>", True),
+            # A named through an escape: never B's record read by A
+            "html_names_A_with_entities": (f"<p>acct&#95;A</p><p>res_b_001 {m}</p>", False),
+            "html_names_A_with_unicode_escape": (f"<p>acct\\u005fA</p><p>res_b_001 {m}</p>", False),
+            "html_names_A_percent_escaped": (f"<p>acct%5FA</p><p>res_b_001 {m}</p>", False),
+            # an escape that does not decode to the identifier does not match
+            "double_percent_escape": (f"<p>res%255Fb%255F001 {m}</p>", False),
+            "lookalike_identifier": (f"<p>res_b_0O1 {m}</p>", False),
+        })
