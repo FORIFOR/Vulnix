@@ -168,9 +168,14 @@ def main() -> None:
                        if e["event"] == "result" and e["fields"].get("tool") == "reproduction_probe")
 
         # ---- 0. the sign-in screen, as a first-time user sees it ---------------------------------
-        first = browser.new_context(viewport={"width": 390, "height": 900}).new_page()
-        first.goto(base + "/login")
-        axe(first, "00m-login-390")
+        for scheme in ("light", "dark"):
+            ctx = browser.new_context(viewport={"width": 390, "height": 900}, color_scheme=scheme)
+            first = ctx.new_page()
+            first.on("pageerror", lambda e: page_errors.append(f"login: {e}"))
+            first.goto(base + "/login")
+            expect(first.get_by_role("button", name="ログイン", exact=True)).to_be_visible(timeout=20000)
+            axe(first, f"00m-login-390-{scheme}")
+            ctx.close()
 
         # ---- 1. qa starts -------------------------------------------------------------------
         qa = open_page("qa", 1280)
@@ -265,6 +270,9 @@ def main() -> None:
         report["checks"]["phone_fix_no_horizontal_scroll"] = no_overflow(phone)
         shot(phone, "07m-fix-comparison-390")
         axe(phone, "07m-fix-comparison-390")
+        phone.emulate_media(color_scheme="dark")
+        axe(phone, "07m-fix-comparison-390-dark")
+        phone.emulate_media(color_scheme="light")
 
         # ---- 6. other organization, real site ---------------------------------------------------
         outsider = open_page("outsider", 1024)
@@ -303,7 +311,7 @@ def main() -> None:
     failed = [k for k, v in report["checks"].items() if v is False]
     expected = {"requester_api_approval_status": 403, "second_key_refused_status": 409, "l2_runs_total": 2,
                 "l2_approved_records": 2, "other_org_api_status": 403, "real_site_status": 404,
-                "l2_runs_after_first_approval": 1, "accessibility_screens_checked": 9}
+                "l2_runs_after_first_approval": 1, "accessibility_screens_checked": 11}
     failed += [k for k, v in expected.items() if report["checks"].get(k) != v]
     report["ok"] = not failed and not page_errors
     print(json.dumps(report, ensure_ascii=False, indent=1))
