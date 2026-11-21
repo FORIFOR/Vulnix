@@ -50,6 +50,14 @@ function upstreamUrl(req: NextRequest, path: string[]) {
   return `${UPSTREAM}/api/${safe}${req.nextUrl.search}`;
 }
 
+// PR-C: a diagnosis operation names its request (docs/DIAGNOSIS_ACTIONS.md). Passed on
+// only in the expected form; the control plane checks it again.
+function idempotency(req: NextRequest, headers: Record<string, string>) {
+  const key = req.headers.get("idempotency-key");
+  if (key && /^[A-Za-z0-9_-]{16,128}$/.test(key)) headers["Idempotency-Key"] = key;
+  return headers;
+}
+
 function withCookie(req: NextRequest, headers: Record<string, string>) {
   const cookie = req.headers.get("cookie");
   if (cookie) headers["Cookie"] = cookie;
@@ -111,7 +119,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ path: stri
   try {
     const res = await fetch(upstreamUrl(req, path), {
       method: "POST",
-      headers: withCookie(req, { "Content-Type": "application/json", "X-Aegis-Request": "1" }),
+      headers: withCookie(req, idempotency(req, { "Content-Type": "application/json", "X-Aegis-Request": "1" })),
       body: await req.text(),
       cache: "no-store",
     });

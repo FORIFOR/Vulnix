@@ -8,12 +8,13 @@
 // - Every text comes from the fixed tables in labels.ts. An id without an entry is
 //   shown as "未定義の値（id）", never guessed.
 import {
-  DIAG_ATTR_VALUE, DIAG_CHECK, DIAG_CLAIM, DIAG_END, DIAG_EVIDENCE_KIND, DIAG_FIX_RESULT, DIAG_FIX_STATE, DIAG_NEXT,
-  DIAG_PLAN_STATE, DIAG_REASON, DIAG_REFUSAL, DIAG_REQUIREMENT, DIAG_RULE, DIAG_SOURCE, DIAG_STATE,
+  DIAG_ATTR_VALUE, DIAG_CHECK, DIAG_CLAIM, DIAG_END, DIAG_EVIDENCE_KIND, DIAG_FINDING_STATUS, DIAG_FIX_RESULT,
+  DIAG_FIX_STATE, DIAG_NEXT, DIAG_OP_KIND, DIAG_OP_REASON, DIAG_OP_STATE, DIAG_PLAN_STATE, DIAG_REASON, DIAG_REFUSAL,
+  DIAG_REQUIREMENT, DIAG_RULE, DIAG_SOURCE, DIAG_STATE,
 } from "./labels";
 import type {
-  DiagnosisAttrs, DiagnosisEvidence, DiagnosisHypothesis, DiagnosisNext, DiagnosisPlan, DiagnosisStep,
-  DiagnosisView,
+  DiagnosisAttrs, DiagnosisEvidence, DiagnosisHypothesis, DiagnosisNext, DiagnosisOperation, DiagnosisPlan,
+  DiagnosisStep, DiagnosisView, DiagnosisViewer,
 } from "./types";
 
 /** What the panel has: still loading, nothing to show (a real site, an ownership flow:
@@ -43,6 +44,8 @@ function emptied(view: DiagnosisView, reason?: string): DiagnosisView {
     ...view, status: reason ? "unverified" : view.status, reason: reason ?? view.reason,
     plan: null, hypotheses: [], steps: [], evidence: [], fix_comparison: [],
     next: { kind: reason || view.status === "unverified" ? "check_audit" : "none" },
+    // a view that shows no results offers no operation either
+    operation: reason || view.status === "unverified" ? null : (view.operation ?? null),
   };
 }
 
@@ -76,11 +79,36 @@ function evidenceOk(e: unknown): boolean {
 }
 
 const sideOk = (x: unknown) => x === null || (isObj(x) && isNum(x.generation) && isStr(x.to) && isStr(x.rule)
-  && isStr(x.judged_audit_hash) && HASH.test(x.judged_audit_hash));
+  && isStr(x.judged_audit_hash) && HASH.test(x.judged_audit_hash) && hashOrNull(x.result_audit_hash)
+  && strOrNull(x.reproduction));
+const findingOk = (x: unknown) => x === null || x === undefined
+  || (isObj(x) && isStr(x.finding_id) && isStr(x.status));
 
 function fixOk(f: unknown): boolean {
   return isObj(f) && isStr(f.hypothesis_id) && isStr(f.supersedes) && strOrNull(f.catalog_id)
-    && sideOk(f.before) && sideOk(f.after) && isStr(f.result);
+    && sideOk(f.before) && sideOk(f.after) && isStr(f.result) && findingOk(f.finding);
+}
+
+/** The loop job. Out of shape -> null: no control is offered on a guess. */
+function parseOperation(o: unknown): DiagnosisOperation | null {
+  if (!isObj(o) || !isStr(o.id) || !isStr(o.kind) || !isStr(o.state) || !isStr(o.requested_by)
+      || !strOrNull(o.diag_id) || !(o.generation === null || o.generation === undefined || isNum(o.generation))
+      || !strOrNull(o.waiting_item_id) || !(o.needs_spec === undefined || strList(o.needs_spec))
+      || !(o.result === null || o.result === undefined || isObj(o.result))) return null;
+  const r = isObj(o.result) ? o.result : null;
+  return {
+    id: o.id, kind: o.kind, state: o.state, requested_by: o.requested_by, diag_id: (o.diag_id as string | null) ?? null,
+    generation: (o.generation as number | null) ?? null, waiting_item_id: (o.waiting_item_id as string | null) ?? null,
+    needs_spec: (o.needs_spec as string[] | undefined) ?? [],
+    result: r ? { plan_state: isStr(r.plan_state) ? r.plan_state : undefined, reason: isStr(r.reason) ? r.reason : undefined }
+      : null,
+    started_at: isNum(o.started_at) ? o.started_at : null,
+  };
+}
+
+function parseViewer(v: unknown): DiagnosisViewer | undefined {
+  if (!isObj(v) || !strOrNull(v.actor) || !strList(v.permissions)) return undefined;
+  return { actor: (v.actor as string | null) ?? null, permissions: v.permissions as string[] };
 }
 
 function planOk(p: unknown): boolean {
@@ -103,7 +131,8 @@ export function parseDiagnosis(raw: unknown, assessmentId: string): DiagnosisVie
       || !STATUSES.has(raw.status)) {
     return emptied(base, "invalid_response");
   }
-  const view = raw as unknown as DiagnosisView;
+  const view = { ...(raw as unknown as DiagnosisView), operation: parseOperation(raw.operation),
+                 viewer: parseViewer(raw.viewer) };
   if (view.status !== "ok") return emptied({ ...base, ...view }, view.status === "unverified" ? (view.reason ?? "invalid_response") : undefined);
   const lists = [view.hypotheses, view.steps, view.evidence, view.fix_comparison];
   if (!lists.every(Array.isArray) || !isObj(view.next) || !isStr(view.next.kind)) {
@@ -124,7 +153,10 @@ export function applyDiagnosisEvent(slot: DiagnosisSlot, ev: { assessment_id?: u
                                     assessmentId: string): DiagnosisSlot {
   if (ev.assessment_id !== assessmentId) return slot;
   const view = parseDiagnosis(ev.diagnosis, assessmentId);
-  return view ? { kind: "view", view, stale: false } : slot;
+  if (!view) return slot;
+  // the event is the same for every member: who reads, and what they may do, come from GET
+  const viewer = view.viewer ?? (slot.kind === "view" ? slot.view.viewer : undefined);
+  return { kind: "view", view: { ...view, viewer }, stale: false };
 }
 
 /** The result of GET .../diagnosis: a view, 404 (nothing to show), or another failure
@@ -240,4 +272,68 @@ export function announcement(prev: DiagnosisView | null, next: DiagnosisView): s
   const label = h ? hypothesisStateLabel({ state: last.judgement.to, purpose: h.purpose })
     : hypothesisStateLabel({ state: last.judgement.to, purpose: "diagnose" });
   return `${stepLabel(last)} の判定：${label}`;
+}
+
+// ---- PR-C: the operations (docs/DIAGNOSIS_ACTIONS.md) ------------------------------------
+
+const ACTIVE = new Set(["awaiting_spec", "running", "waiting_approval"]);
+
+export type DiagnosisControl =
+  | { op: "start"; label: string }
+  | { op: "owner-spec"; targets: string[] }
+  | { op: "approve"; itemId: string }
+  | { op: "fix-check" };
+
+/** Which controls this reader gets, from the view and their permissions (the server
+ *  decides again on every request). A view that is not verified offers nothing. */
+export function availableControls(view: DiagnosisView): { controls: DiagnosisControl[]; notes: string[] } {
+  const controls: DiagnosisControl[] = [];
+  const notes: string[] = [];
+  if (view.status === "unverified") return { controls, notes };
+  const can = new Set(view.viewer?.permissions ?? []);
+  const actor = view.viewer?.actor ?? null;
+  const op = view.operation ?? null;
+  const active = !!op && ACTIVE.has(op.state);
+  const ended = view.plan !== null && view.next.kind === "plan_ended" && view.plan.reason !== "all_settled";
+  if (can.has("diagnosis:request") && !active && view.next.kind !== "confirm_fix_available"
+      && (view.status === "not_started" || view.restored || ended || op?.state === "failed" || op?.state === "interrupted")) {
+    controls.push({ op: "start", label: view.status === "not_started" || view.restored ? "診断を開始" : "診断をやり直す" });
+  }
+  const specTargets = op?.state === "awaiting_spec" ? op.needs_spec
+    : !active && view.next.kind === "needs_spec" && view.next.target_ref ? [view.next.target_ref] : [];
+  if (specTargets.length > 0) {
+    if (can.has("asset:specify")) controls.push({ op: "owner-spec", targets: specTargets });
+    else notes.push("対象資産の管理者が仕様を入力するのを待っています");
+  }
+  if (op?.state === "waiting_approval" && op.waiting_item_id) {
+    if (actor !== null && actor === op.requested_by) notes.push("依頼者本人は承認できません。別の承認者が承認します");
+    else if (can.has("diagnosis:approve_l2")) controls.push({ op: "approve", itemId: op.waiting_item_id });
+    else notes.push("承認者の承認を待っています");
+  }
+  if (can.has("diagnosis:request") && !active && view.next.kind === "confirm_fix_available") {
+    controls.push({ op: "fix-check" });
+  }
+  return { controls, notes };
+}
+
+export function operationText(op: DiagnosisOperation): string {
+  const kind = word(DIAG_OP_KIND, op.kind);
+  const state = word(DIAG_OP_STATE, op.state);
+  const why = op.result?.plan_state
+    ? endText({ state: op.result.plan_state, reason: op.result.reason ?? null })
+    : op.result?.reason ? word(DIAG_OP_REASON, op.result.reason) : null;
+  return `${kind}：${state}${why && op.state !== "finished" ? `（${why}）` : ""}`;
+}
+
+export function opReasonText(reason: unknown): string {
+  return word(DIAG_OP_REASON, reason);
+}
+
+export function findingStatusText(status: unknown): string {
+  return word(DIAG_FINDING_STATUS, status);
+}
+
+export function reproductionText(v: string | null | undefined): string | null {
+  if (v === null || v === undefined) return null;
+  return word(DIAG_ATTR_VALUE.reproduction, v);
 }

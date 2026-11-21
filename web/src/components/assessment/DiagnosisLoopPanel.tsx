@@ -1,21 +1,22 @@
 "use client";
 
-// The diagnosis loop, read only (docs/DIAGNOSIS_UI_DESIGN.md). Every fact shown here
-// came from GET /api/assessments/{id}/diagnosis or the `diagnosis.updated` event: the
-// server rebuilt it from the verified audit log. A view the server could not verify, or
-// one this page cannot read, shows its reason and nothing else.
+// The diagnosis loop (docs/DIAGNOSIS_UI_DESIGN.md). Every fact shown here came from
+// GET /api/assessments/{id}/diagnosis or the `diagnosis.updated` event: the server
+// rebuilt it from the verified audit log. A view the server could not verify, or one
+// this page cannot read, shows its reason and nothing else - and offers no operation.
 //
-// This panel has no buttons that change anything. Starting a diagnosis, entering the
-// owner's specification and the after-fix check come later (PR-C); L2 approval stays
-// on the existing plan items (link only).
+// The operations (start, the owner's specification, the L2 approval of one step, the
+// after-fix check) are in DiagnosisControls (PR-C, docs/DIAGNOSIS_ACTIONS.md).
 import Link from "next/link";
 import { useState } from "react";
 import {
-  announcement, checkText, claimText, endText, evidenceText, fixResult, fmtIso, hypothesisStateLabel, nextText,
+  announcement, checkText, claimText, endText, evidenceText, findingStatusText, fixResult, fmtIso,
+  hypothesisStateLabel, nextText, reproductionText,
   observationText, planStateText, reasonText, refusalText, ruleText, shortHash, stateClass,
   stepLabel, stepsNewestFirst, type DiagnosisSlot,
 } from "@/lib/diagnosisView";
 import { DIAG_END } from "@/lib/labels";
+import { DiagnosisControls } from "./DiagnosisControls";
 import type {
   DiagnosisEvidence, DiagnosisFix, DiagnosisFixSide, DiagnosisHypothesis, DiagnosisNext, DiagnosisStep,
   DiagnosisView,
@@ -42,7 +43,7 @@ function AuditRef({ label, hash }: { label: string; hash: string | null }) {
   );
 }
 
-function NextAction({ next }: { next: DiagnosisNext }) {
+function NextAction({ next, viaLoop }: { next: DiagnosisNext; viaLoop: boolean }) {
   const text = nextText(next);
   if (!text) return null;
   const action = next.kind === "plan_ended"
@@ -52,8 +53,10 @@ function NextAction({ next }: { next: DiagnosisNext }) {
     <p className="text-sm">
       <span className="text-zinc-500">次に必要なこと：</span>
       <span className="font-semibold">{text}</span>
-      {action === "approval" && next.item_id && (
-        <> <a href={`#artex-item-${next.item_id}`} className={LINK}>承認待ちの項目へ</a></>
+      {/* a loop started from this screen is approved here; otherwise on its plan item */}
+      {action === "approval" && next.item_id && (viaLoop
+        ? <> <a href="#diag-controls" className={LINK}>承認の操作へ</a></>
+        : <> <a href={`#artex-item-${next.item_id}`} className={LINK}>承認待ちの項目へ</a></>
       )}
       {action === "audit" && <> <Link href="?tab=logs" scroll={false} className={LINK}>監査ログを見る</Link></>}
       {action === "findings" && <> <Link href="?tab=findings" scroll={false} className={LINK}>所見を見る</Link></>}
@@ -153,7 +156,11 @@ function FixSide({ title, side, purpose }: { title: string; side: DiagnosisFixSi
         <>
           <p className="mt-1"><StateBadge state={side.to} purpose={purpose} /></p>
           <p className="mt-1 text-xs">{ruleText(side.rule)}</p>
-          <p className="mt-1 text-xs"><AuditRef label="判定" hash={side.judged_audit_hash} /></p>
+          {reproductionText(side.reproduction) && <p className="mt-1 text-xs">検査結果：{reproductionText(side.reproduction)}</p>}
+          <p className="mt-1 flex flex-wrap gap-x-3 text-xs">
+            <AuditRef label="検査結果" hash={side.result_audit_hash ?? null} />
+            <AuditRef label="判定" hash={side.judged_audit_hash} />
+          </p>
         </>
       ) : <p className="mt-1 text-xs text-zinc-500">まだ検査していません</p>}
     </div>
@@ -180,6 +187,13 @@ function FixComparison({ fix }: { fix: DiagnosisFix[] }) {
               <span className="text-zinc-500">結果：</span>
               <Pill className={`border ${result.cls}`}>{result.label}</Pill>
             </p>
+            {f.finding && (
+              <p className="mt-1 text-sm">
+                <span className="text-zinc-500">所見：</span>
+                <Link href="?tab=findings" scroll={false} className={`${LINK} font-mono font-normal`}>{f.finding.finding_id}</Link>
+                <span className="ml-1">現在の判定 {findingStatusText(f.finding.status)}</span>
+              </p>
+            )}
           </li>
         );
       })}
@@ -293,8 +307,11 @@ export function DiagnosisLoopPanel({ slot }: { slot: DiagnosisSlot }) {
               {plan.reason && view.next.kind !== "plan_ended" && <span className="ml-1">— {endText(plan)}</span>}
             </p>
           )}
-          {view.status !== "unverified" && <NextAction next={view.next} />}
+          {view.status !== "unverified" && (
+            <NextAction next={view.next} viaLoop={view.operation?.state === "waiting_approval"} />
+          )}
         </div>
+        {view.status !== "unverified" && <DiagnosisControls view={view} />}
 
         <div className="mt-4">
           {view.status === "not_started" && (
