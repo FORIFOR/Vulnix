@@ -3,6 +3,8 @@
 tests/test_tenancy.py (TestDiagnosisActionsOverHttp)."""
 import contextlib
 import os
+import shutil
+import tempfile
 import threading
 import time
 import unittest
@@ -13,6 +15,8 @@ from aegis.diagnosis_ops import PERMISSIONS, permissions_of
 from aegis.policy import PolicyError
 from tests import TEST_CONFINEMENT
 from tests.test_diagnosis_loop import LoopBase
+from aegis.evidence import evidence_status
+from pathlib import Path
 
 REQUESTER = ("qa", ("operator",))
 OWNER = ("owner-alice", ("admin", "operator", "approver"))
@@ -640,6 +644,173 @@ class TestRemainingRisks(ActionsBase):
         self.addCleanup(self.svc.close)
         self.assertEqual(self.job()["state"], "interrupted")
         self.assertIsNone(self.svc._exec_owner)
+
+
+class TestStopAndRoleChangeDuringTheWorker(ActionsBase):
+    """While the approved L2 Worker runs: an emergency stop drops its result (no
+    judgement, no finding), and so does the approver losing the role or the
+    organization (the step's authority is checked again when the result comes back;
+    fail closed - the result is discarded and audited, nothing is adopted)."""
+
+    def waiting(self):
+        self.assertEqual(self.op("start", REQUESTER)[0], 202)
+        self.op("owner-spec", OWNER, {"target_ref": "T2", "requirement": "authentication_required"})
+        return self.wait_job("waiting_approval")["waiting_item_id"]
+
+    def run_with(self, inside):
+        item = self.waiting()
+        run = self.svc.workers.run
+
+        def l2(*a, **kw):
+            r = run(*a, **kw)
+            if "reproduction" in str(a) + str(kw):
+                inside()
+            return r
+        approver, state = revocable()
+        with patch.object(self.svc.workers, "run", side_effect=l2):
+            self.assertEqual(self.op("approve", APPROVER, {"item_id": item}, approver_authorized=approver)[0], 200)
+            j = self.wait_job("finished", "failed")
+        return j, state
+
+    def test_an_emergency_stop_while_the_l2_worker_runs_adopts_nothing(self):
+        def stop():
+            t = threading.Thread(target=self.svc.emergency_stop, args=("approver-human",))
+            t.start()
+            t.join(10)
+        j, _ = self.run_with(stop)
+        self.assertNotEqual(j["result"].get("plan_state"), "COMPLETED")
+        judged = [e for e in self.audit("diagnosis.applied")]
+        self.assertEqual(len(judged), 1)                              # S1 only
+        self.assertNotEqual(evidence_status(self.svc.a.findings.get("f_idor") or {}), "proven")
+        self.assertEqual([s["step_id"] for s in self.svc.diagnosis_view()["steps"]], ["S1"])
+
+    def test_the_approver_losing_the_role_while_the_worker_runs_discards_its_result(self):
+        holder = {}
+
+        def lose():
+            holder["state"]["live"] = False
+        j, state = None, None
+        item = self.waiting()
+        approver, state = revocable()
+        holder["state"] = state
+        run = self.svc.workers.run
+
+        def l2(*a, **kw):
+            r = run(*a, **kw)
+            lose()
+            return r
+        with patch.object(self.svc.workers, "run", side_effect=l2):
+            self.assertEqual(self.op("approve", APPROVER, {"item_id": item}, approver_authorized=approver)[0], 200)
+            j = self.wait_job("finished", "failed")
+        # fail closed: the step's authority (requester AND approver) is checked again when the
+        # Worker's result comes back, so the result is not adopted on the lost approval
+        self.assertEqual(j["result"]["plan_state"], "REJECTED")
+        self.assertEqual(len(self.audit("result.discarded")), 1)
+        self.assertNotEqual(evidence_status(self.svc.a.findings.get("f_idor") or {}), "proven")
+        self.assertEqual([s["step_id"] for s in self.svc.diagnosis_view()["steps"]], ["S1"])
+
+
+class TestCrashAtEachBoundary(ActionsBase):
+    """A process killed at each persistence boundary: the files as they were at that
+    instant are opened by a new process, and the client retries with the same key.
+    Nothing runs twice; no L2 step runs without a new approval."""
+
+    def setUp(self):
+        super().setUp()
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.crashes = Path(tmp.name)
+
+    def snapshot(self, tag) -> Path:
+        dst = self.crashes / tag
+        if not dst.exists():
+            with self.svc._lock:
+                shutil.copytree(self.svc.data_dir, dst)
+        return dst
+
+    def reopen(self, path: Path):
+        svc = AssessmentService(path, self.lab.server_port, l2_confinement=TEST_CONFINEMENT, verify_seconds=0.1)
+        self.addCleanup(svc.close)
+        calls = []
+        run = svc.workers.run
+        p = patch.object(svc.workers, "run", side_effect=lambda *a, **kw: calls.append(1) or run(*a, **kw))
+        p.start()
+        self.addCleanup(p.stop)
+        return svc, calls
+
+    def waiting(self):
+        self.assertEqual(self.op("start", REQUESTER, k=key(1))[0], 202)
+        self.op("owner-spec", OWNER, {"target_ref": "T2", "requirement": "authentication_required"}, k=key(2))
+        return self.wait_job("waiting_approval")["waiting_item_id"]
+
+    def retry(self, svc, op, who, body, k):
+        return svc.diagnosis_ops.run(op, key=k, actor=who[0], roles=who[1], body=body)
+
+    def l2_in(self, svc):
+        return sum(1 for e in svc.audit.entries() if e["event"] == "result"
+                   and e["fields"].get("tool") == "reproduction_probe")
+
+    def test_killed_after_the_request_was_audited_before_it_was_stored(self):
+        item = self.waiting()
+        journal = self.svc._diagnosis_journal
+
+        def crash_after(event, fields):
+            h = journal(event, fields)
+            if event == "diagnosis.request_accepted" and fields.get("op") == "approve":
+                self.snapshot("audited")
+            return h
+        with patch.object(self.svc, "_diagnosis_journal", side_effect=crash_after):
+            self.op("approve", APPROVER, {"item_id": item}, k=key(3))
+            self.wait_job("finished", "failed")          # the first process finishes on its own
+        svc, calls = self.reopen(self.snapshot("audited"))
+        code, body = self.retry(svc, "approve", APPROVER, {"item_id": item}, key(3))
+        self.assertEqual((code, body["reason"]), (409, "not_waiting"))     # the loop died with the process
+        self.assertEqual((calls, self.l2_in(svc)), ([], 0))
+
+    def test_killed_after_the_request_was_stored(self):
+        item = self.waiting()
+        ops = self.svc.diagnosis_ops
+        save = ops._save_locked
+
+        def crash_after_save():
+            save()
+            if any(r["op"] == "approve" and r["status"] == "accepted" for r in ops._requests.values()):
+                self.snapshot("stored")
+        with patch.object(ops, "_save_locked", side_effect=crash_after_save):
+            self.op("approve", APPROVER, {"item_id": item}, k=key(3))
+            self.wait_job("finished", "failed")
+        svc, calls = self.reopen(self.snapshot("stored"))
+        self.assertEqual(svc.diagnosis_ops.job_view_locked()["state"], "interrupted")
+        code, body = self.retry(svc, "approve", APPROVER, {"item_id": item}, key(3))
+        self.assertTrue(body.get("replayed"))                                  # the stored record answers
+        self.assertEqual((calls, self.l2_in(svc)), ([], 0))
+        code, body = self.retry(svc, "start", REQUESTER, {}, key(1))
+        self.assertTrue(body.get("replayed"))
+        self.assertEqual(calls, [])
+
+    def test_killed_while_the_l2_worker_was_starting(self):
+        item = self.waiting()
+        run = self.svc.workers.run
+
+        def crash_at_launch(*a, **kw):
+            if "reproduction" in str(a) + str(kw):
+                self.snapshot("launch")
+            return run(*a, **kw)
+        with patch.object(self.svc.workers, "run", side_effect=crash_at_launch):
+            self.assertEqual(self.op("approve", APPROVER, {"item_id": item}, k=key(3))[0], 200)
+            self.wait_job("finished")
+        self.assertEqual(len(self.l2_workers()), 1)                          # the first process ran it once
+        svc, calls = self.reopen(self.snapshot("launch"))
+        self.assertEqual(svc.diagnosis_ops.job_view_locked()["state"], "interrupted")
+        for op, who, body, k in (("approve", APPROVER, {"item_id": item}, key(3)),
+                                 ("start", REQUESTER, {}, key(1)),
+                                 ("owner-spec", OWNER, {"target_ref": "T2", "requirement": "authentication_required"},
+                                  key(2))):
+            code, b = self.retry(svc, op, who, body, k)
+            self.assertTrue(b.get("replayed"), (op, code, b))
+        self.assertEqual((calls, self.l2_in(svc)), ([], 0))                 # nothing ran in the new process
+        with self.assertRaises(Exception):
+            svc.execute_artex_item(item, "approver-human", roles=("approver",))   # the plan item is gone
 
 
 class TestNotTheLab(ActionsBase):
