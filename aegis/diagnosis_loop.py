@@ -65,15 +65,18 @@ def observe_lab_root(svc, state: DiagnosisState, *, request_authorized=None) -> 
     return made
 
 
-def record_owner_spec(state: DiagnosisState, target_ref: str, requirement: str) -> str:
+def record_owner_spec(state: DiagnosisState, target_ref: str, requirement: str, *,
+                      actor: str | None = None) -> str:
+    """The owner's written requirement. With a service-owned state it is audited
+    (`diagnosis.observed`, with who wrote it) before it takes effect."""
     if requirement not in REQUIREMENTS:
         requirement = "unspecified"
     return state.observe(kind="owner_spec", target_ref=target_ref, source="owner_spec",
-                         attrs={"requirement": requirement})
+                         attrs={"requirement": requirement}, recorded_by=actor)
 
 
 def begin_fix_check(svc, state: DiagnosisState, owner_specs: dict[str, str], *,
-                    request_authorized=None) -> list[str]:
+                    request_authorized=None, actor: str | None = None) -> list[str]:
     """Start the after-fix re-check. Returns the new confirm_fix hypothesis ids."""
     supported = [h for h in state.hypotheses() if h["state"] == "supported" and h["purpose"] == "diagnose"]
     state.begin_generation()
@@ -83,7 +86,7 @@ def begin_fix_check(svc, state: DiagnosisState, owner_specs: dict[str, str], *,
         state.abandon_generation()             # nothing measured: keep the earlier generation usable
         raise
     for ref, req in owner_specs.items():
-        record_owner_spec(state, ref, req)
+        record_owner_spec(state, ref, req, actor=actor)
     made = []
     for h in supported:
         basis = [o["evidence_id"] for o in state.observations(target_ref=h["target_ref"],

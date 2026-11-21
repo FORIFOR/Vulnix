@@ -2548,3 +2548,89 @@ class TestPublicReadOnlyRealSitesReview(TestPublicReadOnlyRealSites):
         self.req(a, "/assets/challenge", {"url": "https://shop.example.com/"})
         with patch.object(srvmod, "REAL_SITE_L1_ONLY", False):
             self.assertEqual(self.req(a, "/assets/verify-ownership", {"host": "shop.example.com"})[0], 403)
+
+
+class TestDiagnosisReadApiOverHttp(unittest.TestCase):
+    """GET /api/assessments/{id}/diagnosis and its SSE event (docs/DIAGNOSIS_READ_API.md):
+    login required, the caller's own organization only, membership re-checked, 404 on a
+    real service."""
+    setUp = TestTenantIsolationOverHttp.setUp
+    _down = TestTenantIsolationOverHttp._down
+    req = TestTenantIsolationOverHttp.req
+    signup = TestTenantIsolationOverHttp.signup
+
+    PATH = "/assessments/scan_001/diagnosis"
+
+    def _diagnose(self, org_id, actor):
+        from aegis.diagnosis_loop import record_owner_spec
+        state = self.reg.service(org_id).diagnosis_state()
+        record_owner_spec(state, "T2", "public", actor=actor)
+        return state.diag_id
+
+    def _stream(self, who, org, until: bytes, deadline=20.0) -> bytes:
+        conn = http.client.HTTPConnection("127.0.0.1", self.srv.server_port, timeout=deadline)
+        try:
+            conn.request("GET", "/api/assessments/scan_001/events?after=0",
+                         headers={"Cookie": who["cookie"], "X-Vulnix-Org": org})
+            resp = conn.getresponse()
+            self.assertEqual(resp.status, 200)
+            data, end = b"", time.time() + deadline
+            while until not in data and time.time() < end:
+                line = resp.fp.readline()
+                if not line:
+                    break
+                data += line
+            return data
+        finally:
+            conn.close()
+
+    def test_the_view_needs_a_login_and_stays_in_its_organization(self):
+        a, b = self.signup("alice"), self.signup("bobby")
+        a_org, b_org = a["orgs"][0]["id"], b["orgs"][0]["id"]
+        self.assertEqual(self.req({}, self.PATH, org=a_org)[0], 401)
+        code, view = self.req(a, self.PATH)
+        self.assertEqual((code, view["status"], view["lab_only"]), (200, "not_started", True))
+        diag_id = self._diagnose(a_org, "alice")
+        code, view = self.req(a, self.PATH)
+        self.assertEqual((code, view["status"], view["diag_id"]), (200, "ok", diag_id))
+        self.assertEqual([e["recorded_by"] for e in view["evidence"]], ["alice"])
+        # another organization's member: refused (and audited), never the data
+        code, body = self.req(b, self.PATH, org=a_org)
+        self.assertEqual(code, 403)
+        self.assertNotIn(diag_id, json.dumps(body))
+        code, own = self.req(b, self.PATH, org=b_org)
+        self.assertEqual((code, own["status"]), (200, "not_started"))
+        self.assertIn(("bobby", a_org), [(e["fields"].get("actor"), e["fields"].get("org"))
+                                         for e in self.reg.platform_audit.entries()
+                                         if e["event"] == "tenancy.access_denied"])
+        # a member reads it; once removed, no longer
+        token = self.req(a, "/orgs/invites", {"roles": ["viewer"]})[1]["token"]
+        self.assertEqual(self.req(b, "/invites/accept", {"token": token})[0], 200)
+        self.assertEqual(self.req(b, self.PATH, org=a_org)[1]["diag_id"], diag_id)
+        self.assertEqual(self.req(a, "/orgs/members/remove", {"name": "bobby"})[0], 200)
+        self.assertEqual(self.req(b, self.PATH, org=a_org)[0], 403)
+        # logout ends it too
+        old = dict(a)
+        self.assertEqual(self.req(a, "/auth/logout", {})[0], 200)
+        self.assertEqual(self.req(old, self.PATH, org=a_org)[0], 401)
+
+    def test_a_real_service_has_no_diagnosis_view(self):
+        a = self.signup("alice")
+        a_org = a["orgs"][0]["id"]
+        svc = self.reg.service(a_org)
+        with patch.object(svc, "_is_external_service_asset", return_value=True):
+            code, body = self.req(a, self.PATH)
+        self.assertEqual(code, 404)
+        self.assertNotIn("hypotheses", body)
+
+    def test_diagnosis_updates_reach_only_the_organizations_own_stream(self):
+        a, b = self.signup("alice"), self.signup("bobby")
+        a_org, b_org = a["orgs"][0]["id"], b["orgs"][0]["id"]
+        diag_id = self._diagnose(a_org, "alice")
+        mine = self._stream(a, a_org, b"diagnosis.updated")
+        self.assertIn(b"diagnosis.updated", mine)
+        self.assertIn(diag_id.encode(), mine)
+        theirs = self._stream(b, b_org, b"event: heartbeat")
+        self.assertIn(b"event: heartbeat", theirs)        # the whole backlog was delivered first
+        self.assertNotIn(b"diagnosis.updated", theirs)
+        self.assertNotIn(diag_id.encode(), theirs)

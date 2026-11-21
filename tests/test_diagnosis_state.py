@@ -1,5 +1,6 @@
 """Observations and hypotheses kept apart from findings (docs/DIAGNOSIS_LOOP_PLAN.md, stage 2)."""
 import tests  # noqa: F401
+import json
 import unittest
 
 from aegis.diagnosis_state import DiagnosisState, StateError
@@ -168,3 +169,72 @@ class TestGenerations(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestJournal(unittest.TestCase):
+    """docs/DIAGNOSIS_READ_API.md: audit first, then change; the log alone rebuilds the state."""
+
+    def journaled(self):
+        import hashlib
+        log = []
+
+        def journal(event, fields):
+            digest = hashlib.sha256(f"{len(log)}{event}".encode()).hexdigest()
+            log.append({"event": event, "fields": json.loads(json.dumps(fields)), "hash": digest})
+            return digest
+        return DiagnosisState(diag_id="dg_test", journal=journal), log
+
+    def test_a_replay_of_the_journal_equals_the_state(self):
+        from aegis.diagnosis_judge import _verdict
+        s, log = self.journaled()
+        s.bind((1, "http://lab.test/"))
+        e1 = s.observe(kind="account_resource_link", target_ref="T2", attrs={"present": True}, source="l1")
+        s.observe(kind="owner_spec", target_ref="T2", attrs={"requirement": "public"}, source="owner_spec",
+                  recorded_by="owner-alice")
+        h = s.propose(claim="other_account_read", target_ref="T2", basis=[e1])
+        bad = s.observe(kind="check_result", target_ref="T2", attrs={"status": 500}, source="check",
+                        audit_hash="a" * 64, step_id="S1", catalog_id="l2_idor")
+        s.discard_unjudged(bad)
+        e3 = s.observe(kind="check_result", target_ref="T2", attrs={"status": 403}, source="check",
+                       audit_hash="b" * 64, step_id="S1", catalog_id="l2_idor")
+        s.apply(_verdict(h, "contradicted", [e3], "denied"), judged_audit_hash="c" * 64)
+        s.begin_generation()
+        s.abandon_generation()
+        self.assertEqual(DiagnosisState.replay("dg_test", log).export(), s.export())
+        self.assertEqual(DiagnosisState.replay("dg_other", log).export()["observations"], [])
+        self.assertEqual(s.tail, log[-1]["hash"])
+        self.assertNotIn("owner-alice", json.dumps(s.planner_view()))   # who wrote it is audited only
+
+    def test_a_change_that_cannot_be_journaled_does_not_happen(self):
+        from aegis.diagnosis_judge import _verdict
+        s, log = self.journaled()
+        e1 = s.observe(kind="account_resource_link", target_ref="T2", attrs={"present": True}, source="l1")
+        h = s.propose(claim="other_account_read", target_ref="T2", basis=[e1])
+        e2 = s.observe(kind="check_result", target_ref="T2", attrs={"status": 403}, source="check",
+                       audit_hash="b" * 64, step_id="S1", catalog_id="l2_idor")
+        before = s.export()
+
+        def broken(event, fields):
+            raise OSError("audit unavailable")
+        s._journal = broken
+        attempts = [
+            lambda: s.bind((1, "u")),
+            lambda: s.observe(kind="owner_spec", target_ref="T2", attrs={"requirement": "public"},
+                              source="owner_spec"),
+            lambda: s.propose(claim="unauthenticated_exposure", target_ref="T2", basis=[e1]),
+            lambda: s.discard_unjudged(e2),
+            lambda: s.apply(_verdict(h, "contradicted", [e2], "denied")),
+            lambda: s.begin_generation(),
+        ]
+        for attempt in attempts:
+            with self.assertRaises(OSError):
+                attempt()
+            self.assertEqual(s.export(), before)
+
+    def test_a_restored_state_is_read_only(self):
+        s, log = self.journaled()
+        s.observe(kind="account_resource_link", target_ref="T2", attrs={"present": True}, source="l1")
+        r = DiagnosisState.replay("dg_test", log)
+        r.frozen = True
+        with self.assertRaises(StateError):
+            r.observe(kind="owner_spec", target_ref="T2", attrs={"requirement": "public"}, source="owner_spec")

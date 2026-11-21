@@ -59,6 +59,7 @@ class AdaptivePlanRunner:
         # (catalog_id, target_ref, frozenset(evidence_refs)) already run in this loop
         self.executed_keys: set = set()
         self._pending = None          # (verdict, observation, judged hash, from, result hash)
+        self._step_actor = None       # the human who approved the current L2 step (None for L1)
 
     # ---- helpers -----------------------------------------------------------------
     def _authority_generation(self) -> str:
@@ -73,9 +74,11 @@ class AdaptivePlanRunner:
 
     def _move(self, plan: AdaptivePlan, to: PlanState, **kw) -> bool:
         """Audit first, then transition. False (and FAILED) when the audit write fails."""
+        diag = ({"diag_id": self.diagnosis.diag_id, "max_steps": self.limits.max_steps}
+                if self.diagnosis is not None and getattr(self.diagnosis, "diag_id", None) else {})
         try:
             entry = self.svc.audit.record(
-                "adaptive_plan.transition", plan_id=plan.plan_id, frm=plan.state.value, to=to.value,
+                "adaptive_plan.transition", plan_id=plan.plan_id, frm=plan.state.value, to=to.value, **diag,
                 catalog_id=kw.get("catalog_id"), item_id=kw.get("item_id"),
                 approval_nonce=kw.get("approval_nonce"), evidence_ids=list(kw.get("evidence_ids", ())),
                 step_id=kw.get("step_id"), hypothesis_id=kw.get("hypothesis_id"),
@@ -92,6 +95,8 @@ class AdaptivePlanRunner:
             return False
         plan.transition(to, authority_generation=self._authority_generation(),
                         budget_remaining=self._budget(plan), audit_hash=audit_hash, **kw)
+        if diag and hasattr(self.svc, "diagnosis_plan_moved"):
+            self.svc.diagnosis_plan_moved(diag["diag_id"])     # the view's plan line changed
         return True
 
     def _abort_reason(self, plan: AdaptivePlan) -> tuple[PlanState, str] | None:
@@ -124,6 +129,16 @@ class AdaptivePlanRunner:
         return next((i for i in plan.get("items", []) if i["id"] == item_id), None)
 
     # ---- diagnosis loop --------------------------------------------------------------
+    def _discard(self, eid: str) -> None:
+        """Drop an unjudged observation on the way to a failed or cancelled plan. With a
+        journaled state the discard is itself an audit write and may fail too; the plan
+        still ends (FAILED / CANCELLED), and the observation that stays is an audited,
+        unjudged fact that moves no hypothesis."""
+        try:
+            self.diagnosis.discard_unjudged(eid)
+        except Exception:  # noqa: BLE001 - never leave the plan open over a cleanup
+            pass
+
     def _nothing_testable(self) -> str | None:
         """Why the diagnosis loop has nothing left to check, or None."""
         from .diagnosis_judge import propose_hypotheses
@@ -171,9 +186,9 @@ class AdaptivePlanRunner:
         try:
             verdict = judge(state, hid, item["catalog_id"], eid)
         except Exception as e:  # noqa: BLE001
-            state.discard_unjudged(eid)
+            self._discard(eid)
             return f"judge_failed: {type(e).__name__}"
-        self._pending = (verdict, eid, before, ev["audit_hash"], dict(ids))
+        self._pending = (verdict, eid, before, ev["audit_hash"], {**ids, "approved_by": self._step_actor})
         return None
 
     def _apply_judgement(self, plan: AdaptivePlan, item: dict, step_id: str) -> str | None:
@@ -188,11 +203,13 @@ class AdaptivePlanRunner:
                 hypothesis_id=hid, frm=before, to=verdict.to, rule=verdict.rule,
                 catalog_id=item["catalog_id"], target_ref=step["target_ref"],
                 cited=list(step["evidence_refs"]), evidence=list(verdict.evidence),
-                result_audit_hash=result_hash, approval_nonce=ids["approval_nonce"])
+                result_audit_hash=result_hash, approval_nonce=ids["approval_nonce"],
+                reason=step.get("reason"), approved_by=ids.get("approved_by"),
+                diag_id=getattr(state, "diag_id", None), observation=eid)
             if not (isinstance(entry, dict) and entry.get("hash")):
                 raise ValueError("audit record has no hash")
         except Exception as e:  # noqa: BLE001
-            state.discard_unjudged(eid)               # an unaudited judgement leaves no trace
+            self._discard(eid)               # an unaudited judgement leaves no trace
             return f"audit_failed: {type(e).__name__}"
         judged_hash = entry["hash"]
         try:
@@ -203,9 +220,9 @@ class AdaptivePlanRunner:
                 if (self.svc._run_generation != plan.assessment_generation
                         or self.svc.gateway.state in (State.STOPPED, State.PAUSED)):
                     raise _Aborted("stopped_or_reset")
-                changed = state.apply(verdict)
+                changed = state.apply(verdict, judged_audit_hash=judged_hash)
         except _Aborted as e:
-            state.discard_unjudged(eid)
+            self._discard(eid)
             try:
                 self.svc.audit.record("diagnosis.judgement_not_applied", plan_id=plan.plan_id,
                                       step_id=step_id, judged=judged_hash, reason=str(e))
@@ -213,7 +230,7 @@ class AdaptivePlanRunner:
                 pass
             return f"aborted: {e}"
         except Exception as e:  # noqa: BLE001
-            state.discard_unjudged(eid)
+            self._discard(eid)
             try:
                 self.svc.audit.record("diagnosis.judgement_not_applied", plan_id=plan.plan_id,
                                       step_id=step_id, judged=judged_hash, reason=type(e).__name__)
@@ -238,7 +255,7 @@ class AdaptivePlanRunner:
         if diag:
             with self.svc._lock:
                 here = (self.svc._run_generation, self.svc.a.target_url)
-            if self.diagnosis.binding != here:
+            if self.diagnosis.binding != here or getattr(self.diagnosis, "frozen", False):
                 # observations of another run or target never decide anything here
                 return self._finish(plan, PlanState.FAILED, "state_from_another_run")
         executed_ids: set[str] = set()
@@ -292,6 +309,7 @@ class AdaptivePlanRunner:
                 if not granted:
                     return self._finish(plan, PlanState.REJECTED, "l2_approval_missing")
                 exec_actor, exec_roles = granted
+            self._step_actor = exec_actor if item["level"] == "L2" else None
             nonce = "apv_" + secrets.token_hex(8)
             ids = {"catalog_id": item["catalog_id"], "item_id": item["id"], "approval_nonce": nonce}
             if diag:
@@ -342,7 +360,7 @@ class AdaptivePlanRunner:
             if abort or not self._move(plan, PlanState.EVIDENCE_RECORDED, evidence_ids=evidence_ids, **ids):
                 if diag and self._pending:
                     # stopped meanwhile, or the evidence is not recorded: the judgement never takes effect
-                    self.diagnosis.discard_unjudged(self._pending[1])
+                    self._discard(self._pending[1])
                     self._pending = None
                 return self._finish(plan, *abort) if abort else plan
             if diag:

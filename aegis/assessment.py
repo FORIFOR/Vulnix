@@ -487,10 +487,17 @@ class AssessmentService:
         self._session_written = False
         self._expiry_handled: set = set()       # expiries whose stop was confirmed
         self._expiry_seen: set = set()
+        # The diagnosis loop's state (docs/DIAGNOSIS_READ_API.md): one per workspace,
+        # journaled to the audit log, restored read-only after a restart.
+        self._diagnosis = None
+        self._diagnosis_refused: dict | None = None
+        self._diagnosis_restored = False
+        self._diagnosis_persist_error: str | None = None
         self._load_state_locked()
         with self._lock:
             self._reconcile_assets_with_ledger_locked()
             self._begin_session_locked()
+            self._restore_diagnosis_locked()
         threading.Thread(target=AssessmentService._expiry_watch, args=(weakref.ref(self),),
                          daemon=True, name="scope-expiry").start()
         if (self._authority_notice or self._marker_pending or self.ledger.dirty()
@@ -1804,6 +1811,190 @@ class AssessmentService:
     def diagnosis_targets(self) -> list[dict]:
         with self._lock:
             return [dict(t) for t in self._diagnosis_targets_locked()]
+
+    # ---- the diagnosis state and its read API (docs/DIAGNOSIS_READ_API.md) -------------
+    def _diagnosis_path(self) -> Path:
+        return self.data_dir / "diagnosis.json"
+
+    def _diagnosis_journal(self, event: str, fields: dict) -> str:
+        """Write-ahead: the change happens only when this audit write succeeded."""
+        entry = self.audit.record(event, **fields)
+        digest = entry.get("hash") if isinstance(entry, dict) else None
+        if not digest:
+            raise ValueError("audit record has no hash")
+        return digest
+
+    def diagnosis_state(self):
+        """The workspace's one diagnosis state: created (and journaled) on first use.
+        A history restored after a restart is read only; the next loop replaces it.
+        Refused on a real service, and while a restored history disagrees with the audit
+        log (only a workspace reset, which is audited, clears that)."""
+        from .diagnosis_state import DiagnosisState
+        with self._lock:
+            if not any(t["target_id"] == "T1" for t in self._diagnosis_targets_locked()):
+                raise ValueError("診断ループは登録済みのローカル検証ラボでのみ使用できます")
+            if self._diagnosis_refused:
+                raise ValueError("診断の記録が監査ログと一致しないため、新しい診断を始められません。"
+                                 "監査ログを確認してから、作業領域をリセットしてください")
+            st = self._diagnosis
+            if st is not None and not st.frozen:
+                return st
+            if st is not None:
+                self._close_diagnosis_locked("replaced_after_restart")
+            diag_id = "dg_" + secrets.token_hex(8)
+            self.audit.record("diagnosis.opened", diag_id=diag_id, assessment_id=self.a.id)  # no audit, no state
+            self._diagnosis = DiagnosisState(diag_id=diag_id, journal=self._diagnosis_journal, lock=self._lock,
+                                             on_change=self._diagnosis_changed_locked)
+            self._diagnosis_restored = False
+            self._diagnosis_changed_locked()
+            return self._diagnosis
+
+    def _diagnosis_changed_locked(self) -> None:
+        """After every journaled change: the snapshot, then the view to subscribers."""
+        self._save_diagnosis_locked()
+        self._publish_diagnosis_locked()
+
+    def _save_diagnosis_locked(self) -> None:
+        st = self._diagnosis
+        if st is None:
+            return
+        try:
+            payload = {"version": 1, "assessment_id": self.a.id, "target_url": self.a.target_url,
+                       "state": st.export()}
+            tmp_path = self._diagnosis_path().with_suffix(".json.tmp")
+            fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps(payload, ensure_ascii=False))
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp_path, self._diagnosis_path())
+            self._sync_dir(self.data_dir)
+            self._diagnosis_persist_error = None
+        except Exception as e:  # noqa: BLE001 - the view says so; a restart then refuses the history
+            first = self._diagnosis_persist_error is None
+            self._diagnosis_persist_error = type(e).__name__
+            if first:
+                try:
+                    self.audit.record("diagnosis.persist_failed", diag_id=st.diag_id, error=type(e).__name__)
+                except Exception:  # noqa: BLE001
+                    pass
+
+    def _publish_diagnosis_locked(self) -> None:
+        view = self._diagnosis_view_locked()
+        if view is not None:
+            self.bus.publish(self.a.id, "diagnosis.updated", diagnosis=view)
+
+    def _close_diagnosis_locked(self, reason: str) -> None:
+        st, refused = self._diagnosis, self._diagnosis_refused
+        diag_id = st.diag_id if st is not None else (refused or {}).get("diag_id")
+        self._diagnosis, self._diagnosis_refused, self._diagnosis_restored = None, None, False
+        if diag_id:
+            try:
+                self.audit.record("diagnosis.closed", diag_id=diag_id, reason=reason)
+            except Exception:  # noqa: BLE001 - a snapshot left behind is refused at restart
+                if refused and refused.get("reason"):
+                    # only an AUDITED close clears a disputed history
+                    self._diagnosis_refused = refused
+        try:
+            os.unlink(self._diagnosis_path())
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+        if diag_id:
+            self._publish_diagnosis_locked()
+
+    def _restore_diagnosis_locked(self) -> None:
+        """After a restart: rebuild the newest open diagnosis from the verified audit log
+        and accept it only when it equals the saved snapshot. Anything else (a broken
+        chain, a missing / unreadable / edited snapshot, a log that says something else)
+        is refused and shown as such - never repaired by guessing."""
+        from .diagnosis_state import DiagnosisState
+        entries, valid = self.audit.verified_entries()
+        opened = [e["fields"].get("diag_id") for e in entries if e.get("event") == "diagnosis.opened"]
+        closed = {e["fields"].get("diag_id") for e in entries if e.get("event") == "diagnosis.closed"}
+        latest = next((d for d in reversed(opened) if d not in closed), None)
+        path = self._diagnosis_path()
+        if latest is None:
+            if path.exists():
+                try:
+                    os.unlink(path)                # the snapshot of a closed diagnosis
+                except OSError:
+                    pass
+            return
+
+        def refuse(reason: str) -> None:
+            self._diagnosis_refused = {"diag_id": latest, "reason": reason}
+            try:
+                self.audit.record("diagnosis.restore_refused", diag_id=latest, reason=reason)
+            except Exception:  # noqa: BLE001
+                pass
+
+        if not valid:
+            return refuse("audit_chain_invalid")
+        try:
+            snap = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return refuse("snapshot_missing")
+        except (OSError, ValueError, RecursionError):
+            return refuse("snapshot_unreadable")
+        state = snap.get("state") if isinstance(snap, dict) else None
+        if not isinstance(state, dict) or state.get("diag_id") != latest:
+            return refuse("snapshot_mismatch")
+        if snap.get("assessment_id") != self.a.id or snap.get("target_url") != self.a.target_url:
+            self._diagnosis_refused = {"diag_id": latest}
+            return self._close_diagnosis_locked("target_changed")
+        try:
+            replayed = DiagnosisState.replay(latest, entries)
+        except Exception:  # noqa: BLE001
+            return refuse("journal_unreadable")
+        if canonical(replayed.export()) != canonical(state):
+            return refuse("state_audit_mismatch")
+        replayed._lock = self._lock
+        replayed.frozen = True
+        self._diagnosis, self._diagnosis_restored = replayed, True
+
+    def _diagnosis_inputs_locked(self) -> dict | None:
+        """What the view needs from the service, taken under the lock (cheap: no file reads)."""
+        if not self._diagnosis_targets_locked():
+            return None                         # a real service or an ownership flow: no such view
+        st = self._diagnosis
+        l2 = [{"item_id": rec["item"].id, "hypothesis_id": rec["item"].step.get("hypothesis_id")}
+              for rec in self._artex_items.values()
+              if rec["item"].level == "L2" and rec["item"].status == "awaiting_approval" and rec["item"].step]
+        return {"assessment_id": self.a.id, "export": st.export() if st is not None else None,
+                "refusal": (self._diagnosis_refused or {}).get("reason"), "restored": self._diagnosis_restored,
+                "persisted": st is None or self._diagnosis_persist_error is None, "l2_items": l2,
+                "catalog_levels": {k: v.level for k, v in CATALOG_BY_ID.items()}}
+
+    def _diagnosis_view_from(self, inputs: dict | None) -> dict | None:
+        """Read the audit log and build the view. Needs no lock: the replay is cut at the
+        state's own last journal record, so a change made meanwhile is not a mismatch."""
+        from .diagnosis_view import build_view
+        if inputs is None:
+            return None
+        try:
+            entries, valid = self.audit.verified_entries()
+        except (OSError, ValueError, KeyError, TypeError):   # an unreadable line is a broken log
+            entries, valid = [], False
+        return build_view(entries=entries, chain_valid=valid, **inputs)
+
+    def _diagnosis_view_locked(self) -> dict | None:
+        return self._diagnosis_view_from(self._diagnosis_inputs_locked())
+
+    def diagnosis_plan_moved(self, diag_id: str) -> None:
+        """A plan transition of the current diagnosis was audited: tell subscribers."""
+        with self._lock:
+            if self._diagnosis is not None and self._diagnosis.diag_id == diag_id:
+                self._publish_diagnosis_locked()
+
+    def diagnosis_view(self) -> dict | None:
+        """GET /api/assessments/{id}/diagnosis. None on a real service (the route answers 404).
+        The service lock is held only to copy the state: reading and re-hashing the audit
+        log happens outside it, so a reader never delays an emergency stop."""
+        with self._lock:
+            inputs = self._diagnosis_inputs_locked()
+        return self._diagnosis_view_from(inputs)
 
     def _refuse_artex_on_real_service_locked(self) -> None:
         scoped_real_site = self._is_external_service_asset()
@@ -3484,6 +3675,8 @@ class AssessmentService:
         self._artex_items = {}
         self._artex_plan = None
         self.a.plan_source = None
+        # so does the diagnosis: its history is closed (audited) with the workspace
+        self._close_diagnosis_locked("reset")
         self._set_state("stopped" if stays_stopped else "idle")
 
     def planner_status(self) -> dict:
