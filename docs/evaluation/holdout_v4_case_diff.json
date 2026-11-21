@@ -1,0 +1,405 @@
+{
+ "about": "holdout v4, fixed_rule: per-case other_account_read and unauthenticated_exposure, previous judge (PR #109) vs frozen judge (PR #111)",
+ "cases": [
+  {
+   "case_id": "holdout-v4-001",
+   "category": "near_miss",
+   "truth": "contradicted",
+   "previous_judge": "inconclusive",
+   "frozen_judge": "inconclusive",
+   "unauth_truth": "contradicted",
+   "unauth_previous": "contradicted",
+   "unauth_frozen": "contradicted"
+  },
+  {
+   "case_id": "holdout-v4-002",
+   "category": "fix_recheck",
+   "truth": "supported",
+   "previous_judge": "inconclusive",
+   "frozen_judge": "supported",
+   "unauth_truth": "contradicted",
+   "unauth_previous": "contradicted",
+   "unauth_frozen": "contradicted"
+  },
+  {
+   "case_id": "holdout-v4-003",
+   "category": "authorization_idor",
+   "truth": "supported",
+   "previous_judge": "inconclusive",
+   "frozen_judge": "supported",
+   "unauth_truth": "contradicted",
+   "unauth_previous": "contradicted",
+   "unauth_frozen": "contradicted"
+  },
+  {
+   "case_id": "holdout-v4-004",
+   "category": "near_miss",
+   "truth": "contradicted",
+   "previous_judge": "inconclusive",
+   "frozen_judge": "inconclusive",
+   "unauth_truth": "contradicted",
+   "unauth_previous": "contradicted",
+   "unauth_frozen": "contradicted"
+  },
+  {
+   "case_id": "holdout-v4-005",
+   "category": "spec_missing_or_no_check",
+   "truth": "contradicted",
+   "previous_judge": "contradicted",
+   "frozen_judge": "contradicted",
+   "unauth_truth": "contradicted",
+   "unauth_previous": "contradicted",
+   "unauth_frozen": "contradicted"
+  },
+  {
+   "case_id": "holdout-v4-006",
+   "category": "fix_recheck",
+   "truth": "supported",
+   "previous_judge": "inconclusive",
+   "frozen_judge": "inconclusive",
+   "unauth_truth": "contradicted",
+   "unauth_previous": "contradicted",
+   "unauth_frozen": "contradicted"
+  },
+  {
+   "case_id": "holdout-v4-007",
+   "category": "decoy_200",
+   "truth": "contradicted",
+   "previous_judge": "inconclusive",
+   "frozen_judge": "inconclusive",
+   "unauth_truth": "contradicted",
+   "unauth_previous": "inconclusive",
+   "unauth_frozen": "inconclusive"
+  },
+  {
+   "case_id": "holdout-v4-008",
+   "category": "spec_missing_or_no_check",
+   "truth": "not_applicable",
+   "previous_judge": "not_applicable",
+   "frozen_judge": "not_applicable",
+   "unauth_truth": "not_applicable",
+   "unauth_previous": "not_applicable",
+   "unauth_frozen": "not_applicable"
+  },
+  {
+   "case_id": "holdout-v4-009",
+   "category": "no_owner_control",
+   "truth": "supported",
+   "previous_judge": "inconclusive",
+   "frozen_judge": "inconclusive",
+   "unauth_truth": "contradicted",
+   "unauth_previous": "contradicted",
+   "unauth_frozen": "contradicted"
+  },
+  {
+   "case_id": "holdout-v4-010",
+   "category": "near_miss",
+   "truth": "contradicted",
+   "previous_judge": "inconclusive",
+   "frozen_judge": "inconclusive",
+   "unauth_truth": "contradicted",
+   "unauth_previous": "contradicted",
+   "unauth_frozen": "contradicted"
+  },
+  {
+   "case_id": "holdout-v4-011",
+   "category": "no_owner_control",
+   "truth": "contradicted",
+   "previous_judge": "inconclusive",
+   "frozen_judge": "inconclusive",
+   "unauth_truth": "contradicted",
+   "unauth_previous": "contradicted",
+   "unauth_frozen": "contradicted"
+  },
+  {
+   "case_id": "holdout-v4-012",
+   "category": "near_miss",
+   "truth": "contradicted",
+   "previous_judge": "inconclusive",
+   "frozen_judge": "inconclusive",
+   "unauth_truth": "contradicted",
+   "unauth_previous": "contradicted",
+   "unauth_frozen": "contradicted"
+  },
+  {
+   "case_id": "holdout-v4-013",
+   "category": "decoy_200",
+   "truth": "contradicted",
+   "previous_judge": "contradicted",
+   "frozen_judge": "contradicted",
+   "unauth_truth": "contradicted",
+   "unauth_previous": "contradicted",
+   "unauth_frozen": "contradicted"
+  },
+  {
+   "case_id": "holdout-v4-014",
+   "category": "decoy_200",
+   "truth": "contradicted",
+   "previous_judge": "inconclusive",
+   "frozen_judge": "inconclusive",
+   "unauth_truth": "contradicted",
+   "unauth_previous": "inconclusive",
+   "unauth_frozen": "inconclusive"
+  },
+  {
+   "case_id": "holdout-v4-015",
+   "category": "decoy_200",
+   "truth": "contradicted",
+   "previous_judge": "inconclusive",
+   "frozen_judge": "inconclusive",
+   "unauth_truth": "contradicted",
+   "unauth_previous": "contradicted",
+   "unauth_frozen": "contradicted"
+  },
+  {
+   "case_id": "holdout-v4-016",
+   "category": "rate_limited",
+   "truth": "supported",
+   "previous_judge": "inconclusive",
+   "frozen_judge": "inconclusive",
+   "unauth_truth": "contradicted",
+   "unauth_previous": "contradicted",
+   "unauth_frozen": "contradicted"
+  },
+  {
+   "case_id": "holdout-v4-017",
+   "category": "auth_public_spec",
+   "truth": "supported",
+   "previous_judge": "inconclusive",
+   "frozen_judge": "supported",
+   "unauth_truth": "supported",
+   "unauth_previous": "inconclusive",
+   "unauth_frozen": "inconclusive"
+  },
+  {
+   "case_id": "holdout-v4-018",
+   "category": "fix_recheck",
+   "truth": "supported",
+   "previous_judge": "inconclusive",
+   "frozen_judge": "supported",
+   "unauth_truth": "contradicted",
+   "unauth_previous": "contradicted",
+   "unauth_frozen": "contradicted"
+  },
+  {
+   "case_id": "holdout-v4-019",
+   "category": "near_miss",
+   "truth": "contradicted",
+   "previous_judge": "inconclusive",
+   "frozen_judge": "inconclusive",
+   "unauth_truth": "contradicted",
+   "unauth_previous": "contradicted",
+   "unauth_frozen": "contradicted"
+  },
+  {
+   "case_id": "holdout-v4-020",
+   "category": "authorization_idor",
+   "truth": "supported",
+   "previous_judge": "inconclusive",
+   "frozen_judge": "inconclusive",
+   "unauth_truth": "contradicted",
+   "unauth_previous": "contradicted",
+   "unauth_frozen": "contradicted"
+  },
+  {
+   "case_id": "holdout-v4-021",
+   "category": "authorization_idor",
+   "truth": "supported",
+   "previous_judge": "inconclusive",
+   "frozen_judge": "inconclusive",
+   "unauth_truth": "contradicted",
+   "unauth_previous": "contradicted",
+   "unauth_frozen": "contradicted"
+  },
+  {
+   "case_id": "holdout-v4-022",
+   "category": "near_miss",
+   "truth": "contradicted",
+   "previous_judge": "inconclusive",
+   "frozen_judge": "inconclusive",
+   "unauth_truth": "contradicted",
+   "unauth_previous": "contradicted",
+   "unauth_frozen": "contradicted"
+  },
+  {
+   "case_id": "holdout-v4-023",
+   "category": "spec_missing_or_no_check",
+   "truth": "needs_spec",
+   "previous_judge": "inconclusive",
+   "frozen_judge": "needs_spec",
+   "unauth_truth": "contradicted",
+   "unauth_previous": "contradicted",
+   "unauth_frozen": "contradicted"
+  },
+  {
+   "case_id": "holdout-v4-024",
+   "category": "rate_limited",
+   "truth": "contradicted",
+   "previous_judge": "inconclusive",
+   "frozen_judge": "inconclusive",
+   "unauth_truth": "contradicted",
+   "unauth_previous": "contradicted",
+   "unauth_frozen": "contradicted"
+  },
+  {
+   "case_id": "holdout-v4-025",
+   "category": "decoy_200",
+   "truth": "contradicted",
+   "previous_judge": "inconclusive",
+   "frozen_judge": "inconclusive",
+   "unauth_truth": "contradicted",
+   "unauth_previous": "inconclusive",
+   "unauth_frozen": "inconclusive"
+  },
+  {
+   "case_id": "holdout-v4-026",
+   "category": "truncated_body",
+   "truth": "supported",
+   "previous_judge": "inconclusive",
+   "frozen_judge": "inconclusive",
+   "unauth_truth": "contradicted",
+   "unauth_previous": "contradicted",
+   "unauth_frozen": "contradicted"
+  },
+  {
+   "case_id": "holdout-v4-027",
+   "category": "rate_limited",
+   "truth": "contradicted",
+   "previous_judge": "inconclusive",
+   "frozen_judge": "inconclusive",
+   "unauth_truth": "contradicted",
+   "unauth_previous": "contradicted",
+   "unauth_frozen": "contradicted"
+  },
+  {
+   "case_id": "holdout-v4-028",
+   "category": "fix_recheck",
+   "truth": "supported",
+   "previous_judge": "inconclusive",
+   "frozen_judge": "supported",
+   "unauth_truth": "contradicted",
+   "unauth_previous": "contradicted",
+   "unauth_frozen": "contradicted"
+  },
+  {
+   "case_id": "holdout-v4-029",
+   "category": "near_miss",
+   "truth": "contradicted",
+   "previous_judge": "inconclusive",
+   "frozen_judge": "inconclusive",
+   "unauth_truth": "contradicted",
+   "unauth_previous": "contradicted",
+   "unauth_frozen": "contradicted"
+  },
+  {
+   "case_id": "holdout-v4-030",
+   "category": "truncated_body",
+   "truth": "contradicted",
+   "previous_judge": "inconclusive",
+   "frozen_judge": "inconclusive",
+   "unauth_truth": "contradicted",
+   "unauth_previous": "contradicted",
+   "unauth_frozen": "contradicted"
+  },
+  {
+   "case_id": "holdout-v4-031",
+   "category": "truncated_body",
+   "truth": "supported",
+   "previous_judge": "inconclusive",
+   "frozen_judge": "inconclusive",
+   "unauth_truth": "contradicted",
+   "unauth_previous": "contradicted",
+   "unauth_frozen": "contradicted"
+  },
+  {
+   "case_id": "holdout-v4-032",
+   "category": "truncated_body",
+   "truth": "supported",
+   "previous_judge": "inconclusive",
+   "frozen_judge": "supported",
+   "unauth_truth": "contradicted",
+   "unauth_previous": "contradicted",
+   "unauth_frozen": "contradicted"
+  },
+  {
+   "case_id": "holdout-v4-033",
+   "category": "auth_public_spec",
+   "truth": "contradicted",
+   "previous_judge": "contradicted",
+   "frozen_judge": "contradicted",
+   "unauth_truth": "contradicted",
+   "unauth_previous": "contradicted",
+   "unauth_frozen": "contradicted"
+  },
+  {
+   "case_id": "holdout-v4-034",
+   "category": "fix_recheck",
+   "truth": "supported",
+   "previous_judge": "inconclusive",
+   "frozen_judge": "supported",
+   "unauth_truth": "contradicted",
+   "unauth_previous": "contradicted",
+   "unauth_frozen": "contradicted"
+  },
+  {
+   "case_id": "holdout-v4-035",
+   "category": "spec_missing_or_no_check",
+   "truth": "needs_spec",
+   "previous_judge": "inconclusive",
+   "frozen_judge": "inconclusive",
+   "unauth_truth": "contradicted",
+   "unauth_previous": "contradicted",
+   "unauth_frozen": "contradicted"
+  },
+  {
+   "case_id": "holdout-v4-036",
+   "category": "auth_public_spec",
+   "truth": "contradicted",
+   "previous_judge": "contradicted",
+   "frozen_judge": "contradicted",
+   "unauth_truth": "supported",
+   "unauth_previous": "inconclusive",
+   "unauth_frozen": "inconclusive"
+  },
+  {
+   "case_id": "holdout-v4-037",
+   "category": "fix_recheck",
+   "truth": "supported",
+   "previous_judge": "inconclusive",
+   "frozen_judge": "supported",
+   "unauth_truth": "contradicted",
+   "unauth_previous": "contradicted",
+   "unauth_frozen": "contradicted"
+  },
+  {
+   "case_id": "holdout-v4-038",
+   "category": "authorization_idor",
+   "truth": "supported",
+   "previous_judge": "inconclusive",
+   "frozen_judge": "inconclusive",
+   "unauth_truth": "contradicted",
+   "unauth_previous": "contradicted",
+   "unauth_frozen": "contradicted"
+  },
+  {
+   "case_id": "holdout-v4-039",
+   "category": "authorization_idor",
+   "truth": "supported",
+   "previous_judge": "inconclusive",
+   "frozen_judge": "inconclusive",
+   "unauth_truth": "contradicted",
+   "unauth_previous": "contradicted",
+   "unauth_frozen": "contradicted"
+  },
+  {
+   "case_id": "holdout-v4-040",
+   "category": "near_miss",
+   "truth": "contradicted",
+   "previous_judge": "inconclusive",
+   "frozen_judge": "inconclusive",
+   "unauth_truth": "contradicted",
+   "unauth_previous": "contradicted",
+   "unauth_frozen": "contradicted"
+  }
+ ]
+}

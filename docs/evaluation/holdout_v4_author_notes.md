@@ -1,0 +1,46 @@
+# holdout v4：作成者のメモ（ケースごとの根拠）
+
+2026-11-22。作成者（Claude Code のセッション）が、ケースの定義と [LABEL_REVIEW_SHEET.md](LABEL_REVIEW_SHEET.md) の基準だけで付けた正解の根拠です。どのコードもこのファイルを読みません。判定器はこのケースに実行していません。
+
+| ケース | 分類 | 匿名 | A | B | 所有者の規則 | 修正後のA | 他アカウント | 認証なし | 修正 | 保留が妥当 | 根拠 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| holdout-v4-001 | near_miss | 401 not_authenticated | 200 html_api_docs | 200 owner_record | authentication_required | – | 不成立 | 不成立 | – | いいえ | Documentation example; the confidential value is a placeholder, no B record served |
+| holdout-v4-002 | fix_recheck | 401 not_authenticated | 200 paged_items | 200 owner_record | authentication_required | 200 own_items | 成立 | 不成立 | fixed | いいえ | Before: B's record in items. After: A's own record only -> fixed |
+| holdout-v4-003 | authorization_idor | 401 not_authenticated | 200 xml_secret | 200 owner_record | authentication_required | – | 成立 | 不成立 | – | いいえ | XML is just another serialisation of B's record; A is served it |
+| holdout-v4-004 | near_miss | 401 not_authenticated | 200 html_a_escaped | 200 owner_record | authentication_required | – | 不成立 | 不成立 | – | いいえ | Page shows A's own secret; B's id and owner name only, no B confidential value (ownership hint only) |
+| holdout-v4-005 | spec_missing_or_no_check | 401 not_authenticated | 403 forbidden | 200 owner_record | なし | – | 不成立 | 不成立 | – | いいえ | A is not served B's record, so no spec is needed to say not read |
+| holdout-v4-006 | fix_recheck | 401 not_authenticated | 200 gql_account | 200 owner_record | authentication_required | 200 gql_errors | 成立 | 不成立 | fixed | いいえ | Before: B's record to A. After: data.node null with FORBIDDEN error, no B data -> fixed |
+| holdout-v4-007 | decoy_200 | 200 gql_errors | 200 gql_errors | 200 owner_record | authentication_required | – | 不成立 | 不成立 | – | いいえ | GraphQL refusal; data.node null |
+| holdout-v4-008 | spec_missing_or_no_check | 401 not_authenticated | 200 xml_secret | 200 owner_record | authentication_required | – | 範囲外 | 範囲外 | – | いいえ | Route exposes no resource link: out of scope per criteria |
+| holdout-v4-009 | no_owner_control | 401 not_authenticated | 200 jsonapi_secret | 500 html_error_500 | authentication_required | – | 成立 | 不成立 | – | はい | World: A is served B's record; without B's control nobody can confirm the data is B's |
+| holdout-v4-010 | near_miss | 401 not_authenticated | 200 path_parts_refusal | 200 owner_record | authentication_required | – | 不成立 | 不成立 | – | いいえ | A refusal; split identifiers are an echo of the request, nothing of B's record |
+| holdout-v4-011 | no_owner_control | 401 not_authenticated | 200 own_items | 403 owner_scope | authentication_required | – | 不成立 | 不成立 | – | はい | A gets its own record only; no owner control to compare with |
+| holdout-v4-012 | near_miss | 401 not_authenticated | 200 activity_log | 200 owner_record | authentication_required | – | 不成立 | 不成立 | – | いいえ | Log of A's own actions; B's id and name appear only as a denied attempt, no B confidential value |
+| holdout-v4-013 | decoy_200 | 401 not_authenticated | 200 html_denied_ko | 200 owner_record | authentication_required | – | 不成立 | 不成立 | – | いいえ | Refusal page in Korean; no B data |
+| holdout-v4-014 | decoy_200 | 200 json_refusal_es | 200 json_refusal_es | 200 owner_record | authentication_required | – | 不成立 | 不成立 | – | いいえ | Refusal in Spanish for both callers; nobody but B is served B's record |
+| holdout-v4-015 | decoy_200 | 401 not_authenticated | 200 problem_json | 200 owner_record | authentication_required | – | 不成立 | 不成立 | – | いいえ | RFC 7807 refusal; names the request, not B's record |
+| holdout-v4-016 | rate_limited | 401 not_authenticated | 200 owners_array | 429 rate_limit_problem | authentication_required | – | 成立 | 不成立 | – | はい | World: A is served B's record; the owner control never succeeds |
+| holdout-v4-017 | auth_public_spec | 200 csv_export | 200 csv_export | 200 owner_record | authentication_required | – | 成立 | 成立 | – | いいえ | Both A and anonymous are served B's record against an auth-required spec |
+| holdout-v4-018 | fix_recheck | 401 not_authenticated | 200 owners_array | 200 owner_record | authentication_required | 200 jsonapi_secret | 成立 | 不成立 | not_fixed | いいえ | The fix only changed the format; A still gets B's record -> not_fixed |
+| holdout-v4-019 | near_miss | 401 not_authenticated | 200 invoices_fk | 200 owner_record | authentication_required | – | 不成立 | 不成立 | – | いいえ | A's invoice owned by A; resource_id is a reference, no B confidential value |
+| holdout-v4-020 | authorization_idor | 401 not_authenticated | 200 record_in_string | 200 owner_record | authentication_required | – | 成立 | 不成立 | – | いいえ | The string decodes to B's full record (id, owner, marker); a reader can parse it, so served = read |
+| holdout-v4-021 | authorization_idor | 401 not_authenticated | 200 jsonapi_secret | 200 owner_record | authentication_required | – | 成立 | 不成立 | – | いいえ | JSON:API resource res_b_001 with B's confidential value and owner relationship acct_B is B's record |
+| holdout-v4-022 | near_miss | 401 not_authenticated | 200 search_echo | 200 owner_record | authentication_required | – | 不成立 | 不成立 | – | いいえ | Zero results; the id is the query echoed back |
+| holdout-v4-023 | spec_missing_or_no_check | 401 not_authenticated | 200 paged_items | 200 owner_record | unspecified | – | 仕様が必要 | 不成立 | – | いいえ | A is served B's record; the rule does not name the readers |
+| holdout-v4-024 | rate_limited | 401 not_authenticated | 200 soft_rate_limit | 200 owner_record | authentication_required | – | 不成立 | 不成立 | – | はい | Soft rate limit as 200; A is not served B's record, but the limit hides the real behaviour |
+| holdout-v4-025 | decoy_200 | 200 html_signin_pt | 200 html_signin_pt | 200 owner_record | authentication_required | – | 不成立 | 不成立 | – | いいえ | Sign-in page for both callers; no B data |
+| holdout-v4-026 | truncated_body | 401 not_authenticated | 200 long_b_first | 200 owner_record | authentication_required | – | 成立 | 不成立 | – | いいえ | B's id, owner and value are all in the first 4 KB, so the read is visible despite the cut |
+| holdout-v4-027 | rate_limited | 401 not_authenticated | 429 rate_limit_problem | 200 owner_record | authentication_required | – | 不成立 | 不成立 | – | はい | A is never served B's record, but no checker can see past the limit |
+| holdout-v4-028 | fix_recheck | 401 not_authenticated | 200 html_profile_b | 200 owner_record | authentication_required | 200 html_signin_pt | 成立 | 不成立 | fixed | いいえ | Before: B's record rendered as HTML. After: sign-in page without B data -> fixed |
+| holdout-v4-029 | near_miss | 401 not_authenticated | 200 search_a_only | 200 owner_record | authentication_required | – | 不成立 | 不成立 | – | いいえ | Result is A's own record; B is named in A's text only |
+| holdout-v4-030 | truncated_body | 401 not_authenticated | 200 long_a_only | 200 owner_record | authentication_required | – | 不成立 | 不成立 | – | はい | A is not served B's record, but the kept 4 KB cannot rule out B's record later in the body |
+| holdout-v4-031 | truncated_body | 401 not_authenticated | 200 long_list_b_late | 200 owner_record | authentication_required | – | 成立 | 不成立 | – | はい | Server does serve B's record to A, but it sits beyond the kept 4096 characters: no checker can see it |
+| holdout-v4-032 | truncated_body | 401 not_authenticated | 200 trunc_html_b | 200 owner_record | authentication_required | – | 成立 | 不成立 | – | いいえ | B's owner, id and value arrive before the cut; the read is visible |
+| holdout-v4-033 | auth_public_spec | 200 pii_profile | 200 pii_profile | 200 owner_record | public | – | 不成立 | 不成立 | – | いいえ | Owner spec says public, so serving it to A / anon is intended |
+| holdout-v4-034 | fix_recheck | 401 not_authenticated | 200 pii_profile | 200 owner_record | authentication_required | 410 gone | 成立 | 不成立 | fixed | いいえ | Before: B's record incl. PII. After: 410 with no B data -> fixed |
+| holdout-v4-035 | spec_missing_or_no_check | 401 not_authenticated | 200 gql_account | 200 owner_record | なし | – | 仕様が必要 | 不成立 | – | いいえ | A is served B's record but no written rule says who may read it |
+| holdout-v4-036 | auth_public_spec | 200 hal_secret | 403 forbidden | 200 owner_record | authentication_required | – | 不成立 | 成立 | – | いいえ | A is refused (not read); anonymous caller gets B's record although auth is required |
+| holdout-v4-037 | fix_recheck | 401 not_authenticated | 200 csv_export | 200 owner_record | authentication_required | 200 csv_export | 成立 | 不成立 | not_fixed | いいえ | B's record as CSV both before and after the claimed fix -> not_fixed |
+| holdout-v4-038 | authorization_idor | 401 not_authenticated | 200 hal_secret | 200 owner_record | authentication_required | – | 成立 | 不成立 | – | いいえ | HAL body carries B's id, owner and confidential value; links are incidental |
+| holdout-v4-039 | authorization_idor | 401 not_authenticated | 200 gql_account | 200 owner_record | authentication_required | – | 成立 | 不成立 | – | いいえ | A's request returns B's id, B-owned nested owner object and B's confidential value; auth required |
+| holdout-v4-040 | near_miss | 401 not_authenticated | 200 own_collab | 200 owner_record | authentication_required | – | 不成立 | 不成立 | – | いいえ | Only A's record and A's marker; B appears as an account id in a collaborator list, no B record |
