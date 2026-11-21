@@ -42,7 +42,7 @@
 
 | 項目 | 状況 | 実装 | 検証 | PR |
 | --- | --- | --- | --- | --- |
-| 所有確認（DNS・ファイル・Google）、範囲、期限、署名付きの同意、読み取りだけの L1、レート制限、緊急停止 | ✅（模擬環境） | `aegis/ownership.py`、`google_ownership.py`、`assessment.py`、`server.py` | `tests/test_real_service.py`（87件）、`test_google_ownership.py`（28件）、CI の Linux の隔離と緊急停止 | #85 まで |
+| 所有確認（DNS・ファイル・Google）、範囲、期限、署名付きの同意、読み取りだけの L1、レート制限、緊急停止 | ✅（模擬環境。2026-11-22 にローカルで 477 件成功。[REAL_SITE_OFFLINE_VERIFICATION.md](REAL_SITE_OFFLINE_VERIFICATION.md)） | `aegis/ownership.py`、`google_ownership.py`、`assessment.py`、`server.py` | `tests/test_real_service.py`（87件）、`test_google_ownership.py`（28件）、CI の Linux の隔離と緊急停止 | #85 まで |
 | 実際の DNS での所有確認、実サイトでの L1 の通し実行 | ⛔ | — | 実行は0回（Gate E・F） | — |
 | 実サイトでの L2 | ⛔（禁止） | 拒否するよう実装している | `test_bulk_verify_never_runs_l2_on_a_real_service` など | — |
 
