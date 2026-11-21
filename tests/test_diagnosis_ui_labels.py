@@ -78,6 +78,10 @@ class TestEveryIdHasWords(unittest.TestCase):
         values = strings(r'"(\w+)" if result\.get\("control_verified"\) is True else "(\w+)"',
                          diagnosis_judge.check_attrs)
         self.assertEqual({v for pair in values for v in pair} - words["control"], set())
+        kinds = strings(r'return "([a-z_]+)"', diagnosis_judge._body_kind)
+        self.assertEqual(kinds - words["body_kind"], set(), "body kinds without words")
+        for key in ("owner_identifiers_present", "owner_account_present"):
+            self.assertEqual({"true", "false"} - words[key], set(), key)
         self.assertEqual({"none", "other_account"} - words["auth"], set())
         self.assertIn("unreadable", words["answer"])
         # reproduction_verdict's answers for the IDOR check
