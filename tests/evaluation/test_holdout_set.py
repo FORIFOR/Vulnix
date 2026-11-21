@@ -334,5 +334,14 @@ class TestHoldoutV4Set(unittest.TestCase):
         self.assertIn(f"`comparison_holdout_v4.json`：`{hashlib.sha256(out.read_bytes()).hexdigest()}`", doc)
 
 
+
+class TestHoldoutV4SecondLabeller(unittest.TestCase):
+    def test_the_blind_second_labels_are_the_recorded_ones(self):
+        import hashlib
+        f = ROOT / "tests/evaluation/fixtures/holdout_v4_truth_independent.json"
+        doc = (ROOT / "docs/evaluation/HOLDOUT_V4.md").read_text(encoding="utf-8")
+        self.assertIn(hashlib.sha256(f.read_bytes()).hexdigest(), doc)
+
+
 if __name__ == "__main__":
     unittest.main()

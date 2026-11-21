@@ -66,12 +66,12 @@
 - 人の署名のひな形は [label_signoff_holdout_v4.template.json](label_signoff_holdout_v4.template.json)（`label_set: "holdout_v4"`）です。署名の本体（`label_signoff_holdout_v4.json`）は人が作ります。AI は作りません。
 - `require_label_signoff(..., label_set="holdout_v4")` は、`holdout_v4_truth.json` の SHA-256 と `label_set: "holdout_v4"` の両方がそろわないと開きません。v1・v2・v3 の署名では開かず、v4 の署名でも v1〜v3 は開きません（`tests/evaluation/test_holdout_set.py` の `TestHoldoutV4Set`）。
 - `holdout-v4-` のケースは、実行器（`aegis/evaluation/evaluation_runner.py` の `run_case`）で必ず `holdout_v4` の署名に結び付きます。正解のファイルは、署名の確認のためにハッシュを取るだけで、計画器・判定器には渡しません。
-- 実行：`VULNIX_NO_ENV_LOCAL=1 python3 -m scripts.run_model_evaluation compare --set holdout_v4`（出力は `comparison_holdout_v4.json`）。**まだ実行していません。** 1回だけ実行します。
+- 実行：`VULNIX_NO_ENV_LOCAL=1 python3 -m scripts.run_model_evaluation compare --set holdout_v4`（出力は `comparison_holdout_v4.json`）。凍結の後に1回だけ実行しました（下の「結果」）。
 
 ## 5. 制約
 
 - **作成者（この AI のセッション）は、判定器の設計と v1〜v3 の結果を知った上でこのケースを作りました。** 判定器の規則に有利にも不利にもしないよう、ケースは製品が実際に出会う応答の形から作り、正解は判定の基準だけで付けました。作成時には判定器を実行していません。それでも独立した作成者の代わりにはなりません。
-- **第2の判定者による独立のラベルはありません。人のラベル確認（署名）も未了です。** 署名がない間、実行器はこのセットでのループバック以外への送信を拒否します。
+- （作成時の記述）第2の判定者のラベルは、その後に付けてもらいました（下の「独立した2人目の判定者によるラベル」）。**人のラベル確認（署名）は未了です。** 署名がない間、実行器はこのセットでのループバック以外への送信を拒否します。
 - 40件なので、95% CI は広いままです。
 
 
@@ -138,3 +138,13 @@ VULNIX_NO_ENV_LOCAL=1 python3 -m scripts.run_model_evaluation compare --set hold
 - `comparison_holdout_v4.json`：`0259aa8e24b41673090a7450abfc7b37b9820dde896269a44c656b2bfa967020`
 - `comparison_holdout_v4_previous_judge.json`：`ac04920d9218fb044479162b781e4b107dd9cdf3d7fb50f6d5f8e81d76455907`
 - `holdout_v4_case_diff.json`：`c8bb932bafe546e0a11512ba1a8deca12876ebb5185ccbb7a213f7528b2307ea`
+
+
+## 結果の読み方（独立レビューを受けて追記）
+
+- **特異度 1.00 の意味**：採点では、判断不能のまま残った負例も TN（真陰性）に数えています。そのため、特異度 1.00 が意味するのは「誤検知がなかった」ことだけです。負例23件のうち、凍結した判定器が実際に「不成立」（または仕様が必要）と**判定できたのは6件**でした（005・008・013・023・033・036）。残りの17件は判断不能です。判断をしない固定 L1 も、特異度は同じく 1.00 になります。
+- **「誤った『安全』判定」の列**は、採点の `wrong_decision` から取っています。これは、誤った「仕様が必要」の判定も含みます。どちらの数え方でも、結果は0件です。
+- **以前の判定器**として比べたのは、v3 を評価した時点（コミット `c8931d7`、PR #109）の判定器です。次のファイルが、そのとき凍結したものと同じであることを確かめています。
+  - `aegis/diagnosis_judge.py`：SHA-256 `8aae15f94b5d71537867de505209b982432f02e5528af248faf9d7fdc254ebea`
+  - `aegis/evidence.py`：SHA-256 `08443b44d0d18b132b86101f614c6fc5c617de0d715e8654e5f144497b73d741`
+- **030・031** の「保留が妥当」というラベルは、Worker が本文を 4 KB までしか保持しないという実装上の事情に依存します。2人目の判定者と食い違ったのも、この2件です。この食い違いが影響するのは「正解または妥当な保留」の件数だけで、TP・FN には影響しません。
