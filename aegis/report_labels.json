@@ -1,0 +1,115 @@
+{
+ "DIAG_CHECK": {
+  "l1_http_probe": "認証なしの GET（L1）",
+  "l2_idor": "別アカウントでの読み取り検査（L2）"
+ },
+ "DIAG_CLAIM": {
+  "intended_public": "所有者が公開を意図した資源か",
+  "other_account_read": "別のアカウントが、B の資源を読めるか",
+  "unauthenticated_exposure": "認証なしで、アカウント資源が読めるか"
+ },
+ "DIAG_END": {
+  "aborted": "記録の整合を確かめられなかったため、結果は採用していません",
+  "all_settled": "すべての仮説を判断しました",
+  "audit_failed": "記録の整合を確かめられなかったため、結果は採用していません",
+  "check_mismatch": "記録の整合を確かめられなかったため、結果は採用していません",
+  "deadline": "上限に達したため止めました",
+  "evidence_mismatch": "記録の整合を確かめられなかったため、結果は採用していません",
+  "evidence_missing": "記録の整合を確かめられなかったため、結果は採用していません",
+  "execute_failed": "検査を実行できなかったため止めました",
+  "generation_changed": "記録の整合を確かめられなかったため、結果は採用していません",
+  "judge_failed": "記録の整合を確かめられなかったため、結果は採用していません",
+  "judgement_not_applied": "記録の整合を確かめられなかったため、結果は採用していません",
+  "l2_approval_missing": "L2 の承認がないため止めました",
+  "max_planner_rounds": "上限に達したため止めました",
+  "max_steps": "上限に達したため止めました",
+  "needs_spec": "所有者の仕様がないため、判断を保留しました",
+  "no_hypothesis": "確かめる仮説がありませんでした",
+  "no_progress": "新しい検査で状況が変わりませんでした。条件を見直してください",
+  "paused": "一時停止中のため止めました",
+  "planner_cost_limit": "上限に達したため止めました",
+  "planner_failed": "計画を作れなかったため止めました",
+  "requester_authority_revoked": "依頼者の権限が失効したため、結果は採用していません",
+  "stalled": "新しい検査で状況が変わりませんでした。条件を見直してください",
+  "state_from_another_run": "記録の整合を確かめられなかったため、結果は採用していません",
+  "stopped_or_reset": "停止またはリセットにより、この周回の結果は採用していません"
+ },
+ "DIAG_FINDING_STATUS": {
+  "candidate": "未計測の候補",
+  "detected": "検出（未実証）",
+  "fixture": "見本",
+  "incomplete": "未完了",
+  "not_reproduced": "再現せず",
+  "proven": "実証成功"
+ },
+ "DIAG_FIX_RESULT": {
+  "fixed": "改善を確認",
+  "not_fixed": "改善されていない",
+  "pending": "確認中"
+ },
+ "DIAG_FIX_STATE": {
+  "contradicted": "改善を確認",
+  "supported": "改善されていない"
+ },
+ "DIAG_PLAN_STATE": {
+  "AUTHORIZED": "実行を許可済み",
+  "CANCELLED": "中止（停止・リセット）",
+  "COMPLETED": "完了",
+  "CREATED": "準備中",
+  "EVIDENCE_RECORDED": "証拠を記録済み",
+  "EXECUTING": "検査を実行中",
+  "EXPIRED": "上限で終了",
+  "FAILED": "整合を確認できず終了",
+  "OBSERVED": "観測を整理中",
+  "PROPOSED": "検査を選択中",
+  "REJECTED": "中止（承認・権限）"
+ },
+ "DIAG_REASON": {
+  "collect_missing_evidence": "{h} の判断に足りない観測を集めるため",
+  "confirm_fix": "修正の後に、同じ検査で確かめ直すため",
+  "test_hypothesis": "{h} を確かめるため"
+ },
+ "DIAG_REFUSAL": {
+  "audit_chain_invalid": "監査ログのハッシュの鎖が壊れています",
+  "evidence_not_in_audit": "観測が指す検査結果が、検証済みの監査ログにありません",
+  "invalid_response": "サーバーの応答が、確かめられる形になっていません",
+  "journal_unreadable": "監査ログの記録から、診断の状態を組み立てられません",
+  "judgement_not_in_audit": "手順の判定が、監査ログにありません",
+  "observation_not_the_result": "手順の観測が、監査ログの検査結果と対応しません",
+  "result_not_in_audit": "手順の検査結果が、監査ログにありません",
+  "snapshot_mismatch": "保存ファイルが、別の診断のものです",
+  "snapshot_missing": "再起動の前の診断の保存ファイルがありません",
+  "snapshot_unreadable": "再起動の前の診断の保存ファイルを読めません",
+  "state_audit_mismatch": "診断の状態が、監査ログから組み立て直した内容と一致しません"
+ },
+ "DIAG_REQUIREMENT": {
+  "authentication_required": "認証必須",
+  "public": "公開",
+  "unspecified": "未指定"
+ },
+ "DIAG_RULE": {
+  "answered_without_auth_unverified": "認証なしで 200 が返ったが、保護された資源そのものかは確かめられない",
+  "check_not_relevant": "この検査では、この仮説を判断できない",
+  "control_failed": "所有者本人でも資源を確認できず、比べられなかった",
+  "cross_account_read": "所有者が「認証必須」とした資源を、別のアカウントが読めた",
+  "denied": "別のアカウントの要求は拒否された（401・403・404）",
+  "denied_without_auth": "認証なしの要求は拒否された",
+  "intended_public": "所有者の仕様で「公開」とされている",
+  "own_resource_only": "返ったのは、要求した本人の資源だった",
+  "spec_missing": "読めたが、誰が読めるべきかの仕様がない",
+  "unrecognised_answer": "応答の形が想定と違い、判断できなかった"
+ },
+ "DIAG_STATE": {
+  "contradicted": "反証（不成立）",
+  "inconclusive": "判断不能",
+  "needs_spec": "所有者の仕様が必要",
+  "open": "確認待ち",
+  "supported": "支持（成立）"
+ },
+ "REPRODUCTION": {
+  "incomplete": "再現 未完了",
+  "not_reproduced": "再現せず",
+  "proven": "再現 成立",
+  "unverified": "再現 未確認"
+ }
+}
