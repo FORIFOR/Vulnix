@@ -118,7 +118,7 @@ export default function LoginPage() {
             className={`rounded-lg py-2 transition ${
               mode === "login"
                 ? "bg-white text-zinc-900 shadow-xs dark:bg-zinc-900 dark:text-white"
-                : "text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
+                : "text-zinc-600 hover:text-zinc-900 dark:hover:text-zinc-200"
             }`}
           >
             ログイン
@@ -134,7 +134,7 @@ export default function LoginPage() {
             className={`rounded-lg py-2 transition ${
               mode === "register"
                 ? "bg-white text-zinc-900 shadow-xs dark:bg-zinc-900 dark:text-white"
-                : "text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
+                : "text-zinc-600 hover:text-zinc-900 dark:hover:text-zinc-200"
             }`}
           >
             新規アカウント登録

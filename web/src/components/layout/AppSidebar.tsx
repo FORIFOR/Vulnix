@@ -67,7 +67,8 @@ export function AppSidebar() {
             }`}
           >
             <span aria-hidden className="w-4 text-center">{n.icon}</span>
-            <span className="hidden sm:inline">{n.label}</span>
+            {/* the words stay readable by a screen reader when only the icon is shown */}
+            <span className="sr-only sm:not-sr-only">{n.label}</span>
           </Link>
         );
       })}
