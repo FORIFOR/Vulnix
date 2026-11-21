@@ -9,12 +9,14 @@
               --set holdout_v2 runs the second held-out set (docs/evaluation/HOLDOUT_V2.md)
               and writes comparison_holdout_v2.json (--name overrides the file name);
               --set holdout_v3 runs the third set, made after the judge was frozen
-              (docs/evaluation/HOLDOUT_V3.md), and writes comparison_holdout_v3.json.
+              (docs/evaluation/HOLDOUT_V3.md), and writes comparison_holdout_v3.json;
+              --set holdout_v4 runs the fourth set, made after the judge with 案2 was frozen
+              (docs/evaluation/HOLDOUT_V4.md), and writes comparison_holdout_v4.json.
     freeze    check (or with --write, record) the SHA-256 of the 16 regression conditions
               and of the development cases moved out of the first held-out set.
 
 Usage: VULNIX_NO_ENV_LOCAL=1 python3 -m scripts.run_model_evaluation {preview,compare,freeze}
-       [--out DIR] [--set holdout|holdout_v2|holdout_v3] [--name FILE]
+       [--out DIR] [--set holdout|holdout_v2|holdout_v3|holdout_v4] [--name FILE]
 """
 from __future__ import annotations
 
@@ -35,7 +37,7 @@ from aegis.evaluation.request_preview import config_sha256, cost_estimate  # noq
 from tests import TEST_CONFINEMENT  # noqa: E402
 from tests.artex_mock_llm import MockLLM  # noqa: E402
 from tests.diagnosis_planner import intents_from_facts  # noqa: E402
-from tests.evaluation.fixtures import holdout_v2_lab, holdout_v3_lab  # noqa: E402
+from tests.evaluation.fixtures import holdout_v2_lab, holdout_v3_lab, holdout_v4_lab  # noqa: E402
 from tests.evaluation.fixtures.holdout_lab import CASES, HoldoutLab  # noqa: E402
 from tests.test_artex_bridge import FAKE  # noqa: E402
 
@@ -55,6 +57,8 @@ HOLDOUT_V2_FILES = ("tests/evaluation/fixtures/holdout_v2_cases.json", "tests/ev
                     "tests/evaluation/fixtures/holdout_v2_truth.json")
 HOLDOUT_V3_FILES = ("tests/evaluation/fixtures/holdout_v3_cases.json", "tests/evaluation/fixtures/holdout_v3_lab.py",
                     "tests/evaluation/fixtures/holdout_v3_truth.json")
+HOLDOUT_V4_FILES = ("tests/evaluation/fixtures/holdout_v4_cases.json", "tests/evaluation/fixtures/holdout_v4_lab.py",
+                    "tests/evaluation/fixtures/holdout_v4_truth.json")
 # The first held-out cases the judge change (docs/evaluation/FAILURE_ANALYSIS.md) was derived
 # from. They are development / regression cases now and never score a judge or model change.
 DEVELOPMENT_CASES = ("holdout-001", "holdout-007", "holdout-010", "holdout-013", "holdout-014",
@@ -67,6 +71,9 @@ SETS = {
     "holdout_v3": {"cases": holdout_v3_lab.CASES,
                    "truth": json.loads((FIX / "holdout_v3_truth.json").read_text())["cases"],
                    "lab": holdout_v3_lab.HoldoutV3Lab, "out": "comparison_holdout_v3.json"},
+    "holdout_v4": {"cases": holdout_v4_lab.CASES,
+                   "truth": json.loads((FIX / "holdout_v4_truth.json").read_text())["cases"],
+                   "lab": holdout_v4_lab.HoldoutV4Lab, "out": "comparison_holdout_v4.json"},
 }
 
 

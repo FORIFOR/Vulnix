@@ -35,7 +35,7 @@ class TestHoldoutSet(unittest.TestCase):
                 self.assertEqual(t[k], self.second[c][k], (c, k))
 
     def test_no_diagnosis_code_reads_the_labels(self):
-        names = ("holdout_truth", "holdout_v2_truth", "holdout_v3_truth")
+        names = ("holdout_truth", "holdout_v2_truth", "holdout_v3_truth", "holdout_v4_truth")
         for path in (ROOT / "aegis").rglob("*.py"):
             if path.parent.name != "evaluation":
                 for name in names:
@@ -49,7 +49,7 @@ class TestHoldoutSet(unittest.TestCase):
                 for reader in ("json.loads(LABELS_FILE", "json.loads(labels_file", "LABELS_FILE.read_text",
                                "labels_file.read_text", "open(labels_file", "open(LABELS_FILE"):
                     self.assertNotIn(reader, text)
-        for lab in ("holdout_lab.py", "holdout_v2_lab.py", "holdout_v3_lab.py"):
+        for lab in ("holdout_lab.py", "holdout_v2_lab.py", "holdout_v3_lab.py", "holdout_v4_lab.py"):
             for name in names:
                 self.assertNotIn(name, (FIX / lab).read_text())
 
@@ -236,6 +236,102 @@ class TestHoldoutV3Set(unittest.TestCase):
         for wrong in ("holdout", "holdout_v2"):
             with self.assertRaises(ValueError):
                 run_case("holdout-v3-001", self.cases["holdout-v3-001"], "fixed_rule", None, label_set=wrong)
+
+
+class TestHoldoutV4Set(unittest.TestCase):
+    """The fourth held-out set, made after the judge with 案2 was frozen (docs/evaluation/HOLDOUT_V4.md).
+    Nothing here runs the judge, a Worker or a planner on the v4 cases."""
+
+    def setUp(self):
+        self.cases = json.loads((FIX / "holdout_v4_cases.json").read_text())["cases"]
+        self.truth = json.loads((FIX / "holdout_v4_truth.json").read_text())["cases"]
+        self.doc = (ROOT / "docs/evaluation/HOLDOUT_V4.md").read_text()
+
+    def test_forty_new_cases(self):
+        self.assertEqual(len(self.cases), 40)
+        self.assertEqual(set(self.cases), set(self.truth))
+        self.assertEqual(Counter(t["category"] for t in self.truth.values()),
+                         {"authorization_idor": 5, "fix_recheck": 6, "near_miss": 8, "decoy_200": 5,
+                          "truncated_body": 4, "auth_public_spec": 3, "spec_missing_or_no_check": 4,
+                          "no_owner_control": 2, "rate_limited": 3})
+        for other in ("holdout_cases.json", "holdout_v2_cases.json", "holdout_v3_cases.json"):
+            self.assertFalse(set(self.cases) & set(json.loads((FIX / other).read_text())["cases"]))
+
+    def test_the_files_are_the_ones_recorded_at_creation(self):
+        for name in ("holdout_v4_cases.json", "holdout_v4_truth.json", "holdout_v4_lab.py"):
+            digest = hashlib.sha256((FIX / name).read_bytes()).hexdigest()
+            self.assertIn(f"`tests/evaluation/fixtures/{name}` | `{digest}`", self.doc, name)
+
+    def test_the_record_names_the_frozen_judge_and_retires_v2_v3(self):
+        frozen = (ROOT / "docs/evaluation/FROZEN_JUDGE_V4.md").read_text(encoding="utf-8")
+        import re
+        rows = re.findall(r"\| `([^`]+)` \| `([0-9a-f]{64})` \|", frozen)
+        self.assertGreaterEqual(len(rows), 7)
+        for path, digest in rows:
+            self.assertIn(f"`{path}` | `{digest}`", self.doc, path)
+        self.assertIn("v2 と v3 は、この時点から開発・回帰用のセットです", self.doc)
+
+    def test_case_ids_and_behaviour_carry_no_answer(self):
+        text = json.dumps(self.cases).lower()
+        for word in ("supported", "contradicted", "needs_spec", "vulnerable", "idor", "category", "fixed\"",
+                     "near_miss", "decoy", "withhold"):
+            self.assertNotIn(word, text)
+        self.assertTrue(all(c.startswith("holdout-v4-") and c[11:].isdigit() for c in self.cases))
+
+    def test_every_answer_the_cases_name_exists(self):
+        from tests.evaluation.fixtures.holdout_v4_lab import JSON_BODIES, TEXT_BODIES
+        for cid, c in self.cases.items():
+            for answers in (c["resource"], c.get("after_fix") or {}):
+                for who, (status, body) in answers.items():
+                    self.assertIn(body, {**JSON_BODIES, **TEXT_BODIES}, (cid, who))
+            self.assertIn(c["root"]["body"], JSON_BODIES, cid)
+
+    def test_a_separate_human_sign_off_is_required(self):
+        from aegis.evaluation.budget_ledger import LedgerError
+        from aegis.evaluation.evaluation_runner import require_label_signoff
+        template = json.loads((ROOT / "docs/evaluation/label_signoff_holdout_v4.template.json").read_text())
+        self.assertEqual(template["label_set"], "holdout_v4")
+        with self.assertRaises(LedgerError):
+            require_label_signoff(template, "holdout_v4")
+        self.assertFalse((ROOT / "docs/evaluation/label_signoff_holdout_v4.json").exists(),
+                         "the sign-off is written by a human reviewer, never generated")
+        digests = {s: hashlib.sha256((FIX / f).read_bytes()).hexdigest() for s, f in (
+            ("holdout", "holdout_truth.json"), ("holdout_v2", "holdout_v2_truth.json"),
+            ("holdout_v3", "holdout_v3_truth.json"), ("holdout_v4", "holdout_v4_truth.json"))}
+        base = {"reviewer_kind": "human", "reviewer": "owner", "completed": "2026-11-22",
+                "disagreements_resolved": True}
+        earlier = [{**base, "labels_sha256": digests["holdout"]}] + [
+            {**base, "labels_sha256": digests[s], "label_set": s} for s in ("holdout_v2", "holdout_v3")]
+        require_label_signoff(earlier[0])                         # the earlier gates are unchanged
+        require_label_signoff(earlier[1], "holdout_v2")
+        require_label_signoff(earlier[2], "holdout_v3")
+        for old in earlier:                                       # a v1 / v2 / v3 sign-off never opens v4
+            for bad in (old, {**old, "label_set": "holdout_v4"}, {**old, "labels_sha256": digests["holdout_v4"]}):
+                with self.assertRaises(LedgerError):
+                    require_label_signoff(bad, "holdout_v4")
+        fourth = {**base, "labels_sha256": digests["holdout_v4"], "label_set": "holdout_v4"}
+        require_label_signoff(fourth, "holdout_v4")
+        for other in ("holdout", "holdout_v2", "holdout_v3"):    # and the v4 sign-off opens nothing else
+            with self.assertRaises(LedgerError):
+                require_label_signoff(fourth, other)
+
+    def test_a_fourth_set_case_is_gated_by_its_own_set(self):
+        """The label set check fails before any lab, Worker or judge is started (harness None)."""
+        from aegis.evaluation.evaluation_runner import run_case
+        for wrong in ("holdout", "holdout_v2", "holdout_v3"):
+            with self.assertRaises(ValueError):
+                run_case("holdout-v4-001", self.cases["holdout-v4-001"], "fixed_rule", None, label_set=wrong)
+
+    def test_the_compare_command_knows_the_set_without_running_it(self):
+        text = (ROOT / "scripts/run_model_evaluation.py").read_text()
+        self.assertIn('"holdout_v4": {"cases": holdout_v4_lab.CASES', text)
+        self.assertIn('"out": "comparison_holdout_v4.json"', text)
+        # v4 was run once, after the freeze: the stored result is that run (a rerun that
+        # overwrote it would change its hash and must be recorded as a new evaluation)
+        import hashlib
+        out = ROOT / "docs/evaluation/comparison_holdout_v4.json"
+        doc = (ROOT / "docs/evaluation/HOLDOUT_V4.md").read_text(encoding="utf-8")
+        self.assertIn(f"`comparison_holdout_v4.json`：`{hashlib.sha256(out.read_bytes()).hexdigest()}`", doc)
 
 
 if __name__ == "__main__":
