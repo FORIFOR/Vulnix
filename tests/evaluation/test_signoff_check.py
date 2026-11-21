@@ -55,11 +55,15 @@ class TestSignoffCheck(unittest.TestCase):
                 require_label_signoff(json.loads(path.read_text()))
 
     def test_the_check_never_writes_a_signoff(self):
-        self.assertFalse(SIGNOFF.exists())
-        code, out = run("signoff-check")
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        missing = Path(tmp.name) / "label_signoff.json"      # never the real file
+        code, out = run("signoff-check", "--file", str(missing))
         self.assertEqual(code, 1)
         self.assertIn("署名のファイルがありません", out)
-        self.assertFalse(SIGNOFF.exists(), "the check must not create the sign-off")
+        self.assertFalse(missing.exists(), "the check must not create the sign-off")
+        self.assertEqual(list(Path(tmp.name).iterdir()), [])
+        self.assertEqual(SIGNOFF.name, "label_signoff.json")
 
 
 if __name__ == "__main__":
