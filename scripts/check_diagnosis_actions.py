@@ -110,7 +110,7 @@ def main() -> None:
         base = f"http://127.0.0.1:{web_port}"
         web = subprocess.Popen([str(ROOT / "web/node_modules/.bin/next"), "start" if args.production else "dev",
                                 "-H", "127.0.0.1", "-p", str(web_port)], cwd=ROOT / "web",
-                               env={**os.environ, "AEGIS_API": f"http://127.0.0.1:{port}"},
+                               env={**os.environ, "AEGIS_API": f"http://127.0.0.1:{port}", "NEXT_TELEMETRY_DISABLED": "1"},
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         stack.callback(web.terminate)
         wait_for_web(base, web)
