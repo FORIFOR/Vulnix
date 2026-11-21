@@ -93,6 +93,9 @@ class RunnerBase(unittest.TestCase):
         self.svc = AssessmentService(Path(tmp.name), LAB_PORT, l2_confinement=TEST_CONFINEMENT,
                                      verify_seconds=0.1)
         self.addCleanup(self.svc.workers.kill_all)
+        # close (not only kill workers): an open service keeps its scope-expiry thread,
+        # which busy-loops under a later test's patched time.sleep and starves CI
+        self.addCleanup(self.svc.close)
         self.rounds: list[list[dict]] = []
         self.planner_calls = 0
         original = assessment_module.run_artex_planner

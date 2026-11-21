@@ -256,6 +256,8 @@ class ServiceBase(unittest.TestCase):
             self.svc = AssessmentService(Path(self.tmp.name), LAB_PORT, l2_confinement=TEST_CONFINEMENT,
                                          verify_seconds=0.1)
         self.addCleanup(self.svc.workers.kill_all)
+        # close the service too: see tests/test_adaptive_plan_runner.py
+        self.addCleanup(self.svc.close)
 
     def plan(self):
         snap = self.svc.plan_with_artex("op")
@@ -902,7 +904,7 @@ class TestThePlanThroughTheGateway(ServiceBase):
     def test_not_configured_and_real_service_are_refused(self):
         with patch.dict(os.environ, {"VULNIX_ARTEX_REAL_CMD": ""}):
             svc = AssessmentService(Path(self.tmp.name) / "b", LAB_PORT, l2_confinement=TEST_CONFINEMENT)
-        self.addCleanup(svc.workers.kill_all)
+        self.addCleanup(svc.close)
         with self.assertRaises(ValueError):
             svc.plan_with_artex("op")
         with patch.object(AssessmentService, "_is_external_service_asset", return_value=True):
