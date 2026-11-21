@@ -253,6 +253,17 @@ jobs:
           python3 -c "import json,sys; print(json.dumps(json.load(open(sys.argv[1]))['summary'], indent=1))" \
             "$RUNNER_TEMP/diagnosis-loop-comparison.json"
 
+      - name: Held-out diagnosis evaluation (30 unseen cases; no model is called)
+        env:
+          VULNIX_ARTEX_REAL_BIN: ${{ runner.temp }}/artex-vulnix-planner
+          VULNIX_ARTEX_PG_DSN: postgres://artex_planner:artex-planner-ci-only@127.0.0.1:5432/artex_planner?sslmode=disable
+          VULNIX_ARTEX_CONFINE: "1"
+        run: |
+          VULNIX_NO_ENV_LOCAL=1 python3 -m scripts.run_model_evaluation freeze
+          VULNIX_NO_ENV_LOCAL=1 python3 -m scripts.run_model_evaluation compare --out "$RUNNER_TEMP/eval" > /dev/null
+          python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(json.dumps({m: {k: s[k] for k in ('outcomes','tp','fp','fn','tn','precision','recall','unnecessary_checks','worker_launches','target_gets')} for m, s in d['summary'].items()}, indent=1)); sys.exit(1 if d['external_connection_attempts'] or d['checks_failed'] else 0)" \
+            "$RUNNER_TEMP/eval/comparison_ci.json"
+
       - name: Same-lab status precision and cost comparison with real ARTEX
         env:
           VULNIX_ARTEX_REAL_BIN: ${{ runner.temp }}/artex-vulnix-planner

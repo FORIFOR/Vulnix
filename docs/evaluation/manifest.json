@@ -1,0 +1,114 @@
+{
+  "evaluation_id": "vulnix-eval-001",
+  "created": "2026-11-21",
+  "dry_run": true,
+  "external_calls_enabled": false,
+  "models": {
+    "abliterated-model": {
+      "key": "abliterated-model",
+      "provider": "abliteration",
+      "model_id": "abliterated-model",
+      "price_in_per_m": 3.0,
+      "price_out_per_m": 3.0,
+      "official_price_in_per_m": 1.0,
+      "official_price_out_per_m": 3.0,
+      "price_source": "https://docs.abliteration.ai/pricing.md (official $1/$3); owner's plan $3/$3 kept as the higher",
+      "price_checked": "2026-11-21",
+      "max_input_tokens": 2000,
+      "max_output_tokens": 2048,
+      "overhead_tokens": 50,
+      "api_spec": "sent_before",
+      "sendable": false,
+      "notes": "reasoning_effort none turns reasoning off (docs/ABLITERATION_SELECTION_REAL_RESULT.md, 2026-11-19)",
+      "config_sha256": "6181b113e499bf6dfea38dcb3a76813acb65672a22379b407f915c6a3a779bc9"
+    },
+    "abliterated-model-large-v2": {
+      "key": "abliterated-model-large-v2",
+      "provider": "abliteration",
+      "model_id": "abliterated-model-large-v2",
+      "price_in_per_m": 5.0,
+      "price_out_per_m": 5.0,
+      "official_price_in_per_m": 3.0,
+      "official_price_out_per_m": 5.0,
+      "price_source": "https://docs.abliteration.ai/pricing.md (official $3/$5); owner's plan $5/$5 kept as the higher",
+      "price_checked": "2026-11-21",
+      "max_input_tokens": 2000,
+      "max_output_tokens": 2048,
+      "overhead_tokens": 50,
+      "api_spec": "docs_only",
+      "sendable": false,
+      "notes": "reasoning cannot be turned off (docs: none maps to low); reasoning may use the output cap, an answer cut by length is rejected, never retried",
+      "config_sha256": "1a9072f3ca326a4680c0f8fb07f9c2a10a4301f178b3a21a7408dcc2b53b6cd8"
+    },
+    "claude-sonnet-5-5": {
+      "key": "claude-sonnet-5-5",
+      "provider": "anthropic",
+      "model_id": "claude-sonnet-5-5",
+      "price_in_per_m": 2.0,
+      "price_out_per_m": 10.0,
+      "official_price_in_per_m": 2.0,
+      "official_price_out_per_m": 10.0,
+      "price_source": "Anthropic API pricing, Claude Sonnet 5.5 $2/$10 (reference cached 2026-11-03)",
+      "price_checked": "2026-11-21",
+      "max_input_tokens": 2000,
+      "max_output_tokens": 2048,
+      "overhead_tokens": 400,
+      "api_spec": "docs_only",
+      "sendable": false,
+      "notes": "structured output (output_config.format json_schema), effort low, no fallback model",
+      "config_sha256": "630e97c013938b81998e24ac42a72ebe4a06e5785b6c0c395d7732a120a6fdcd"
+    }
+  },
+  "baselines": [
+    "fixed_l1",
+    "fixed_rule",
+    "local_model"
+  ],
+  "limits": {
+    "max_steps": 3,
+    "max_planner_rounds": 2,
+    "max_seconds": 300,
+    "max_planner_cost_usd": 1.0,
+    "max_stalled_steps": 2,
+    "max_total_cost_usd": 5.0,
+    "max_cases": 30,
+    "max_requests_per_case_per_model_per_phase": 2
+  },
+  "template_sha256": "8199a77b144cc0e30d803cac5fd717ed42d48982ec47bae97809117ab7091ae0",
+  "holdout": {
+    "cases": 30,
+    "files": {
+      "tests/evaluation/fixtures/holdout_cases.json": "bc5a083c83543b1d3986d5a6aa8fc6bdaea8aa66514172254c21f870cb149b24",
+      "tests/evaluation/fixtures/holdout_lab.py": "0b68e55cc53c0bd770dc5c0f96231ecd77726fe59fc5695c7a04d2bbba1f60e1",
+      "tests/evaluation/fixtures/holdout_truth.json": "c82b58104ddc0881603052b504aca617bb56002f29d8bd50e320f1a8dc33114f",
+      "tests/evaluation/fixtures/holdout_truth_independent.json": "49fdd9fb78e56440dc18606c608bcfd785e31d10be327415bc7cbe144a872a8a"
+    }
+  },
+  "regression": {
+    "conditions": 16,
+    "files": {
+      "tests/fixtures/access_control_lab.py": "0db6cbd3929c98504bd84be6e89fa3929c2ea937d23dee707206f45e65f8c73d",
+      "tests/fixtures/access_control_truth.json": "161ba0c32b3ed8dcb75d2eaa495dc1e651f4529c357e43181b25380691b3e5e7",
+      "tests/fixtures/access_control_owner_specs.json": "33749f063ec2e8c999a13e9e280a8e3cab3fbce3dd666f8e1dd56edaf1f5fd56",
+      "tests/fixtures/access_control_loop_truth.json": "6fc4ba769b985a63bd857b24e8a7d430460cead6fe7fd13cf37e733922920adb",
+      "tests/fixtures/access_control_loop_owner_specs.json": "462fe0aa10788a6b9d25cfd7a9daef32c272d011fed4550735dae7fd31e591e6"
+    },
+    "use": "development and regression only; never in the model selection score"
+  },
+  "previews": {
+    "requests": 81,
+    "per_model": {
+      "abliterated-model": 27,
+      "abliterated-model-large-v2": 27,
+      "claude-sonnet-5-5": 27
+    },
+    "cases_without_a_request": [
+      "holdout-018",
+      "holdout-019",
+      "holdout-022"
+    ],
+    "requests_jsonl_sha256": "0997e6667457568b8fb543ccc2b5121ee01e9e14de119859a13967349b23ecc0"
+  },
+  "external_connection_attempts": 0,
+  "api_keys_read": 0
+}
