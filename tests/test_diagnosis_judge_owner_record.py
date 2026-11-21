@@ -51,8 +51,6 @@ JSON_DATA = {
 NEAR_MISS = {
     "marker_only": {"message": f"example payload: {MARKER}"},
     "b_resource_id_only": {"id": "res_b_001", "title": "quarterly notes"},
-    "b_record_nested": {"caller_account": "acct_A", "data": {"resource_id": "res_b_001",
-                                                             "confidential_marker": MARKER}},
     "b_named_without_identifiers": {"owner": "acct_B", "balance_note": "lab-only data"},
     "html_not_a_login_page": HTML_LANDING,
     "html_search_form_and_login_link": ('<html><body><a href="/login">Log in</a><form action="/search">'
@@ -67,6 +65,12 @@ NEAR_MISS = {
     "identifier_json_escaped": '{"id": "res\\u005fb\\u005f001"}',
     "truncated_excerpt": "<html><body><form>Sign in" + "x" * 5000,
 }
+
+# B's record nested in an envelope. It was a near miss while only the answer's self-report could
+# support; with 案2 (docs/evaluation/JUDGE_IDENTITY_MATCH.md) B's resource id and confidential
+# marker, measured against B's own control, decide "supported". It must still never be closed
+# by the absence rule.
+B_RECORD_NESTED = {"caller_account": "acct_A", "data": {"resource_id": "res_b_001", "confidential_marker": MARKER}}
 
 
 def idor_result(response, *, status=200, control=True, control_response=None, truncated=False):
@@ -131,6 +135,10 @@ class TestOwnerRecordAbsent(JudgeCase):
         for name, body in NEAR_MISS.items():
             with self.subTest(name):
                 self.assertEqual(self.idor(body), ("inconclusive", "unrecognised_answer"))
+
+    def test_b_record_nested_is_supported_by_the_owner_record_match_never_closed(self):
+        self.assertEqual(self.idor(B_RECORD_NESTED), ("supported", "cross_account_read"))
+        self.assertEqual(self.idor(B_RECORD_NESTED, truncated=True), ("inconclusive", "unrecognised_answer"))
 
     def test_identifiers_come_from_the_owner_control_in_the_worker_result(self):
         control = {**OWNER, "resource_id": "zz_custom_77", "confidential_marker": "ZZ_MARK"}
@@ -240,7 +248,7 @@ class TestOwnerRecordAbsentWithoutAuth(JudgeCase):
                 self.assertEqual(self.l1(body), ("contradicted", "owner_record_absent_without_auth"))
 
     def test_near_misses_stay_unsettled(self):
-        for name, body in NEAR_MISS.items():
+        for name, body in {**NEAR_MISS, "b_record_nested": B_RECORD_NESTED}.items():
             with self.subTest(name):
                 self.assertEqual(self.l1(body), ("inconclusive", "answered_without_auth_unverified"))
         self.assertEqual(self.l1({"owner": "acct_B", "balance_note": "lab-only data"}),
@@ -276,7 +284,7 @@ class TestTheNewRulesNeverSupport(JudgeCase):
             self.assertEqual(calls, ["contradicted"], rule)
 
     def test_every_combination_never_supports_by_a_new_rule(self):
-        bodies = list(ABSENT.values()) + list(NEAR_MISS.values()) + [OWNER, CROSS, None]
+        bodies = list(ABSENT.values()) + list(NEAR_MISS.values()) + [OWNER, CROSS, B_RECORD_NESTED, None]
         for body, status, spec, control in itertools.product(
                 bodies, (200, 403, 500), ("authentication_required", "unspecified", None), (True, False)):
             if body is None:
@@ -304,8 +312,10 @@ class TestExistingVerdictsUnchanged(JudgeCase):
             self.assertEqual(self.idor({"error": "forbidden"}, status=status), ("contradicted", "denied"))
         self.assertEqual(self.idor({"caller_account": "acct_A", "resource_owner": "acct_A"}),
                          ("contradicted", "own_resource_only"))
-        # B's record served to A but announced as B's own answer: still unrecognised (案2 is not implemented)
-        self.assertEqual(self.idor(OWNER), ("inconclusive", "unrecognised_answer"))
+        # B's record served to A but announced as B's own answer (holdout-030): with 案2 the
+        # measured match with B's control decides, not the answer's "caller_account"
+        # (docs/evaluation/JUDGE_IDENTITY_MATCH.md); before 案2 this was unrecognised_answer
+        self.assertEqual(self.idor(OWNER), ("supported", "cross_account_read"))
 
     def test_unauthenticated_exposure(self):
         for status in (401, 403, 404):
