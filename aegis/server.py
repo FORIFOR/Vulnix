@@ -501,6 +501,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     return self._get_org(p, u, *bound)  # long stream: per-batch lease below
                 if p in {f"/api/assessments/{bound[0].a.id}",
                          f"/api/assessments/{bound[0].a.id}/logs",
+                         f"/api/assessments/{bound[0].a.id}/diagnosis",
                          f"/api/assessments/{bound[0].a.id}/report",
                          f"/api/assessments/{bound[0].a.id}/remotion"}:
                     # Large audit reads and report formatting must not hold the
@@ -520,6 +521,11 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         payload = bound[0].snapshot()
                     elif p.endswith("/logs"):
                         payload = bound[0].logs()
+                    elif p.endswith("/diagnosis"):
+                        payload = bound[0].diagnosis_view()
+                        if payload is None:          # a real service: there is no such view
+                            return self._authorized_org_read(sess, org, lambda _: self._json(
+                                404, {"error": "診断ループは登録済みのローカル検証ラボでのみ表示できます"}))
                     elif p.endswith("/report"):
                         payload = {"markdown": bound[0].report_markdown(),
                                    "filename": f"vulnix-report-{bound[0].a.id}.md"}
@@ -595,6 +601,11 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 return self._json(200, svc.snapshot())
             if p == f"/api/assessments/{svc.a.id}/logs":
                 return self._json(200, svc.logs())
+            if p == f"/api/assessments/{svc.a.id}/diagnosis":
+                view = svc.diagnosis_view()
+                if view is None:
+                    return self._json(404, {"error": "診断ループは登録済みのローカル検証ラボでのみ表示できます"})
+                return self._json(200, view)
             if p == f"/api/assessments/{svc.a.id}/artex/llm-preview":
                 # what the planner model was (or would be) sent: approver review only
                 if not sess or "approver" not in sess.roles:
