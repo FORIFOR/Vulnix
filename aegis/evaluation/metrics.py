@@ -73,7 +73,6 @@ def score(rows: list[dict], truth: dict) -> dict:
         ok = got == want
         if ok:
             s["correct"] += 1
-            cat["correct"] += 1
             s["needs_spec_correct"] += got == "needs_spec"
         # (a) detection confusion matrix: positive = "another account can read B's record"
         if got == "supported":
