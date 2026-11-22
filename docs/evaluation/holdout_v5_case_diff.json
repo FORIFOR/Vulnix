@@ -1,0 +1,405 @@
+{
+ "about": "holdout v5, fixed_rule: per-case, v4-frozen judge vs v5-frozen judge",
+ "cases": [
+  {
+   "case_id": "holdout-v5-001",
+   "category": "decoy_200",
+   "truth": "contradicted",
+   "v4_judge": "inconclusive",
+   "v5_judge": "inconclusive",
+   "unauth_truth": "contradicted",
+   "unauth_v4": "inconclusive",
+   "unauth_v5": "inconclusive"
+  },
+  {
+   "case_id": "holdout-v5-002",
+   "category": "fix_recheck",
+   "truth": "supported",
+   "v4_judge": "supported",
+   "v5_judge": "supported",
+   "unauth_truth": "contradicted",
+   "unauth_v4": "contradicted",
+   "unauth_v5": "contradicted"
+  },
+  {
+   "case_id": "holdout-v5-003",
+   "category": "fix_recheck",
+   "truth": "supported",
+   "v4_judge": "inconclusive",
+   "v5_judge": "supported",
+   "unauth_truth": "contradicted",
+   "unauth_v4": "contradicted",
+   "unauth_v5": "contradicted"
+  },
+  {
+   "case_id": "holdout-v5-004",
+   "category": "authorization_idor",
+   "truth": "supported",
+   "v4_judge": "supported",
+   "v5_judge": "supported",
+   "unauth_truth": "contradicted",
+   "unauth_v4": "contradicted",
+   "unauth_v5": "contradicted"
+  },
+  {
+   "case_id": "holdout-v5-005",
+   "category": "spec_missing_or_no_check",
+   "truth": "needs_spec",
+   "v4_judge": "needs_spec",
+   "v5_judge": "needs_spec",
+   "unauth_truth": "contradicted",
+   "unauth_v4": "contradicted",
+   "unauth_v5": "contradicted"
+  },
+  {
+   "case_id": "holdout-v5-006",
+   "category": "near_miss",
+   "truth": "contradicted",
+   "v4_judge": "inconclusive",
+   "v5_judge": "inconclusive",
+   "unauth_truth": "contradicted",
+   "unauth_v4": "contradicted",
+   "unauth_v5": "contradicted"
+  },
+  {
+   "case_id": "holdout-v5-007",
+   "category": "rate_limited",
+   "truth": "contradicted",
+   "v4_judge": "inconclusive",
+   "v5_judge": "inconclusive",
+   "unauth_truth": "contradicted",
+   "unauth_v4": "contradicted",
+   "unauth_v5": "contradicted"
+  },
+  {
+   "case_id": "holdout-v5-008",
+   "category": "truncated_body",
+   "truth": "supported",
+   "v4_judge": "inconclusive",
+   "v5_judge": "inconclusive",
+   "unauth_truth": "contradicted",
+   "unauth_v4": "contradicted",
+   "unauth_v5": "contradicted"
+  },
+  {
+   "case_id": "holdout-v5-009",
+   "category": "decoy_200",
+   "truth": "contradicted",
+   "v4_judge": "inconclusive",
+   "v5_judge": "inconclusive",
+   "unauth_truth": "contradicted",
+   "unauth_v4": "contradicted",
+   "unauth_v5": "contradicted"
+  },
+  {
+   "case_id": "holdout-v5-010",
+   "category": "no_owner_control",
+   "truth": "supported",
+   "v4_judge": "inconclusive",
+   "v5_judge": "inconclusive",
+   "unauth_truth": "contradicted",
+   "unauth_v4": "contradicted",
+   "unauth_v5": "contradicted"
+  },
+  {
+   "case_id": "holdout-v5-011",
+   "category": "authorization_idor",
+   "truth": "supported",
+   "v4_judge": "inconclusive",
+   "v5_judge": "supported",
+   "unauth_truth": "contradicted",
+   "unauth_v4": "contradicted",
+   "unauth_v5": "contradicted"
+  },
+  {
+   "case_id": "holdout-v5-012",
+   "category": "rate_limited",
+   "truth": "contradicted",
+   "v4_judge": "inconclusive",
+   "v5_judge": "inconclusive",
+   "unauth_truth": "contradicted",
+   "unauth_v4": "contradicted",
+   "unauth_v5": "contradicted"
+  },
+  {
+   "case_id": "holdout-v5-013",
+   "category": "authorization_idor",
+   "truth": "supported",
+   "v4_judge": "supported",
+   "v5_judge": "supported",
+   "unauth_truth": "contradicted",
+   "unauth_v4": "contradicted",
+   "unauth_v5": "contradicted"
+  },
+  {
+   "case_id": "holdout-v5-014",
+   "category": "decoy_200",
+   "truth": "contradicted",
+   "v4_judge": "inconclusive",
+   "v5_judge": "inconclusive",
+   "unauth_truth": "contradicted",
+   "unauth_v4": "contradicted",
+   "unauth_v5": "contradicted"
+  },
+  {
+   "case_id": "holdout-v5-015",
+   "category": "fix_recheck",
+   "truth": "supported",
+   "v4_judge": "inconclusive",
+   "v5_judge": "inconclusive",
+   "unauth_truth": "contradicted",
+   "unauth_v4": "contradicted",
+   "unauth_v5": "contradicted"
+  },
+  {
+   "case_id": "holdout-v5-016",
+   "category": "no_owner_control",
+   "truth": "contradicted",
+   "v4_judge": "inconclusive",
+   "v5_judge": "inconclusive",
+   "unauth_truth": "contradicted",
+   "unauth_v4": "contradicted",
+   "unauth_v5": "contradicted"
+  },
+  {
+   "case_id": "holdout-v5-017",
+   "category": "near_miss",
+   "truth": "contradicted",
+   "v4_judge": "inconclusive",
+   "v5_judge": "inconclusive",
+   "unauth_truth": "contradicted",
+   "unauth_v4": "contradicted",
+   "unauth_v5": "contradicted"
+  },
+  {
+   "case_id": "holdout-v5-018",
+   "category": "auth_public_spec",
+   "truth": "supported",
+   "v4_judge": "supported",
+   "v5_judge": "supported",
+   "unauth_truth": "supported",
+   "unauth_v4": "inconclusive",
+   "unauth_v5": "inconclusive"
+  },
+  {
+   "case_id": "holdout-v5-019",
+   "category": "near_miss",
+   "truth": "contradicted",
+   "v4_judge": "inconclusive",
+   "v5_judge": "inconclusive",
+   "unauth_truth": "contradicted",
+   "unauth_v4": "contradicted",
+   "unauth_v5": "contradicted"
+  },
+  {
+   "case_id": "holdout-v5-020",
+   "category": "truncated_body",
+   "truth": "supported",
+   "v4_judge": "inconclusive",
+   "v5_judge": "supported",
+   "unauth_truth": "contradicted",
+   "unauth_v4": "contradicted",
+   "unauth_v5": "contradicted"
+  },
+  {
+   "case_id": "holdout-v5-021",
+   "category": "decoy_200",
+   "truth": "contradicted",
+   "v4_judge": "inconclusive",
+   "v5_judge": "inconclusive",
+   "unauth_truth": "contradicted",
+   "unauth_v4": "inconclusive",
+   "unauth_v5": "inconclusive"
+  },
+  {
+   "case_id": "holdout-v5-022",
+   "category": "near_miss",
+   "truth": "contradicted",
+   "v4_judge": "inconclusive",
+   "v5_judge": "inconclusive",
+   "unauth_truth": "contradicted",
+   "unauth_v4": "contradicted",
+   "unauth_v5": "contradicted"
+  },
+  {
+   "case_id": "holdout-v5-023",
+   "category": "auth_public_spec",
+   "truth": "contradicted",
+   "v4_judge": "contradicted",
+   "v5_judge": "contradicted",
+   "unauth_truth": "supported",
+   "unauth_v4": "inconclusive",
+   "unauth_v5": "inconclusive"
+  },
+  {
+   "case_id": "holdout-v5-024",
+   "category": "spec_missing_or_no_check",
+   "truth": "contradicted",
+   "v4_judge": "contradicted",
+   "v5_judge": "contradicted",
+   "unauth_truth": "contradicted",
+   "unauth_v4": "contradicted",
+   "unauth_v5": "contradicted"
+  },
+  {
+   "case_id": "holdout-v5-025",
+   "category": "truncated_body",
+   "truth": "supported",
+   "v4_judge": "inconclusive",
+   "v5_judge": "inconclusive",
+   "unauth_truth": "contradicted",
+   "unauth_v4": "contradicted",
+   "unauth_v5": "contradicted"
+  },
+  {
+   "case_id": "holdout-v5-026",
+   "category": "authorization_idor",
+   "truth": "supported",
+   "v4_judge": "inconclusive",
+   "v5_judge": "inconclusive",
+   "unauth_truth": "contradicted",
+   "unauth_v4": "contradicted",
+   "unauth_v5": "contradicted"
+  },
+  {
+   "case_id": "holdout-v5-027",
+   "category": "decoy_200",
+   "truth": "contradicted",
+   "v4_judge": "inconclusive",
+   "v5_judge": "inconclusive",
+   "unauth_truth": "contradicted",
+   "unauth_v4": "contradicted",
+   "unauth_v5": "contradicted"
+  },
+  {
+   "case_id": "holdout-v5-028",
+   "category": "near_miss",
+   "truth": "contradicted",
+   "v4_judge": "inconclusive",
+   "v5_judge": "inconclusive",
+   "unauth_truth": "contradicted",
+   "unauth_v4": "contradicted",
+   "unauth_v5": "contradicted"
+  },
+  {
+   "case_id": "holdout-v5-029",
+   "category": "fix_recheck",
+   "truth": "supported",
+   "v4_judge": "supported",
+   "v5_judge": "supported",
+   "unauth_truth": "contradicted",
+   "unauth_v4": "contradicted",
+   "unauth_v5": "contradicted"
+  },
+  {
+   "case_id": "holdout-v5-030",
+   "category": "fix_recheck",
+   "truth": "supported",
+   "v4_judge": "supported",
+   "v5_judge": "supported",
+   "unauth_truth": "contradicted",
+   "unauth_v4": "contradicted",
+   "unauth_v5": "contradicted"
+  },
+  {
+   "case_id": "holdout-v5-031",
+   "category": "near_miss",
+   "truth": "contradicted",
+   "v4_judge": "inconclusive",
+   "v5_judge": "inconclusive",
+   "unauth_truth": "contradicted",
+   "unauth_v4": "contradicted",
+   "unauth_v5": "contradicted"
+  },
+  {
+   "case_id": "holdout-v5-032",
+   "category": "fix_recheck",
+   "truth": "supported",
+   "v4_judge": "supported",
+   "v5_judge": "supported",
+   "unauth_truth": "contradicted",
+   "unauth_v4": "contradicted",
+   "unauth_v5": "contradicted"
+  },
+  {
+   "case_id": "holdout-v5-033",
+   "category": "spec_missing_or_no_check",
+   "truth": "not_applicable",
+   "v4_judge": "not_applicable",
+   "v5_judge": "not_applicable",
+   "unauth_truth": "not_applicable",
+   "unauth_v4": "not_applicable",
+   "unauth_v5": "not_applicable"
+  },
+  {
+   "case_id": "holdout-v5-034",
+   "category": "near_miss",
+   "truth": "contradicted",
+   "v4_judge": "inconclusive",
+   "v5_judge": "inconclusive",
+   "unauth_truth": "contradicted",
+   "unauth_v4": "contradicted",
+   "unauth_v5": "contradicted"
+  },
+  {
+   "case_id": "holdout-v5-035",
+   "category": "near_miss",
+   "truth": "contradicted",
+   "v4_judge": "inconclusive",
+   "v5_judge": "inconclusive",
+   "unauth_truth": "contradicted",
+   "unauth_v4": "contradicted",
+   "unauth_v5": "contradicted"
+  },
+  {
+   "case_id": "holdout-v5-036",
+   "category": "near_miss",
+   "truth": "contradicted",
+   "v4_judge": "inconclusive",
+   "v5_judge": "inconclusive",
+   "unauth_truth": "contradicted",
+   "unauth_v4": "contradicted",
+   "unauth_v5": "contradicted"
+  },
+  {
+   "case_id": "holdout-v5-037",
+   "category": "authorization_idor",
+   "truth": "supported",
+   "v4_judge": "inconclusive",
+   "v5_judge": "inconclusive",
+   "unauth_truth": "contradicted",
+   "unauth_v4": "contradicted",
+   "unauth_v5": "contradicted"
+  },
+  {
+   "case_id": "holdout-v5-038",
+   "category": "authorization_idor",
+   "truth": "supported",
+   "v4_judge": "supported",
+   "v5_judge": "supported",
+   "unauth_truth": "contradicted",
+   "unauth_v4": "contradicted",
+   "unauth_v5": "contradicted"
+  },
+  {
+   "case_id": "holdout-v5-039",
+   "category": "truncated_body",
+   "truth": "contradicted",
+   "v4_judge": "inconclusive",
+   "v5_judge": "inconclusive",
+   "unauth_truth": "contradicted",
+   "unauth_v4": "contradicted",
+   "unauth_v5": "contradicted"
+  },
+  {
+   "case_id": "holdout-v5-040",
+   "category": "auth_public_spec",
+   "truth": "contradicted",
+   "v4_judge": "contradicted",
+   "v5_judge": "contradicted",
+   "unauth_truth": "contradicted",
+   "unauth_v4": "contradicted",
+   "unauth_v5": "contradicted"
+  }
+ ]
+}
