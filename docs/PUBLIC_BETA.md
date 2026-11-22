@@ -68,7 +68,7 @@ scripts/public-beta.sh stop
 | `VULNIX_REAL_SITE_LOCAL_ARTEX` | 0 | 既定では実サイトのARTEX計画を無効にします。`1` は隔離済みARTEXとループバックのモデル接続先が設定されている場合だけ使用します。モデルへ渡すのは匿名化した実測所見の固定項目だけです。計画はGatewayで審査し、実サイトのL2は引き続き拒否します |
 | `VULNIX_ARTEX_LLM_PLANS_PER_HOUR` | 0 | 実モデルを使う ARTEX の計画を無効にします（プレビューのみ） |
 | `VULNIX_CHAT_PER_DAY` | 200 | AI 解説の1日あたりの上限（プラットフォーム全体） |
-| `AEGIS_SEPARATE_L2_APPROVER` | 1 | 実在サイトの L2 は、依頼者と承認者が別の人である必要があります |
+| `AEGIS_SEPARATE_L2_APPROVER` | （設定しない。既定で有効） | L2 は、依頼者と承認者が別の人である必要があります。`0` は認可ラボ専用の構成でだけ受け付け、公開・実サイトの構成では起動を拒否します |
 | （開発モード） | 無効 | 本番モードで動かします（ARTEX の SHA-256 固定と隔離が必須） |
 
 利用制限の一覧は、ARCHITECTURE.md の「公開β版の利用制限」を参照してください。
