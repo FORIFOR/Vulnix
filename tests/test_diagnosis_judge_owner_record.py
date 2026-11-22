@@ -83,7 +83,7 @@ def idor_result(response, *, status=200, control=True, control_response=None, tr
                 "control_response": None}
     proven = status == 200 and response == CROSS
     if isinstance(response, str):
-        response = response[:4096]           # the Worker keeps a 4096-character excerpt
+        response = response[:diagnosis_judge.L2_EXCERPT]     # the characters the lab IDOR Worker keeps
     return {"check": "idor", "request_path": "/api/accounts/B/secret",
             "request_headers": {"X-Test-Account": "acct_A"}, "status": status, "established": proven,
             "verdict": "proven" if proven else ("not_reproduced" if status == 403 else "unverified"),
