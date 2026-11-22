@@ -72,7 +72,24 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+      # The artifact service is eventually consistent: a read right after the upload has
+      # failed with "Artifact not found" although the artifact existed (runner-side, see
+      # docs/PRODUCT_COMPLETION.md). Read once more after a pause; the assert below still
+      # fails the job when the artifact is really missing or different.
       - name: Read back simulated failure output
+        id: artifact_read_back
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: failure-upload-probe-attempt-${{ github.run_attempt }}
+          path: artifact-failure-probe
+
+      - name: Wait before reading back again
+        if: ${{ steps.artifact_read_back.outcome == 'failure' }}
+        run: sleep 30
+
+      - name: Read back simulated failure output (second read)
+        if: ${{ steps.artifact_read_back.outcome == 'failure' }}
         uses: actions/download-artifact@v4
         with:
           name: failure-upload-probe-attempt-${{ github.run_attempt }}
