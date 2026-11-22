@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import secrets
 import shlex
 import subprocess
@@ -231,6 +232,16 @@ def main() -> None:
         report["checks"]["l2_runs_after_first_approval"] = l2_results()
         shot(qa, "06-finding-proven")
         axe(qa, "06-finding-proven")
+        # the step's audited result opens as the finding's evidence record (full content)
+        open_ev = panel(qa).get_by_role("link", name=re.compile("所見の証拠を開く"))
+        expect(open_ev.first).to_be_visible(timeout=20000)
+        ev_page = qa.context.new_page()
+        ev_page.goto(base + open_ev.first.get_attribute("href"))
+        opened = ev_page.locator("details[open][id^=evidence-]")
+        expect(opened).to_have_count(1, timeout=20000)
+        expect(opened).to_contain_text("監査ハッシュ")
+        report["checks"]["step_opens_the_finding_evidence"] = "/findings/f_idor#evidence-ev_" in ev_page.url
+        ev_page.close()
         f = svc.a.findings.get("f_idor") or {}
         from aegis.evidence import evidence_status
         report["checks"]["finding_proven"] = evidence_status(f) == "proven"
