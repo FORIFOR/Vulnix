@@ -39,7 +39,7 @@ import time
 import urllib.parse
 from dataclasses import dataclass, field
 
-from .confinement import dropped_packets
+from .confinement import ROOT_FAIL_MARK, dropped_packets
 from pathlib import Path
 
 # The tools the overlay may give the ARTEX planner (exact ARTEX tool names). A run
@@ -329,8 +329,10 @@ def require_loopback_dsn(dsn: str) -> str:
     return dsn
 
 
-# Host directories a planner never needs: covered by empty tmpfs in its mount view
-# (what it needs from them - its work dir, the launcher, the interpreter - is bound back).
+# Host directories a planner never needs. Its root is a minimal tmpfs root (pivot_root;
+# see aegis/confinement.py minimal_root_plan): these do not exist there, except as the
+# parents of what it needs (its work dir, the launcher, the interpreter), and the probe
+# proves that before ARTEX starts.
 PLANNER_HIDDEN = ("/etc", "/home", "/root", "/tmp", "/var", "/dev/shm", "/dev/mqueue", "/run", "/mnt", "/media",
                   "/srv", "/opt", "/boot", "/lost+found", "/snap",
                   # host folders shared into a VM (Colima / Lima / Docker Desktop mount the
@@ -476,6 +478,8 @@ def run_artex_planner(command: list[str], request: dict, *, llm_url: str, llm_mo
             except subprocess.TimeoutExpired:
                 raise ArtexBridgeError("ARTEX プランナーの停止を確認できません（隔離は維持されています）") from None
             raise ArtexBridgeError("ARTEX プランナーが制限時間内に終了しませんでした") from None
+        if sess is not None and ROOT_FAIL_MARK.encode() in (err or b""):
+            raise ArtexBridgeError("ARTEX の最小ルート（pivot_root）を構築できなかったため、ARTEX は起動していません")
         if sess is not None:
             enforced = bool(sess.still_enforced()) if hasattr(sess, "still_enforced") else True
             isolation["enforced_after_run"] = enforced

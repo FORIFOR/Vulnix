@@ -67,6 +67,271 @@ def _system_which(tool: str) -> str | None:
     return shutil.which(tool, path=SYSTEM_PATH)
 
 
+# ---- the planner's minimal root (namespace mode) ------------------------------
+# The planner does not get the host's file system with some directories covered:
+# it gets an empty tmpfs root into which only what it needs to run is bound
+# read-only (its work directory read-write), then pivot_root and the old root is
+# detached. What is not in the plan does not exist in its view.
+VXROOT = "/mnt"                       # where the new root is built (in the private mount namespace)
+OLDROOT = "/.oldroot"                 # the old root, right after pivot_root (detached at once)
+DEV_NODES = ("null", "zero", "full", "random", "urandom")
+ROOT_FAIL_MARK = "vulnix-sandbox: minimal root not built; nothing started"
+# Never a bind source (nor anything below the first group): these would bring back
+# what the minimal root exists to remove.
+_NEVER_BELOW = ("/sys", "/proc", "/dev", "/etc", "/run")
+_NEVER_EXACT = ("/", "/usr", "/usr/bin", "/usr/sbin", "/usr/local", "/usr/share", "/bin", "/sbin", "/home",
+                "/root", "/var", "/boot", "/opt", "/tmp", "/mnt", "/srv", "/snap", "/media", "/Users", "/Volumes")
+# a Python installed into one of these prefixes is bound by its pieces, never whole
+_SYSTEM_PREFIXES = ("/", "/usr", "/usr/local")
+
+
+def elf_interpreter(path: str) -> str | None:
+    """The PT_INTERP (dynamic loader) of an ELF executable; None for a static ELF or
+    anything that is not ELF."""
+    import struct
+    try:
+        with open(path, "rb") as f:
+            hdr = f.read(64)
+            if len(hdr) < 52 or hdr[:4] != b"\x7fELF" or hdr[4] not in (1, 2) or hdr[5] not in (1, 2):
+                return None
+            e = "<" if hdr[5] == 1 else ">"
+            if hdr[4] == 2:
+                phoff = struct.unpack(e + "Q", hdr[32:40])[0]
+                phentsize, phnum = struct.unpack(e + "HH", hdr[54:58])
+            else:
+                phoff = struct.unpack(e + "I", hdr[28:32])[0]
+                phentsize, phnum = struct.unpack(e + "HH", hdr[42:46])
+            for i in range(min(phnum, 64)):
+                f.seek(phoff + i * phentsize)
+                ph = f.read(phentsize)
+                if len(ph) < 32 or struct.unpack(e + "I", ph[:4])[0] != 3:        # PT_INTERP
+                    continue
+                if hdr[4] == 2:
+                    off, size = struct.unpack(e + "Q", ph[8:16])[0], struct.unpack(e + "Q", ph[32:40])[0]
+                else:
+                    off, size = struct.unpack(e + "I", ph[4:8])[0], struct.unpack(e + "I", ph[16:20])[0]
+                if not 0 < size <= 4096:
+                    return None
+                f.seek(off)
+                return f.read(size).split(b"\0", 1)[0].decode("utf-8", "strict") or None
+    except (OSError, ValueError, struct.error):
+        return None
+    return None
+
+
+class HostFS:
+    """What the plan asks of the host's file system (a fake one in unit tests)."""
+
+    def islink(self, p: str) -> bool:
+        return os.path.islink(p)
+
+    def readlink(self, p: str) -> str:
+        return os.readlink(p)
+
+    def isdir(self, p: str) -> bool:
+        return os.path.isdir(p) and not os.path.islink(p)
+
+    def exists(self, p: str) -> bool:
+        return os.path.lexists(p)
+
+    def elf_interp(self, p: str) -> str | None:
+        return elf_interpreter(p)
+
+
+def python_layout(executable: str | None = None) -> dict:
+    """What this Python needs to start (it runs the seccomp launcher and the probe):
+    its executable, its standard library, its shared libpython, and its installation
+    prefix when that is a prefix of its own (not /usr or /usr/local)."""
+    import sysconfig
+    exe = executable or sys.executable
+    paths = sysconfig.get_paths()
+    dirs = [os.path.realpath(paths[k]) for k in ("stdlib", "platstdlib") if paths.get(k)]
+    prefix = os.path.realpath(sys.base_prefix)
+    if prefix not in _SYSTEM_PREFIXES:
+        dirs.insert(0, prefix)
+    files = [exe]
+    if sysconfig.get_config_var("Py_ENABLE_SHARED"):
+        so = sysconfig.get_config_var("INSTSONAME") or sysconfig.get_config_var("LDLIBRARY") or ""
+        libdir = sysconfig.get_config_var("LIBDIR") or ""
+        if so and libdir and os.path.exists(os.path.join(libdir, so)):
+            files.append(os.path.join(libdir, so))
+    import platform as _pf
+    multiarch = [m for m in (sysconfig.get_config_var("MULTIARCH"), f"{_pf.machine()}-linux-gnu") if m]
+    return {"dirs": dirs, "files": files, "multiarch": multiarch}
+
+
+def _under(p: str, d: str) -> bool:
+    return p == d or p.startswith(d.rstrip("/") + "/")
+
+
+def _resolve_chain(path: str, fs) -> tuple[list[tuple[str, str]], str]:
+    """Every symlink met while resolving `path` (link, target as stored) and the real
+    path it ends at."""
+    links: list[tuple[str, str]] = []
+    queue = [c for c in Path(os.path.normpath(path)).parts[1:]]
+    cur = "/"
+    hops = 0
+    while queue:
+        name = queue.pop(0)
+        nxt = os.path.join(cur, name)
+        if fs.islink(nxt):
+            hops += 1
+            if hops > 40:
+                raise ConfinementError(f"シンボリックリンクが多すぎます: {path}")
+            target = fs.readlink(nxt)
+            links.append((nxt, target))
+            base = os.path.normpath(target if target.startswith("/") else os.path.join(cur, target))
+            queue = list(Path(base).parts[1:]) + queue
+            cur = "/"
+        else:
+            cur = nxt
+    return links, cur
+
+
+def minimal_root_plan(*, rw=(), ro=(), programs=(), loaders_of=(), python: dict | None = None,
+                      hidden=(), fs=None) -> list[tuple]:
+    """The planner's whole file system, as a list of entries (all at their host paths):
+      ("rw", dir)              bound read-write (nosuid, nodev): its work directory only
+      ("ro", dir)              bound read-only (nosuid, nodev)
+      ("file", src, dst)       one file bound read-only at `dst`
+      ("symlink", path, target)
+    plus, always and nothing else: an empty tmpfs root (read-only once built), a /dev
+    tmpfs with DEV_NODES only, and a fresh /proc of its own PID namespace (hidepid).
+    No /sys, no /etc, no host /proc, no /home. `programs`: executables run inside the
+    view (bound, with their dynamic loader); `loaders_of`: executables run from the old
+    root during the switch, whose loader alone is needed. Anything that cannot be
+    placed safely raises ConfinementError: nothing starts."""
+    fs = fs or HostFS()
+    python = python or {"dirs": [], "files": [], "multiarch": []}
+    hidden = [os.path.normpath(h) for h in hidden]
+    plan: list[tuple] = []
+
+    def check_source(src: str) -> None:
+        if (not src.startswith("/") or src in _NEVER_EXACT or any(_under(src, d) for d in _NEVER_BELOW)
+                or any(_under(h, src) for h in hidden)):
+            raise ConfinementError(f"最小ルートに含められないパスです: {src}")
+
+    def covered(p: str) -> bool:
+        for e in plan:
+            if e[0] in ("rw", "ro") and _under(p, e[1]):
+                return True
+            if e[0] in ("file", "symlink") and e[1 if e[0] == "symlink" else 2] == p:
+                return True
+        return False
+
+    def add_dir(d: str, kind: str = "ro") -> None:
+        d = os.path.normpath(d)
+        links, real = _resolve_chain(d, fs)
+        if links or not fs.isdir(real):
+            raise ConfinementError(f"最小ルートに含めるディレクトリが不正です: {d}")
+        check_source(d)
+        if not covered(d):
+            plan.append((kind, d))
+
+    def add_file(p: str) -> str:
+        links, real = _resolve_chain(p, fs)
+        if not fs.exists(real) or fs.isdir(real):
+            raise ConfinementError(f"最小ルートに含めるファイルが見つかりません: {p}")
+        for link, target in links:
+            if not covered(link):
+                check_source(link)
+                plan.append(("symlink", link, target))
+        if not covered(real):
+            check_source(real)
+            plan.append(("file", real, real))
+        return real
+
+    def add_loader(p: str) -> None:
+        _, real = _resolve_chain(p, fs)
+        interp = fs.elf_interp(real)
+        if interp:
+            add_file(interp)
+
+    for d in rw:
+        add_dir(d, "rw")
+    for d in ro:
+        add_dir(d)
+    # the shared libraries: the merged-/usr top-level links, the multiarch library
+    # directory (or /usr/lib where there is none), /usr/lib64
+    for top in ("/lib", "/lib64"):
+        if fs.islink(top):
+            plan.append(("symlink", top, fs.readlink(top)))
+        elif fs.isdir(top):
+            add_dir(top)
+    arch_dirs = [f"/usr/lib/{m}" for m in python.get("multiarch", ()) if fs.isdir(f"/usr/lib/{m}")]
+    add_dir(arch_dirs[0] if arch_dirs else "/usr/lib")
+    if fs.isdir("/usr/lib64"):
+        add_dir("/usr/lib64")
+    for d in python.get("dirs", ()):
+        add_dir(d)
+    for f in python.get("files", ()):
+        add_file(f)
+    for p in programs:
+        add_loader(add_file(p))
+    for p in loaders_of:
+        add_loader(p)
+    return plan
+
+
+def plan_paths(plan: list[tuple]) -> list[str]:
+    """Every path the plan makes exist in the view (bind destinations and links)."""
+    return [e[2] if e[0] == "file" else e[1] for e in plan]
+
+
+def plan_mountpoints(plan: list[tuple]) -> set[str]:
+    """Exactly the mount points the view may have."""
+    return {"/", "/proc", "/dev", *(f"/dev/{n}" for n in DEV_NODES),
+            *(e[2] if e[0] == "file" else e[1] for e in plan if e[0] != "symlink")}
+
+
+def minimal_root_script(plan: list[tuple], *, umount: str, pivot_root: str) -> list[str]:
+    """Shell lines (run as root in the run's private mount namespace and own PID
+    namespace) that build the view from `plan`, switch to it and detach the old root.
+    `set -e`: any failed step ends the script before the program is started, and says so."""
+    import shlex
+    q = shlex.quote
+    R = VXROOT
+    lines = ["set -eu",
+             f"trap {q('echo ' + q(ROOT_FAIL_MARK) + ' >&2')} EXIT",
+             # -n everywhere: mount must not write a utab
+             "mount -n --make-rprivate /",
+             f"mount -n -t tmpfs -o mode=0755,nosuid,nodev,size=4m vxroot {R}",
+             f"mkdir {R}/proc {R}/dev {R}{OLDROOT}"]
+    depth = lambda e: (e[2] if e[0] == "file" else e[1]).count("/")      # noqa: E731
+    for e in sorted(plan, key=depth):
+        if e[0] == "symlink":
+            _, path, target = e
+            lines += [f"mkdir -p {q(R + os.path.dirname(path))}", f"ln -s {q(target)} {q(R + path)}"]
+        elif e[0] in ("rw", "ro"):
+            _, d = e
+            flags = "nosuid,nodev" if e[0] == "rw" else "ro,nosuid,nodev"
+            lines += [f"mkdir -p {q(R + d)}", f"mount -n --bind {q(d)} {q(R + d)}",
+                      f"mount -n -o remount,bind,{flags} {q(R + d)}"]
+        elif e[0] == "file":
+            _, src, dst = e
+            lines += [f"mkdir -p {q(R + os.path.dirname(dst))}", f": > {q(R + dst)}",
+                      f"mount -n --bind {q(src)} {q(R + dst)}",
+                      f"mount -n -o remount,bind,ro,nosuid,nodev {q(R + dst)}"]
+        else:
+            raise ConfinementError("最小ルートの計画が不正です")
+    lines.append(f"mount -n -t tmpfs -o mode=0755,nosuid,noexec,size=64k vxdev {R}/dev")
+    for n in DEV_NODES:
+        lines += [f": > {R}/dev/{n}", f"mount -n --bind /dev/{n} {R}/dev/{n}"]
+    lines += [f"ln -s /proc/self/fd {R}/dev/fd",
+              *(f"ln -s /proc/self/fd/{i} {R}/dev/{n}" for i, n in enumerate(("stdin", "stdout", "stderr"))),
+              f"mount -n -o remount,ro,nosuid,noexec {R}/dev",
+              # a fresh /proc of this run's own PID namespace: nothing else is visible
+              f"mount -n -t proc -o hidepid=invisible,subset=pid,nosuid,nodev,noexec vxproc {R}/proc",
+              f"mount -n -o remount,ro,nosuid,nodev {R}",
+              f"cd {R}",
+              f"{q(pivot_root)} . {OLDROOT[1:]}",
+              "cd /",
+              # the old root (the host's whole tree) is detached; its binary runs once more
+              f"{q(OLDROOT + umount)} -n -l {OLDROOT}",
+              'exec "$@"']
+    return lines
+
+
 def _pinned(ip: str, port: int) -> tuple[ipaddress._BaseAddress, int]:
     try:
         addr = ipaddress.ip_address(ip)
@@ -114,6 +379,16 @@ def ruleset(name: str, ip: str, port: int, extra: tuple = ()) -> str:
     ])
 
 
+def relay_status_fields(status: str) -> dict:
+    """/proc/<pid>/status -> {field: [values]} for the fields the relay check reads."""
+    out = {}
+    for line in status.splitlines():
+        k, _, v = line.partition(":")
+        if k in ("Uid", "Gid", "Seccomp", "NoNewPrivs", "CapEff", "CapPrm", "CapBnd"):
+            out[k] = v.split()
+    return out
+
+
 def flow_mark(name: str) -> int:
     """A conntrack mark that belongs to one run (never 0)."""
     import hashlib as _h
@@ -147,6 +422,8 @@ class KernelConfinement:
         self._which = which
         self._status: tuple[float, dict] | None = None
         self._staged: Path | None = None
+        self._fs = HostFS()                    # what the planner's minimal root is built from
+        self._python: dict | None = None       # python_layout(), computed on first use
 
     # ---- preflight -----------------------------------------------------------
     def status(self) -> dict:
@@ -275,6 +552,7 @@ class KernelConfinement:
         # a namespace of a run left behind is deleted with it - only when there is one
         # (an L2-only host may have no iproute2 at all)
         sess.ns, sess._relay, sess.netns_left = None, None, False
+        sess.relay_uid, sess._plan, sess.relay_evidence = None, None, {}
         sess._netns = Path(f"/run/netns/{name}").exists()
         return sess
 
@@ -325,8 +603,10 @@ class ConfinementSession:
         self._owned: list[Path] = []          # directories given to this run's uid
         # namespaces={"hide": [...], "keep": [...]}: the program runs in a network
         # namespace of its own (only `lo`; the pinned endpoints reachable through a relay
-        # in this cgroup) and a private mount view (`hide` covered by empty tmpfs, `keep`
-        # bound back), with fresh /proc (hidepid) and the planner seccomp profile.
+        # in this cgroup, under a uid of its own and its own seccomp allowlist) and a
+        # minimal root (pivot_root into a tmpfs holding only `keep` read-write and what
+        # the interpreter needs read-only; `hide` is what the probe proves is absent),
+        # with fresh /proc (hidepid) and the planner seccomp profile.
         self.ns = None
         if namespaces is not None:
             eps = [(self.ip, int(self.port)), *self.extra]
@@ -337,6 +617,9 @@ class ConfinementSession:
                        "ports": sorted({int(pt) for _, pt in eps})}
         self._netns = False
         self._relay = None
+        self.relay_uid: int | None = None     # the relay's own uid (never the planner's)
+        self.relay_evidence: dict = {}
+        self._plan: list[tuple] | None = None  # the minimal root the last wrap() built
         self.netns_left = False
         self.forbidden = tuple(forbidden_paths)
         self.on_leftover = None
@@ -382,56 +665,39 @@ class ConfinementSession:
         launch = [interpreter or mapped[0], "-I", str(staged / "_sandbox_launch.py"), *profile, *mapped]
         # in namespace mode: into the run's network namespace and a private mount view
         # (still root: the mounts are made there), and only then dropped to the uid
-        ns = self._ns_chain(staged) if self.ns is not None else []
+        ns = (self._ns_chain(staged, programs=[drop[0], launch[0], *[a for a in mapped[:1] if a != launch[0]]])
+              if self.ns is not None else [])
         if self._o._euid == 0:
             return [*enter, *ns, *drop, *launch]
         keep = [f"--preserve-env={','.join(keys)}"] if keys else []
         return [*self._o._priv(), *keep, *enter, *ns, *drop, *launch]
 
-    def _keep_paths(self, staged: Path) -> list[str]:
-        """What must stay visible under a hidden directory: given paths, the staged
-        launcher and the interpreter's installation."""
-        cands = [*self.ns["keep"], str(staged), sys.base_prefix, str(Path(os.path.realpath(sys.executable)).parent)]
-        hide = self.ns["hide"]
-        out = []
-        for c in cands:
-            c = str(Path(c))
-            if any(c == h or c.startswith(h.rstrip("/") + "/") for h in hide) and c not in out:
-                out.append(c)
-        return out
+    def _root_plan(self, staged: Path, programs=()) -> list[tuple]:
+        """The planner's minimal root: its work directory (read-write), the staged
+        launcher, what the interpreter and `programs` need (read-only). Kept on the
+        session: the probe's verdict checks the view against exactly this plan."""
+        o = self._o
+        if getattr(o, "_python", None) is None:
+            o._python = python_layout()
+        umount = o._which("umount")
+        if not umount:
+            raise ConfinementError("umount が見つかりません")
+        plan = minimal_root_plan(rw=self.ns["keep"], ro=[str(staged)], programs=programs, loaders_of=[umount],
+                                 python=o._python, hidden=self.ns["hide"], fs=getattr(o, "_fs", None))
+        self._plan = plan
+        return plan
 
-    def _ns_chain(self, staged: Path) -> list[str]:
-        import shlex
-        q = shlex.quote
-        keep = self._keep_paths(staged)
-        hide = sorted({h for h in self.ns["hide"]}, key=lambda h: -h.count("/"))
-        # -n everywhere: mount must not write its utab into the (empty) /run of the view
-        lines = ["set -eu", "mount -n --make-rprivate /",
-                 "mount -n -t tmpfs -o size=1m,mode=0700 vxstash /mnt"]
-        for i, k in enumerate(keep):
-            lines += [f"mkdir /mnt/k{i}", f"mount -n --bind {q(k)} /mnt/k{i}"]
-        for h in hide:
-            if h == "/mnt":
-                continue                     # the stash itself: covered after it is gone
-            mode = "1777" if h in ("/tmp", "/var/tmp", "/dev/shm") else "0755"
-            lines.append(f"if [ -d {q(h)} ]; then mount -n -t tmpfs -o mode={mode},nosuid,nodev,size=64m vxhide {q(h)}; fi")
-        for i, k in enumerate(keep):
-            lines += [f"mkdir -p {q(k)}", f"mount -n --bind /mnt/k{i} {q(k)}"]
-        lines += ["umount -n -l /mnt"]
-        if "/mnt" in hide:
-            lines.append("mount -n -t tmpfs -o mode=0755,nosuid,nodev,size=1m vxhide /mnt")
-        lines += [
-                  # a fresh /proc of this run's own PID namespace: nothing else is visible
-                  "mount -n -t proc -o hidepid=invisible,subset=pid vxproc /proc",
-                  # no working directory of the caller (it may lie under a hidden path)
-                  "cd /",
-                  'exec "$@"']
+    def _ns_chain(self, staged: Path, programs=()) -> list[str]:
+        plan = self._root_plan(staged, programs)
+        tools = {t: self._o._which(t) for t in ("unshare", "pivot_root", "umount")}
+        missing = [t for t, v in tools.items() if not v]
+        if missing:
+            raise ConfinementError(f"{', '.join(missing)} が見つかりません（最小ルートを構築できません）")
+        lines = minimal_root_script(plan, umount=tools["umount"], pivot_root=tools["pivot_root"])
         ip = self._ip()
-        unshare = self._o._which("unshare")
-        if not unshare:
-            raise ConfinementError("unshare が見つかりません")
-        # own IPC (no SysV / POSIX IPC of the host) and PID namespaces as well
-        return [ip, "netns", "exec", self.name, unshare, "--ipc", "--pid", "--fork",
+        # own IPC (no SysV / POSIX IPC of the host) and PID namespaces as well; the mount
+        # namespace is the private one `ip netns exec` creates
+        return [ip, "netns", "exec", self.name, tools["unshare"], "--ipc", "--pid", "--fork",
                 self._o._which("sh") or "sh", "-c", "\n".join(lines), "sh"]
 
     def _ip(self) -> str:
@@ -454,9 +720,17 @@ class ConfinementSession:
         if r.returncode != 0:
             raise ConfinementError("名前空間の lo を有効にできません")
         staged = self._o.staged_workers()
+        # the relay runs under a uid of its own: the planner can neither signal it nor
+        # read anything of its process
+        for _ in range(8):
+            self.relay_uid = self._o.fresh_identity()
+            if self.relay_uid != self.uid:
+                break
+        if self.relay_uid == self.uid:
+            raise ConfinementError("中継用の UID を確保できません")
         enter = [self._o._which("sh") or "sh", "-c", _ENTER, "sh", str(self.cgroup / "cgroup.procs"), "100000"]
         argv = [*self._o._priv(), *enter, sys.executable, "-I", str(staged / "_ns_relay.py"),
-                self.name, str(self.uid), *[str(pt) for pt in self.ns["ports"]]]
+                self.name, str(self.relay_uid), *[str(pt) for pt in self.ns["ports"]]]
         self._relay = self._o._popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                      stderr=subprocess.DEVNULL, close_fds=True, text=True)
         import select
@@ -464,6 +738,24 @@ class ConfinementSession:
         line = self._relay.stdout.readline().strip() if ready else ""
         if line != "READY":
             raise ConfinementError("名前空間への中継を起動できません")
+        # what the kernel says about the relay (not what it says about itself): the only
+        # process in the cgroup, its own uid, no capabilities, no_new_privs, seccomp filter
+        self.relay_evidence = self._relay_status()
+        if not self.relay_evidence.get("ok"):
+            raise ConfinementError(f"中継の隔離（専用 UID・seccomp）を確認できません: {self.relay_evidence}")
+
+    def _relay_status(self) -> dict:
+        r = self._sh('cat "$1"', str(self.cgroup / "cgroup.procs"), timeout=10)
+        pids = r.stdout.split() if r.returncode == 0 else []
+        if len(pids) != 1 or not pids[0].isdigit():
+            return {"ok": False, "relay_pids": len(pids)}
+        r = self._sh('cat "$1"', f"/proc/{pids[0]}/status", timeout=10)
+        st = relay_status_fields(r.stdout if r.returncode == 0 else "")
+        ok = (st.get("Uid") == [str(self.relay_uid)] * 4 and st.get("Gid") == [str(self.relay_uid)] * 4
+              and st.get("Seccomp") == ["2"] and st.get("NoNewPrivs") == ["1"]
+              and all(int(st.get(k, ["1"])[0], 16) == 0 for k in ("CapEff", "CapPrm", "CapBnd")))
+        return {"ok": bool(ok), "relay_uid": self.relay_uid, "relay_separate_uid": self.relay_uid != self.uid,
+                "relay_seccomp": (st.get("Seccomp") or ["?"])[0]}
 
     def _check_cancelled(self) -> None:
         if self._cancelled:
@@ -620,6 +912,12 @@ class ConfinementSession:
             pr = self._o._run(self.wrap([sys.executable, "-I", "-c", probe]), stdin=subprocess.DEVNULL,
                               capture_output=True, text=True, timeout=15, env={"PATH": "/usr/bin:/bin"})
             import json
+            if self.ns is not None and pr.returncode != 0 and ROOT_FAIL_MARK in (pr.stderr or ""):
+                if canary is not None:
+                    canary.close()
+                tail = [ln for ln in (pr.stderr or "").splitlines() if ln.strip() and ROOT_FAIL_MARK not in ln]
+                raise ConfinementError("最小ルート（pivot_root）を構築できなかったため、プランナーは起動しません"
+                                       f"（{(tail[-1] if tail else '')[:200]}）")
             try:
                 seen = json.loads(pr.stdout.strip().splitlines()[-1]) if pr.returncode == 0 else {}
             except (ValueError, IndexError):
@@ -718,7 +1016,38 @@ class ConfinementSession:
             "out['bpf']='ALLOWED' if r>=0 else 'DENIED:%d' % ctypes.get_errno()\n"
             "out['procs_visible']=len([d for d in os.listdir('/proc') if d.isdigit()])\n"
             "out['seccomp']=[l.split()[1] for l in open('/proc/self/status') if l.startswith('Seccomp:')]\n"
+            # the minimal root: every mount of this view (mount point, fs type, source),
+            # and what is left at the old root's place
+            "out['mounts']=[]\n"
+            "for l in open('/proc/self/mountinfo'):\n"
+            "    a,_,b=l.partition(' - ')\n"
+            "    f=a.split(); g=b.split()+['','']\n"
+            "    out['mounts'].append([f[4],g[0],g[1]])\n"
+            "try:\n"
+            f"    out['oldroot']=sorted(os.listdir({OLDROOT!r}))\n"
+            "except OSError as e:\n"
+            "    out['oldroot']='GONE:'+type(e).__name__\n"
+            "out['absent']={}\n"
+            f"for p in {self._must_be_absent()!r}:\n"
+            "    out['absent'][p]=not os.path.lexists(p)\n"
         )
+
+    def _must_be_absent(self) -> list[str]:
+        """Paths that do not exist in the planner's view (proved by the probe): the host's
+        system and configuration areas, Vulnix's own code, the hidden directories, and
+        the host /proc entry of the control plane."""
+        here = str(Path(__file__).resolve())
+        paths = ["/sys", "/etc/passwd", "/etc", "/home", "/root", "/var", "/run", "/boot", "/usr/share",
+                 "/usr/local", "/usr/bin/sudo", "/usr/sbin", here, str(Path(here).parent / "server.py")]
+        if self.protected_pid > 64:          # in its own PID namespace low numbers are its own
+            paths.append(f"/proc/{self.protected_pid}")
+        if self._plan is None:               # the probe's own plan (wrap() builds the same one)
+            self._root_plan(self._o.staged_workers(),
+                            programs=[self._o._which("setpriv") or "setpriv", sys.executable])
+        keep = plan_paths(self._plan or [])
+        # absent unless something of the plan lies beneath it (e.g. /tmp holds the work
+        # directory; /sys, /etc, /run and Vulnix's code never do: the plan refuses them)
+        return sorted({p for p in [*paths, *self.ns["hide"]] if not any(_under(k, p) for k in keep)})
 
     def _ns_verdict(self, seen: dict, canary) -> tuple[bool, dict]:
         host_netns = os.readlink("/proc/self/ns/net") if os.path.exists("/proc/self/ns/net") else ""
@@ -732,7 +1061,7 @@ class ConfinementSession:
                 pass
             finally:
                 canary.close()
-        keep = set(self._keep_paths(self._o.staged_workers()))
+        keep = set(plan_paths(self._plan or []))
         hidden = seen.get("hidden") if isinstance(seen.get("hidden"), dict) else {}
 
         def hidden_ok(d, v):
@@ -758,6 +1087,22 @@ class ConfinementSession:
             "bpf_syscall": seen.get("bpf"), "procs_visible": seen.get("procs_visible"),
             "seccomp_mode": seen.get("seccomp"),
         }
+        mounts = seen.get("mounts") if isinstance(seen.get("mounts"), list) else []
+        points = {m[0] for m in mounts if isinstance(m, list) and m}
+        root = [m for m in mounts if isinstance(m, list) and len(m) == 3 and m[0] == "/"]
+        absent = seen.get("absent") if isinstance(seen.get("absent"), dict) else {}
+        expected = plan_mountpoints(self._plan or [])
+        ev.update({
+            # pivot_root into the tmpfs root, the old root detached, nothing mounted that
+            # the plan did not put there, and the listed paths do not exist
+            "minimal_root": (bool(self._plan) and bool(points) and points <= expected
+                             and root == [["/", "tmpfs", "vxroot"]] and seen.get("oldroot") == []),
+            "minimal_root_unexpected_mounts": sorted(points - expected)[:8],
+            "absent_paths_ok": (bool(absent) and set(absent) == set(self._must_be_absent())
+                                and all(v is True for v in absent.values())),
+            "absent_paths_failed": sorted(p for p, v in absent.items() if v is not True)[:8],
+            **{k: v for k, v in self.relay_evidence.items() if k != "ok"},
+        })
         ok = (ev["netns_separate"] and ev["netns_interfaces"] == ["lo"]
               and str(ev["host_loopback_canary"]).startswith("BLOCKED:") and not arrived
               and relay and all(v == "OK" for v in relay.values())
@@ -766,7 +1111,9 @@ class ConfinementSession:
               # EPERM from the filter itself (not "module missing" / "disabled anyway")
               and ev["netlink_socket"] == "DENIED:PermissionError" and ev["vsock_socket"] == "DENIED:PermissionError"
               and ev["bpf_syscall"] == "DENIED:1" and ev["seccomp_mode"] == ["2"]
-              and isinstance(ev["procs_visible"], int) and ev["procs_visible"] <= 8)
+              and isinstance(ev["procs_visible"], int) and ev["procs_visible"] <= 8
+              and ev["minimal_root"] and ev["absent_paths_ok"]
+              and bool(self.relay_evidence.get("ok")))
         return bool(ok), ev
 
     def _listing(self) -> str:

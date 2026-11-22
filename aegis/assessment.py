@@ -178,7 +178,8 @@ def _artex_isolation_view(iso: dict) -> dict:
             "run_dropped_packets", "limits", "files_left",
             "netns_separate", "netns_interfaces", "host_loopback_canary", "host_loopback_canary_arrived",
             "relay_endpoints", "hidden_paths_ok", "netlink_socket", "vsock_socket", "bpf_syscall",
-            "procs_visible", "seccomp_mode", "netns_left")
+            "procs_visible", "seccomp_mode", "netns_left", "minimal_root", "absent_paths_ok",
+            "relay_separate_uid", "relay_seccomp")
     view = {k: iso[k] for k in keys if k in iso}
     view["confined"] = bool(iso.get("confined"))
     view["label"] = (f"OS 隔離あり（{iso.get('mechanism', '')}）" if view["confined"]

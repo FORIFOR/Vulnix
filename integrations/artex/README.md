@@ -39,11 +39,20 @@ ARTEX source.
 
 ## 本番利用前の検討事項（未解決）
 
-ARTEX プランナーは Linux カーネル隔離（専用 cgroup v2・nftables、専用のネットワーク／マウント／IPC／PID 名前空間、専用 uid・権限なし、planner 用 seccomp、プロセス・メモリ上限）の中でのみ起動します。CI で実機の ARTEX について検証済みです。ただし、次の点は本番利用の前に判断が必要です。
+ARTEX プランナーは Linux カーネル隔離（専用 cgroup v2・nftables、専用のネットワーク／マウント／IPC／PID 名前空間、`pivot_root` による最小ルート、専用 uid・権限なし、planner 用 seccomp、プロセス・メモリ上限）の中でのみ起動します。CI で実機の ARTEX について検証済みです。ただし、次の点は本番利用の前に判断が必要です。
 
-1. **ホストの一部ファイルは読み取れます。** マウントビューは固定の一覧（`/etc` `/home` `/root` `/tmp` `/var` `/dev/shm` `/dev/mqueue` `/run` `/mnt` `/media` `/srv` `/opt` `/boot` `/snap`、Vulnix 本体、データディレクトリ）を空の tmpfs で隠す方式で、最小ルートへの `pivot_root` ではありません。2026-11-14 から `/etc`（ユーザー一覧、ホスト名、サービス設定）も隠しています（ARTEX は 127.0.0.1 だけに接続するため名前解決は不要。VM で実 ARTEX の隔離テスト 70 件が通ることを確認）。`/usr` `/lib*` `/sys` `/proc` などのシステム領域は見えたままで、そこにある他ユーザーが読めるファイルは ARTEX から読めます。Vulnix の秘密情報とデータディレクトリは隠れています（起動前のプローブで、隠した各ディレクトリが空に見えることを確認）。
-   - **本番で必要になり得る対策：** 最小ルート（tmpfs ルートに `/usr` `/lib*` と実行に必要なパスだけを読み取り専用でバインド）への `pivot_root`。または、システム領域に機密ファイルを置かない運用の確認。
-2. **中継（relay）は ARTEX と同じ uid で、専用の seccomp がありません。** ARTEX が中継を停止・枯渇させることはできますが、影響は ARTEX 自身の通信が止まることに限られます。
+**最小ルート（1）と中継の uid・seccomp（2）は、Linux CI（`artex-real-planner` と Python Suite + Linux）での実行が通るまで未確認です。** macOS では計画の組み立てと seccomp 規則の単体テストだけを実行しています。
+
+1. **ファイルの見え方は最小ルートです（2026-11-23 から）。** 固定の一覧を空の tmpfs で隠す方式をやめ、空の tmpfs ルートに必要なものだけを置いてから `pivot_root` し、元のルートを切り離します（`aegis/confinement.py` の `minimal_root_plan` / `minimal_root_script`）。ARTEX から見えるのは次だけです。
+   - 読み書き可：実行用の作業ディレクトリ（ARTEX のバイナリのコピーと HOME）だけ（nosuid・nodev）。
+   - 読み取り専用：起動用ランチャーの配置先、Python の実行ファイルと標準ライブラリ（専用プレフィックスのときはプレフィックス全体）、`/usr/lib/<multiarch>`（無ければ `/usr/lib`）、`/usr/lib64`、`/usr/bin/setpriv`、各実行ファイルの動的ローダー。`/lib` `/lib64` はホストと同じシンボリックリンク。
+   - `/dev` は `null` `zero` `full` `random` `urandom` だけ。`/proc` は ARTEX 自身の PID 名前空間の新しい proc（`hidepid=invisible,subset=pid`）。ルートの tmpfs は構築後に読み取り専用。
+   - `/sys` `/etc` `/home` `/root` `/var` `/run` `/usr/share` `/usr/local` `/usr/sbin`、ホストの `/proc`、Vulnix のコードとデータディレクトリは存在しません。計画に `/` `/usr` `/usr/bin` `/etc` `/sys` `/proc` `/run` などを含めようとすると計画自体が拒否されます。
+   - **fail closed：** 構築のどの手順が失敗しても（`set -eu`）ARTEX は起動せず、「最小ルート（pivot_root）を構築できなかった」と表示します。
+   - **起動前のプローブ（ARTEX と同じ経路で起動）で確認：** マウント一覧が計画どおりのものだけであること、ルートが `vxroot` の tmpfs であること、切り離した元のルートが空であること、上の各パスと Vulnix のソース、制御プロセスの `/proc/<pid>` が存在しないこと。
+   - **残る点：** `/usr/lib/<multiarch>` のライブラリ一式（Ubuntu では `/usr/lib/x86_64-linux-gnu` 全体）と Python の標準ライブラリは読み取れます。必要なライブラリだけに絞る（ldd 相当の解決）は未実装です。ARTEX が将来 `/etc`（TLS 証明書・タイムゾーン）や `/usr/share/zoneinfo` を必要とした場合は起動に失敗します（fail closed）。対応は merged-/usr の配置（Ubuntu 24.04 / Debian 12）で、それ以外は CI 未検証です。
+2. **中継（relay）は ARTEX と別の uid で、専用の seccomp 許可リストの中で動きます（2026-11-23 から）。** 中継は ARTEX と別に払い出した uid で動き（ARTEX から中継へシグナルを送れません）、通信を扱う前に許可リスト方式の seccomp を入れます（`aegis/workers/_ns_relay.py` の `RELAY_ALLOW`）。許可は accept/accept4、AF_INET の socket、connect、send/recv 系、poll/ppoll、close、shutdown、get/setsockopt、スレッド作成（`CLONE_THREAD` のみ、名前空間フラグ不可）、メモリ管理、futex、シグナル復帰、exit、ioctl（FIONBIO/FIOCLEX のみ）です。ファイルを開く・プログラムの実行・fork・bind/listen・UNIX/netlink/IPv6 ソケット・ptrace・kill・mount などは EPERM、別 ABI はプロセスごと強制終了です。フィルタを入れられなければ中継は起動せず（exit 97）、Vulnix は起動後にカーネル側（`/proc/<pid>/status`）で uid・Seccomp=2・NoNewPrivs・権限なしを確認してから ARTEX を起動します。
+   - **残る点：** 中継は Vulnix と同じ Python を使い、ホストのファイルシステムを見たまま動きます（ファイルは開けませんが、マウントは分離していません）。接続先の制限は seccomp ではなく、従来どおり cgroup に結び付いた nftables 規則です。ARTEX は中継への接続数を増やして中継を枯渇させることはできます（影響は ARTEX 自身の通信が止まることに限られます）。
 3. **DB 権限の検査は、ハッシュ固定した overlay バイナリ自身が行います**（スーパーユーザー・CREATEROLE・サーバープログラム／ファイル権限・dblink/postgres_fdw を拒否）。
-4. **動作要件：** cgroup v2、nftables、iproute2、passwordless sudo、Linux 5.14 以降（`cgroup.kill` / `cgroup.freeze` / `subset=pid`）。満たさない環境では起動を拒否します（fail closed）。検証は GitHub の Ubuntu ランナーのみです。
+4. **動作要件：** cgroup v2、nftables、iproute2、util-linux（`unshare` `pivot_root` `umount` `setpriv`）、passwordless sudo、Linux 5.14 以降（`cgroup.kill` / `cgroup.freeze` / `subset=pid`）。満たさない環境では起動を拒否します（fail closed）。検証は GitHub の Ubuntu ランナーのみです。
 5. **モデル：** ARTEX の計画生成の検証は、ローカル模擬 LLM による 1 計画ラウンドのみです。実モデルは未検証です。
