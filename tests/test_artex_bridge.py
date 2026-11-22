@@ -1840,13 +1840,20 @@ class TestTheRelaysOwnSeccompAllowlist(unittest.TestCase):
         import subprocess as sp
 
         from aegis.confinement import ConfinementError
-        for seccomp, should_pass in (("2", True), ("0", False)):
+        zero = "0000000000000000"
+        good = {"Uid": "5000\t5000\t5000\t5000", "Gid": "5000\t5000\t5000\t5000", "NoNewPrivs": "1",
+                "Seccomp": "2", "CapInh": zero, "CapPrm": zero, "CapEff": zero, "CapBnd": zero, "CapAmb": zero}
+        cases = [(good, None), ({**good, "Seccomp": "0"}, "seccomp"),
+                 # setuid() alone leaves the bounding set full: CI run 45067537375
+                 ({**good, "CapBnd": "000001ffffffffff"}, "CapBnd_zero"),
+                 ({**good, "NoNewPrivs": "0"}, "no_new_privs"), ({**good, "Gid": "0\t0\t0\t0"}, "gid"),
+                 ({k: v for k, v in good.items() if k != "CapAmb"}, "CapAmb_zero")]
+        for fields, failing in cases:
+            should_pass = failing is None
             o = fake_owner()
             ids = iter([4242, 4242, 5000])                          # planner, collision, relay
             o.fresh_identity = lambda: next(ids)
-            status = (f"Uid:\t5000\t5000\t5000\t5000\nGid:\t5000\t5000\t5000\t5000\nNoNewPrivs:\t1\n"
-                      f"Seccomp:\t{seccomp}\nCapEff:\t0000000000000000\nCapPrm:\t0000000000000000\n"
-                      "CapBnd:\t0000000000000000\n")
+            status = "".join(f"{k}:\t{v}\n" for k, v in fields.items())
 
             def runner(argv, **kw):
                 if argv[-1].endswith("cgroup.procs"):
@@ -1876,8 +1883,18 @@ class TestTheRelaysOwnSeccompAllowlist(unittest.TestCase):
                     self.assertEqual(launched[0][-3], "5000")           # <name> <uid> <port> <port>
                     self.assertEqual(sess.relay_evidence["relay_seccomp"], "2")
                 else:
-                    with self.assertRaises(ConfinementError):
+                    with self.assertRaises(ConfinementError) as cm:
                         sess._setup_netns()
+                    self.assertEqual(sess.relay_evidence["failed"], [failing], str(cm.exception))
+                    self.assertIn(failing, str(cm.exception))          # the message names the failed check
+
+    def test_the_relay_empties_its_bounding_set_before_dropping_root(self):
+        src = (Path(ab.__file__).with_name("workers") / "_ns_relay.py").read_text()
+        main = src[src.index("def main()"):]
+        self.assertLess(main.index("drop_bounding_set(libc)"), main.index("os.setuid(uid)"))
+        self.assertLess(main.index("own_caps()"), main.index("install_relay_filter()"))
+        for cap in ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"):
+            self.assertIn(f'"{cap}"', main[main.index("own_caps()") - 200:main.index("install_relay_filter()")])
 
 
 class TestPlannerSeccompProfileAndNamespaceChain(unittest.TestCase):

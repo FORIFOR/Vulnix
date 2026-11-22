@@ -384,7 +384,7 @@ def relay_status_fields(status: str) -> dict:
     out = {}
     for line in status.splitlines():
         k, _, v = line.partition(":")
-        if k in ("Uid", "Gid", "Seccomp", "NoNewPrivs", "CapEff", "CapPrm", "CapBnd"):
+        if k in ("Uid", "Gid", "Seccomp", "NoNewPrivs", "CapInh", "CapEff", "CapPrm", "CapBnd", "CapAmb"):
             out[k] = v.split()
     return out
 
@@ -751,11 +751,23 @@ class ConfinementSession:
             return {"ok": False, "relay_pids": len(pids)}
         r = self._sh('cat "$1"', f"/proc/{pids[0]}/status", timeout=10)
         st = relay_status_fields(r.stdout if r.returncode == 0 else "")
-        ok = (st.get("Uid") == [str(self.relay_uid)] * 4 and st.get("Gid") == [str(self.relay_uid)] * 4
-              and st.get("Seccomp") == ["2"] and st.get("NoNewPrivs") == ["1"]
-              and all(int(st.get(k, ["1"])[0], 16) == 0 for k in ("CapEff", "CapPrm", "CapBnd")))
-        return {"ok": bool(ok), "relay_uid": self.relay_uid, "relay_separate_uid": self.relay_uid != self.uid,
-                "relay_seccomp": (st.get("Seccomp") or ["?"])[0]}
+        want = [str(self.relay_uid)] * 4
+        caps = ("CapInh", "CapEff", "CapPrm", "CapBnd", "CapAmb")
+
+        def zero(k):
+            try:
+                return int(st[k][0], 16) == 0
+            except (KeyError, IndexError, ValueError):
+                return False
+        # every condition is reported, so a failure explains itself
+        checks = {"uid": st.get("Uid") == want, "gid": st.get("Gid") == want,
+                  "seccomp": st.get("Seccomp") == ["2"], "no_new_privs": st.get("NoNewPrivs") == ["1"],
+                  **{f"{k}_zero": zero(k) for k in caps}}
+        return {"ok": all(checks.values()), "relay_uid": self.relay_uid,
+                "relay_separate_uid": self.relay_uid != self.uid,
+                "relay_seccomp": (st.get("Seccomp") or ["?"])[0],
+                "failed": sorted(k for k, v in checks.items() if not v),
+                "seen": {k: " ".join(st.get(k, ["<missing>"])) for k in ("Uid", "Gid", "Seccomp", "NoNewPrivs", *caps)}}
 
     def _check_cancelled(self) -> None:
         if self._cancelled:
@@ -1101,7 +1113,7 @@ class ConfinementSession:
             "absent_paths_ok": (bool(absent) and set(absent) == set(self._must_be_absent())
                                 and all(v is True for v in absent.values())),
             "absent_paths_failed": sorted(p for p, v in absent.items() if v is not True)[:8],
-            **{k: v for k, v in self.relay_evidence.items() if k != "ok"},
+            **{k: v for k, v in self.relay_evidence.items() if k not in ("ok", "failed", "seen")},
         })
         ok = (ev["netns_separate"] and ev["netns_interfaces"] == ["lo"]
               and str(ev["host_loopback_canary"]).startswith("BLOCKED:") and not arrived

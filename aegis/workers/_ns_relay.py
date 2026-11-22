@@ -32,6 +32,8 @@ import threading
 CLONE_NEWNET = 0x40000000
 PR_SET_NO_NEW_PRIVS = 38
 PR_SET_SECCOMP = 22
+PR_CAPBSET_DROP = 24
+EINVAL = 22
 SECCOMP_MODE_FILTER = 2
 RET_KILL_PROCESS = 0x80000000
 RET_ERRNO = 0x00050000
@@ -197,6 +199,24 @@ def _serve(listener: socket.socket, port: int) -> None:
         threading.Thread(target=_pump, args=(upstream, client), daemon=True).start()
 
 
+def drop_bounding_set(libc) -> None:
+    """Empty the capability bounding set (needs CAP_SETPCAP: done while still root).
+    setuid() clears the effective and permitted sets but leaves this one full."""
+    for cap in range(64):
+        if libc.prctl(PR_CAPBSET_DROP, cap, 0, 0, 0) != 0:
+            if ctypes.get_errno() == EINVAL:       # past the kernel's last capability
+                return
+            raise OSError(ctypes.get_errno(), f"PR_CAPBSET_DROP {cap} failed")
+    raise OSError("no end to the capability list")
+
+
+def own_caps() -> dict:
+    """The capability sets of this process, as the kernel reports them."""
+    with open("/proc/self/status") as f:
+        return {k: int(v.split()[0], 16) for k, _, v in (ln.partition(":") for ln in f)
+                if k in ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb")}
+
+
 def main() -> None:
     if len(sys.argv) < 4:
         sys.exit(97)
@@ -219,14 +239,25 @@ def main() -> None:
         _setns(host)                     # every later socket is a host-namespace socket
         os.close(target)
         os.close(host)
-    # from here on: the run's own uid, nothing more
+    # from here on: the relay's own uid, nothing more - and no capability it could
+    # ever regain (the bounding set is emptied while we still may)
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.prctl.argtypes = [ctypes.c_int, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong]
+    try:
+        drop_bounding_set(libc)
+    except OSError:
+        sys.exit(97)
     os.setgroups([])
     os.setgid(uid)
     os.setuid(uid)
-    libc = ctypes.CDLL(None, use_errno=True)
     if libc.prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0:
         sys.exit(97)
     if os.getuid() != uid or os.geteuid() != uid or os.getgroups():
+        sys.exit(97)
+    try:
+        if any(own_caps().get(k, 1) for k in ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb")):
+            sys.exit(97)
+    except (OSError, ValueError):
         sys.exit(97)
     try:
         install_relay_filter()          # before any traffic: no filter, no relay
