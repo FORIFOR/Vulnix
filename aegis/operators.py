@@ -818,11 +818,16 @@ class OperatorStore:
             op = self._ops.get(name)
         if not secret or not op:
             raise AuthError("先に2要素認証の有効化を開始してください")
-        if not verify_totp(secret, code, self._clock()):
+        counter = matching_totp_counter(secret, code or "", self._clock())
+        if counter is None:
             raise AuthError("認証コードが違います")
         with self._lock:
             self._require_self_locked(name, session_token)
             op.totp_secret = secret
+            # the code that confirmed enrollment is spent: it cannot also sign in or
+            # switch the second factor off (it may have been seen while it was typed)
+            self._totp_last_counter[name] = max(self._totp_last_counter.get(name, -1), counter)
+            op.totp_last_counter = max(op.totp_last_counter, counter)
             self._pending_totp.pop(name, None)
         try:
             self._persist_operators(strict=True)

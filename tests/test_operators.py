@@ -207,6 +207,7 @@ class TestStore(unittest.TestCase):
             store.login("op", "pw")
         with self.assertRaises(MFAChallenge):
             store.login("op", "pw", "000000")
+        clock.t += 30                               # the enrollment code is spent; the next one signs in
         self.assertEqual(store.login("op", "pw", totp_code(secret, clock.t)).operator, "op")
         # Enrollment survives a restart (secret persisted in the 0600 seed).
         self.assertEqual(oct(path.stat().st_mode)[-3:], "600")
@@ -220,6 +221,7 @@ class TestStore(unittest.TestCase):
         store = OperatorStore(path, clock=clock)
         secret, _ = store.begin_totp_enroll("op")
         store.confirm_totp("op", totp_code(secret, clock.t))
+        clock.t += 30                               # the enrollment code is spent
         with self.assertRaises(AuthError):
             store.disable_totp("op", "wrong-password", totp_code(secret, clock.t))
         with self.assertRaises(AuthError):          # the password alone no longer removes the second factor
