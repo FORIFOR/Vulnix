@@ -217,7 +217,9 @@ def do_signoff_check(path: Path, label_set: str = "holdout") -> int:
     print(f"その正解ラベルの SHA-256（署名の labels_sha256 に書く値）: {labels_sha256(label_set)}")
     if not path.exists():
         print(f"署名のファイルがありません: {path}")
-        print("レビューを終えた人が、docs/evaluation/label_signoff.template.json を写して記入してください。")
+        template = ("label_signoff.template.json" if label_set == "holdout"
+                    else f"label_signoff_{label_set}.template.json")
+        print(f"レビューを終えた人が、docs/evaluation/{template} を写して記入してください。")
         return 1
     try:
         signoff = json.loads(path.read_text(encoding="utf-8"))
