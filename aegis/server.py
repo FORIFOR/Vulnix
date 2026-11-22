@@ -31,6 +31,7 @@ from urllib.parse import parse_qs, urlsplit
 from . import google_ownership
 from .assessment import (ApproverRequired, AssessmentService, SeparationConfigError, StopNotConfirmed,
                          separate_l2_approver_from_env)
+from .audit import AuditWriteFailed
 from .control_verification import run_live_control_verification
 from .diagnosis_ops import OP_PERMISSION, member_permissions, permitted
 from .lab import set_lab_mode, start_lab
@@ -106,6 +107,27 @@ PLATFORM_POST_ROUTES = frozenset({"/api/l2-profiles/accept", "/api/router/verify
                                   "/api/system/verify-controls", "/api/cve/real-software-verify"})
 # Routes that start a verification job (spawn workers / probes on this machine).
 JOB_ROUTES = frozenset({"/api/system/verify-controls", "/api/cve/real-software-verify"})
+
+# Audit before state (docs/AUDIT_BEFORE_STATE.md): a grant is recorded first and is not
+# made without its record; a removal is made whatever the audit log does, then recorded.
+AUDIT_REFUSED = "監査ログに記録できないため、この操作は行いませんでした（何も変更していません）"
+AUDIT_MISSING = "操作は反映しました（権限の取り消しは有効です）が、監査ログに記録できませんでした"
+
+
+def audit_first(audit, event: str, **fields) -> None:
+    try:
+        audit.record(event, **fields)
+    except Exception as e:  # noqa: BLE001 - disk, chain or anchor: all mean "not recorded"
+        raise AuditWriteFailed(AUDIT_REFUSED) from e
+
+
+def audit_after(audit, event: str, **fields) -> bool:
+    """The record of an applied removal; False if it could not be written."""
+    try:
+        audit.record(event, **fields)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_auth: bool | None = None,
@@ -1089,13 +1111,15 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     # the new account sees only its own organization (or the one it was invited to)
                     try:
                         if invite:
-                            org_id, roles = tenancy.store.accept_invite(invite, sess.operator)
-                            tenancy.service(org_id).audit.record("tenancy.invite_accepted", actor=sess.operator,
-                                                                 roles=roles)
+                            org_id, roles = tenancy.store.accept_invite(
+                                invite, sess.operator,
+                                journal=lambda oid, r: audit_first(tenancy.service(oid).audit,
+                                                                   "tenancy.invite_accepted",
+                                                                   actor=sess.operator, roles=r))
                         else:
                             org_id = tenancy.store.create_org(f"{display or sess.operator} の組織", sess.operator)
                             tenancy.service(org_id).audit.record("tenancy.org_created", actor=sess.operator)
-                    except TenancyError as e:
+                    except (TenancyError, AuditWriteFailed) as e:
                         tenancy_warning = str(e)     # signed in all the same; no organization yet
             finally:
                 signup_lock.release()
@@ -1132,16 +1156,31 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             raw = body.get("roles")
             roles = [str(r) for r in raw] if isinstance(raw, list) else []
             target = str(body.get("name", "")).strip()
+            unrecorded = []
+
+            def journal(before, after):
+                # audit first; only removing power goes ahead without its record
+                try:
+                    paudit.record("operator.roles_changed", actor=sess.operator, target=target,
+                                  before=list(before), after=list(after),
+                                  attested_unchanged=set(before) == set(after))
+                except Exception as e:  # noqa: BLE001
+                    if set(after) <= set(before) and set(after) != set(before):
+                        unrecorded.append(e)
+                        return
+                    raise AuditWriteFailed(AUDIT_REFUSED) from e
             try:
                 before, after = ops.set_roles(target, roles, actor=sess.operator,
-                                              session_token=sess.token)
+                                              session_token=sess.token, journal=journal)
+            except AuditWriteFailed as e:
+                return self._json(503, {"error": str(e), "applied": False, "audit_failed": True})
             except AuthError as e:
                 paudit.record("operator.roles_change_failed", actor=sess.operator, target=target[:64],
                                  requested=roles[:8], error=str(e)[:200])
                 return self._admin_failure(sess, e, 409)
-            paudit.record("operator.roles_changed", actor=sess.operator, target=target,
-                             before=list(before), after=list(after),
-                             attested_unchanged=set(before) == set(after))
+            if unrecorded:
+                return self._json(503, {"error": AUDIT_MISSING, "applied": True, "audit_failed": True,
+                                        "name": target, "roles": list(after)})
             return self._json(200, {"name": target, "roles": list(after)})
 
         def _admin_recovery(self, p, body, sess):
@@ -1205,35 +1244,62 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     return self._json(200, {"org": {"id": org_id, "name": st.org_name(org_id)},
                                             "orgs": st.orgs_of(sess.operator)})
                 if p == "/api/invites/accept":
-                    org_id, roles = st.accept_invite(str(body.get("token", "")), sess.operator)
-                    tenancy.service(org_id).audit.record("tenancy.invite_accepted", actor=sess.operator, roles=roles)
+                    org_id, roles = st.accept_invite(
+                        str(body.get("token", "")), sess.operator,
+                        journal=lambda oid, r: audit_first(tenancy.service(oid).audit, "tenancy.invite_accepted",
+                                                           actor=sess.operator, roles=r))
                     return self._json(200, {"org": {"id": org_id, "name": st.org_name(org_id)}, "roles": roles,
                                             "orgs": st.orgs_of(sess.operator)})
                 org_id = self._org_for_management(sess, body)
                 audit = tenancy.service(org_id).audit
                 if p == "/api/orgs/members/roles":
                     target = str(body.get("name", "")).strip()
-                    before = st.set_roles(org_id, sess.operator, target, body.get("roles"))
-                    audit.record("tenancy.member_roles_changed", actor=sess.operator, target=target,
-                                 before=before, after=list(st.roles_in(org_id, target)))
+                    unrecorded = []
+
+                    def journal(before, after):
+                        # audit first; only removing power goes ahead without its record
+                        try:
+                            audit.record("tenancy.member_roles_changed", actor=sess.operator, target=target,
+                                         before=before, after=after)
+                        except Exception as e:  # noqa: BLE001
+                            # a removal: no new organization role (viewer carries no power)
+                            # and no new service role
+                            if (set(service_roles(after)) <= set(service_roles(before))
+                                    and set(after) <= set(before) | {"viewer"} and set(after) != set(before)):
+                                unrecorded.append(e)
+                                return
+                            raise AuditWriteFailed(AUDIT_REFUSED) from e
+                    st.set_roles(org_id, sess.operator, target, body.get("roles"), journal=journal)
+                    if unrecorded:
+                        return self._json(503, {"error": AUDIT_MISSING, "applied": True, "audit_failed": True,
+                                                "members": st.members(org_id)})
                     return self._json(200, {"members": st.members(org_id)})
                 if p == "/api/orgs/members/remove":
                     target = str(body.get("name", "")).strip()
                     st.remove_member(org_id, sess.operator, target)
-                    audit.record("tenancy.member_removed", actor=sess.operator, target=target)
+                    # a removal: applied whatever the audit log does, then recorded
+                    if not audit_after(audit, "tenancy.member_removed", actor=sess.operator, target=target):
+                        return self._json(503, {"error": AUDIT_MISSING, "applied": True, "audit_failed": True,
+                                                "members": st.members(org_id)})
                     return self._json(200, {"members": st.members(org_id)})
                 if p == "/api/orgs/invites":
                     hours = body.get("ttl_hours", 168)
                     ttl = float(hours) * 3600 if isinstance(hours, (int, float)) else 168 * 3600
-                    iid, token = st.create_invite(org_id, sess.operator, body.get("roles"), ttl)
-                    audit.record("tenancy.invite_created", actor=sess.operator, invite=iid,
-                                 roles=list(body.get("roles") or []))
+                    iid, token = st.create_invite(
+                        org_id, sess.operator, body.get("roles"), ttl,
+                        journal=lambda i, r: audit_first(audit, "tenancy.invite_created", actor=sess.operator,
+                                                         invite=i, roles=r))
                     # the token is shown once to the inviter; only its hash is stored
                     return self._json(200, {"id": iid, "token": token, "invites": st.invites(org_id)})
                 if p == "/api/orgs/invites/revoke":
                     st.revoke_invite(org_id, sess.operator, str(body.get("id", "")))
-                    audit.record("tenancy.invite_revoked", actor=sess.operator, invite=str(body.get("id", ""))[:40])
+                    if not audit_after(audit, "tenancy.invite_revoked", actor=sess.operator,
+                                       invite=str(body.get("id", ""))[:40]):
+                        return self._json(503, {"error": AUDIT_MISSING, "applied": True, "audit_failed": True,
+                                                "invites": st.invites(org_id)})
                     return self._json(200, {"invites": st.invites(org_id)})
+            except AuditWriteFailed as e:
+                return self._json(503, {"error": str(e), "applied": False, "audit_failed": True})
             except TenancyError as e:
                 return self._json(403 if "権限" in str(e) or "メンバー" in str(e) else 400, {"error": str(e)})
             return self._json(404, {"error": "not found"})
@@ -1489,8 +1555,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     return self._authorized_platform_read(sess, lambda: self._json(200, st))
                 elif p == base + "/start":
                     with live_grant_roles(sess, getattr(self, "_bound_org", DEFAULT_ORG)):
-                        svc.start(actor)
-                    svc.audit.record("assessment.start_requested", actor=actor)
+                        svc.start(actor=actor)      # recorded first, by the service: no record, no run
                 elif p == base + "/restart":
                     with live_grant_roles(sess, getattr(self, "_bound_org", DEFAULT_ORG)):
                         result = svc.restart(actor)

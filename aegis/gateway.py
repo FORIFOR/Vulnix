@@ -432,8 +432,9 @@ class Gateway:
             if self._state is not State.PAUSED:
                 raise AuthzError(f"cannot resume from {self._state.value}")
             self.engagement.check_active(self.clock())   # re-validate window & authz
-            self._state = State.RUNNING
+            # audit first: work that cannot be recorded does not resume
             self.audit.record("resume", actor=actor)
+            self._state = State.RUNNING
 
     # ---- emergency stop (layer 6) ----------------------------------------
     def emergency_stop(self, actor: str, confirm_timeout_s: float = 5.0) -> StopReport:

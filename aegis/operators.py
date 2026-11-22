@@ -761,10 +761,12 @@ class OperatorStore:
 
     @_revocation
     def set_roles(self, target: str, roles: list[str] | tuple[str, ...], *, actor: str,
-                  session_token: str | None = None) -> tuple[tuple[str, ...], tuple[str, ...]]:
+                  session_token: str | None = None, journal=None) -> tuple[tuple[str, ...], tuple[str, ...]]:
         """Replace `target`'s roles. Returns (before, after). The caller (server)
         has already established that `actor` is an authenticated admin; this
-        re-checks it, and refuses changes that would defeat the model."""
+        re-checks it, and refuses changes that would defeat the model.
+        `journal(before, after)` is called after every check and before the change;
+        if it raises, nothing changes (audit before state)."""
         unknown = [r for r in roles if r not in ROLES]
         if unknown:
             raise AuthError(f"不明なロールです: {', '.join(unknown)}")
@@ -782,6 +784,8 @@ class OperatorStore:
             if "admin" in before and "admin" not in new_roles and not any(
                     "admin" in o.roles for n, o in self._ops.items() if n != target):
                 raise AuthError("最後の管理者から管理者ロールを外すことはできません")
+            if journal is not None:
+                journal(before, new_roles)
             op.roles = new_roles
         self._persist_operators(strict=True)
         return before, new_roles

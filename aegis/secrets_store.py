@@ -121,9 +121,11 @@ class EncryptedSecretStore:
         os.replace(tmp, self._enc_path)
 
     def set_credentials(self, asset_id: str, payload: dict, *, profile: dict,
-                        actor: str = "operator") -> dict:
+                        actor: str = "operator", before_commit=None) -> dict:
         """Merge tokens/paths declared by `profile` into the asset's record.
-        Empty values leave the stored value unchanged; undeclared keys are rejected."""
+        Empty values leave the stored value unchanged; undeclared keys are rejected.
+        `before_commit(status)` is called with the public status the change would have,
+        after every check and before anything is stored; if it raises, nothing is."""
         unknown = [k for k, v in payload.items()
                    if isinstance(v, str) and v.strip()
                    and k not in profile["tokens"] and k not in profile["paths"]]
@@ -169,6 +171,8 @@ class EncryptedSecretStore:
                 rec[k] = val
         rec["updated_at"] = time.time()
         rec["updated_by"] = actor
+        if before_commit is not None:
+            before_commit(self.public_status(asset_id, profile, rec=rec))
         self._cache[asset_id] = rec
         self._save_all()
         return self.public_status(asset_id, profile)
@@ -211,9 +215,11 @@ class EncryptedSecretStore:
             env["VULNIX_L2_PATHS"] = json.dumps(overrides)
         return env
 
-    def public_status(self, asset_id: str, profile: dict | None) -> dict:
-        """Safe status object for UI/API/logs - never includes raw token strings."""
-        rec = self._cache.get(asset_id) or {}
+    def public_status(self, asset_id: str, profile: dict | None, *, rec: dict | None = None) -> dict:
+        """Safe status object for UI/API/logs - never includes raw token strings.
+        `rec` (default: the stored record) lets a change be described before it is stored."""
+        if rec is None:
+            rec = self._cache.get(asset_id) or {}
         status = {
             "asset_id": asset_id,
             "encryption": "PBKDF2-HMAC-SHA256-CTR-MAC (0600 file permissions)",
@@ -239,7 +245,7 @@ class EncryptedSecretStore:
             {"key": k, "label": meta["label"], "default": meta["default"], "value": rec.get(k)}
             for k, meta in profile["paths"].items()]
         for c in profile["checks"]:
-            missing = self.missing_for_check(asset_id, c)
+            missing = [k for k in tokens_needed(c) if not rec.get(k)]
             runnable = c["spec_status"] == "confirmed"
             status["checks"][c["id"]] = {
                 "label": c["label"], "category": c["category"],

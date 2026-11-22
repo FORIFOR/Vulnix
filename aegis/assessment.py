@@ -30,7 +30,7 @@ from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_FLOOR
 from pathlib import Path
 
 from . import cve
-from .audit import AuditLog
+from .audit import AuditLog, AuditWriteFailed
 from .audit_anchor import client_from_env as anchor_client_from_env
 from .authz import ApprovalStore, AuthzError, Engagement, Target, TokenAuthority
 from .events import EventBus
@@ -848,15 +848,48 @@ class AssessmentService:
             self.ledger.ownership_proofs.pop(name, None)
             self.ledger.assets.pop(name, None)
 
-    def _commit_grant_locked(self, before: dict, what: str) -> None:
+    def _commit_grant_locked(self, before: dict, what: str, audited: str | None = None) -> None:
         """Commit a change that grants authority, now. If it cannot be written it
-        is rolled back: nothing was granted, in memory or on disk."""
+        is rolled back: nothing was granted, in memory or on disk. `audited` names the
+        audit-first record of this grant, which is then marked as not committed."""
         try:
             self._sync_ledger_assets_locked()
             self.ledger.commit_or_rollback(before)
         except LedgerError:
             self._persist_error = self.ledger.error or "LedgerError"
+            if audited:
+                self._grant_not_committed(audited, "ledger")
             raise ValueError(f"権限台帳に保存できないため、{what}は記録されませんでした。保存先を確認してください") from None
+
+    # ---- audit before state (docs/AUDIT_BEFORE_STATE.md) -------------------------------
+    def _audit_first(self, event: str, **fields) -> dict:
+        """Write-ahead for a change that grants authority or starts work: recorded
+        BEFORE anything changes. No record, no change: the caller changes nothing."""
+        try:
+            return self.audit.record(event, **fields)
+        except Exception as e:  # noqa: BLE001 - disk, chain or anchor: all mean "not recorded"
+            raise AuditWriteFailed("監査ログに記録できないため、この操作は行いませんでした（何も変更していません）。"
+                                   "監査ログの保存先を確認してください") from e
+
+    def _grant_not_committed(self, event: str, reason: str) -> None:
+        """An audit-first record whose change was then not applied (best effort)."""
+        try:
+            self.audit.record("grant.not_committed", grant=event, reason=reason)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _audit_reduction(self, event: str, **fields) -> AuditWriteFailed | None:
+        """The record of a change that removes authority or stops work, written AFTER it
+        was applied: a failing audit log never holds such a change back. The failure is
+        returned, for the caller to report once the change is complete."""
+        try:
+            self.audit.record(event, **fields)
+            return None
+        except Exception as e:  # noqa: BLE001
+            err = AuditWriteFailed("操作は反映しました（権限の取り消し・停止は有効です）が、監査ログに記録できませんでした。"
+                                   "監査ログの保存先を確認してください", applied=True)
+            err.__cause__ = e
+            return err
 
     def _authority_reduced_locked(self, host: str) -> None:
         """Every withdrawal of authority goes through here, BEFORE it is committed:
@@ -1507,14 +1540,16 @@ class AssessmentService:
             if not sha256 or src["sha256"] != sha256:
                 raise ValueError("プロファイルの内容が表示時から変わっています。内容を確認し直してください")
             self._require_working_store()
+            # audit first: an acceptance that cannot be recorded accepts nothing
+            self._audit_first("l2.profile_accepted", actor=actor, profile=profile_id, file=src["file"],
+                              sha256=src["sha256"])
             before = self.ledger.snapshot()
             self._accepted_profiles[profile_id] = src["sha256"]
-            self._commit_grant_locked(before, "プロファイルの承認")      # committed, or not accepted at all
+            self._commit_grant_locked(before, "プロファイルの承認",      # committed, or not accepted at all
+                                      audited="l2.profile_accepted")
             self.l2 = fresh
             self._apply_profile_acceptance_locked()
             self._save_state_locked()
-        self.audit.record("l2.profile_accepted", actor=actor, profile=profile_id, file=src["file"],
-                          sha256=src["sha256"])
         return self.l2_profiles_status()
 
     def _l2_profile(self, host: str | None = None) -> dict | None:
@@ -2985,6 +3020,15 @@ class AssessmentService:
             in_ownership_flow = self._in_ownership_flow(clean_name)
             if in_ownership_flow:   # checked BEFORE anything is added to the lab allow-list
                 raise ValueError("この資産は実サービスとして登録されています。所有確認（DNS TXT / 検証ファイル）の手順で登録してください")
+            self._audit_first(
+                "asset.registered",
+                actor=actor,
+                name=clean_name,
+                kind=clean_kind,
+                environment=clean_env,
+                authorized=authorized,
+                authorization_ref=clean_ref,
+            )
             if authorized:
                 self._allowed_hosts.add(clean_name)
             # whether the workspace switched to this asset (reported, never stored)
@@ -3048,16 +3092,6 @@ class AssessmentService:
                 elif activate_workspace:
                     skipped = "running" if authorized else "not_authorized"
             self._save_state_locked()
-
-        self.audit.record(
-            "asset.registered",
-            actor=actor,
-            name=clean_name,
-            kind=clean_kind,
-            environment=clean_env,
-            authorized=authorized,
-            authorization_ref=clean_ref,
-        )
         return {**asset_record, "workspace_activated": activated, "activation_skipped": skipped}
 
     def _activate_asset_locked(self, asset_record: dict, auth_ref: str) -> None:
@@ -3116,9 +3150,9 @@ class AssessmentService:
                 raise ValueError("この資産は書面許可（SOW）が未登録のため診断できません")
             if self._in_ownership_flow(target_asset["name"]) and self._external_entry(target_asset["name"]) is None:
                 raise ValueError("所有確認・診断範囲確認が未完了か有効期限切れです。資産管理から所有確認をやり直してください")
+            self._audit_first("asset.selected", actor=actor, asset_id=asset_id, name=target_asset["name"])
             self._activate_asset_locked(target_asset, str(target_asset["authorization_ref"]))
             self._reset_workspace_locked()
-        self.audit.record("asset.selected", actor=actor, asset_id=asset_id, name=self.a.asset["name"])
         return self.snapshot()
 
     def asset_is_real_service(self, asset_id: str = "", host: str = "") -> bool:
@@ -3209,8 +3243,11 @@ class AssessmentService:
                 self.secrets.clear_credentials(gone)
             except OSError:
                 pass        # cleared again at the next start (orphan cleanup)
-        self.audit.record("asset.deleted", actor=actor, asset_id=asset_id, name=deleted_name)
+        # a withdrawal: applied above whatever the audit log does, then recorded
+        audit_error = self._audit_reduction("asset.deleted", actor=actor, asset_id=asset_id, name=deleted_name)
         self._raise_if_unstopped("対象を削除し、診断許可を取り消しました")
+        if audit_error:
+            raise audit_error
         return self.assets()
 
     def _withdraw_deleted_locked(self, name: str) -> None:
@@ -3294,6 +3331,16 @@ class AssessmentService:
             # the name must be durably recorded as a real service before a challenge
             # for it exists anywhere
             self._require_working_store()
+            # audit first: a registration that cannot be recorded registers nothing
+            self._audit_first(
+                "asset.challenge_issued",
+                actor=approver,
+                host=host,
+                target_url=parsed["target_url"],
+                dns_txt_name=ch["dns_txt_name"],
+                well_known_url=ch["well_known_url"],
+                authorization_ref=internal_auth_ref,
+            )
             ledger_before = self.ledger.snapshot()
             endpoint_revoked = False
             self._real_service_hosts.add(host)
@@ -3348,13 +3395,14 @@ class AssessmentService:
             if endpoint_revoked:
                 self._save_state_locked()          # a reduction: kept in memory whatever the disk does
                 if self.ledger.error:
+                    self._grant_not_committed("asset.challenge_issued", "ledger")
                     raise ValueError("権限台帳に保存できないため、登録できませんでした。保存先を確認してください")
             else:
                 # The registration (name + asset) is committed to the ledger BEFORE
                 # the card is written anywhere. If it cannot be, nothing was
                 # registered - and nothing else in the ledger is disturbed.
                 try:
-                    self._commit_grant_locked(ledger_before, "登録")
+                    self._commit_grant_locked(ledger_before, "登録", audited="asset.challenge_issued")
                 except ValueError:
                     if existing is None:
                         self._extra_assets = [x for x in self._extra_assets if x is not asset_rec]
@@ -3375,15 +3423,6 @@ class AssessmentService:
                     )
                     asset_rec = inherited["asset"] or asset_rec
 
-        self.audit.record(
-            "asset.challenge_issued",
-            actor=approver,
-            host=host,
-            target_url=parsed["target_url"],
-            dns_txt_name=ch["dns_txt_name"],
-            well_known_url=ch["well_known_url"],
-            authorization_ref=internal_auth_ref,
-        )
         if endpoint_revoked:
             self._raise_if_unstopped("対象の宛先を変更し、以前の診断許可を取り消しました")
         return {
@@ -3487,6 +3526,10 @@ class AssessmentService:
                 self.audit.record("asset.reverification_denied", actor=actor, host=host, method=method,
                                   reason="approver role required for a host that holds authority")
                 raise ApproverRequired("所有確認済みの対象の再確認には承認責任者の権限が必要です")
+            if verified:
+                # audit first: a proof that cannot be recorded is not kept
+                self._audit_first("asset.ownership_verified", actor=actor, host=host, method=method,
+                                  verified=True, detail=res.get("detail", ""))
             if target_asset is not None:
                 target_asset["ownership_verified"] = verified
                 # The proof record is what scope confirmation checks, not the flag.
@@ -3504,7 +3547,7 @@ class AssessmentService:
                         "port": int(target_asset.get("port") or parsed["port"]),
                     }
                     try:
-                        self._commit_grant_locked(before, "所有確認")
+                        self._commit_grant_locked(before, "所有確認", audited="asset.ownership_verified")
                     except ValueError:
                         target_asset["ownership_verified"] = False
                         target_asset.pop("ownership_proof", None)
@@ -3530,16 +3573,13 @@ class AssessmentService:
                         target_asset["note"] = "所有確認に失敗しました。DNS TXT または検証ファイルを確認してください"
             self._save_state_locked()
 
-        self.audit.record(
-            "asset.ownership_verified" if verified else "asset.ownership_failed",
-            actor=actor,
-            host=host,
-            method=method,
-            verified=verified,
-            detail=res.get("detail", ""),
-        )
         if not verified:
+            # a withdrawal: applied above whatever the audit log does, then recorded
+            audit_error = self._audit_reduction("asset.ownership_failed", actor=actor, host=host, method=method,
+                                                verified=False, detail=res.get("detail", ""))
             self._raise_if_unstopped("所有確認に失敗したため診断許可を取り消しました")
+            if audit_error:
+                raise audit_error
         return {
             "host": host,
             "verified": verified,
@@ -3635,6 +3675,15 @@ class AssessmentService:
                 raise ValueError("検証ファイルによる所有確認で診断できるのは https の443番ポートだけです。"
                                  "他のポートを診断するには DNS TXT で所有確認してください")
 
+            # audit first: a scope that cannot be recorded is not granted
+            self._audit_first(
+                "asset.scope_confirmed",
+                actor=approver,
+                host=host,
+                authorization_ref=auth_ref,
+                l2_auto_approved=False,
+                allow_status_probe=allow_status_probe is True,
+            )
             before = self.ledger.snapshot()
             self._verified_external_hosts[host] = {
                 "host": host,
@@ -3655,7 +3704,7 @@ class AssessmentService:
                 "proof_method": proof["method"],
                 "proof_verified_at": proof["verified_at"],
             }
-            self._commit_grant_locked(before, "範囲確認")
+            self._commit_grant_locked(before, "範囲確認", audited="asset.scope_confirmed")
             self._authority_notice = None      # the operator has re-established authority since
             target_asset["authorization_ref"] = auth_ref
             target_asset["scope_confirmed"] = True
@@ -3670,14 +3719,6 @@ class AssessmentService:
             else:
                 self._save_state_locked()
 
-        self.audit.record(
-            "asset.scope_confirmed",
-            actor=approver,
-            host=host,
-            authorization_ref=auth_ref,
-            l2_auto_approved=False,
-            allow_status_probe=allow_status_probe is True,
-        )
         return {
             "host": host,
             "scope_confirmed": True,
@@ -3713,7 +3754,22 @@ class AssessmentService:
                 for k, v in src.items():
                     if isinstance(v, str):
                         payload[str(k)] = v
-            status = self.secrets.set_credentials(target_host, payload, profile=profile, actor=actor)
+            def audit_first(preview):
+                # audit first: test accounts that cannot be recorded are not stored
+                self._audit_first(
+                    "secrets.configured",
+                    actor=actor,
+                    host=target_host,
+                    profile=profile["id"],
+                    token_fingerprints={t["key"]: t["fingerprint"] for t in preview["tokens"] if t["set"]},
+                    l2_ready=preview.get("l2_ready"),
+                )
+            try:
+                self.secrets.set_credentials(target_host, payload, profile=profile, actor=actor,
+                                             before_commit=audit_first)
+            except OSError:
+                self._grant_not_committed("secrets.configured", "secret_store")
+                raise
             # Refresh L2 candidate notes if active workspace matches
             if self.a.asset.get("name", "").lower() == target_host:
                 for cand in self._l2_candidates():
@@ -3721,15 +3777,6 @@ class AssessmentService:
                     if existing_f is None or not existing_f.get("evidence"):
                         self.a.findings[cand["id"]] = cand
                 self._save_state_locked()
-
-        self.audit.record(
-            "secrets.configured",
-            actor=actor,
-            host=target_host,
-            profile=profile["id"],
-            token_fingerprints={t["key"]: t["fingerprint"] for t in status["tokens"] if t["set"]},
-            l2_ready=status.get("l2_ready"),
-        )
         return self.secrets_status(target_host)
 
     def secrets_status(self, host: str | None = None) -> dict:
@@ -3922,8 +3969,10 @@ class AssessmentService:
         with self._lock:
             if self.a.state != "idle":
                 raise ValueError(f"cannot start from {self.a.state}")
-            self.a.started_by = actor
             self._ensure_active_window_locked()
+            # audit first: a run that cannot be recorded does not start
+            self._audit_first("assessment.start_requested", actor=actor)
+            self.a.started_by = actor
             self._new_scan_usage_locked()
             if getattr(self, "_may_switch_lab", True):
                 set_lab_mode("vulnerable")
@@ -3949,6 +3998,8 @@ class AssessmentService:
             # a run that may not start (scope expired, revoked, held) is refused
             # BEFORE the previous results are cleared
             self._ensure_active_window_locked()
+            # audit first: a run that cannot be recorded does not start (nothing is cleared)
+            self._audit_first("assessment.restarted", actor=actor, target=self.a.asset["name"])
             self._reset_workspace_locked(end_stop=True)      # the one explicit way out of an emergency stop
             if self._unstopped_now_locked():
                 # (an emergency stop, if there was one, is still in force)
@@ -3962,15 +4013,24 @@ class AssessmentService:
             self._thread = threading.Thread(target=self._run, args=(self._run_generation,),
                                             daemon=True, name="runner")
             self._thread.start()
-        self.audit.record("assessment.restarted", actor=actor, target=self.a.asset["name"])
         return self.snapshot()
 
     def pause(self, actor: str) -> None:
         with self._lock:
             if self.a.state != "running":
                 raise ValueError(f"cannot pause from {self.a.state}")
-            self.gateway.pause(actor)
+            # stopping work is never held back by a failing audit log (the Gateway is
+            # paused before it records); the missing record is reported afterwards
+            audit_error = None
+            try:
+                self.gateway.pause(actor)
+            except Exception as e:  # noqa: BLE001
+                audit_error = AuditWriteFailed("一時停止しました（有効です）が、監査ログに記録できませんでした。"
+                                               "監査ログの保存先を確認してください", applied=True)
+                audit_error.__cause__ = e
             self._set_state("paused")
+        if audit_error:
+            raise audit_error
 
     def resume(self, actor: str) -> None:
         with self._lock:
@@ -4024,7 +4084,10 @@ class AssessmentService:
                     self._upsert_finding({**f, "verdict": "aborted", "_in_verification": False})
             for ap in self.a.approvals.values():
                 if ap["status"] == "pending":
-                    self._decide(ap["id"], "rejected", actor, notify=False)
+                    if self._decide(ap["id"], "rejected", actor, notify=False):
+                        # the stop stands; it is not reported as a confirmed (recorded) stop
+                        report["confirmed"] = False
+                        report["audit_incomplete"] = True
             self.a.activity = None
             self._set_state("stopped")
         self.bus.publish(self.a.id, "stop.report", stop_report=report)
@@ -4068,7 +4131,9 @@ class AssessmentService:
                         "この実行の依頼者が記録されていないため、承認できません。実行をやり直してください"
                         if not self.a.started_by else
                         "診断を開始した本人は、その L2 を承認できません。別の承認責任者が承認してください")
-            self._decide(approval_id, decision, actor)
+            audit_error = self._decide(approval_id, decision, actor)
+        if audit_error:
+            raise audit_error
 
     def _think(self, step: str, detail: str, *, phase: str = "", tool: str = "", level: str = "L1") -> None:
         if self._stale_runner():
@@ -4096,10 +4161,12 @@ class AssessmentService:
                 raise ValueError("この検証項目の判定ルールは対象APIの仕様と未照合（placeholder）のため、依頼できません")
             if not actor or str(actor).startswith("policy:auto"):
                 raise ValueError("L2検証の依頼は人間の操作者だけが行えます")
+            # audit first: the precondition of an L2 run exists only once it is recorded
+            self._audit_first("l2.run_requested", actor=actor, finding=finding_id, check=check["id"],
+                              risk_level="L2")
             self._l2_requests[finding_id] = {"requested_by": actor, "requested_at": time.time(),
                                              "check": check["id"], "host": self.a.asset.get("name")}
             self._save_state_locked()
-        self.audit.record("l2.run_requested", actor=actor, finding=finding_id, check=check["id"], risk_level="L2")
         return self.snapshot()
 
     def _take_l2_request(self, finding_id: str, check_id: str, approver: str) -> dict | None:
@@ -5371,15 +5438,18 @@ class AssessmentService:
                               action=ap["action"], risk_level=ap["risk_level"])
         ap["status"] = status
         ap["decided_by"], ap["decided_at"] = actor, time.time()
+        audit_error = None
         if ap["status"] == "approved":
             ap["approval_ref"] = self.approval_store.approve(actor, "eng_demo", "lab", ap["action"])
         else:
-            self.audit.record("approval.rejected", request=aid, actor=actor,
-                              action=ap["action"], risk_level=ap["risk_level"])
+            # a rejection is never held back by a failing audit log; the caller reports it
+            audit_error = self._audit_reduction("approval.rejected", request=aid, actor=actor,
+                                                action=ap["action"], risk_level=ap["risk_level"])
         self._save_state_locked()
         self._publish_approval(aid)
         if notify and aid in self._approval_events:
             self._approval_events[aid].set()
+        return audit_error
 
     def _publish_approval(self, aid):
         self.bus.publish(self.a.id, "approval.updated", approval=dict(self.a.approvals[aid]))

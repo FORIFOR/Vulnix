@@ -191,7 +191,9 @@ class OrgStore:
         if "owner" in set(roles) and "owner" not in mine:
             raise TenancyError("オーナーの付与・削除はオーナーだけが行えます")
 
-    def set_roles(self, org_id: str, actor: str, account: str, roles) -> list[str]:
+    def set_roles(self, org_id: str, actor: str, account: str, roles, *, journal=None) -> list[str]:
+        """`journal(before, after)` is called after every check and before the change;
+        if it raises, nothing changes (audit before state)."""
         roles = _clean_roles(roles)
         with self._tx():
             org = self._require(org_id)
@@ -206,6 +208,8 @@ class OrgStore:
             self._check_manager(org, actor, ["owner"] if ("owner" in before or "owner" in roles) else [])
             if "owner" in before and "owner" not in roles and self._owners(org) == [account]:
                 raise TenancyError("最後のオーナーは外せません。先に別のメンバーをオーナーにしてください")
+            if journal is not None:
+                journal(before, list(roles))
             org["members"][account] = roles
             return before
 
@@ -221,7 +225,10 @@ class OrgStore:
                 raise TenancyError("最後のオーナーは外せません")
             del org["members"][account]
 
-    def create_invite(self, org_id: str, actor: str, roles, ttl_s: float = INVITE_TTL_S) -> tuple[str, str]:
+    def create_invite(self, org_id: str, actor: str, roles, ttl_s: float = INVITE_TTL_S, *,
+                      journal=None) -> tuple[str, str]:
+        """`journal(invite_id, roles)` is called before the invitation exists; if it
+        raises, none is created (audit before state)."""
         roles = _clean_roles(roles)
         ttl_s = max(300.0, min(float(ttl_s), MAX_INVITE_TTL_S))
         with self._tx():
@@ -234,6 +241,8 @@ class OrgStore:
                 raise TenancyError(f"有効な招待は1つの組織につき {MAX_ACTIVE_INVITES} 件までです。不要な招待を取り消してください")
             token = "inv_" + secrets.token_urlsafe(24)
             iid = "invid_" + secrets.token_hex(6)
+            if journal is not None:
+                journal(iid, list(roles))
             self._data["invites"][iid] = {"org": org_id, "roles": roles, "hash": _hash(token),
                                           "created_by": actor, "created_at": self._clock(),
                                           "expires_at": self._clock() + ttl_s}
@@ -255,8 +264,10 @@ class OrgStore:
             return any(secrets.compare_digest(v["hash"], h) and v["expires_at"] > self._clock()
                        for v in self._data["invites"].values())
 
-    def accept_invite(self, token: str, account: str) -> tuple[str, list[str]]:
-        """Single use: the invitation is removed whether it is accepted or found expired."""
+    def accept_invite(self, token: str, account: str, *, journal=None) -> tuple[str, list[str]]:
+        """Single use: the invitation is removed whether it is accepted or found expired.
+        `journal(org_id, roles)` is called before the membership changes; if it raises,
+        nothing changes and the invitation stays usable (audit before state)."""
         h = _hash(str(token or ""))
         with self._lock:
             iid, inv = next(((k, v) for k, v in self._data["invites"].items()
@@ -271,8 +282,10 @@ class OrgStore:
                 # an admin accepting their own invitation would hand themselves roles
                 raise TenancyError("自分が作成した招待は使えません（自分の権限を増やすことはできません）")
             with self._tx():
-                del self._data["invites"][iid]
                 org = self._require(inv["org"])
+                if journal is not None:
+                    journal(inv["org"], list(inv["roles"]))
+                del self._data["invites"][iid]
                 current = set(org["members"].get(account, ()))
                 org["members"][account] = sorted(current | set(inv["roles"]), key=ORG_ROLES.index)
             return inv["org"], list(inv["roles"])
