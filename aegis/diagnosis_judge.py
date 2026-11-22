@@ -70,7 +70,7 @@ REQUIREMENTS = frozenset({"authentication_required", "public", "unspecified"})
 # diagnosis loop runs only on that lab, so an L1 GET is compared with them.
 LAB_OWNER_IDENTIFIERS = ("res_b_001", REPRODUCTION_MARKERS["idor"])
 LAB_OWNER_ACCOUNTS = ("acct_B",)
-L2_EXCERPT = 4096           # characters of A's answer the lab Worker keeps
+L2_EXCERPT = 65536          # characters of A's answer the lab IDOR Worker keeps (LAB_IDOR_EXCERPT)
 L1_BODY_CAP = 4096          # bytes of the body the L1 probe reads
 # body kinds an absent owner record may be read from (everything else stays unsettled)
 # Only answers that are themselves a refusal or a sign-in page count as "the owner's record is
@@ -87,22 +87,45 @@ _REFUSAL_WORDS = ("forbidden", "denied", "unauthorized", "unauthorised", "not al
                   "permission denied", "no permission", "access_denied", "not_authenticated", "login required")
 
 
+_ERROR_DETAIL_KEYS = ("path", "locations", "extensions")     # what a GraphQL error carries
+
+
+def _flat(value, scalar, depth: int) -> bool:
+    """A scalar, or a list / dict of scalars nested at most `depth` levels; short strings only."""
+    if isinstance(value, (list, dict)):
+        items = value.values() if isinstance(value, dict) else value
+        return depth > 0 and all(_flat(x, scalar, depth - 1) for x in items)
+    return isinstance(value, scalar) and not (isinstance(value, str) and len(value) > 200)
+
+
 def _json_refusal(parsed) -> bool:
     """A JSON body that is only an error / refusal object - never data in an envelope.
-    Every value must be a short scalar (or, for `errors`, a list of {code, message}
-    scalars), success flags must not say success, and the refusal words are looked for
-    in the error fields only (a word inside data, e.g. "permission": "admin", is data)."""
+    Every value must be a short scalar (or, for `errors`, a list of {code, message, detail}
+    scalars, optionally with a GraphQL error's `path`, `locations` and `extensions` holding
+    only scalars or lists / dicts of scalars), a `data` field must be null or an object of
+    nulls only (GraphQL: no field resolved), success flags must not say success, and the
+    refusal words are looked for in the error fields only (message / code / detail and an
+    error's extensions.code; a word inside data, e.g. "permission": "admin", is data)."""
     if not isinstance(parsed, dict) or not parsed:
         return False
     allowed = {"error", "errors", "message", "detail", "code", "status", "error_description", "request_id",
-               "ok", "success", "reason"}
+               "ok", "success", "reason", "data"}
     if set(map(str, parsed)) - allowed:
         return False
     scalar = (str, int, float, bool, type(None))
     for k, v in parsed.items():
-        if k == "errors":
-            if not (isinstance(v, list) and all(isinstance(e, dict) and set(map(str, e)) <= {"code", "message", "detail"}
-                                                and all(isinstance(x, scalar) for x in e.values()) for e in v)):
+        if k == "data":
+            if not (v is None or (isinstance(v, dict) and all(x is None for x in v.values()))):
+                return False
+        elif k == "errors":
+            if not (isinstance(v, list) and all(
+                    isinstance(e, dict) and set(map(str, e)) <= {"code", "message", "detail", *_ERROR_DETAIL_KEYS}
+                    and all(isinstance(x, scalar) for kk, x in e.items() if kk not in _ERROR_DETAIL_KEYS)
+                    # path ["node", 0], extensions {"code": "FORBIDDEN"}: one level of scalars;
+                    # locations [{"line": 1, "column": 2}]: a list of such objects
+                    and all(_flat(x, scalar, 2 if kk == "locations" else 1)
+                            for kk, x in e.items() if kk in _ERROR_DETAIL_KEYS)
+                    for e in v)):
                 return False
         elif not isinstance(v, scalar) or (isinstance(v, str) and len(v) > 200):
             return False
@@ -110,7 +133,11 @@ def _json_refusal(parsed) -> bool:
         return False
     words = [str(parsed.get(k, "")).lower() for k in ("error", "message", "detail", "reason", "error_description",
                                                        "status", "code")]
-    words += [str(x).lower() for e in parsed.get("errors") or [] for x in e.values()]
+    for e in parsed.get("errors") or []:
+        words += [str(e[k]).lower() for k in ("code", "message", "detail") if k in e]
+        ext = e.get("extensions")
+        if isinstance(ext, dict) and "code" in ext:
+            words.append(str(ext["code"]).lower())
     text = " ".join(words)
     return any(w in text for w in _REFUSAL_WORDS) or any(str(parsed.get(k)) in ("401", "403")
                                                           for k in ("code", "status"))

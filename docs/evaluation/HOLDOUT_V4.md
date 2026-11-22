@@ -148,3 +148,11 @@ VULNIX_NO_ENV_LOCAL=1 python3 -m scripts.run_model_evaluation compare --set hold
   - `aegis/diagnosis_judge.py`：SHA-256 `8aae15f94b5d71537867de505209b982432f02e5528af248faf9d7fdc254ebea`
   - `aegis/evidence.py`：SHA-256 `08443b44d0d18b132b86101f614c6fc5c617de0d715e8654e5f144497b73d741`
 - **030・031** の「保留が妥当」というラベルは、Worker が本文を 4 KB までしか保持しないという実装上の事情に依存します。2人目の判定者と食い違ったのも、この2件です。この食い違いが影響するのは「正解または妥当な保留」の件数だけで、TP・FN には影響しません。
+
+## v4 は開発用のセットに移しました（2026-11-22、v5 のサイクル）
+
+[V4_MISS_ANALYSIS.md](V4_MISS_ANALYSIS.md) の分析をもとに判定器を変えました（[FROZEN_JUDGE_V5.md](FROZEN_JUDGE_V5.md)）。**v4 は、この時点から v1〜v3 と同じく開発・回帰用のセットです。** v4 の数字は、v5 の判定器の偏りのない推定には使いません。偏りのない推定には、v5 の判定器を凍結した後に作る、新しい未見セット（v5）が必要です（まだ作っていません）。
+
+- v4 のファイル（§2 の SHA-256）、正解、2人目のラベル、上の1回だけの評価の出力（`comparison_holdout_v4.json`）は変えていません。
+- 開発・回帰用のセットの一覧と、そのファイルの SHA-256 は、FROZEN_JUDGE_V5.md の「開発・回帰用のセット」にあります（v2・v3 と同じ扱いで、v4 を加えました）。
+- 新しい判定器で v4 を流した結果は `comparison_holdout_v4_v5judge.json` です（開発用の確認。未見の評価ではありません）。

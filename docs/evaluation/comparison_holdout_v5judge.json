@@ -1,0 +1,6165 @@
+{
+  "about": "held-out comparison without a real model (docs/evaluation/EVALUATION_PROTOCOL.md)",
+  "case_set": "holdout",
+  "artex": "Python stand-in",
+  "model": "local scripted stand-in (tests/diagnosis_planner.py); not a real model",
+  "limits": {
+    "max_steps": 3,
+    "max_planner_rounds": 2,
+    "max_seconds": 300,
+    "max_planner_cost_usd": 1.0,
+    "max_stalled_steps": 2
+  },
+  "external_connection_attempts": 0,
+  "summary": {
+    "fixed_l1": {
+      "cases": 30,
+      "correct": 3,
+      "tp": 0,
+      "fp": 0,
+      "fn": 10,
+      "tn": 20,
+      "undecided": 27,
+      "undecided_appropriate": 2,
+      "needs_spec_correct": 0,
+      "unauth_correct": 3,
+      "unauth_false_positive": 0,
+      "fix_checks": 0,
+      "fix_correct": 0,
+      "checks_run": 0,
+      "unnecessary_checks": 0,
+      "forbidden_checks_run": 0,
+      "target_gets": 30,
+      "worker_launches": 30,
+      "planner_calls": 0,
+      "model_requests": 0,
+      "invalid_replies": 0,
+      "steps_offered": 0,
+      "steps_rejected": 0,
+      "plan_useful": 0,
+      "plan_scored": 0,
+      "replan_moved_on": 0,
+      "replan_scored": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "reasoning_tokens": 0,
+      "planner_seconds": 0.0,
+      "elapsed_s": 1.977,
+      "model_cost_usd": 0.0,
+      "reserved_usd": 0.0,
+      "per_category": {
+        "decoy_200": {
+          "cases": 5,
+          "correct": 0,
+          "withheld_otherwise": 4,
+          "withheld_missing_vuln": 1
+        },
+        "authorization_idor": {
+          "cases": 8,
+          "correct": 0,
+          "withheld_otherwise": 4,
+          "withheld_appropriately": 2,
+          "withheld_missing_vuln": 2
+        },
+        "fix_recheck": {
+          "cases": 3,
+          "correct": 0,
+          "withheld_missing_vuln": 3
+        },
+        "replan_contradiction": {
+          "cases": 5,
+          "correct": 0,
+          "withheld_otherwise": 2,
+          "withheld_missing_vuln": 3
+        },
+        "auth_public_spec": {
+          "cases": 5,
+          "correct": 0,
+          "withheld_otherwise": 4,
+          "withheld_missing_vuln": 1
+        },
+        "spec_missing_or_no_check": {
+          "cases": 4,
+          "correct": 3,
+          "withheld_missing_vuln": 1
+        }
+      },
+      "outcomes": {
+        "correct": 3,
+        "false_positive": 0,
+        "wrong_decision": 0,
+        "withheld_appropriately": 2,
+        "withheld_missing_vuln": 11,
+        "withheld_otherwise": 14
+      },
+      "unauth_outcomes": {
+        "correct": 3,
+        "false_positive": 0,
+        "wrong_decision": 0,
+        "withheld_appropriately": 0,
+        "withheld_missing_vuln": 1,
+        "withheld_otherwise": 26
+      },
+      "accuracy": 0.1,
+      "accuracy_ci95": [
+        0.0346,
+        0.2562
+      ],
+      "precision": null,
+      "precision_ci95": null,
+      "recall": 0.0,
+      "recall_ci95": [
+        0.0,
+        0.2775
+      ],
+      "false_positive_ci95": [
+        0.0,
+        0.1611
+      ],
+      "specificity": 1.0,
+      "specificity_ci95": [
+        0.8389,
+        1.0
+      ],
+      "appropriate_or_correct": 5,
+      "appropriate_or_correct_ci95": [
+        0.0734,
+        0.3356
+      ],
+      "contract_compliance": null,
+      "invalid_reply_rate": null,
+      "plan_useful_rate": null,
+      "replan_rate": null,
+      "cost_per_correct_usd": 0.0
+    },
+    "fixed_rule": {
+      "cases": 30,
+      "correct": 27,
+      "tp": 9,
+      "fp": 0,
+      "fn": 1,
+      "tn": 20,
+      "undecided": 3,
+      "undecided_appropriate": 2,
+      "needs_spec_correct": 2,
+      "unauth_correct": 27,
+      "unauth_false_positive": 0,
+      "fix_checks": 3,
+      "fix_correct": 3,
+      "checks_run": 57,
+      "unnecessary_checks": 0,
+      "forbidden_checks_run": 0,
+      "target_gets": 110,
+      "worker_launches": 90,
+      "planner_calls": 57,
+      "model_requests": 0,
+      "invalid_replies": 0,
+      "steps_offered": 87,
+      "steps_rejected": 3,
+      "plan_useful": 0,
+      "plan_scored": 0,
+      "replan_moved_on": 0,
+      "replan_scored": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "reasoning_tokens": 0,
+      "planner_seconds": 0.0,
+      "elapsed_s": 8.804,
+      "model_cost_usd": 0.0,
+      "reserved_usd": 0.0,
+      "per_category": {
+        "decoy_200": {
+          "cases": 5,
+          "correct": 4,
+          "withheld_otherwise": 1
+        },
+        "authorization_idor": {
+          "cases": 8,
+          "correct": 6,
+          "withheld_appropriately": 2
+        },
+        "fix_recheck": {
+          "cases": 3,
+          "correct": 3
+        },
+        "replan_contradiction": {
+          "cases": 5,
+          "correct": 5
+        },
+        "auth_public_spec": {
+          "cases": 5,
+          "correct": 5
+        },
+        "spec_missing_or_no_check": {
+          "cases": 4,
+          "correct": 4
+        }
+      },
+      "outcomes": {
+        "correct": 27,
+        "false_positive": 0,
+        "wrong_decision": 0,
+        "withheld_appropriately": 2,
+        "withheld_missing_vuln": 0,
+        "withheld_otherwise": 1
+      },
+      "unauth_outcomes": {
+        "correct": 27,
+        "false_positive": 0,
+        "wrong_decision": 0,
+        "withheld_appropriately": 0,
+        "withheld_missing_vuln": 1,
+        "withheld_otherwise": 2
+      },
+      "accuracy": 0.9,
+      "accuracy_ci95": [
+        0.7438,
+        0.9654
+      ],
+      "precision": 1.0,
+      "precision_ci95": [
+        0.7009,
+        1.0
+      ],
+      "recall": 0.9,
+      "recall_ci95": [
+        0.5958,
+        0.9821
+      ],
+      "false_positive_ci95": [
+        0.0,
+        0.1611
+      ],
+      "specificity": 1.0,
+      "specificity_ci95": [
+        0.8389,
+        1.0
+      ],
+      "appropriate_or_correct": 29,
+      "appropriate_or_correct_ci95": [
+        0.8333,
+        0.9941
+      ],
+      "contract_compliance": 0.9655,
+      "invalid_reply_rate": null,
+      "plan_useful_rate": null,
+      "replan_rate": null,
+      "cost_per_correct_usd": 0.0
+    },
+    "local_model": {
+      "cases": 30,
+      "correct": 27,
+      "tp": 9,
+      "fp": 0,
+      "fn": 1,
+      "tn": 20,
+      "undecided": 3,
+      "undecided_appropriate": 2,
+      "needs_spec_correct": 2,
+      "unauth_correct": 27,
+      "unauth_false_positive": 0,
+      "fix_checks": 3,
+      "fix_correct": 3,
+      "checks_run": 57,
+      "unnecessary_checks": 0,
+      "forbidden_checks_run": 0,
+      "target_gets": 110,
+      "worker_launches": 90,
+      "planner_calls": 57,
+      "model_requests": 0,
+      "invalid_replies": 0,
+      "steps_offered": 87,
+      "steps_rejected": 3,
+      "plan_useful": 0,
+      "plan_scored": 0,
+      "replan_moved_on": 0,
+      "replan_scored": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "reasoning_tokens": 0,
+      "planner_seconds": 0.0,
+      "elapsed_s": 8.856,
+      "model_cost_usd": 0.0,
+      "reserved_usd": 0.0,
+      "per_category": {
+        "decoy_200": {
+          "cases": 5,
+          "correct": 4,
+          "withheld_otherwise": 1
+        },
+        "authorization_idor": {
+          "cases": 8,
+          "correct": 6,
+          "withheld_appropriately": 2
+        },
+        "fix_recheck": {
+          "cases": 3,
+          "correct": 3
+        },
+        "replan_contradiction": {
+          "cases": 5,
+          "correct": 5
+        },
+        "auth_public_spec": {
+          "cases": 5,
+          "correct": 5
+        },
+        "spec_missing_or_no_check": {
+          "cases": 4,
+          "correct": 4
+        }
+      },
+      "outcomes": {
+        "correct": 27,
+        "false_positive": 0,
+        "wrong_decision": 0,
+        "withheld_appropriately": 2,
+        "withheld_missing_vuln": 0,
+        "withheld_otherwise": 1
+      },
+      "unauth_outcomes": {
+        "correct": 27,
+        "false_positive": 0,
+        "wrong_decision": 0,
+        "withheld_appropriately": 0,
+        "withheld_missing_vuln": 1,
+        "withheld_otherwise": 2
+      },
+      "accuracy": 0.9,
+      "accuracy_ci95": [
+        0.7438,
+        0.9654
+      ],
+      "precision": 1.0,
+      "precision_ci95": [
+        0.7009,
+        1.0
+      ],
+      "recall": 0.9,
+      "recall_ci95": [
+        0.5958,
+        0.9821
+      ],
+      "false_positive_ci95": [
+        0.0,
+        0.1611
+      ],
+      "specificity": 1.0,
+      "specificity_ci95": [
+        0.8389,
+        1.0
+      ],
+      "appropriate_or_correct": 29,
+      "appropriate_or_correct_ci95": [
+        0.8333,
+        0.9941
+      ],
+      "contract_compliance": 0.9655,
+      "invalid_reply_rate": null,
+      "plan_useful_rate": null,
+      "replan_rate": null,
+      "cost_per_correct_usd": 0.0
+    }
+  },
+  "cases": {
+    "fixed_l1": [
+      {
+        "case_id": "holdout-001",
+        "method": "fixed_l1",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": null,
+        "other_account_read": "untested",
+        "unauthenticated_exposure": "untested",
+        "steps": [],
+        "plans": [],
+        "steps_rejected": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.059,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-002",
+        "method": "fixed_l1",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": null,
+        "other_account_read": "untested",
+        "unauthenticated_exposure": "untested",
+        "steps": [],
+        "plans": [],
+        "steps_rejected": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.063,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-003",
+        "method": "fixed_l1",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": null,
+        "other_account_read": "untested",
+        "unauthenticated_exposure": "untested",
+        "steps": [],
+        "plans": [],
+        "steps_rejected": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.061,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-004",
+        "method": "fixed_l1",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": null,
+        "other_account_read": "untested",
+        "unauthenticated_exposure": "untested",
+        "steps": [],
+        "plans": [],
+        "steps_rejected": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.069,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-005",
+        "method": "fixed_l1",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": null,
+        "other_account_read": "untested",
+        "unauthenticated_exposure": "untested",
+        "steps": [],
+        "plans": [],
+        "steps_rejected": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.065,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-006",
+        "method": "fixed_l1",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": null,
+        "other_account_read": "untested",
+        "unauthenticated_exposure": "untested",
+        "steps": [],
+        "plans": [],
+        "steps_rejected": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.06,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-007",
+        "method": "fixed_l1",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": null,
+        "other_account_read": "untested",
+        "unauthenticated_exposure": "untested",
+        "steps": [],
+        "plans": [],
+        "steps_rejected": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.072,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-008",
+        "method": "fixed_l1",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": null,
+        "other_account_read": "untested",
+        "unauthenticated_exposure": "untested",
+        "steps": [],
+        "plans": [],
+        "steps_rejected": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.073,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-009",
+        "method": "fixed_l1",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": null,
+        "other_account_read": "untested",
+        "unauthenticated_exposure": "untested",
+        "steps": [],
+        "plans": [],
+        "steps_rejected": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.064,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-010",
+        "method": "fixed_l1",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": null,
+        "other_account_read": "untested",
+        "unauthenticated_exposure": "untested",
+        "steps": [],
+        "plans": [],
+        "steps_rejected": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.06,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-011",
+        "method": "fixed_l1",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": null,
+        "other_account_read": "untested",
+        "unauthenticated_exposure": "untested",
+        "steps": [],
+        "plans": [],
+        "steps_rejected": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.069,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-012",
+        "method": "fixed_l1",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": null,
+        "other_account_read": "untested",
+        "unauthenticated_exposure": "untested",
+        "steps": [],
+        "plans": [],
+        "steps_rejected": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.061,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-013",
+        "method": "fixed_l1",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": null,
+        "other_account_read": "untested",
+        "unauthenticated_exposure": "untested",
+        "steps": [],
+        "plans": [],
+        "steps_rejected": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.064,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-014",
+        "method": "fixed_l1",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": null,
+        "other_account_read": "untested",
+        "unauthenticated_exposure": "untested",
+        "steps": [],
+        "plans": [],
+        "steps_rejected": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.07,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-015",
+        "method": "fixed_l1",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": null,
+        "other_account_read": "untested",
+        "unauthenticated_exposure": "untested",
+        "steps": [],
+        "plans": [],
+        "steps_rejected": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.065,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-016",
+        "method": "fixed_l1",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": null,
+        "other_account_read": "untested",
+        "unauthenticated_exposure": "untested",
+        "steps": [],
+        "plans": [],
+        "steps_rejected": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.059,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-017",
+        "method": "fixed_l1",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": null,
+        "other_account_read": "untested",
+        "unauthenticated_exposure": "untested",
+        "steps": [],
+        "plans": [],
+        "steps_rejected": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.071,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-018",
+        "method": "fixed_l1",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": null,
+        "other_account_read": "not_applicable",
+        "unauthenticated_exposure": "not_applicable",
+        "steps": [],
+        "plans": [],
+        "steps_rejected": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.059,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-019",
+        "method": "fixed_l1",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": null,
+        "other_account_read": "not_applicable",
+        "unauthenticated_exposure": "not_applicable",
+        "steps": [],
+        "plans": [],
+        "steps_rejected": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.067,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-020",
+        "method": "fixed_l1",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": null,
+        "other_account_read": "untested",
+        "unauthenticated_exposure": "untested",
+        "steps": [],
+        "plans": [],
+        "steps_rejected": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.067,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-021",
+        "method": "fixed_l1",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": null,
+        "other_account_read": "untested",
+        "unauthenticated_exposure": "untested",
+        "steps": [],
+        "plans": [],
+        "steps_rejected": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.072,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-022",
+        "method": "fixed_l1",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": null,
+        "other_account_read": "not_applicable",
+        "unauthenticated_exposure": "not_applicable",
+        "steps": [],
+        "plans": [],
+        "steps_rejected": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.065,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-023",
+        "method": "fixed_l1",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": null,
+        "other_account_read": "untested",
+        "unauthenticated_exposure": "untested",
+        "steps": [],
+        "plans": [],
+        "steps_rejected": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.066,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-024",
+        "method": "fixed_l1",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": null,
+        "other_account_read": "untested",
+        "unauthenticated_exposure": "untested",
+        "steps": [],
+        "plans": [],
+        "steps_rejected": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.061,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-025",
+        "method": "fixed_l1",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": null,
+        "other_account_read": "untested",
+        "unauthenticated_exposure": "untested",
+        "steps": [],
+        "plans": [],
+        "steps_rejected": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.074,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-026",
+        "method": "fixed_l1",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": null,
+        "other_account_read": "untested",
+        "unauthenticated_exposure": "untested",
+        "steps": [],
+        "plans": [],
+        "steps_rejected": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.066,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-027",
+        "method": "fixed_l1",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": null,
+        "other_account_read": "untested",
+        "unauthenticated_exposure": "untested",
+        "steps": [],
+        "plans": [],
+        "steps_rejected": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.066,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-028",
+        "method": "fixed_l1",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": null,
+        "other_account_read": "untested",
+        "unauthenticated_exposure": "untested",
+        "steps": [],
+        "plans": [],
+        "steps_rejected": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.066,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-029",
+        "method": "fixed_l1",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": null,
+        "other_account_read": "untested",
+        "unauthenticated_exposure": "untested",
+        "steps": [],
+        "plans": [],
+        "steps_rejected": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.072,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-030",
+        "method": "fixed_l1",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": null,
+        "other_account_read": "untested",
+        "unauthenticated_exposure": "untested",
+        "steps": [],
+        "plans": [],
+        "steps_rejected": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.071,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      }
+    ],
+    "fixed_rule": [
+      {
+        "case_id": "holdout-001",
+        "method": "fixed_rule",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 4,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "inconclusive",
+        "unauthenticated_exposure": "inconclusive",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "inconclusive",
+              "rule": "answered_without_auth_unverified",
+              "observation": "E4",
+              "result_audit_hash": "e4a935a850d99d745284855e0c0370f6733fb759dbae452e3e8b2fadfd111d82",
+              "judged_audit_hash": "58bfa50713692b0724d4059287040b40c4a393e00f79855c9289edb219507937"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "inconclusive",
+              "rule": "unrecognised_answer",
+              "observation": "E5",
+              "result_audit_hash": "826962a092dbe365397b106417d000b4060e2b029118d97d3e3a228635441473",
+              "judged_audit_hash": "657e752cf5c426120ff999d4b79a9dc78769ab34d5ba058dfb900b30080c7d2e"
+            },
+            "phase": "diagnose"
+          }
+        ],
+        "plans": [
+          {
+            "state": "EXPIRED",
+            "reason": "max_planner_rounds",
+            "planner_rounds": 2,
+            "rejected_steps": 1
+          }
+        ],
+        "steps_rejected": 1,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.287,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-002",
+        "method": "fixed_rule",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 3,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "contradicted",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E4",
+              "result_audit_hash": "f9f9f7c39ccc8c2823014aa50f666e65a7e67a65a5fd3acdfb2a998118bc7c9d",
+              "judged_audit_hash": "82d2504080213544e5d6e49d2ed49380fc42e563cca4ac14102d1549ef5068be"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "own_resource_only",
+              "observation": "E5",
+              "result_audit_hash": "7acd26a3ce286123bcce802eb8b9905b20e17064d5a7a464d1c5f309ff1c3218",
+              "judged_audit_hash": "e2ab8f7744ad2867096986d8bcce4f68879be5a2bf57f226d7b550563bc2f4e5"
+            },
+            "phase": "diagnose"
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 2,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.289,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-003",
+        "method": "fixed_rule",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 4,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "supported",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E4",
+              "result_audit_hash": "ecbcdd11611d03ecd55ae5df3a124ee97d4b72978ac3d880fc4bb40db200cf6a",
+              "judged_audit_hash": "819b322d3423b0ef44482c4464a5e8aba93b95d27c69da8c4b8da3654b8bfdc1"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "supported",
+              "rule": "cross_account_read",
+              "observation": "E5",
+              "result_audit_hash": "6edb025183b38dd688eff769375d697bf59ecd57b159dc2b4addad11c6d28412",
+              "judged_audit_hash": "689d96a269fa322e9ec8fdcd7c9c85f97d510707735f2b219b76ddff9d78e70d"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S1",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "confirm_fix",
+            "evidence_refs": [
+              "E7",
+              "E8"
+            ],
+            "hypothesis_id": "H3",
+            "judgement": {
+              "hypothesis_id": "H3",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied",
+              "observation": "E9",
+              "result_audit_hash": "ff4c8b3f21ba83af2a8d06c32473b7512e863e3cfcff3da1556bc47fb4c15555",
+              "judged_audit_hash": "d5fc1b74872cdbc296ae730906651064cbb1b4022290194bc4adad77e52889d2"
+            },
+            "phase": "fix_check"
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 2,
+            "rejected_steps": 0
+          },
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 1,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 7,
+        "worker_launches": 5,
+        "planner_calls": 3,
+        "elapsed_s": 0.491,
+        "fix_check": {
+          "hypotheses": [
+            "H3"
+          ],
+          "result": [
+            "contradicted"
+          ],
+          "confirmed_fixed": true
+        },
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-004",
+        "method": "fixed_rule",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 3,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "contradicted",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E4",
+              "result_audit_hash": "d8ffc93bb6b71ad0e4201bcddafa080672b85104ebab37c1cad2ad10f527fa6b",
+              "judged_audit_hash": "1b9825bbf51d06c70d8d940ce74e25c8ee7baebbef93abcfea437a9e891af9e9"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "own_resource_only",
+              "observation": "E5",
+              "result_audit_hash": "4533734a37478654012dd367f208c14d5f23f926c31f3d70eb819fab28a18cc9",
+              "judged_audit_hash": "2e836932dc4916ee6cfaa254cb1b7c070915d53af83edfd25db70f0486297233"
+            },
+            "phase": "diagnose"
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 2,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.311,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-005",
+        "method": "fixed_rule",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 4,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "supported",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E4",
+              "result_audit_hash": "1b7cef9043cbc90a673197291270e45eb5647f65eda96c61f4161c29139bd271",
+              "judged_audit_hash": "de475aea22da89c53165ddeba3ec1e0d2c4637ab44494e165a585c9d63184ff3"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "supported",
+              "rule": "cross_account_read",
+              "observation": "E5",
+              "result_audit_hash": "dd2aeecf25050ca7095edd0aa8ef65ba0c18efcc0ac99f631aa76ce81edef212",
+              "judged_audit_hash": "35e615decd18f80f5fa58521e861e51f40e27d16340f1a84e112e4a9c75fb6c3"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S1",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "confirm_fix",
+            "evidence_refs": [
+              "E7",
+              "E8"
+            ],
+            "hypothesis_id": "H3",
+            "judgement": {
+              "hypothesis_id": "H3",
+              "from": "open",
+              "to": "supported",
+              "rule": "cross_account_read",
+              "observation": "E9",
+              "result_audit_hash": "da85ace0266207d53de8e1322eca89d491d48e84682b2f6d277db8f258a5f107",
+              "judged_audit_hash": "513cbc4b5aa8ee73f791024903df400be435ed62a6ad8ecce77931881804b977"
+            },
+            "phase": "fix_check"
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 2,
+            "rejected_steps": 0
+          },
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 1,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 7,
+        "worker_launches": 5,
+        "planner_calls": 3,
+        "elapsed_s": 0.475,
+        "fix_check": {
+          "hypotheses": [
+            "H3"
+          ],
+          "result": [
+            "supported"
+          ],
+          "confirmed_fixed": false
+        },
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-006",
+        "method": "fixed_rule",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 3,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "contradicted",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E4",
+              "result_audit_hash": "da71971989cc3f46ee33e771d2b6cb12b0b8dd44243d7caa0e76489ee4c897ad",
+              "judged_audit_hash": "681a4da570c3755cf2d45c5a6c2602fab9b9b00fd59c53bef1abd122ad2412b7"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "own_resource_only",
+              "observation": "E5",
+              "result_audit_hash": "0d12f0ca8634af075523d6fdf07c40dcf007e4912ff8d7dc9be2a7fcd2c930e7",
+              "judged_audit_hash": "8146a6bc0a4aa4caa9a4ac83c028f34308e8e1e4db936bda97ea50d2ab34fe6e"
+            },
+            "phase": "diagnose"
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 2,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.299,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-007",
+        "method": "fixed_rule",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 3,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "inconclusive",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E4",
+              "result_audit_hash": "8df200a6e21f40bc4188cb2eecebd1122d36fc21e2cb8af6ce3e855056235167",
+              "judged_audit_hash": "d39a1fe1a6fa37ecba2146209d2c8268676693b1da5f637d3ea585bf628d02db"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "inconclusive",
+              "rule": "unrecognised_answer",
+              "observation": "E5",
+              "result_audit_hash": "e6e1636a9485c9c1e3b1ab6e55e8ca150350b4b9346ac898318da93fb0288c0c",
+              "judged_audit_hash": "41b78af01e3efbd41ba3aed71d5c94785a4cc7c077260229ad86e52767f699d2"
+            },
+            "phase": "diagnose"
+          }
+        ],
+        "plans": [
+          {
+            "state": "EXPIRED",
+            "reason": "max_planner_rounds",
+            "planner_rounds": 2,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.311,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-008",
+        "method": "fixed_rule",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 3,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "contradicted",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E4",
+              "result_audit_hash": "c8dfe4a89d71f9d415e3f73d4b6df61d412cd53c853e00e5d882f5e5cf70df2a",
+              "judged_audit_hash": "d676794a447fe382723830803ebfd90d9227a24cf843d88ce027b1b34cef80d5"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied",
+              "observation": "E5",
+              "result_audit_hash": "bc9e6f78ed848112aabd370101b98c1a4509a072aeb2b6c84c5932801933520d",
+              "judged_audit_hash": "e0dc2ea4e4d54b5e67b8e4fc7429f4547d8578ad830dde3480d5f17288521484"
+            },
+            "phase": "diagnose"
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 2,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.298,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-009",
+        "method": "fixed_rule",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 3,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "contradicted",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E4",
+              "result_audit_hash": "14c301bb6c334ead9904f7bbc3ccb6afe01182aa7ff0909ded6c402cd401d239",
+              "judged_audit_hash": "5392ea337b008cf53c16c19ddafa007129f914913e9251681d1c9aa7c68119f3"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied",
+              "observation": "E5",
+              "result_audit_hash": "1047d214768fed3fc6ef1cc6a421797af5649dd6c168a97b642d6af242b89278",
+              "judged_audit_hash": "6bb65a3641732eb8d2cf24ac1bc6411c064d5e1ca36c6ea5faee7e775e68d038"
+            },
+            "phase": "diagnose"
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 2,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.303,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-010",
+        "method": "fixed_rule",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 3,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "supported",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "owner_record_absent_without_auth",
+              "observation": "E4",
+              "result_audit_hash": "5a59573a17a089d10070ab0db6f5d0565ead4d0d8f8c8031b22b3a5f2f45e76f",
+              "judged_audit_hash": "9cba7899ddacd1218255563e623b1e0c710d00f85091e817c05f13c6322edc62"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "supported",
+              "rule": "cross_account_read",
+              "observation": "E5",
+              "result_audit_hash": "a6e7d757f15dbade2b3b4a0749a2e9e3211ae32927a5450eaa40491e9be12c66",
+              "judged_audit_hash": "51093371385be0255710e7d6165406c7639ef894090ed42a6b77b75fe3e8c30b"
+            },
+            "phase": "diagnose"
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 2,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.307,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-011",
+        "method": "fixed_rule",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 3,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "contradicted",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "intended_public",
+              "observation": "E4",
+              "result_audit_hash": "7a7be4ce7469261c6186321de94c1a9dc85aba53753dbbdb14d1d8e2c49370e0",
+              "judged_audit_hash": "64f74f4e2694d7de7105711ef406ddaa2788994f387a8c250d7bd1833208dc6c"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "intended_public",
+              "observation": "E5",
+              "result_audit_hash": "5f76f5ae0869d9980c38d256f84d7d67237a37f971b6324111596ed8983dd213",
+              "judged_audit_hash": "1b21045224402186c24cfbfaaff72310da8566ccd0411ab75da57aa80c69c08d"
+            },
+            "phase": "diagnose"
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 2,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.3,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-012",
+        "method": "fixed_rule",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 3,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "supported",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E4",
+              "result_audit_hash": "4f47251d80cc3b5a59aefb2ef194bba48572c85ce4feb277d96e07dc20b0e74c",
+              "judged_audit_hash": "1eea020a405de72b21913ffba028f53f0ab1838ffe17435e4435946d756b0222"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "supported",
+              "rule": "cross_account_read",
+              "observation": "E5",
+              "result_audit_hash": "3d682f0e2217702ecffef20b85104d180315d7ddd2d44237771b77444981ab39",
+              "judged_audit_hash": "d595a8df7a4231d7511dea26a8b3ccdf6b99de463ddc0d978ce4f2d2305aebdf"
+            },
+            "phase": "diagnose"
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 2,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.311,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-013",
+        "method": "fixed_rule",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 3,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "contradicted",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "owner_record_absent_without_auth",
+              "observation": "E4",
+              "result_audit_hash": "f300bf3d8a9b96bf95c7d1c5ce4095ba14bebdb87126343ee0b1ad6f595c4ee9",
+              "judged_audit_hash": "14ae89a73d0d9dbaab86d9086243a92570df8d73066e7672a6bedbdf79f6e235"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "owner_record_absent",
+              "observation": "E5",
+              "result_audit_hash": "364be11b10d7c5e347e9c54ca40d05cf4b4965acad5b2169d39baa873ccd9a4a",
+              "judged_audit_hash": "62b712434d3f43b24aeb2889aeaeaa827e9cf0e71ddaa5e45e2f0fc1143add07"
+            },
+            "phase": "diagnose"
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 2,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.286,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-014",
+        "method": "fixed_rule",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 4,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "supported",
+        "unauthenticated_exposure": "inconclusive",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "inconclusive",
+              "rule": "answered_without_auth_unverified",
+              "observation": "E4",
+              "result_audit_hash": "d51df5d430be6b39b4331f1955bba4d4e503d3bdc938f024e89f6d7a44688550",
+              "judged_audit_hash": "b28f5dfa24ea9f0f56807d8befa073ca8629ac452cf69e20d9787b8a20048273"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "supported",
+              "rule": "cross_account_read",
+              "observation": "E5",
+              "result_audit_hash": "c8cdd8f7c398502f8ca4aaee5633d3fcb3634245fdf04def3195e83827d63efa",
+              "judged_audit_hash": "85704e3e55f252da0632ecc4816fdec4ca75aa7a385310312a9ed1f9763ffddb"
+            },
+            "phase": "diagnose"
+          }
+        ],
+        "plans": [
+          {
+            "state": "EXPIRED",
+            "reason": "max_planner_rounds",
+            "planner_rounds": 2,
+            "rejected_steps": 1
+          }
+        ],
+        "steps_rejected": 1,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.283,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-015",
+        "method": "fixed_rule",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 3,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "needs_spec",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E4",
+              "result_audit_hash": "6abb51a61d0a9278031974f8e38b60988c036a9538c28e1f12c6c3a2b641ea21",
+              "judged_audit_hash": "0c1e5ed47b7412a9189092b51851ac87e7125cc9ce5bc254f733078241af7af2"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "needs_spec",
+              "rule": "spec_missing",
+              "observation": "E5",
+              "result_audit_hash": "a08537a0ec7236eda1a47cae91c21a37183eb16af501b09bf881ebe5c607b178",
+              "judged_audit_hash": "92cd142de62faad08886d1de4a4d544a7050f6071503b7efbc819e4cdd56517e"
+            },
+            "phase": "diagnose"
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "needs_spec",
+            "planner_rounds": 2,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.296,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-016",
+        "method": "fixed_rule",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 3,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "supported",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E4",
+              "result_audit_hash": "097d55b16ca5d75a936d44764167228da398f424cdc6327dcab0ce49ff109b90",
+              "judged_audit_hash": "c67fb245884537176cbefc1d86ba3be81a523cdb5dfb9f74d2aeadcf8933ee71"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "supported",
+              "rule": "cross_account_read",
+              "observation": "E5",
+              "result_audit_hash": "5935c1db6061b1bee85d9c6b3a126b61766d41414cd5f4de3e346a8bc7bf09c7",
+              "judged_audit_hash": "927d8e87804d78de05581175c4aa219985d661d0b08f5c7e5a711ad7102fc8ed"
+            },
+            "phase": "diagnose"
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 2,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.3,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-017",
+        "method": "fixed_rule",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 4,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "contradicted",
+        "unauthenticated_exposure": "inconclusive",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "inconclusive",
+              "rule": "answered_without_auth_unverified",
+              "observation": "E4",
+              "result_audit_hash": "5de38f3e9bd1b9b3e3e8f866f9bb95a8797d760822bccc67681f5a79ea398aac",
+              "judged_audit_hash": "0f5601e14e8f7e4cb1d17e7561257ff261ff1c4b9e4e0442838b9a39293b8a76"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied",
+              "observation": "E5",
+              "result_audit_hash": "9ca5a79e8e75d2d80db9320691ce3d11ef9c9cd9e84ef2ed72caaec92b061e46",
+              "judged_audit_hash": "5438dbd460695a552930f9392c6760c69b3437352fb27ea1e71a62f9d49b8c8a"
+            },
+            "phase": "diagnose"
+          }
+        ],
+        "plans": [
+          {
+            "state": "EXPIRED",
+            "reason": "max_planner_rounds",
+            "planner_rounds": 2,
+            "rejected_steps": 1
+          }
+        ],
+        "steps_rejected": 1,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.288,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-018",
+        "method": "fixed_rule",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": null,
+        "other_account_read": "not_applicable",
+        "unauthenticated_exposure": "not_applicable",
+        "steps": [],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "no_hypothesis",
+            "planner_rounds": 0,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.069,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-019",
+        "method": "fixed_rule",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": null,
+        "other_account_read": "not_applicable",
+        "unauthenticated_exposure": "not_applicable",
+        "steps": [],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "no_hypothesis",
+            "planner_rounds": 0,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.069,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-020",
+        "method": "fixed_rule",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 4,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "supported",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E4",
+              "result_audit_hash": "e22a43b1fd1c3191fde9343080e1847cfacd1591230f6c25efd3b1f03cef2e1b",
+              "judged_audit_hash": "91bc4bc1364c4e083576e7806bf75c7ba432bf9d3cec94cd354bf754a5c4115a"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "supported",
+              "rule": "cross_account_read",
+              "observation": "E5",
+              "result_audit_hash": "6654a4a93304c2b8f360b54153f13c80624c0eb94cd0ecab4c5f0ec6a54b9bbf",
+              "judged_audit_hash": "9ebff9bf152c13df59e589dc2b2e926822e4117022cf9fa43b5688cc7112276b"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S1",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "confirm_fix",
+            "evidence_refs": [
+              "E7",
+              "E8"
+            ],
+            "hypothesis_id": "H3",
+            "judgement": {
+              "hypothesis_id": "H3",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "own_resource_only",
+              "observation": "E9",
+              "result_audit_hash": "814b96da592328b166e909f6053f91fc335ea6c00556dc08f6ec38817f0bd3c8",
+              "judged_audit_hash": "aadd662f1e2c367b4f96367756030c0a881cce48b0624a542eca25ccbe36ca7e"
+            },
+            "phase": "fix_check"
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 2,
+            "rejected_steps": 0
+          },
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 1,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 7,
+        "worker_launches": 5,
+        "planner_calls": 3,
+        "elapsed_s": 0.487,
+        "fix_check": {
+          "hypotheses": [
+            "H3"
+          ],
+          "result": [
+            "contradicted"
+          ],
+          "confirmed_fixed": true
+        },
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-021",
+        "method": "fixed_rule",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 3,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "supported",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E4",
+              "result_audit_hash": "fd69794ae44472417f3914afff26ed358198a35f5bd338edeb9f49fe9a12401e",
+              "judged_audit_hash": "d71c122b3bed85e85bdda375e8e39c7190d4f02b2a2272b5369883c331ca76b4"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "supported",
+              "rule": "cross_account_read",
+              "observation": "E5",
+              "result_audit_hash": "893809f2a1fe4e483ccf26909dfc5802d92e93c3e8adb7b3ac1fb261a9bee2ca",
+              "judged_audit_hash": "54929c3fdca2efe3c4561b65b2c757e2653a6bdbb6ce0d53633ed496e5edf44e"
+            },
+            "phase": "diagnose"
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 2,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.293,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-022",
+        "method": "fixed_rule",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": null,
+        "other_account_read": "not_applicable",
+        "unauthenticated_exposure": "not_applicable",
+        "steps": [],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "no_hypothesis",
+            "planner_rounds": 0,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.067,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-023",
+        "method": "fixed_rule",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 3,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "contradicted",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E4",
+              "result_audit_hash": "81effe37053a8750e3662de8b4aa1fd837a9de43d3b682092bd577becc5e8090",
+              "judged_audit_hash": "d1e29e2728369ea668f8d02d430d48dbf7dab8322e1c8b55a54bc83ee3fafa5a"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied",
+              "observation": "E5",
+              "result_audit_hash": "a038467e6b30cf25eeedf6092778e28f1e7b30a2ca00b43a685e5ae722e2d0b4",
+              "judged_audit_hash": "99d24f97d67272fa45f06d46aa3392d75a5642fa81afc8b56559e2e5bd06ccd2"
+            },
+            "phase": "diagnose"
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 2,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.284,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-024",
+        "method": "fixed_rule",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 3,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "contradicted",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E4",
+              "result_audit_hash": "17dbfcc7f763b1096e0c6f2e204507728a77047beef198fa518933780551ff49",
+              "judged_audit_hash": "b5a7348e11b07c23cab76cd440e7ab33498cf539c69c48bddc9c40f76b5c446d"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied",
+              "observation": "E5",
+              "result_audit_hash": "28873f508afb4753813c3cb8213a1fb1f260a9555146d2ef9a7449b019b801a2",
+              "judged_audit_hash": "70c3893760499f9806eed5737741fcd2f3e99fa69f36906dd36e344f334dcac3"
+            },
+            "phase": "diagnose"
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 2,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.292,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-025",
+        "method": "fixed_rule",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 3,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "contradicted",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E4",
+              "result_audit_hash": "b01360b7a84b94cb3deb4adf8ac1ef6a6799780903e0bad2611cade6652c5a38",
+              "judged_audit_hash": "74eab65ecf6fd2898f3ece562cc1f96ce73ca4df1bb1b9686fa3d83cc99b1d8b"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied",
+              "observation": "E5",
+              "result_audit_hash": "a99cc21282acfb472f56f8c199ee1c5fe98f4b9cc97a438dc4397a1a6af525c8",
+              "judged_audit_hash": "36b24a463bad87a2fe9932425305d45db4e9f621f4ee7805925049664b0f9df3"
+            },
+            "phase": "diagnose"
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 2,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.307,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-026",
+        "method": "fixed_rule",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 3,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "needs_spec",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E3",
+              "result_audit_hash": "9189bd554761749731967c4cc424c11122095f1b32fb052b19c296ff7c48c710",
+              "judged_audit_hash": "9b3909fe2f141055616f68e149d5be8cffd30049cd1f149112a703df74be63ad"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "needs_spec",
+              "rule": "spec_missing",
+              "observation": "E4",
+              "result_audit_hash": "3ecb2ed90f4515c75e9d329ee8c0daa55676cb9beb83b8b4949524f583bc276c",
+              "judged_audit_hash": "86f5d7c247bb6a3c55b6c11175ff1d8d380f1e106e0c9b14a3c9641875694275"
+            },
+            "phase": "diagnose"
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "needs_spec",
+            "planner_rounds": 2,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.317,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-027",
+        "method": "fixed_rule",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 3,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "contradicted",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E4",
+              "result_audit_hash": "fe05015cd046b481125cc076b5f8ef768c3b5c83a88d3a0f8fa2c90d218aa369",
+              "judged_audit_hash": "515f5c6d44339d193d8454cd2fad47f70d19f9c13b78014d1f3c1bd29a658f40"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied",
+              "observation": "E5",
+              "result_audit_hash": "f0ce90a0c91889997416a002fe68fb751107962b20683319f325a810f96983ae",
+              "judged_audit_hash": "da9cab3f11f87649def76176bebfdfeef3ec78dc87c14598a0f88ff6e7f8279b"
+            },
+            "phase": "diagnose"
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 2,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.295,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-028",
+        "method": "fixed_rule",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 3,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "contradicted",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "intended_public",
+              "observation": "E4",
+              "result_audit_hash": "c80c12402224fe982536be17f636464c2616c0702b8780ee78cb8f609c7e9acf",
+              "judged_audit_hash": "4c853203d41ff296004cbd116fd1a81d011b60a82f8b20e9a21b76d9d4011dba"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "intended_public",
+              "observation": "E5",
+              "result_audit_hash": "2473bed91086e6292e06a7e986d68634cf84bbbc35f03750c519e18b47a63feb",
+              "judged_audit_hash": "1cb274ff886758896e2afc183f1b73492d93609757de4489bfb9c03e17ff46e8"
+            },
+            "phase": "diagnose"
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 2,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.289,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-029",
+        "method": "fixed_rule",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 3,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "inconclusive",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E4",
+              "result_audit_hash": "6c23ca0d704c444fa2f9213d22c077ea5a929a612a7b225068cb942b9c171373",
+              "judged_audit_hash": "14df3a1cb23f9e35207f871937ec12bea371d9d82dd75a3262868d001c7e2e8c"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "inconclusive",
+              "rule": "control_failed",
+              "observation": "E5",
+              "result_audit_hash": "e6705000a484e0b79ebe52329151e750b99e9d1b425cb9cda759636670dc8ad2",
+              "judged_audit_hash": "c5500f627747ed01933854ae8075a7683ac961be5440ea185a882249387689b5"
+            },
+            "phase": "diagnose"
+          }
+        ],
+        "plans": [
+          {
+            "state": "EXPIRED",
+            "reason": "max_planner_rounds",
+            "planner_rounds": 2,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 3,
+        "target_gets_with_fix_check": 3,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.295,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-030",
+        "method": "fixed_rule",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 3,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "supported",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E4",
+              "result_audit_hash": "f7c485eca8f1a050134faec312d81168410d0dfaf7e5a3cd8e175b5de3bb1b03",
+              "judged_audit_hash": "935461043301571f91bbe95b09dfd81df3dfd5a77c83faa4d01838103d31cfef"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "supported",
+              "rule": "cross_account_read",
+              "observation": "E5",
+              "result_audit_hash": "6e12eb49472574648adacbbe167b42d7ce7c3ad85cbff695f6daa523fbbc58cc",
+              "judged_audit_hash": "f97a7fe02a84ac6de9898db6c903ee0219742bc9c42c876214c7746ebcfbed79"
+            },
+            "phase": "diagnose"
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 2,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.305,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      }
+    ],
+    "local_model": [
+      {
+        "case_id": "holdout-001",
+        "method": "local_model",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 4,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "inconclusive",
+        "unauthenticated_exposure": "inconclusive",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "inconclusive",
+              "rule": "unrecognised_answer",
+              "observation": "E4",
+              "result_audit_hash": "e1cd396c1429ad234e214ca11c5f2622b550abc99dc601aaa6b1dee471d9f2d3",
+              "judged_audit_hash": "9c4d3fc66c285803695de8b3a0698397444dd24b44fff8a72140d31511562d05"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "inconclusive",
+              "rule": "answered_without_auth_unverified",
+              "observation": "E5",
+              "result_audit_hash": "5f3c945f3000d154ef41533544f0df92b251d7ccea5192d2647ed979c0835a59",
+              "judged_audit_hash": "28f2529de0c30e316e0c9d2fd34c588e4c2982487f1203bbe5de55249020ae13"
+            },
+            "phase": "diagnose"
+          }
+        ],
+        "plans": [
+          {
+            "state": "EXPIRED",
+            "reason": "max_planner_rounds",
+            "planner_rounds": 2,
+            "rejected_steps": 1
+          }
+        ],
+        "steps_rejected": 1,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.299,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-002",
+        "method": "local_model",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 3,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "contradicted",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "own_resource_only",
+              "observation": "E4",
+              "result_audit_hash": "c5d1f5950de13293593bae659e01be7bf72c505a0d021882e0384f8e0d1a4317",
+              "judged_audit_hash": "1d57a063e74325e38b2be4d51f63e3d7b3e0c1c97640110c2006c494c90a098d"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E5",
+              "result_audit_hash": "7632d7dc3d42c935a0e8c70deb382fcc3226e8b27a32cced1448ceb8f399d98f",
+              "judged_audit_hash": "ca2560fcc1e920a583fa73d7d2f74ec9ab0b9d3441afb31fce84808ee8930e4e"
+            },
+            "phase": "diagnose"
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 2,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.305,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-003",
+        "method": "local_model",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 4,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "supported",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "supported",
+              "rule": "cross_account_read",
+              "observation": "E4",
+              "result_audit_hash": "afbe7f8668e4b33084f304ff9321a35b9373618afa093cc192e674a1da16657f",
+              "judged_audit_hash": "d20cc560a45e957e805d2c4640d979908ee1c0a3b9ac6eb74f88e15cafa2a57a"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E5",
+              "result_audit_hash": "2e430623dceb29c5eaec51c79c19749c78ea8f0a4b59a19babe1235b43aafe48",
+              "judged_audit_hash": "dc022ea712c64327c2d67fcf47cb9d4e0a042afd6cb12a90eab0b27f506dfb42"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S1",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "confirm_fix",
+            "evidence_refs": [
+              "E7",
+              "E8"
+            ],
+            "hypothesis_id": "H3",
+            "judgement": {
+              "hypothesis_id": "H3",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied",
+              "observation": "E9",
+              "result_audit_hash": "87704ae11d1620bedc1ee3ade7c7b22abbb63fdafb286d19180b613adf33ceda",
+              "judged_audit_hash": "07ab62054349fb09df97c44e1526153c1b371fb58e770bc6f067384569c8e7f4"
+            },
+            "phase": "fix_check"
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 2,
+            "rejected_steps": 0
+          },
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 1,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 7,
+        "worker_launches": 5,
+        "planner_calls": 3,
+        "elapsed_s": 0.472,
+        "fix_check": {
+          "hypotheses": [
+            "H3"
+          ],
+          "result": [
+            "contradicted"
+          ],
+          "confirmed_fixed": true
+        },
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-004",
+        "method": "local_model",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 3,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "contradicted",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "own_resource_only",
+              "observation": "E4",
+              "result_audit_hash": "55e927c42931c32bd12a933db0ba349ef880b769bab3516a9233ef59a072e119",
+              "judged_audit_hash": "8f723aa893de1e4a10fedc88d96efd7ba41c6798d1afe66cd032e916944a2543"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E5",
+              "result_audit_hash": "5f20446aa19ebac1a7b74d33f200f415cd6aa132b4cfed444f9423ebb0218bc0",
+              "judged_audit_hash": "fa9081bee73f9c0fa11b52b3eefb18c03adc07e85f49e146a10d4e77a83a5c63"
+            },
+            "phase": "diagnose"
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 2,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.293,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-005",
+        "method": "local_model",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 4,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "supported",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "supported",
+              "rule": "cross_account_read",
+              "observation": "E4",
+              "result_audit_hash": "233d90cabe9b77331238bfa56154a2ce106ff5da6073ae698d506882b0bf64db",
+              "judged_audit_hash": "235ac90920c0c78c00f2bda0ab8dfbd0150d1a663b767e0d928d8d103c024cd9"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E5",
+              "result_audit_hash": "e47f9ff18db9a760127deff7adfb2ffdad3f637a841660c273046477d23f8beb",
+              "judged_audit_hash": "3a180825226a4b160a0b801c31e7175a335be662e849958a61ee7863eee84c85"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S1",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "confirm_fix",
+            "evidence_refs": [
+              "E7",
+              "E8"
+            ],
+            "hypothesis_id": "H3",
+            "judgement": {
+              "hypothesis_id": "H3",
+              "from": "open",
+              "to": "supported",
+              "rule": "cross_account_read",
+              "observation": "E9",
+              "result_audit_hash": "04371683b780fd80cbf9639c10a8fccd72cc1ff1ce88828460f725e75178a0f7",
+              "judged_audit_hash": "c0e7e28543d22b9c5e40f932d4f07c22283ca9d64382c4ec59ca883a8a5002cf"
+            },
+            "phase": "fix_check"
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 2,
+            "rejected_steps": 0
+          },
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 1,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 7,
+        "worker_launches": 5,
+        "planner_calls": 3,
+        "elapsed_s": 0.484,
+        "fix_check": {
+          "hypotheses": [
+            "H3"
+          ],
+          "result": [
+            "supported"
+          ],
+          "confirmed_fixed": false
+        },
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-006",
+        "method": "local_model",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 3,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "contradicted",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "own_resource_only",
+              "observation": "E4",
+              "result_audit_hash": "d8ec68ef47b6cc998e5a9a330f52937edc27f0205b19337c90f64ce250610fc6",
+              "judged_audit_hash": "6ba2a567d2d56dfaa91c2742d16904578ffaa831d94a5e11e9cf1368d3841ddb"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E5",
+              "result_audit_hash": "bb560c275de2553547fc1da2a8d399691dcad902e48072d1d5fb7645c450ecbf",
+              "judged_audit_hash": "c0b8340c9717a419b8ed88ad3fff8a530e6a9c3cc38595c75f60047202aaa4c8"
+            },
+            "phase": "diagnose"
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 2,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.303,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-007",
+        "method": "local_model",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 4,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "inconclusive",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "inconclusive",
+              "rule": "unrecognised_answer",
+              "observation": "E4",
+              "result_audit_hash": "75320fa4ae66f7118f406c55afd154c7a568219753add4ce1fb26916a9953929",
+              "judged_audit_hash": "5eb0f437306c2d7ad753c494c424ed5c5c0a4a0bb45756c09eaca2658ee28b2f"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E5",
+              "result_audit_hash": "09cad5b1b9ce84d14dad5ecbeb71ab112529851b9f7f9efd4385d7afe740423e",
+              "judged_audit_hash": "9fc36db89a0fbb9b65de1f82e5f35078f86fda2897c163f5fd724cf947f51f21"
+            },
+            "phase": "diagnose"
+          }
+        ],
+        "plans": [
+          {
+            "state": "EXPIRED",
+            "reason": "max_planner_rounds",
+            "planner_rounds": 2,
+            "rejected_steps": 1
+          }
+        ],
+        "steps_rejected": 1,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.304,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-008",
+        "method": "local_model",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 3,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "contradicted",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied",
+              "observation": "E4",
+              "result_audit_hash": "989898a865be4acf7a009901e3d0cc5fdeb895d66fbbe9262291a2de571fc059",
+              "judged_audit_hash": "93f5ebe2d71759618198a42cbd4f41e0aec5571ba87e26e7bd7398ce2abc1fea"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E5",
+              "result_audit_hash": "57292f949e393b7609035eafd8f04ab5c570f036cbcb27a07f3587efbf498d6c",
+              "judged_audit_hash": "af5b9843e745d211ae238f8dc7858d0ebbe136025aa0f3393b2fd9627698ad86"
+            },
+            "phase": "diagnose"
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 2,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.309,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-009",
+        "method": "local_model",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 3,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "contradicted",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied",
+              "observation": "E4",
+              "result_audit_hash": "33a2e08a9989556e74980d60d5889c70528c4845d8aa916fe7437ab8d32076ea",
+              "judged_audit_hash": "bd6c1669875f712b7247e23717503c98dff9ea02a8df8c293ff936f31f9acc86"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E5",
+              "result_audit_hash": "ec609e90b9fd31a22bc01a45a42c97f75ee90a08004a9b056168e7c19d9756ee",
+              "judged_audit_hash": "ebe962fec6436a7bacc1a6d109b9d8b56a9f73832ddfcc092a4b858e2984814d"
+            },
+            "phase": "diagnose"
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 2,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.289,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-010",
+        "method": "local_model",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 3,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "supported",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "supported",
+              "rule": "cross_account_read",
+              "observation": "E4",
+              "result_audit_hash": "a356ab52c2d4a3d821a2fbb1b77b6d90786d5879bbce0e3bee481c9486e068c5",
+              "judged_audit_hash": "d2157ed6998126b8ad6fe9b874d43b9eddcb8a80fb0db097e482c0bd7687baac"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "owner_record_absent_without_auth",
+              "observation": "E5",
+              "result_audit_hash": "3d9660dd9a07fe11105a345e3e0028c90cbb7659f7bcd443837a52d8145bd9c9",
+              "judged_audit_hash": "9b7ff2ba2a4b94f646764cb91e56318aad3ad4eb2a829ccb9582b3182d2475db"
+            },
+            "phase": "diagnose"
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 2,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.31,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-011",
+        "method": "local_model",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 3,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "contradicted",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "intended_public",
+              "observation": "E4",
+              "result_audit_hash": "e0ba94a68253e151fc95aa7325c3e95b985d0c7e12f74dd5281bf2cca41de825",
+              "judged_audit_hash": "5f3e11a1cf413939635ce141de2a8067c8666922ca7c9c702dff4c2e3ca8a814"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "intended_public",
+              "observation": "E5",
+              "result_audit_hash": "9255040d64aa498d8dfbe29da81d2400a08b7b45229251fdd26798c3bdb71a68",
+              "judged_audit_hash": "efe67389b4934e5f92f78dff4b60801aa5f61f53ce765676e884abe07a89cdca"
+            },
+            "phase": "diagnose"
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 2,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.295,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-012",
+        "method": "local_model",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 3,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "supported",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "supported",
+              "rule": "cross_account_read",
+              "observation": "E4",
+              "result_audit_hash": "988261cb2915a87534be9d80851408ee62f57d49ed77bca3f32d9980aeccc12c",
+              "judged_audit_hash": "bd2824257840db8d03e86ff8e28b90d9ef4cb7777434ea2ecd36c9726c337bd7"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E5",
+              "result_audit_hash": "045e3e2d41b2109c4a3ebb0d1b0860b631899cea1e1444bfb48d67666ca5d9a6",
+              "judged_audit_hash": "ce74a87823955d5b081978bb22dc3a283d4e796792548b2d96e4fee7e7153da5"
+            },
+            "phase": "diagnose"
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 2,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.296,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-013",
+        "method": "local_model",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 3,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "contradicted",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "owner_record_absent",
+              "observation": "E4",
+              "result_audit_hash": "676e0d6ed8ba77f63e7ebd1149a1ce0ac125978001300da034d6328fede9e9ed",
+              "judged_audit_hash": "38323dec913b78cf5fac53bf874643168124c3a43deb15137b9f836a9e92dfd0"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "owner_record_absent_without_auth",
+              "observation": "E5",
+              "result_audit_hash": "b9e1b1a9802dd9d24ee94d5cd63f369e7ae7e6ed4b80ff141b0995f71ab060fe",
+              "judged_audit_hash": "0d75ddefad583b07c6a22fb891be8db71fd5e62520d1b49e5ede4d088e734e43"
+            },
+            "phase": "diagnose"
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 2,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.291,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-014",
+        "method": "local_model",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 3,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "supported",
+        "unauthenticated_exposure": "inconclusive",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "supported",
+              "rule": "cross_account_read",
+              "observation": "E4",
+              "result_audit_hash": "2101c75c80073ef68a9a148867489e4707887ccfa142569bb968c19a0ce4dd80",
+              "judged_audit_hash": "dec943c43ec9d300e4fb8ab7fabd3659058490349a8f9d2681fe85b74d28408b"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "inconclusive",
+              "rule": "answered_without_auth_unverified",
+              "observation": "E5",
+              "result_audit_hash": "753e74da7f02fa1d45187bdefb0cfe9ec0777afb119efc0680dccbee8b5d2112",
+              "judged_audit_hash": "70542ddfa8db000e2475a592c8ec1fb9fd598edf7a048540427bb17b8037c32d"
+            },
+            "phase": "diagnose"
+          }
+        ],
+        "plans": [
+          {
+            "state": "EXPIRED",
+            "reason": "max_planner_rounds",
+            "planner_rounds": 2,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.308,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-015",
+        "method": "local_model",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 3,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "needs_spec",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "needs_spec",
+              "rule": "spec_missing",
+              "observation": "E4",
+              "result_audit_hash": "96a147d485b48c5f2741711ed86d77f87c504751a8bbe9d8add2c9771ed2e8f4",
+              "judged_audit_hash": "a2a5cd9e3664e390680aaa3aeace958ab0abb95d67f7184c703d3a5cc231e37f"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E5",
+              "result_audit_hash": "c66ecef06c85b304679c91c212be8753ce2e237b1a3a54932e2cb2189098aac3",
+              "judged_audit_hash": "91be5bb5e960b42c75de1c1777c4af9a0f592d3b10c2ccd3dc717e5b64aeb303"
+            },
+            "phase": "diagnose"
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "needs_spec",
+            "planner_rounds": 2,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.304,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-016",
+        "method": "local_model",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 3,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "supported",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "supported",
+              "rule": "cross_account_read",
+              "observation": "E4",
+              "result_audit_hash": "68f7ebd5bf219ddf45c8d80b92968d57847a3366e82da85c52c8cfd0bddc931f",
+              "judged_audit_hash": "a8102464b5ed54b9f048d5ae4d7438e47a89c00ff742d89c6baa56fc26d0c7fa"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E5",
+              "result_audit_hash": "028b9d152337b1cbba35d3a1632a630b6281841328faac1792ff042333392c03",
+              "judged_audit_hash": "b585316a41163412fca55883125a462ddf0503ad771aec10dee987877ba2fe5d"
+            },
+            "phase": "diagnose"
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 2,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.299,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-017",
+        "method": "local_model",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 3,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "contradicted",
+        "unauthenticated_exposure": "inconclusive",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied",
+              "observation": "E4",
+              "result_audit_hash": "02808fbc698e0634a88c6439f0b1ae880026e51d181d49cb6226504f58c65691",
+              "judged_audit_hash": "27f6e2c42f0a6068f17a486389ba1a31fcc55f0bc106ec96877c4afa5c08cdaf"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "inconclusive",
+              "rule": "answered_without_auth_unverified",
+              "observation": "E5",
+              "result_audit_hash": "2a838b282314befa8aa0fa250cac4536938c357a6258071a45a93e3eef795b69",
+              "judged_audit_hash": "8c730f5b948574dd098e930470b486e90e8c1b388ade73242f2a879d502809f9"
+            },
+            "phase": "diagnose"
+          }
+        ],
+        "plans": [
+          {
+            "state": "EXPIRED",
+            "reason": "max_planner_rounds",
+            "planner_rounds": 2,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.297,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-018",
+        "method": "local_model",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": null,
+        "other_account_read": "not_applicable",
+        "unauthenticated_exposure": "not_applicable",
+        "steps": [],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "no_hypothesis",
+            "planner_rounds": 0,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.074,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-019",
+        "method": "local_model",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": null,
+        "other_account_read": "not_applicable",
+        "unauthenticated_exposure": "not_applicable",
+        "steps": [],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "no_hypothesis",
+            "planner_rounds": 0,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.081,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-020",
+        "method": "local_model",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 4,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "supported",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "supported",
+              "rule": "cross_account_read",
+              "observation": "E4",
+              "result_audit_hash": "04316201a0b8c18057c478c0ca6725f982dd6ba8d28aca272c63e6cf2912f51d",
+              "judged_audit_hash": "8c44ff3cb899359c10306a1b9cdf0ff178178c07a58800a8c9076bd8eed6dc99"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E5",
+              "result_audit_hash": "362db3f9f05c00a3410a1290681b6c5e20a98a1db0e5c4bda36d88b3046bd2ef",
+              "judged_audit_hash": "202040643d4ddcd0ffbe335bbaf017973082722e56077c26b5ab17898f60a624"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S1",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "confirm_fix",
+            "evidence_refs": [
+              "E7",
+              "E8"
+            ],
+            "hypothesis_id": "H3",
+            "judgement": {
+              "hypothesis_id": "H3",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "own_resource_only",
+              "observation": "E9",
+              "result_audit_hash": "6dc8b14dfe3f782b1d2cd5373da06ed5344413df82e67b6828e65f5efef1bfa2",
+              "judged_audit_hash": "db2572c47528a65e5fb4f47634d19ecee02ce9bcd5920f2bd4601343199c40fa"
+            },
+            "phase": "fix_check"
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 2,
+            "rejected_steps": 0
+          },
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 1,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 7,
+        "worker_launches": 5,
+        "planner_calls": 3,
+        "elapsed_s": 0.472,
+        "fix_check": {
+          "hypotheses": [
+            "H3"
+          ],
+          "result": [
+            "contradicted"
+          ],
+          "confirmed_fixed": true
+        },
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-021",
+        "method": "local_model",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 3,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "supported",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "supported",
+              "rule": "cross_account_read",
+              "observation": "E4",
+              "result_audit_hash": "fdd5d71c9f4aa3868f8d4b1d498b0798b9827e6d6e594669b7189d2ae80974ea",
+              "judged_audit_hash": "617a3b592e22463d16d7884d449fab0712c6699aa03579356d854e8e01309526"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E5",
+              "result_audit_hash": "94b74c47931c54b94468dc30c6edc67da1bb8a6a517bfc17659f15ccf902d367",
+              "judged_audit_hash": "53fc8cd83b0838345a1b099e83eaa5907a1d1d1cd8c80c36da21fcbd60e1ded2"
+            },
+            "phase": "diagnose"
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 2,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.294,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-022",
+        "method": "local_model",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": null,
+        "other_account_read": "not_applicable",
+        "unauthenticated_exposure": "not_applicable",
+        "steps": [],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "no_hypothesis",
+            "planner_rounds": 0,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 1,
+        "target_gets_with_fix_check": 1,
+        "worker_launches": 1,
+        "planner_calls": 0,
+        "elapsed_s": 0.077,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-023",
+        "method": "local_model",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 3,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "contradicted",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied",
+              "observation": "E4",
+              "result_audit_hash": "77ab87daa6b6c132923057bc41f4ac2945865d3c5306253124a6d56d5b28de51",
+              "judged_audit_hash": "105a75c86fd124ef849139204a3121c193dd71bee0b80b87dbbdc99c8a25bf97"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E5",
+              "result_audit_hash": "f36eeeea2a9e2fb8313b99938e57f8f8c84b94e3113228a1fb2554efaf7e9b3d",
+              "judged_audit_hash": "06673d65e3863c52d153a71b41bf2286cde2c114c0e55e37b5699e2ceb6ce811"
+            },
+            "phase": "diagnose"
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 2,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.298,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-024",
+        "method": "local_model",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 3,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "contradicted",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied",
+              "observation": "E4",
+              "result_audit_hash": "78bdcc73dc211e93600eee2e8c26787230642b500d6b02df91b44b492cbeb763",
+              "judged_audit_hash": "d9d4f37169e56f12288733495941eda923a1c728ea4bcfabef8488c6abb5765e"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E5",
+              "result_audit_hash": "9ab101247bd2ce492c6f05f89b0e61be9a4301bd6bb566d88acebcb050b18404",
+              "judged_audit_hash": "59b8b2f0683cd79d486a11ad690890830e63a9cc0644e788726e829a67413720"
+            },
+            "phase": "diagnose"
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 2,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.301,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-025",
+        "method": "local_model",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 3,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "contradicted",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied",
+              "observation": "E4",
+              "result_audit_hash": "9552c2169eae66761ccff30cc85259b93678c96aeb24a1158fe8616db3200193",
+              "judged_audit_hash": "adb989bb6517bf69b184899fe5a5b86612d030befbcab984f851279b8e68a521"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E5",
+              "result_audit_hash": "688cc31af2efd9b24b4530c3d167db327f0b909f0945044987685c5afc3c48b2",
+              "judged_audit_hash": "ac6b7a71b9a172e7cf59d97f3ff1cd507b053850bfee64fdb3211f01ec30ab8c"
+            },
+            "phase": "diagnose"
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 2,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.289,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-026",
+        "method": "local_model",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 3,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "needs_spec",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "needs_spec",
+              "rule": "spec_missing",
+              "observation": "E3",
+              "result_audit_hash": "47519c822ad7d4024f67327dca65fd6c80d1af2fde899dc8178de03b9c49a449",
+              "judged_audit_hash": "03f575acf5b7d4c698b7a91a439d98ca4a27d70a6d9f3b3adfeec2993c755bd3"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E4",
+              "result_audit_hash": "0d79be0887f73e653359199993fb430f6e7febcbefab42270076d66247262b8b",
+              "judged_audit_hash": "60188eba5bb00a8114493a943d4f50f2ffca716ae352229095b753d81a069403"
+            },
+            "phase": "diagnose"
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "needs_spec",
+            "planner_rounds": 2,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.29,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-027",
+        "method": "local_model",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 3,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "contradicted",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied",
+              "observation": "E4",
+              "result_audit_hash": "0720e2a321c64ca684138ed514f9b71fe0d8ae012aacf0acdf4c333d5e8fb909",
+              "judged_audit_hash": "64f21ee7fe0b25d3f9ba7527ac261b654519e30a76f5d385417d05764ab32291"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E5",
+              "result_audit_hash": "f13824936abeb63563c1269b666e204402da39b63bd737a6adf9e8520d5946ea",
+              "judged_audit_hash": "f04a35aa26386d09d542d00e80a57222b2bc61188c9006d440374fd88794395f"
+            },
+            "phase": "diagnose"
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 2,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.317,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-028",
+        "method": "local_model",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 3,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "contradicted",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "intended_public",
+              "observation": "E4",
+              "result_audit_hash": "999cafed7280e46e4a8f44b3adf0de2e1f2d4a004fe3ac6025c717627fa94ceb",
+              "judged_audit_hash": "36f8399973a55df55956dac17a39ae6e9b7494f2b2537631523bbb3fc86694d5"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "intended_public",
+              "observation": "E5",
+              "result_audit_hash": "bfd32b35c6994fd179b47b73544dad7ebdce3537476f009c86496a8eca488b69",
+              "judged_audit_hash": "32bfd1f57bb41ba56d8700fcd80cb83956347f904a9750cd3dca5caae9bf877a"
+            },
+            "phase": "diagnose"
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 2,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.302,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-029",
+        "method": "local_model",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 4,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "inconclusive",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "inconclusive",
+              "rule": "control_failed",
+              "observation": "E4",
+              "result_audit_hash": "f9eadbfa49e68afda735cd0780b69089999e1202253091f790af6f5e68d1bd03",
+              "judged_audit_hash": "50448af0ba90f51e59756d51dfe13e51540cee13ab66d5af1c490b93200defdb"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E5",
+              "result_audit_hash": "53aaea1f3166eb310c5eba7b3b5f3e6eab2d5dacb833a44b4e7a6917386ae8fd",
+              "judged_audit_hash": "d7e429775342a1b055113bfa24b752710e09b3132bc21f065783907f09a74279"
+            },
+            "phase": "diagnose"
+          }
+        ],
+        "plans": [
+          {
+            "state": "EXPIRED",
+            "reason": "max_planner_rounds",
+            "planner_rounds": 2,
+            "rejected_steps": 1
+          }
+        ],
+        "steps_rejected": 1,
+        "target_gets": 3,
+        "target_gets_with_fix_check": 3,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.3,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      },
+      {
+        "case_id": "holdout-030",
+        "method": "local_model",
+        "status": "ran",
+        "previews": [],
+        "model_rounds": [],
+        "model_requests": 0,
+        "invalid_replies": 0,
+        "steps_offered": 3,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "planner_seconds": 0.0,
+        "model_cost_usd": 0.0,
+        "reserved_usd": 0.0,
+        "engine_kind": "unverified",
+        "other_account_read": "supported",
+        "unauthenticated_exposure": "contradicted",
+        "steps": [
+          {
+            "step_id": "S1",
+            "catalog_id": "l2_idor",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3"
+            ],
+            "hypothesis_id": "H2",
+            "judgement": {
+              "hypothesis_id": "H2",
+              "from": "open",
+              "to": "supported",
+              "rule": "cross_account_read",
+              "observation": "E4",
+              "result_audit_hash": "13692fe3a7762682bb443290044369d01a5063bbe92d27f4a4df0b3e507fbcb4",
+              "judged_audit_hash": "fb6b960eb83d6ceabf37f151c81d358c30c38cdec4fc471b50058cf4ba564842"
+            },
+            "phase": "diagnose"
+          },
+          {
+            "step_id": "S2",
+            "catalog_id": "l1_http_probe",
+            "target_ref": "T2",
+            "reason": "test_hypothesis",
+            "evidence_refs": [
+              "E2",
+              "E3",
+              "E4"
+            ],
+            "hypothesis_id": "H1",
+            "judgement": {
+              "hypothesis_id": "H1",
+              "from": "open",
+              "to": "contradicted",
+              "rule": "denied_without_auth",
+              "observation": "E5",
+              "result_audit_hash": "91f71113426870d1ff5058599dfb7c71d350a3676aa58a1a92f21b67383e2666",
+              "judged_audit_hash": "f727e3109e2e4623896b993e76d644f3e6cf9fc54432c6c1256c4dfdf8dbbd7c"
+            },
+            "phase": "diagnose"
+          }
+        ],
+        "plans": [
+          {
+            "state": "COMPLETED",
+            "reason": "all_settled",
+            "planner_rounds": 2,
+            "rejected_steps": 0
+          }
+        ],
+        "steps_rejected": 0,
+        "target_gets": 4,
+        "target_gets_with_fix_check": 4,
+        "worker_launches": 3,
+        "planner_calls": 2,
+        "elapsed_s": 0.303,
+        "fix_check": null,
+        "audit_chain_valid": true,
+        "every_judgement_cites_an_audited_result": true,
+        "planner_input_leaked": []
+      }
+    ]
+  },
+  "checks_failed": []
+}
