@@ -64,6 +64,14 @@
 - 第2の判定者が、作成者の正解を見ずに独立して正解を付けました（`holdout_truth_independent.json`）。一致の状況は [LABEL_REVIEW.md](LABEL_REVIEW.md) にあります。
 - **実モデルで評価する前に、人の確認が必要です。**
 - モデルやプロンプトの調整に使ったケースは、未見の評価から外し、回帰用に移します。
+- 2026-11-22：判定器の変更（案1・案3）の根拠にした8件（holdout-001・007・010・013・014・017・029・030）を、開発・回帰用に移しました（`regression_manifest.json` の `development_cases`）。
+
+### 2つ目の未見の評価用：30ケース（holdout v2）
+
+- 場所：`tests/evaluation/fixtures/holdout_v2_cases.json`（正解は `holdout_v2_truth.json`）。作成時の SHA-256 と制約は [HOLDOUT_V2.md](HOLDOUT_V2.md) にあります。
+- 実行：`python3 -m scripts.run_model_evaluation compare --set holdout_v2`
+- 人のラベル確認は、1つ目とは別の署名（`label_signoff_holdout_v2.json`、`label_set: "holdout_v2"`）が必要です。未了です。
+- 判定器の変更の前後の結果は [JUDGE_OWNER_RECORD.md](JUDGE_OWNER_RECORD.md) にあります。
 
 ## 4. 指標
 

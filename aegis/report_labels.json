@@ -96,6 +96,8 @@
   "denied_without_auth": "認証なしの要求は拒否された",
   "intended_public": "所有者の仕様で「公開」とされている",
   "own_resource_only": "返ったのは、要求した本人の資源だった",
+  "owner_record_absent": "200 が返ったが、所有者 B の対照で得た識別子も B の名前もなく、B の記録ではなかった",
+  "owner_record_absent_without_auth": "認証なしで 200 が返ったが、所有者 B の識別子も名前もなく、B の記録ではなかった",
   "spec_missing": "読めたが、誰が読めるべきかの仕様がない",
   "unrecognised_answer": "応答の形が想定と違い、判断できなかった"
  },
