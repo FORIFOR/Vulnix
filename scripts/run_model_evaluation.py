@@ -154,12 +154,41 @@ def do_freeze(write: bool) -> int:
     return 0 if old["files"] == now["files"] else 1
 
 
+SIGNOFF = ROOT / "docs/evaluation/label_signoff.json"
+
+
+def do_signoff_check(path: Path) -> int:
+    """Check a sign-off the HUMAN reviewer wrote (docs/evaluation/LABEL_REVIEW_SHEET.md).
+    Read only: it prints what is missing and never writes, fills in or signs anything."""
+    from aegis.evaluation.evaluation_runner import labels_sha256, signoff_problems
+    print(f"正解ラベルのファイル: tests/evaluation/fixtures/holdout_truth.json")
+    print(f"その SHA-256（署名の labels_sha256 に書く値）: {labels_sha256()}")
+    if not path.exists():
+        print(f"署名のファイルがありません: {path}")
+        print("レビューを終えた人が、docs/evaluation/label_signoff.template.json を写して記入してください。")
+        return 1
+    try:
+        signoff = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        print(f"署名のファイルを読めません: {type(e).__name__}")
+        return 1
+    problems = signoff_problems(signoff)
+    for p in problems:
+        print(f"- {p}")
+    print("署名は有効です（実モデルの評価の前提の1つを満たします。送信には別の承認が必要です）"
+          if not problems else "署名はまだ有効ではありません")
+    return 0 if not problems else 1
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("command", choices=("preview", "compare", "freeze"))
+    ap.add_argument("command", choices=("preview", "compare", "freeze", "signoff-check"))
     ap.add_argument("--out", default=str(ROOT / "docs/evaluation"))
     ap.add_argument("--write", action="store_true")
+    ap.add_argument("--file", default=str(SIGNOFF), help="signoff-check: the sign-off to check")
     a = ap.parse_args(argv)
+    if a.command == "signoff-check":
+        return do_signoff_check(Path(a.file))
     if a.command == "preview":
         return do_preview(Path(a.out))
     if a.command == "compare":
