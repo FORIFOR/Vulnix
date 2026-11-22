@@ -62,17 +62,39 @@ class Harness:
 LABELS_FILE = Path(__file__).resolve().parents[2] / "tests/evaluation/fixtures/holdout_truth.json"
 
 
+def labels_sha256() -> str | None:
+    import hashlib
+    return hashlib.sha256(LABELS_FILE.read_bytes()).hexdigest() if LABELS_FILE.exists() else None
+
+
+def signoff_problems(signoff) -> list[str]:
+    """Why a sign-off does not open the gate (empty: it does). Read only; it never writes
+    or completes a sign-off - only a human reviewer fills it in."""
+    want = labels_sha256()
+    if want is None:
+        return ["正解ラベルのファイル（holdout_truth.json）がありません"]
+    if not isinstance(signoff, dict):
+        return ["署名が JSON のオブジェクトではありません"]
+    out = []
+    if signoff.get("reviewer_kind") != "human":
+        out.append('reviewer_kind が "human" ではありません（AI による署名は受け付けません）')
+    if not (isinstance(signoff.get("reviewer"), str) and signoff["reviewer"].strip()):
+        out.append("reviewer（確認した人の名前）が空です")
+    if not (isinstance(signoff.get("completed"), str) and signoff["completed"].strip()):
+        out.append("completed（確認を終えた日付）が空です")
+    if signoff.get("labels_sha256") != want:
+        out.append(f"labels_sha256 が現在のラベルのファイルと一致しません（現在：{want}）")
+    if signoff.get("disagreements_resolved") is not True:
+        out.append("disagreements_resolved が true ではありません（不一致をすべて解消してから署名します）")
+    return out
+
+
 def require_label_signoff(signoff: dict | None) -> None:
     """No real-model run before a human reviewed the labels it will be scored against.
     The sign-off must name a human reviewer, a completion date and the SHA-256 of the
     exact label file; a changed label file voids it. (Only the hash is read here; the
     labels themselves never reach a planner.)"""
-    import hashlib
-    want = hashlib.sha256(LABELS_FILE.read_bytes()).hexdigest() if LABELS_FILE.exists() else None
-    if not (isinstance(signoff, dict) and signoff.get("reviewer_kind") == "human"
-            and isinstance(signoff.get("reviewer"), str) and signoff["reviewer"].strip()
-            and isinstance(signoff.get("completed"), str) and signoff.get("labels_sha256") == want
-            and want is not None and signoff.get("disagreements_resolved") is True):
+    if signoff_problems(signoff):
         raise LedgerError("labels_not_reviewed", "a human label review is required before a real-model run")
 
 

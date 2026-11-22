@@ -4,6 +4,23 @@
 
 モデルには、このシートも正解も渡しません。モデルが見るのは、診断状態の ID と短い語だけです（`docs/evaluation/requests.jsonl`）。
 
+## 署名の手順（人のレビュー者が行います）
+
+1. 下の表の「人の確認」欄を、すべてのケースについて埋めます。
+2. ラベルを直す場合は、`tests/evaluation/fixtures/holdout_truth.json` を直した PR を別に作ります（ハッシュが変わります）。
+3. `docs/evaluation/label_signoff.template.json` を `docs/evaluation/label_signoff.json` に写し、次を記入します。
+   - `reviewer`：あなたの名前
+   - `completed`：完了日
+   - `labels_sha256`：次のコマンドが表示する値
+   - 不一致を解消したら、`disagreements_resolved` を `true` にする
+4. 次のコマンドで、署名が有効かを確かめます。このコマンドは読むだけで、署名を作ったり書き換えたりはしません。
+
+```
+VULNIX_NO_ENV_LOCAL=1 python3 -m scripts.run_model_evaluation signoff-check
+```
+
+**AI（Claude などの開発エージェントを含む）は、この署名を作成・代行しません。** 署名があっても、外部モデルへの送信には、送信ごとの別の承認が必要です。
+
 ## 判定の基準
 
 - **他アカウントの読み取り（other_account_read）**
