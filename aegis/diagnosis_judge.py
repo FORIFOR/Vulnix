@@ -11,10 +11,17 @@ A check was run and the owner's spec says the resource is public -> contradicted
 
 other_account_read  x  l2_idor
     the owner control did not establish the resource       -> inconclusive (control_failed)
-    reproduction proven (aegis.evidence.reproduction_verdict)
+    reproduction proven (aegis.evidence.reproduction_verdict), or
+    B's record measured in A's answer (aegis.evidence.owner_record_read_by_other_account:
+        the Worker sent it as acct_A, B's control established in the same run, 200 read
+        whole, the control's resource id AND confidential marker both present after the
+        normalisations below, and the answer is not another resource / A's own)
         owner spec: authentication_required                -> supported   (cross_account_read)
         owner spec: public                                 -> contradicted (intended_public)
         owner spec missing / unspecified                   -> needs_spec  (spec_missing)
+        (the second way decides "supported" only here; a finding becomes 実証成功 only when
+         reproduction_verdict, which also requires this match, says proven -
+         docs/evaluation/JUDGE_IDENTITY_MATCH.md)
     acct_A gets 401/403/404 while the owner gets 200       -> contradicted (denied)
     acct_A gets 200 with its own resource (no marker)      -> contradicted (own_resource_only)
     acct_A gets 200 carrying none of the owner control's identifiers (resource id,
@@ -43,15 +50,13 @@ A check that does not test the claim                       -> inconclusive (chec
 """
 from __future__ import annotations
 
-import html
 import json
 import re
 import weakref
 from dataclasses import dataclass
-from urllib.parse import unquote
 
 from .diagnosis_state import DiagnosisState
-from .evidence import REPRODUCTION_MARKERS, reproduction_verdict
+from .evidence import REPRODUCTION_MARKERS, normalised_texts, owner_record_read_by_other_account, reproduction_verdict
 
 _ISSUER = object()          # only this module holds it
 # The verdict objects this module made. A copy (dataclasses.replace, copy.copy) carries the
@@ -133,19 +138,7 @@ def _verdict(hid: str, to: str, evidence, rule: str) -> Verdict:
 def _texts(body) -> list[str]:
     """The answer as lower-case text, also with HTML entities, %-escapes and JSON escapes
     undone, so an identifier hidden by an encoding still counts as present."""
-    if isinstance(body, str):
-        try:
-            parsed = json.loads(body)
-        except ValueError:
-            parsed = None
-        raw = [body] + ([json.dumps(parsed, ensure_ascii=False)] if isinstance(parsed, (dict, list)) else [])
-    else:
-        raw = [json.dumps(body, ensure_ascii=False)]
-    out = []
-    for t in raw:
-        js = re.sub(r"\\u([0-9a-fA-F]{4})", lambda m: chr(int(m.group(1), 16)), t)   # JavaScript \uXXXX
-        out += [t, html.unescape(t), unquote(t), unquote(html.unescape(t)), js, html.unescape(js)]
-    return [t.lower() for t in out]
+    return normalised_texts(body)
 
 
 def _mentions(body, needles) -> bool:
@@ -252,7 +245,8 @@ def check_attrs(catalog_id: str, result: dict) -> dict:
             complete = result.get("response_truncated") is False
             present, named, kind = _owner_facts(response, complete, ids, accounts)
             attrs.update({"owner_identifiers_present": present, "owner_account_present": named,
-                          "body_kind": kind})
+                          "body_kind": kind,
+                          "owner_record_match": owner_record_read_by_other_account(result)})
         return attrs
     return {"status": status}
 
@@ -303,6 +297,9 @@ def judge(state: DiagnosisState, hypothesis_id: str, catalog_id: str, evidence_i
         if a.get("control") != "established":
             return _verdict(hypothesis_id, "inconclusive", ev, "control_failed")
         if a.get("reproduction") == "proven":
+            return by_spec("cross_account_read")
+        if status == 200 and a.get("own_resource") is False and a.get("owner_record_match") is True:
+            # B's record, measured against B's own control in the same Worker run (案2)
             return by_spec("cross_account_read")
         if status in DENIED:
             return _verdict(hypothesis_id, "contradicted", ev, "denied")
