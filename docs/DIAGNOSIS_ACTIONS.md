@@ -39,10 +39,10 @@
 **依頼者と L2 の承認者は、同じ人にできません。** これは3か所で確かめています。
 
 - 承認の API（403 `self_approval`。監査ログに `diagnosis.approval_denied` を記録）
-- 既存の `execute_artex_item`（計画を依頼した本人は承認できない）
+- 既存の `execute_artex_item`（計画を依頼した本人は承認できない）。**ただし、この確認は `AEGIS_SEPARATE_L2_APPROVER=1` のときだけ働きます**（既定では無効。[セキュリティレビュー資料](security_review/README.md) の O1）。診断ループの承認 API と画面の確認は、設定にかかわらず常に働きます
 - 画面（依頼者には承認のボタンを出さない）
 
-自分で登録したアカウントは、L2 を承認できません（既存の `/request-l2` と同じ扱い）。
+自分で登録したアカウントは、L2 を承認できません（既存の `/request-l2` と同じ扱い）。この確認も `AEGIS_SEPARATE_L2_APPROVER=1` のときだけ働きます（O2）。
 
 ## 2. API
 
