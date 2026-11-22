@@ -70,7 +70,8 @@ export function OrgSection() {
 
   return (
     <Card className="p-5">
-      <h2 className="font-semibold">組織とメンバー</h2>
+      {/* the diagnosis panel links here when the requester needs an approver */}
+      <h2 id="org" className="scroll-mt-24 font-semibold">組織とメンバー</h2>
       <p className="mt-1 text-xs text-zinc-500">
         「{org.name}」のサイト・診断結果・証拠・監査ログは、この組織のメンバーだけが見られます。
       </p>
@@ -127,7 +128,7 @@ export function OrgSection() {
             <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs dark:border-amber-900 dark:bg-amber-950/40">
               <p className="font-semibold">招待リンク（この画面でだけ表示されます・7日間有効・1回限り）</p>
               <div className="mt-2 flex gap-2">
-                <input readOnly value={link} className="min-w-0 flex-1 rounded border border-zinc-300 bg-white px-2 py-1 font-mono dark:border-zinc-700 dark:bg-zinc-900" />
+                <input readOnly value={link} aria-label="招待リンク" className="min-w-0 flex-1 rounded border border-zinc-300 bg-white px-2 py-1 font-mono dark:border-zinc-700 dark:bg-zinc-900" />
                 <button type="button" onClick={() => navigator.clipboard?.writeText(link)}
                   className="rounded border border-zinc-300 px-2 py-1 dark:border-zinc-700">コピー</button>
               </div>

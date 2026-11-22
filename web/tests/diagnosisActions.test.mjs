@@ -52,6 +52,9 @@ test("L2 approval: an approver who is not the requester; the requester is told w
   const self = dv.availableControls(view({ ...w, viewer: { actor: "qa", permissions: ALL } }));
   assert.deepEqual(self.controls, []);
   assert.deepEqual(self.notes, ["依頼者本人は承認できません。別の承認者が承認します"]);
+  assert.equal(self.inviteApprover, true);            // an owner is told how to get an approver
+  const qaSelf = dv.availableControls(view({ ...w, viewer: { actor: "qa", permissions: ["diagnosis:read", "diagnosis:request"] } }));
+  assert.equal(qaSelf.inviteApprover, false);          // a runner cannot invite: no link
   assert.deepEqual(dv.availableControls(view({ ...w, viewer: { actor: "op-2", permissions: ["diagnosis:read", "diagnosis:request"] } })).notes,
                    ["承認者の承認を待っています"]);
 });
@@ -68,7 +71,7 @@ test("a view that is not verified offers no operation, whatever its viewer may d
                                 reason: "audit_chain_invalid", operation: job({ state: "awaiting_spec", needs_spec: ["T2"] }),
                                 viewer: { actor: "alice", permissions: ALL } }, "scan_001");
   assert.equal(v.operation, null);
-  assert.deepEqual(dv.availableControls(v), { controls: [], notes: [] });
+  assert.deepEqual(dv.availableControls(v), { controls: [], notes: [], inviteApprover: false });
 });
 
 test("a malformed job or viewer gives no control (never a guess)", () => {
