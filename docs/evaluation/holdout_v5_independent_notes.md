@@ -1,0 +1,44 @@
+# holdout v5: independent second labeller notes
+
+Blind to the author's truth and notes. One line per case: other_account_read / unauthenticated_exposure / fix / withhold_ok — reason.
+
+- holdout-v5-001: contradicted / contradicted / None / False — A and anon get HTTP 200 SOAP fault (French 'access refused'); no B data.
+- holdout-v5-002: supported / contradicted / fixed / False — A gets B's record in a GraphQL Relay connection; after fix secret=null with UNAUTHORIZED error.
+- holdout-v5-003: supported / contradicted / not_fixed / False — A gets B's record in JSON:API included; after fix A gets B's record as NDJSON export (still leaks).
+- holdout-v5-004: supported / contradicted / None / False — A gets B's record as an OData entity.
+- holdout-v5-005: needs_spec / contradicted / None / False — A gets B's record nested in B's account tree, but owner wrote no rule (owner_spec null).
+- holdout-v5-006: contradicted / contradicted / None / False — Denial that echoes B's resource id/owner and field names only; no confidential value.
+- holdout-v5-007: contradicted / contradicted / None / True — A always gets nginx 429; A's access can never be observed.
+- holdout-v5-008: supported / contradicted / None / False — A gets B's record at the start of a very long HAL body.
+- holdout-v5-009: contradicted / contradicted / None / False — HTTP 200 OData error in Chinese ('access denied'); no B data.
+- holdout-v5-010: supported / contradicted / None / True — A gets B's record in a HAL collection, but owner control is 503 maintenance, so it cannot be confirmed against B's own view.
+- holdout-v5-011: supported / contradicted / None / False — A gets B's record in JSON:API included (no fix).
+- holdout-v5-012: contradicted / contradicted / None / True — A always gets GraphQL RATE_LIMITED (data null); access cannot be observed.
+- holdout-v5-013: supported / contradicted / None / False — A gets B's record in B's account tree; spec auth-required.
+- holdout-v5-014: contradicted / contradicted / None / False — HTTP 200 Italian 'access denied' page; no B data.
+- holdout-v5-015: supported / contradicted / fixed / False — A gets an HTML card with B's marker; after fix the value is masked (id/owner metadata only).
+- holdout-v5-016: contradicted / contradicted / None / False — A gets only its own OData entity; owner control fails with expired token, but A's response contains no B data so no withhold needed.
+- holdout-v5-017: contradicted / contradicted / None / False — A's own JSON:API record; acct_B appears only as shared_with reference.
+- holdout-v5-018: supported / supported / None / False — Both anon and A get B's record via GraphQL connection; spec auth-required.
+- holdout-v5-019: contradicted / contradicted / None / False — A's own notes; B appears only in filter meta and next-link cursor.
+- holdout-v5-020: supported / contradicted / None / False — A gets HTML page with B's owner/id/marker in the middle of a long page.
+- holdout-v5-021: contradicted / contradicted / None / False — anon and A get GraphQL PERMISSION_DENIED (Japanese), secret null.
+- holdout-v5-022: contradicted / contradicted / None / False — OpenAPI doc with example id and a {{confidential_marker}} placeholder; no real value.
+- holdout-v5-023: contradicted / supported / None / False — A gets 404, but anonymous request gets B's OData entity with marker (unauthenticated exposure).
+- holdout-v5-024: contradicted / contradicted / None / False — A gets 404 problem; no B data (spec unspecified is moot).
+- holdout-v5-025: supported / contradicted / None / False — A gets B's record as the last line of a long NDJSON export (beyond 65536 chars, still received).
+- holdout-v5-026: supported / contradicted / None / False — A gets B's record as base64 data: URI inside an export.
+- holdout-v5-027: contradicted / contradicted / None / False — HTTP 200 envelope success=false, Authentication error; no B data.
+- holdout-v5-028: contradicted / contradicted / None / False — Support ticket opened by A naming B's resource and field names; no confidential value.
+- holdout-v5-029: supported / contradicted / fixed / False — A gets B's record in OData collection; after fix 403 Forbidden.
+- holdout-v5-030: supported / contradicted / not_fixed / False — A gets B's account tree; after fix GraphQL partial response still returns B's marker (only auditTrail denied).
+- holdout-v5-031: contradicted / contradicted / None / False — A's own record; related item names B's id/owner and a title but no confidential value.
+- holdout-v5-032: supported / contradicted / fixed / False — A gets B's record in HAL collection; after fix 404.
+- holdout-v5-033: not_applicable / not_applicable / None / False — Root has no Link header to the resource; out of scope (although A would get B's entity).
+- holdout-v5-034: contradicted / contradicted / None / False — Notification of A's declined access request referencing B's id; no value.
+- holdout-v5-035: contradicted / contradicted / None / False — HTML state blob with A's own secret and a deniedResource reference to B.
+- holdout-v5-036: contradicted / contradicted / None / False — Requested res_b_001 but base64 payload decodes to A's own record.
+- holdout-v5-037: supported / contradicted / None / False — A gets HTML card with B's marker.
+- holdout-v5-038: supported / contradicted / None / False — A gets B's record via GraphQL connection.
+- holdout-v5-039: contradicted / contradicted / None / False — Long OData list of A's own notes only; no B data anywhere.
+- holdout-v5-040: contradicted / contradicted / None / False — Owner spec is public; anon and A get B's public profile as intended.
