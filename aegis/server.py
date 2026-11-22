@@ -1519,6 +1519,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     # lock (a check here could be invalidated by a concurrent switch)
                     result = svc.verify_finding(
                         fid, actor, roles=tuple(sess.roles),
+                        approver_eligible=not ops.is_self_registered(actor),
                         request_authorized=live_request_authority(
                             sess, getattr(self, "_bound_org", DEFAULT_ORG),
                             approver="approver" in sess.roles))
@@ -1585,7 +1586,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 elif p == base + "/verify-fix":
                     if "approver" not in sess.roles:
                         return self._json(403, {"error": "修正後の再検証には承認責任者の権限が必要です"})
-                    result = svc.verify_fix(actor)
+                    result = svc.verify_fix(actor, approver_eligible=not ops.is_self_registered(actor))
                     return self._authorized_org_read(
                         sess, getattr(self, "_bound_org", DEFAULT_ORG),
                         lambda _: self._json(200, result), reader=False, approver=True)
@@ -1714,7 +1715,9 @@ def _load_env_local(path: Path | None = None) -> int:
             key = key[len("export "):].strip()
         if not _ENV_KEY.fullmatch(key):
             continue
-        if key.startswith("VULNIX_AUDIT_ANCHOR_"):
+        if key.startswith("VULNIX_AUDIT_ANCHOR_") or key == "AEGIS_SEPARATE_L2_APPROVER":
+            # (separation of duties, too: only the operator's real environment may switch
+            # it off - and only in an authorized-lab-only setup)
             # Who the audit anchor is (socket, helper user, source name) comes only from the
             # operator's real environment: the service user can write .env.local and could
             # otherwise point the service at a helper of its own (docs/AUDIT_ANCHOR.md).
@@ -1759,7 +1762,9 @@ def main() -> None:
             "本番運用では --no-read-auth / AEGIS_REQUIRE_READ_AUTH=0 を使用しないでください。")
     try:
         # refuse to start rather than run with L2 self-approval outside an authorized lab
-        separate_l2_approver_from_env()
+        # judged against the real-site mode this process actually runs with (read when
+        # the module loaded), not a value .env.local may have added since
+        separate_l2_approver_from_env({**os.environ, "VULNIX_REAL_SERVICE_DIAGNOSIS": _REAL_SITE_MODE})
     except SeparationConfigError as e:
         raise SystemExit(str(e)) from None
     data = Path(a.data_dir or tempfile.mkdtemp(prefix="aegis-"))

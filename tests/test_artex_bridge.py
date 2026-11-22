@@ -871,6 +871,33 @@ class TestThePlanThroughTheGateway(ServiceBase):
         with self.assertRaises(ApproverRequired):
             self.svc.execute_artex_item(self.item(plan, "l2_idor")["id"], "op", roles=("operator", "approver"))
 
+    def test_by_default_the_planner_cannot_approve_its_own_l2(self):
+        # option A: no setting needed - separation of duties is on by default
+        self.assertTrue(self.svc.separate_l2_approver)
+        plan = self.plan()                        # requested by "op"
+        l2 = self.item(plan, "l2_idor")["id"]
+        with self.assertRaises(ApproverRequired):
+            self.svc.execute_artex_item(l2, "op", roles=("operator", "approver"))
+        denied = [e["fields"] for e in self.svc.audit.entries() if e["event"] == "artex.item_denied"]
+        self.assertEqual(denied[-1]["reason"], "separation of duties")
+
+    def test_a_self_registered_approver_cannot_run_an_artex_l2(self):
+        plan = self.plan()
+        with self.assertRaises(ApproverRequired):
+            self.svc.execute_artex_item(self.item(plan, "l2_idor")["id"], "appr2",
+                                        roles=("operator", "approver"), approver_eligible=False)
+        denied = [e["fields"] for e in self.svc.audit.entries() if e["event"] == "artex.item_denied"]
+        self.assertEqual(denied[-1]["reason"], "self-registered approver")
+
+    def test_an_artex_l2_with_no_human_requester_is_refused(self):
+        plan = self.plan()
+        l2 = self.item(plan, "l2_idor")["id"]
+        for requester in (None, "", "policy:auto"):
+            with self.subTest(requester=requester):
+                self.svc._artex_items[l2]["requested_by"] = requester
+                with self.assertRaises(ApproverRequired):
+                    self.svc.execute_artex_item(l2, "appr2", roles=("operator", "approver"))
+
     def test_one_item_cannot_be_claimed_twice_concurrently(self):
         plan = self.plan()
         l1 = self.item(plan, "l1_http_probe")["id"]

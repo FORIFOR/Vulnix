@@ -61,6 +61,34 @@ class TestSetting(unittest.TestCase):
         self.assertIn("認可ラボ専用", str(cm.exception))
 
 
+class TestEnvLocal(unittest.TestCase):
+    """Only the operator's real environment may switch separation off (.env.local is
+    writable by the service user), judged against the real-site mode the server runs with."""
+
+    def test_env_local_cannot_switch_it_off(self):
+        from aegis import server
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp) / ".env.local"
+            f.write_text("AEGIS_SEPARATE_L2_APPROVER=0\nVULNIX_TEST_MARKER_SEP=1\n")
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("AEGIS_SEPARATE_L2_APPROVER", None)
+                os.environ.pop("VULNIX_TEST_MARKER_SEP", None)
+                server._load_env_local(f)                    # an explicit file (never the real one)
+                self.assertEqual(os.environ.get("VULNIX_TEST_MARKER_SEP"), "1")   # the file was read
+                self.assertNotIn("AEGIS_SEPARATE_L2_APPROVER", os.environ)
+
+    def test_the_check_uses_the_mode_the_server_runs_with(self):
+        # the process runs with real-site L1 (read at import); a later "0" in the
+        # environment (e.g. from .env.local) does not make it a lab-only setup
+        from aegis import server
+        with patch.dict(os.environ, {"AEGIS_SEPARATE_L2_APPROVER": "0", "VULNIX_REAL_SERVICE_DIAGNOSIS": "0",
+                                     "VULNIX_NO_ENV_LOCAL": "1"}), \
+                patch.object(server, "_REAL_SITE_MODE", "l1"), patch("sys.argv", ["aegis.server"]), \
+                patch.object(server, "start_lab", side_effect=AssertionError("must not get this far")), \
+                self.assertRaises(SystemExit):
+            server.main()
+
+
 class TestLegacyApproval(unittest.TestCase):
     """The legacy run raises its L2 approvals itself; the requester is who started it."""
 
