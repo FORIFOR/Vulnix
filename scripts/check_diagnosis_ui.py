@@ -54,6 +54,7 @@ from aegis.diagnosis_loop import begin_fix_check, observe_lab_root, record_owner
 from aegis.operators import OperatorStore, hash_password  # noqa: E402
 from aegis.server import make_handler  # noqa: E402
 from aegis.tenancy import OrgStore, TenantRegistry  # noqa: E402
+from scripts.axe_check import gate as axe_gate, run_axe  # noqa: E402
 from tests import TEST_CONFINEMENT  # noqa: E402
 from tests.diagnosis_planner import view_from_text  # noqa: E402
 from tests.fixtures.access_control_lab import AccessControlLab  # noqa: E402
@@ -187,7 +188,7 @@ def main() -> None:
         base = f"http://127.0.0.1:{web_port}"
         web = subprocess.Popen([str(ROOT / "web/node_modules/.bin/next"), "start" if args.production else "dev",
                                 "-H", "127.0.0.1", "-p", str(web_port)], cwd=ROOT / "web",
-                               env={**os.environ, "AEGIS_API": f"http://127.0.0.1:{port}"},
+                               env={**os.environ, "AEGIS_API": f"http://127.0.0.1:{port}", "NEXT_TELEMETRY_DISABLED": "1"},
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         stack.callback(web.terminate)
         wait_for_web(base, web)
@@ -226,6 +227,8 @@ def main() -> None:
                 panel(page).locator("..").screenshot(path=path)
             report["screenshots"].append(str(path))
 
+        report["accessibility"] = {}
+
         def no_overflow(page) -> bool:
             return page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
 
@@ -234,6 +237,7 @@ def main() -> None:
         expect(panel(desk)).to_contain_text("まだ診断ループを実行していません", timeout=20000)
         expect(panel(desk)).to_contain_text("ラボ専用")
         shot(desk, "01-not-started")
+        report["accessibility"]["01-not-started"] = run_axe(desk)
 
         # pages that watch the same run through a broken stream
         streams = {"forged": 0, "blocked": 0}
@@ -388,9 +392,11 @@ def main() -> None:
         report["checks"]["refused_shows_no_steps"] = panel(desk).get_by_text("② 手順の記録").count() == 0 \
             and panel(desk).get_by_text("別アカウントでの読み取り検査").count() == 0
         shot(desk, "06-refused-tampered-log")
+        report["accessibility"]["06-refused-tampered-log"] = run_axe(desk)
         phone.reload()
         expect(panel(phone).get_by_role("alert")).to_contain_text("記録を確かめられないため", timeout=20000)
         shot(phone, "06m-refused-390")
+        report["accessibility"]["06m-refused-390"] = run_axe(phone)
 
         report["lab_paths"] = sorted({path for path, _ in lab.seen})
         report["checks"]["other_org"] = other_org
@@ -401,6 +407,8 @@ def main() -> None:
         registry.close_all()
         svc.close()
     lab.shutdown()
+    checked, clean = axe_gate(report.get("accessibility", {}))
+    report["checks"]["accessibility_no_serious_violation"] = clean and checked == 3
     failed = [k for k, v in report["checks"].items() if v is False]
     report["ok"] = not failed and not page_errors
     print(json.dumps(report, ensure_ascii=False, indent=1))
