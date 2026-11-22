@@ -1644,7 +1644,10 @@ class TestThePlannersMinimalRootPlan(unittest.TestCase):
         # never a directory bound whole that holds these (single files only)
         for bad in ("/", "/usr", "/usr/bin", "/usr/lib", "/tmp"):
             self.assertFalse([e for e in plan if e[0] in ("ro", "rw") and under(bad, e[1])], bad)
-        self.assertEqual(plan_mountpoints(plan) & {"/sys", "/etc", "/home", "/usr", "/usr/bin", "/tmp"}, set())
+        self.assertEqual(plan_mountpoints(plan) & {"/sys", "/etc", "/home", "/usr", "/usr/bin"}, set())
+        # /tmp is a mount point only as the run's private tmpfs: the host's /tmp is never bound
+        self.assertIn("/tmp", plan_mountpoints(plan))
+        self.assertFalse([e for e in plan if e[0] != "symlink" and e[1] == "/tmp"])
         # read-write: the work directory and nothing else
         self.assertEqual([e for e in plan if e[0] == "rw"], [("rw", "/tmp/vulnix-artex-abc")])
 
@@ -1669,6 +1672,10 @@ class TestThePlannersMinimalRootPlan(unittest.TestCase):
                                         f"{OLDROOT}/usr/bin/umount -n -l {OLDROOT}"])
         self.assertLess(lines.index(f"mount -n -o remount,ro,nosuid,nodev {VXROOT}"), len(lines) - 4)
         self.assertIn(f"mount -n -t tmpfs -o mode=0755,nosuid,nodev,size=4m vxroot {VXROOT}", lines)
+        # ARTEX's private /tmp (its work dir /tmp/vulnix-artex-planner): an empty, size-limited
+        # tmpfs, mounted before anything of the plan is bound beneath it
+        tmp = lines.index(f"mount -n -t tmpfs -o mode=1777,nosuid,nodev,noexec,size=64m vxtmp {VXROOT}/tmp")
+        self.assertLess(tmp, min(i for i, ln in enumerate(lines) if ln.startswith("mount -n --bind ")))
         self.assertNotIn("sysfs", script)
         self.assertNotIn("--rbind", script)
         self.assertIn(f"mount -n -t proc -o hidepid=invisible,subset=pid,nosuid,nodev,noexec vxproc {VXROOT}/proc",
@@ -1703,6 +1710,8 @@ class TestThePlannersMinimalRootPlan(unittest.TestCase):
             "/sys mounted": {"mounts": good["mounts"] + [["/sys", "sysfs", "sysfs"]]},
             "host root": {"mounts": [["/", "ext4", "/dev/sda1"]] + good["mounts"][1:]},
             "old root left": {"oldroot": ["etc", "home"]},
+            "host /tmp": {"mounts": [m if m[0] != "/tmp" else ["/tmp", "ext4", "/dev/sda1"] for m in good["mounts"]]},
+            "no /tmp": {"mounts": [m for m in good["mounts"] if m[0] != "/tmp"]},
             "old root gone?": {"oldroot": "GONE:FileNotFoundError"},
             "passwd visible": {"absent": {**good["absent"], "/etc/passwd": False}},
             "list incomplete": {"absent": {k: v for k, v in good["absent"].items() if k != "/sys"}},
@@ -1717,7 +1726,8 @@ class TestThePlannersMinimalRootPlan(unittest.TestCase):
     @staticmethod
     def seen(sess):
         from aegis.confinement import plan_mountpoints
-        mounts = [["/", "tmpfs", "vxroot"]] + [[m, "x", "y"] for m in sorted(plan_mountpoints(sess._plan)) if m != "/"]
+        mounts = [["/", "tmpfs", "vxroot"], ["/tmp", "tmpfs", "vxtmp"]] + [
+            [m, "x", "y"] for m in sorted(plan_mountpoints(sess._plan)) if m not in ("/", "/tmp")]
         return {"netns": "net:[4026532999]", "ifaces": ["lo"], "canary": "BLOCKED:TimeoutError",
                 "relay": {"5432": "OK", "18080": "OK"},
                 "hidden": {h: "GONE:FileNotFoundError" for h in sess.ns["hide"] if h != "/tmp"}
@@ -2149,6 +2159,7 @@ class TestMinimalRootOnLinux(unittest.TestCase):
             # positive controls: the probe itself works
             f"out['stdlib']=len(open({stdlib!r},'rb').read(10))\n"
             "open('/dev/null','wb').write(b'x'); out['devnull']='OK'\n"
+            "os.mkdir('/tmp/vulnix-artex-planner',0o700); out['tmp_workdir']='OK'\n"
             "print(json.dumps(out))\n")
         with MockLLM() as mock:
             work, secret = self.dirs()
@@ -2177,6 +2188,8 @@ class TestMinimalRootOnLinux(unittest.TestCase):
         self.assertLessEqual(len(out["pids"]), 2, out["pids"])            # its own PID namespace
         self.assertEqual(out["stdlib"], 10)
         self.assertEqual(out["devnull"], "OK")
+        self.assertEqual(out["tmp_workdir"], "OK")                         # ARTEX's work dir
+        self.assertFalse(os.path.exists("/tmp/vulnix-artex-planner"))     # private: not the host's /tmp
 
     def test_a_root_switch_that_fails_means_nothing_starts(self):
         import urllib.parse

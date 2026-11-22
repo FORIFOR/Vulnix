@@ -75,6 +75,11 @@ def _system_which(tool: str) -> str | None:
 VXROOT = "/mnt"                       # where the new root is built (in the private mount namespace)
 OLDROOT = "/.oldroot"                 # the old root, right after pivot_root (detached at once)
 DEV_NODES = ("null", "zero", "full", "random", "urandom")
+# a private, empty, size-limited /tmp of the run's own (gone with the namespace). ARTEX
+# needs it: the overlay creates its work dir at os.TempDir() = /tmp/vulnix-artex-planner
+# (a fixed path that is part of its prompt), and TMPDIR never arrives - glibc drops it
+# for the setuid sudo. Plan entries below /tmp are bound on top of it.
+TMP_MOUNT = "mount -n -t tmpfs -o mode=1777,nosuid,nodev,noexec,size=64m vxtmp"
 ROOT_FAIL_MARK = "vulnix-sandbox: minimal root not built; nothing started"
 # Never a bind source (nor anything below the first group): these would bring back
 # what the minimal root exists to remove.
@@ -195,8 +200,9 @@ def minimal_root_plan(*, rw=(), ro=(), programs=(), loaders_of=(), python: dict 
       ("ro", dir)              bound read-only (nosuid, nodev)
       ("file", src, dst)       one file bound read-only at `dst`
       ("symlink", path, target)
-    plus, always and nothing else: an empty tmpfs root (read-only once built), a /dev
-    tmpfs with DEV_NODES only, and a fresh /proc of its own PID namespace (hidepid).
+    plus, always and nothing else: an empty tmpfs root (read-only once built), a private
+    empty /tmp tmpfs (TMP_MOUNT), a /dev tmpfs with DEV_NODES only, and a fresh /proc of
+    its own PID namespace (hidepid).
     No /sys, no /etc, no host /proc, no /home. `programs`: executables run inside the
     view (bound, with their dynamic loader); `loaders_of`: executables run from the old
     root during the switch, whose loader alone is needed. Anything that cannot be
@@ -280,7 +286,7 @@ def plan_paths(plan: list[tuple]) -> list[str]:
 
 def plan_mountpoints(plan: list[tuple]) -> set[str]:
     """Exactly the mount points the view may have."""
-    return {"/", "/proc", "/dev", *(f"/dev/{n}" for n in DEV_NODES),
+    return {"/", "/proc", "/dev", "/tmp", *(f"/dev/{n}" for n in DEV_NODES),
             *(e[2] if e[0] == "file" else e[1] for e in plan if e[0] != "symlink")}
 
 
@@ -296,7 +302,8 @@ def minimal_root_script(plan: list[tuple], *, umount: str, pivot_root: str) -> l
              # -n everywhere: mount must not write a utab
              "mount -n --make-rprivate /",
              f"mount -n -t tmpfs -o mode=0755,nosuid,nodev,size=4m vxroot {R}",
-             f"mkdir {R}/proc {R}/dev {R}{OLDROOT}"]
+             f"mkdir {R}/proc {R}/dev {R}/tmp {R}{OLDROOT}",
+             f"{TMP_MOUNT} {R}/tmp"]
     depth = lambda e: (e[2] if e[0] == "file" else e[1]).count("/")      # noqa: E731
     for e in sorted(plan, key=depth):
         if e[0] == "symlink":
@@ -1108,7 +1115,9 @@ class ConfinementSession:
             # pivot_root into the tmpfs root, the old root detached, nothing mounted that
             # the plan did not put there, and the listed paths do not exist
             "minimal_root": (bool(self._plan) and bool(points) and points <= expected
-                             and root == [["/", "tmpfs", "vxroot"]] and seen.get("oldroot") == []),
+                             and root == [["/", "tmpfs", "vxroot"]] and seen.get("oldroot") == []
+                             and [m for m in mounts if isinstance(m, list) and m and m[0] == "/tmp"]
+                             == [["/tmp", "tmpfs", "vxtmp"]]),
             "minimal_root_unexpected_mounts": sorted(points - expected)[:8],
             "absent_paths_ok": (bool(absent) and set(absent) == set(self._must_be_absent())
                                 and all(v is True for v in absent.values())),
