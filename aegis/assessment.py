@@ -5094,7 +5094,14 @@ class AssessmentService:
         if d.result.killed or d.result.returncode != 0:
             self._fail(self._worker_failure_text(tool, d.result))
             return None, None
-        entry = next(e for e in reversed(self.audit.entries()) if e["event"] == "result")
+        # this Worker's own result entry: another Worker of the organization may have
+        # finished in between, so "the last result" could be someone else's
+        jti = self.tokens.token_id(tok)
+        entry = next((e for e in reversed(self.audit.entries())
+                      if e["event"] == "result" and (e.get("fields") or {}).get("jti") == jti), None)
+        if entry is None:
+            self._fail("この実行の結果を監査ログで確かめられないため、記録しません")
+            return None, None
         try:
             clean_stdout = self.secrets.redact(d.result.stdout.strip())
             if not isinstance(clean_stdout, str):

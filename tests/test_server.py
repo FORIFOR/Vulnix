@@ -221,7 +221,9 @@ class TestServer(unittest.TestCase):
         self.assertTrue(b.get("mfa_required"))
         self.cookie = None
         self.assertEqual(self._req(f"{root}/auth/login",
-                                   {"name": "op", "password": "op-pw", "code": totp_code(secret)})[0], 200)
+                                   {"name": "op", "password": "op-pw",
+                                    # the enrollment code is spent: the next step's code (within the window)
+                                    "code": totp_code(secret, time.time() + 30)})[0], 200)
         events = [e["event"] for e in self.get("/logs")["entries"]]
         self.assertIn("auth.mfa_enabled", events)
 
