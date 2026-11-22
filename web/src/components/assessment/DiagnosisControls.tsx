@@ -4,6 +4,7 @@
 // follows the reader's permissions from GET .../diagnosis; the server checks every request
 // again (login, organization, permission, registered lab, stop, Idempotency-Key). After a
 // request the screen changes only through the server's own view (SSE / refresh).
+import Link from "next/link";
 import { useState } from "react";
 import { keyFor, postDiagnosisOp, requestSignature, type PendingKey } from "@/lib/diagnosisActions";
 import { availableControls, opReasonText, operationText, type DiagnosisControl } from "@/lib/diagnosisView";
@@ -46,7 +47,7 @@ export function DiagnosisControls({ view }: { view: DiagnosisView }) {
   const [pending, setPending] = useState<PendingKey>(null);
   const [busy, setBusy] = useState(false);
   const [outcome, setOutcome] = useState<Outcome>(null);
-  const { controls, notes } = availableControls(view);
+  const { controls, notes, inviteApprover } = availableControls(view);
   const op = view.operation ?? null;
   // a confirmation belongs to the moment it was sent: once the job moves on, the job line says it
   const opKey = op ? `${op.id}:${op.state}` : "";
@@ -112,7 +113,7 @@ export function DiagnosisControls({ view }: { view: DiagnosisView }) {
     }
   };
 
-  if (!op && controls.length === 0 && notes.length === 0 && !outcome) return null;
+  if (!op && controls.length === 0 && notes.length === 0 && !outcome && !inviteApprover) return null;
   return (
     <div id="diag-controls" className="mt-3 space-y-2" data-testid="diagnosis-controls">
       {op && (
@@ -123,6 +124,11 @@ export function DiagnosisControls({ view }: { view: DiagnosisView }) {
         </p>
       )}
       {notes.map((n) => <p key={n} className="text-sm text-zinc-600 dark:text-zinc-400">{n}</p>)}
+      {inviteApprover && (
+        <p className="text-sm text-zinc-600 dark:text-zinc-400">
+          組織に承認者がいない場合は、<Link href="/settings#org" className="font-semibold underline underline-offset-2">設定の「メンバーを招待」</Link>から、承認者の役割で招待してください。
+        </p>
+      )}
       {controls.length > 0 && <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-start">{controls.map(render)}</div>}
       {outcome && (
         <p role={outcome.ok ? "status" : "alert"}
