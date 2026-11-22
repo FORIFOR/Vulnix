@@ -15,7 +15,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from tests import TEST_CONFINEMENT
+from tests import TEST_CONFINEMENT, l2_requested_by_another
 from aegis import assessment as assessment_mod
 from aegis.assessment import AssessmentService
 from aegis.confinement import KernelConfinement
@@ -165,6 +165,7 @@ class TestRevokedAuthorityNeverComesBackUnapproved(ReleaseBase):
         self.assertIsNotNone(self.restart()._external_entry(HOST))
 
 
+@l2_requested_by_another()
 class TestScopeExpiryStopsRunningWorkers(ReleaseBase):
     def expire(self):
         self.svc._verified_external_hosts[HOST]["not_after"] = time.time() - 1
@@ -1267,6 +1268,7 @@ class TestHeldSessionsAcrossAPoolSwap(ReleaseBase):
         self.assertIsNone(self.svc.system_status()["unstopped_workers"])
 
 
+@l2_requested_by_another()
 class TestProbePhaseIsHeld(ReleaseBase):
     def test_a_stop_during_the_probe_is_not_confirmed(self):
         self.onboard()

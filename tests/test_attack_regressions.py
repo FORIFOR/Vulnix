@@ -14,7 +14,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from aegis import operators as ops_mod
-from tests import TEST_CONFINEMENT
+from tests import TEST_CONFINEMENT, l2_requested_by_another
 from aegis.assessment import AssessmentService
 from aegis.l2_rules import BUILTIN_PROFILE_DIR
 from aegis.network import NetworkError
@@ -596,6 +596,7 @@ class TestScopeFromTheInside(RealServiceBase):
         self.assertEqual(self.fake.seen, [])
 
 
+@l2_requested_by_another()
 class TestL2ApprovalFromTheInside(ApiBase):
     def setUp(self):
         super().setUp()
@@ -706,6 +707,7 @@ class TestDnsGamesAfterVerification(RealServiceBase):
 
 
 # --------------------------------------------------------------------------- third review
+@l2_requested_by_another()
 class TestThirdReviewFindingsStayFixed(ApiBase):
     def setUp(self):
         super().setUp()

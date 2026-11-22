@@ -18,7 +18,7 @@ from unittest.mock import patch
 
 from aegis import artex_bridge, evidence, l2_rules
 from aegis.artex_bridge import PlanItem
-from tests import TEST_CONFINEMENT
+from tests import TEST_CONFINEMENT, l2_requested_by_another
 from aegis.assessment import AssessmentService
 from aegis.evidence import reproduction_verdict
 from aegis.l2_rules import BUILTIN_PROFILE_DIR, L2RuleSet, RuleError, validate_profile
@@ -1355,6 +1355,7 @@ class TestL1Diagnosis(RealServiceBase):
         self.assertEqual(self.finding("f_ex_idor")["risk_score"], 0)
 
 
+@l2_requested_by_another()
 class TestL2HumanApprovedChecks(RealServiceBase):
     def setUp(self):
         super().setUp()
@@ -1515,6 +1516,64 @@ class TestL2HumanApprovedChecks(RealServiceBase):
         self.assertLess(self.svc._risk()["score"], proven_score)
 
 
+class TestRealSiteL2NeedsASecondPerson(RealServiceBase):
+    """Not decorated: separation of duties on a real site, unaided (option A, 2026-11-23).
+    Every L2 run - a first run and a re-run during a fix re-verification - needs a fresh
+    request by a different person; the requester's own approval is refused."""
+
+    def setUp(self):
+        super().setUp()
+        self.onboard()
+        self.assertEqual(self.run_l1()["state"], "completed")
+        self.set_secrets()
+        self.fake.seen.clear()
+
+    def l2_requests_seen(self):
+        return [p for p, _ in self.fake.seen if p in (NOTE_A, NOTE_B)]
+
+    def test_on_even_when_the_service_was_built_with_it_off(self):
+        self.svc.separate_l2_approver = False           # e.g. a lab-only setting
+        self.assertTrue(self.svc._separation_required())
+        with self.assertRaises(ValueError):
+            self.svc.verify_finding("f_ex_idor", actor="appr")
+        self.assertEqual(self.l2_requests_seen(), [])
+
+    def test_the_requester_cannot_run_their_own_request(self):
+        self.svc.request_l2_run("f_ex_idor", "appr")
+        with self.assertRaises(ValueError):
+            self.svc.verify_finding("f_ex_idor", actor="appr")
+        self.assertEqual(self.l2_requests_seen(), [])
+
+    def test_a_fix_reverification_reruns_l2_only_on_a_fresh_request_by_another(self):
+        self.svc.request_l2_run("f_ex_idor", "op")
+        self.svc.verify_finding("f_ex_idor", actor="appr")
+        self.assertEqual(self.finding("f_ex_idor")["evidence_status"], "proven")
+        self.fake.mode = "patched"
+        for requester in (None, "appr"):                  # no request / the approver's own
+            with self.subTest(requester=requester):
+                if requester:
+                    self.svc.request_l2_run("f_ex_idor", requester)
+                self.fake.seen.clear()
+                snap = self.svc.verify_fix("appr")
+                self.assertEqual(self.l2_requests_seen(), [])          # the L2 item was not re-run
+                self.assertNotIn("req_reverify_f_ex_idor",
+                                 [e["fields"].get("request") for e in self.svc.audit.entries()
+                                  if e["event"] == "approval.approved"])
+        self.svc.request_l2_run("f_ex_idor", "op")
+        self.fake.seen.clear()
+        snap = self.svc.verify_fix("appr")
+        self.assertTrue(self.l2_requests_seen())
+        items = {i["id"]: i for i in snap["defense_comparison"]["items"]}
+        self.assertEqual(items["f_ex_idor"]["after_verdict"], "not_reproduced")
+        approved = [e["fields"] for e in self.svc.audit.entries()
+                    if e["event"] == "approval.approved" and e["fields"].get("request") == "req_reverify_f_ex_idor"]
+        self.assertEqual((approved[-1]["actor"], approved[-1]["requested_by"]), ("appr", "op"))
+        self.fake.seen.clear()                             # the request was used up
+        self.svc.verify_fix("appr")
+        self.assertEqual(self.l2_requests_seen(), [])
+
+
+@l2_requested_by_another()
 class TestUnconfirmedRulesCannotRun(RealServiceBase):
     """A rule that was not matched against the target's API definition is listed
     as an unmeasured candidate and refused at every layer."""
@@ -1610,6 +1669,7 @@ class TestUnconfirmedRulesCannotRun(RealServiceBase):
         self.assertEqual([p["hosts"] for p in self.svc.l2.profiles.values()], [[]])
 
 
+@l2_requested_by_another()
 class TestReviewFindingsStayFixed(RealServiceBase):
     """Regressions for the bypasses found in the final review of this change."""
 
@@ -1929,6 +1989,14 @@ class TestRealServiceApi(RealServiceBase):
         # L2 on a real service: operator role is refused before anything is sent
         code, body, _ = self.call("/assessments/scan_001/verify-finding", {"finding_id": "f_ex_idor"}, op)
         self.assertEqual(code, 403)
+        self.assertEqual(self.fake.seen, [])
+        # separation of duties (always on for a real site): the approver alone is refused...
+        code, body, _ = self.call("/assessments/scan_001/verify-finding", {"finding_id": "f_ex_idor"}, appr)
+        self.assertEqual(code, 409)
+        self.assertEqual(self.fake.seen, [])
+        # ...a different operator asks for the run, then the approver runs it
+        code, body, _ = self.call("/assessments/scan_001/request-l2", {"finding_id": "f_ex_idor"}, op)
+        self.assertEqual(code, 200)
         self.assertEqual(self.fake.seen, [])
         code, body, _ = self.call("/assessments/scan_001/verify-finding", {"finding_id": "f_ex_idor"}, appr)
         self.assertEqual(code, 200)

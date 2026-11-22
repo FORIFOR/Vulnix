@@ -29,7 +29,8 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from . import google_ownership
-from .assessment import ApproverRequired, AssessmentService, StopNotConfirmed
+from .assessment import (ApproverRequired, AssessmentService, SeparationConfigError, StopNotConfirmed,
+                         separate_l2_approver_from_env)
 from .control_verification import run_live_control_verification
 from .diagnosis_ops import OP_PERMISSION, member_permissions, permitted
 from .lab import set_lab_mode, start_lab
@@ -1482,7 +1483,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     return self._authorized_platform_read(sess, lambda: self._json(200, st))
                 elif p == base + "/start":
                     with live_grant_roles(sess, getattr(self, "_bound_org", DEFAULT_ORG)):
-                        svc.start()
+                        svc.start(actor)
                     svc.audit.record("assessment.start_requested", actor=actor)
                 elif p == base + "/restart":
                     with live_grant_roles(sess, getattr(self, "_bound_org", DEFAULT_ORG)):
@@ -1530,7 +1531,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     # the lab check are decided by the service, with the live roles
                     org = getattr(self, "_bound_org", DEFAULT_ORG)
                     approving = m.group(1) == "approve"
-                    if approving and svc.separate_l2_approver and ops.is_self_registered(actor):
+                    if approving and svc._separation_required() and ops.is_self_registered(actor):
                         return self._json(403, {"error": "自己登録のアカウントは L2 検査を承認できません",
                                                 "reason": "self_registered"})
                     code, result = svc.diagnosis_ops.run(
@@ -1556,6 +1557,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     # L2 needs an approver: decided by the service, with the caller's roles
                     result = svc.execute_artex_item(
                         m.group(1), actor, roles=tuple(sess.roles),
+                        approver_eligible=not ops.is_self_registered(actor),
                         request_authorized=live_request_authority(
                             sess, getattr(self, "_bound_org", DEFAULT_ORG),
                             approver="approver" in sess.roles))
@@ -1567,7 +1569,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     fid = str(body.get("finding_id", "")).strip()
                     if not fid:
                         return self._json(400, {"error": "finding_id is required"})
-                    if svc.separate_l2_approver and ops.is_self_registered(actor):
+                    if svc._separation_required() and ops.is_self_registered(actor):
                         # a second identity anyone can mint is not a second person
                         return self._json(403, {"error": "自己登録のアカウントはL2検証を依頼できません。"
                                                          "管理者が作成したアカウントで依頼してください"})
@@ -1606,7 +1608,8 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         return self._json(400, {"error": "decision must be approve|reject"})
                     if "approver" not in sess.roles:
                         return self._json(403, {"error": "承認には承認責任者の権限が必要です"})
-                    svc.decide_approval(m.group(1), decision, actor)
+                    svc.decide_approval(m.group(1), decision, actor,
+                                        approver_eligible=not ops.is_self_registered(actor))
                 else:
                     return self._json(404, {"error": "not found"})
             except AuthError as e:
@@ -1743,7 +1746,8 @@ def main() -> None:
                     help="Allow unauthenticated GET reads. Development only: refused unless "
                          "AEGIS_ENV=development is set")
     ap.add_argument("--separate-l2-approver", action="store_true",
-                    help="Real-service L2 runs need a request by one operator and approval by another")
+                    help="(default, kept for compatibility) the L2 requester never approves their own L2. "
+                         "AEGIS_SEPARATE_L2_APPROVER=0 switches it off in an authorized-lab-only setup only")
     a = ap.parse_args()
     env_opt_out = os.environ.get("AEGIS_REQUIRE_READ_AUTH") == "0"
     if (a.no_read_auth or env_opt_out) and not development_mode():
@@ -1753,6 +1757,11 @@ def main() -> None:
             "読み取りAPIの認証を無効にできるのは開発モードだけです。"
             "ローカル開発で必要な場合は AEGIS_ENV=development を明示してください。"
             "本番運用では --no-read-auth / AEGIS_REQUIRE_READ_AUTH=0 を使用しないでください。")
+    try:
+        # refuse to start rather than run with L2 self-approval outside an authorized lab
+        separate_l2_approver_from_env()
+    except SeparationConfigError as e:
+        raise SystemExit(str(e)) from None
     data = Path(a.data_dir or tempfile.mkdtemp(prefix="aegis-"))
     data.mkdir(parents=True, exist_ok=True)
     seed = data / "operators.json"

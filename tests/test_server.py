@@ -239,8 +239,10 @@ class TestServer(unittest.TestCase):
         self.svc.set_verify_seconds(0.05)
         initial = self.get()
         self.assertEqual(initial["evidence_summary"]["candidate"], 3)
+        self.login("op", "op-pw")                   # the requester; a different person approves
         self.post("/start")
         pending = self.wait_for(lambda s: any(a["status"] == "pending" for a in s["approvals"]))
+        self.login("appr", "appr-pw")
         self.assertGreater(pending["evidence_summary"]["detected"], 0)
         self.assertEqual(next(f for f in pending["findings"] if f["id"] == "f_banner")["evidence_status"], "detected")
         for approval in pending["approvals"]:
@@ -267,9 +269,10 @@ class TestServer(unittest.TestCase):
 
     # ---- full flow with an approver ----------------------------------------
     def test_l2_waits_for_human_and_stop_kills_worker(self):
-        self.login("appr", "appr-pw")
+        self.login("op", "op-pw")                   # the requester; a different person approves
         self.assertEqual(self.post("/start")[0], 200)
         s = self.wait_for(lambda s: any(a["status"] == "pending" for a in s["approvals"]))
+        self.login("appr", "appr-pw")
         self.assertNotIn("demo_verify", json.dumps(self.get("/logs")))
         rid = s["approvals"][0]["id"]
         self.assertEqual(self.post(f"/approvals/{rid}", {"decision": "approve"})[0], 200)
@@ -286,6 +289,20 @@ class TestServer(unittest.TestCase):
         self.assertEqual(next(f for f in s["findings"] if f["id"] == "f_banner")["verdict"], "aborted")
         self.assertEqual(self.post("/resume")[0], 409)
         self.assertTrue(self.get("/logs")["chain_valid"])
+
+    def test_one_person_alone_leaves_the_l2_waiting(self):
+        # the approver who started the run cannot approve its L2 (403); it stays pending -
+        # nothing relaxes the rule on its own - and a rejection is still possible
+        self.login("appr", "appr-pw")
+        self.assertEqual(self.post("/start")[0], 200)
+        s = self.wait_for(lambda s: any(a["status"] == "pending" for a in s["approvals"]))
+        rid = s["approvals"][0]["id"]
+        self.assertEqual(self.post(f"/approvals/{rid}", {"decision": "approve"})[0], 403)
+        time.sleep(0.5)
+        self.assertEqual(next(a for a in self.get()["approvals"] if a["id"] == rid)["status"], "pending")
+        self.assertIn("approval.denied", [e["event"] for e in self.get("/logs")["entries"]])
+        self.assertEqual(self.post(f"/approvals/{rid}", {"decision": "reject"})[0], 200)
+        self.wait_for(lambda s: s["state"] == "completed", timeout=15)
 
     def test_reject_skips_verification(self):
         self.login("appr", "appr-pw")
@@ -376,9 +393,10 @@ class TestServer(unittest.TestCase):
     def test_l2_reproduction_proof_and_post_patch_verify_fix(self):
         # Use short verify_seconds so L2 completes quickly with real reproduction_probe
         self.svc.set_verify_seconds(0.05)
-        self.login("appr", "appr-pw")
+        self.login("op", "op-pw")                   # the requester; a different person approves
         self.assertEqual(self.post("/start")[0], 200)
         s = self.wait_for(lambda s: any(a["status"] == "pending" for a in s["approvals"]))
+        self.login("appr", "appr-pw")
         rid = s["approvals"][0]["id"]
         self.assertEqual(self.post(f"/approvals/{rid}", {"decision": "approve"})[0], 200)
         s = self.wait_for(lambda s: s["state"] == "completed", timeout=15)
@@ -540,8 +558,10 @@ class TestServer(unittest.TestCase):
             "authorization_ref": "SOW-PERSIST-001",
             "ownership_verified": True,
         })
+        self.login("op", "op-pw")                   # the requester; a different person approves
         self.post("/start")
         pending = self.wait_for(lambda s: any(a["status"] == "pending" for a in s["approvals"]))
+        self.login("appr", "appr-pw")
         for ap in pending["approvals"]:
             self.assertEqual(self.post(f"/approvals/{ap['id']}", {"decision": "approve"})[0], 200)
         completed = self.wait_for(lambda s: s["state"] == "completed", timeout=15)

@@ -21,7 +21,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from tests import TEST_CONFINEMENT
+from tests import TEST_CONFINEMENT, l2_requested_by_another
 from aegis.assessment import AssessmentService
 from aegis.confinement import (ConfinementError, ConfinementSession, KernelConfinement,
                                dropped_packets, ruleset)
@@ -482,6 +482,7 @@ class _Scripted:
         return self.s
 
 
+@l2_requested_by_another()
 class TestRealServiceL2NeedsKernelConfinement(PersistenceBase):
     def prepare(self, confinement):
         self.restart(l2_confinement=confinement)

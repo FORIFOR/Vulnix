@@ -144,6 +144,8 @@ class Assessment:
     run_history: list[dict] = field(default_factory=list)
     # why the assessment is in state "failed": {"reason", "kind", "at"[, "error"]}
     failure: dict | None = None
+    # who started the current run (the requester of the L2 approvals it raises)
+    started_by: str | None = None
 
 
 def _libpq_env(dsn: str) -> dict:
@@ -222,6 +224,35 @@ class ExecutionConflict(ValueError):
 
 class ApproverRequired(PermissionError):
     """The action needs the approver role (mapped to HTTP 403)."""
+
+
+class SeparationConfigError(RuntimeError):
+    """Separation of duties for L2 was switched off outside an authorized-lab-only setup."""
+
+
+def separate_l2_approver_from_env(environ=None) -> bool:
+    """Separation of duties for L2 (the requester never approves their own L2) is ON by
+    default. `AEGIS_SEPARATE_L2_APPROVER=0` switches it off ONLY in an authorized-lab-only
+    setup: real-site diagnosis off (`VULNIX_REAL_SERVICE_DIAGNOSIS=0`), no public sign-up,
+    not the public site, not production. Anywhere else the request is refused (raises),
+    never silently ignored. Any other value means on."""
+    env = os.environ if environ is None else environ
+    if (env.get("AEGIS_SEPARATE_L2_APPROVER") or "").strip() != "0":
+        return True
+    problems = []
+    if (env.get("VULNIX_REAL_SERVICE_DIAGNOSIS", "l1") or "l1").strip().lower() != "0":
+        problems.append("VULNIX_REAL_SERVICE_DIAGNOSIS が 0 ではありません（実サイトの診断が有効）")
+    if env.get("VULNIX_PUBLIC_SIGNUP") == "1":
+        problems.append("VULNIX_PUBLIC_SIGNUP=1（公開登録が有効）")
+    if env.get("VULNIX_PUBLIC_MODE") == "1":
+        problems.append("VULNIX_PUBLIC_MODE=1（公開サイト）")
+    if (env.get("AEGIS_ENV") or "").strip().lower() in ("production", "prod"):
+        problems.append("AEGIS_ENV=production")
+    if problems:
+        raise SeparationConfigError(
+            "AEGIS_SEPARATE_L2_APPROVER=0（L2 の依頼者と承認者の分離を無効にする）は、認可ラボ専用の構成でだけ使えます: "
+            + "、".join(problems))
+    return False
 
 
 _DATA_DIR_LOCKS: dict[str, object] = {}
@@ -350,8 +381,10 @@ class AssessmentService:
         self.l2 = self._read_l2_profiles()
         # Optional separation of duties for real-service L2: one operator requests
         # a run, a DIFFERENT approver approves and executes it.
+        # On by default; switching it off is for an authorized-lab-only setup (raises
+        # otherwise). Real sites always require it whatever this says (_separation_required).
         self.separate_l2_approver = (
-            os.environ.get("AEGIS_SEPARATE_L2_APPROVER") == "1"
+            separate_l2_approver_from_env()
             if separate_l2_approver is None else bool(separate_l2_approver))
         # Pending requests live in memory only: under separation of duties they are
         # half of the authority to run, so they are never restored from state.json.
@@ -1375,6 +1408,13 @@ class AssessmentService:
         with self._lock:
             return any(self._external_entry(h) is not None for h in list(self._verified_external_hosts))
 
+    def _separation_required(self) -> bool:
+        """The L2 requester may not approve: always on a real site, and on the lab unless
+        an authorized-lab-only setup switched it off (separate_l2_approver_from_env)."""
+        name = self.a.asset.get("name")
+        return bool(self.separate_l2_approver or self._is_external_service_asset(name)
+                    or self._in_ownership_flow(name))
+
     def _is_external_service_asset(self, host: str | None = None) -> bool:
         """True only for a real service that completed ownership + scope
         confirmation. Everything else is the local simulated lab."""
@@ -1590,6 +1630,7 @@ class AssessmentService:
                 "defense_comparison": self.a.defense_comparison,
                 "run_history": self.a.run_history,
                 "failure": self.a.failure,
+                "started_by": self.a.started_by,
                 # survivors of a stop/withdrawal outlive the control plane: so does their record
                 "unstopped_workers": [{"host": u["host"], "pids": u["pids"], "at": u["at"],
                                        "cgroups": [getattr(x, "name", "") for x in u.get("sessions") or []]}
@@ -1734,6 +1775,8 @@ class AssessmentService:
                 rec.pop("ownership_proof", None)
         if isinstance(data.get("failure"), dict):
             self.a.failure = dict(data["failure"])
+        if isinstance(data.get("started_by"), str):
+            self.a.started_by = data["started_by"]
         for u in (data.get("unstopped_workers") if isinstance(data.get("unstopped_workers"), list) else []):
             try:
                 pids = [int(p) for p in u["pids"] if WorkerPool.group_alive(int(p))]
@@ -2662,7 +2705,8 @@ class AssessmentService:
             raise ExecutionConflict("この診断ループは終了しています")
 
     def execute_artex_item(self, item_id: str, actor: str, *, roles=None,
-                           request_authorized=None, exec_owner: str | None = None) -> dict:
+                           request_authorized=None, exec_owner: str | None = None,
+                           approver_eligible: bool | None = None) -> dict:
         """Run ONE item of the ARTEX plan. The operation is rebuilt from Vulnix's catalog
         (never from what ARTEX or the stored proposal says); L1 goes through the Gateway
         under the L1 policy, L2 needs an approver and runs in the isolated worker."""
@@ -2697,7 +2741,11 @@ class AssessmentService:
                         self.audit.record("artex.item_denied", item=item_id, actor=actor,
                                           reason="approver role required")
                         raise ApproverRequired("ARTEX 計画の L2 検証には承認責任者の権限が必要です")
-                    if self.separate_l2_approver and actor == rec["requested_by"]:
+                    if self._separation_required() and approver_eligible is False:
+                        self.audit.record("artex.item_denied", item=item_id, actor=actor,
+                                          reason="self-registered approver")
+                        raise ApproverRequired("自己登録のアカウントは L2 検証を承認できません")
+                    if self._separation_required() and actor == rec["requested_by"]:
                         self.audit.record("artex.item_denied", item=item_id, actor=actor,
                                           reason="separation of duties")
                         raise ApproverRequired("計画を依頼した本人は、その L2 検証を承認できません")
@@ -3813,10 +3861,10 @@ class AssessmentService:
                 "findings": [{**f, "evidence_status": evidence_status(f),
                               "requires_l2_approval": self.l2.has_check(f.get("reproduce_check")),
                               "l2_request": self._public_l2_request(f["id"]),
-                              "l2_needs_request": bool(self.separate_l2_approver
+                              "l2_needs_request": bool(self._separation_required()
                                                        and self.l2.has_check(f.get("reproduce_check")))}
                              for f in self.a.findings.values()],
-                "l2_separation_required": self.separate_l2_approver,
+                "l2_separation_required": self._separation_required(),
                 "persistence_error": self._persist_error,
                 "authority_notice": self._authority_notice,
                 "authority_generation": self.ledger.generation,
@@ -3854,10 +3902,11 @@ class AssessmentService:
     def set_verify_seconds(self, seconds: float) -> None:
         self.gateway.tools["demo_verify"] = demo_verify_tool(seconds)
 
-    def start(self) -> None:
+    def start(self, actor: str | None = None) -> None:
         with self._lock:
             if self.a.state != "idle":
                 raise ValueError(f"cannot start from {self.a.state}")
+            self.a.started_by = actor
             self._ensure_active_window_locked()
             self._new_scan_usage_locked()
             if getattr(self, "_may_switch_lab", True):
@@ -3892,6 +3941,7 @@ class AssessmentService:
             self._new_scan_usage_locked()
             if getattr(self, "_may_switch_lab", True):
                 set_lab_mode("vulnerable")
+            self.a.started_by = actor
             self._set_state("running")
             self._thread = threading.Thread(target=self._run, args=(self._run_generation,),
                                             daemon=True, name="runner")
@@ -3977,7 +4027,8 @@ class AssessmentService:
             raise ValueError("実在するサイトに対しては、読み取り専用の診断だけを行います。"
                              "この操作は実在するサイトでは使えません")
 
-    def decide_approval(self, approval_id: str, decision: str, actor: str) -> None:
+    def decide_approval(self, approval_id: str, decision: str, actor: str,
+                        approver_eligible: bool | None = None) -> None:
         with self._lock:
             self._refuse_read_only_real_locked()
             ap = self.a.approvals.get(approval_id)
@@ -3985,6 +4036,21 @@ class AssessmentService:
                 raise ValueError("approval not pending")
             if self.a.state == "stopped":
                 raise ValueError("assessment stopped")
+            if decision == "approve" and self._separation_required():
+                # a rejection is always allowed (the safe direction); an approval needs a
+                # second person: not whoever started this run, not an unknown starter, not
+                # a self-registered identity. One person alone leaves it pending.
+                reason = ("self-registered approver" if approver_eligible is False else
+                          "requester unknown" if not self.a.started_by else
+                          "separation of duties" if actor == self.a.started_by else "")
+                if reason:
+                    self.audit.record("approval.denied", request=approval_id, actor=actor,
+                                      requested_by=self.a.started_by, reason=reason)
+                    raise ApproverRequired(
+                        "自己登録のアカウントは L2 を承認できません" if approver_eligible is False else
+                        "この実行の依頼者が記録されていないため、承認できません。実行をやり直してください"
+                        if not self.a.started_by else
+                        "診断を開始した本人は、その L2 を承認できません。別の承認責任者が承認してください")
             self._decide(approval_id, decision, actor)
 
     def _think(self, step: str, detail: str, *, phase: str = "", tool: str = "", level: str = "L1") -> None:
@@ -4022,7 +4088,7 @@ class AssessmentService:
     def _take_l2_request(self, finding_id: str, check_id: str, approver: str) -> dict | None:
         """Under separation of duties: the pending request this approval answers.
         Raises unless a different operator requested this item for this host recently."""
-        if not self.separate_l2_approver:
+        if not self._separation_required():
             return None
         req = self._l2_requests.get(finding_id)
         if (not req or req.get("check") != check_id or req.get("host") != self.a.asset.get("name")
@@ -4030,6 +4096,19 @@ class AssessmentService:
             raise ValueError("このL2検証には、別の担当者による実行依頼が必要です（依頼が無いか、期限切れです）")
         if req.get("requested_by") == approver:
             raise ValueError("依頼した本人は承認できません。別の承認責任者が承認してください")
+        return req
+
+    def _take_rerun_request(self, finding_id: str, check_id: str, approver: str) -> dict | None:
+        """For a re-verification: {} when no request is needed; under separation the
+        pending request by a different person (removed: one request, one run), or None
+        when there is none - then this item is not re-run."""
+        if not self._separation_required():
+            return {}
+        try:
+            req = self._take_l2_request(finding_id, check_id, approver)
+        except ValueError:
+            return None
+        self._l2_requests.pop(finding_id, None)
         return req
 
     def finding_requires_human_l2_approval(self, finding_id: str) -> bool:
@@ -4209,7 +4288,7 @@ class AssessmentService:
                 check=dn_check,
                 risk_level="L2",
                 requested_by=(l2_request or {}).get("requested_by"),
-                separation_of_duties=self.separate_l2_approver,
+                separation_of_duties=self._separation_required(),
             )
             try:
                 res, ev = self._exec(
@@ -4495,12 +4574,16 @@ class AssessmentService:
                 l2_wrule = self.l2.worker_rule(chk)
                 # only items a human already approved and ran once are re-run
                 if (fid in before_verdicts and chk in ready and l2_check["spec_status"] == "confirmed"
-                        and not self.separate_l2_approver    # then every L2 run needs its own request + approval
                         and self._l2_transport_ok()
-                        and self.a.findings.get(fid, {}).get("reproduce_check") == chk):
+                        and self.a.findings.get(fid, {}).get("reproduce_check") == chk
+                        # under separation of duties every L2 run - a re-run too - needs a
+                        # fresh request by a different person, used up by this run
+                        and (rerun_request := self._take_rerun_request(fid, chk, actor)) is not None):
                     apr_dn = self.approval_store.approve(actor, "eng_demo", "lab", "safe_reproduction")
                     self.audit.record("approval.approved", request=f"req_reverify_{fid}", actor=actor,
-                                      action="safe_reproduction", check=chk, risk_level="L2")
+                                      action="safe_reproduction", check=chk, risk_level="L2",
+                                      requested_by=rerun_request.get("requested_by"),
+                                      separation_of_duties=self._separation_required())
                     try:
                         r_dn, e_dn = self._exec("reproduction_probe", "safe_reproduction",
                                                 {"url": url, "check": chk}, approval_id=apr_dn)

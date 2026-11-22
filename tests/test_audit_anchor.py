@@ -413,7 +413,7 @@ class TestFindingVerdictEndToEnd(AnchorBase):
             return original(event, **fields)
         patch.object(svc.audit, "record", side_effect=record).start()
         self.addCleanup(patch.stopall)
-        svc.start()
+        svc.start("operator")          # the requester; "audit" approves its L2
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:
             snap = svc.snapshot()
