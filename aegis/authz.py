@@ -94,6 +94,12 @@ class TokenAuthority:
         payload = _b64(json.dumps(claims, sort_keys=True).encode())
         return payload + "." + _b64(self._sign(payload))
 
+    @staticmethod
+    def token_id(token: str) -> str:
+        """The jti of a token THIS process issued (read only to find its own audit entry;
+        never used to authorise anything - the Gateway verifies the signature)."""
+        return str(json.loads(_unb64(token.split(".")[0]))["jti"])
+
     def verify(self, token: str) -> dict:
         try:
             payload, sig = token.split(".")

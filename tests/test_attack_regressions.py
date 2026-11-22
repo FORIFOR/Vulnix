@@ -147,6 +147,24 @@ class TestPasswordGuessing(ApiBase):
             store.login("op2", "wrong")
         self.assertNotIsInstance(cm.exception, LockedOut)
 
+    def test_the_code_that_confirmed_enrollment_cannot_sign_in(self):
+        # a code seen while it confirmed the second factor (shoulder-surfed, logged
+        # by a proxy) is spent: it cannot be replayed for a sign-in in the same window
+        clock = Clock()
+        store = OperatorStore(self.dir / "operators.json", clock=clock)
+        secret, _ = store.begin_totp_enroll("appr")
+        enroll_code = totp_code(secret, clock.t)
+        store.confirm_totp("appr", enroll_code)
+        with self.assertRaises(AuthError):
+            store.login("appr", "appr-password", enroll_code)
+        with self.assertRaises(AuthError):
+            store.disable_totp("appr", "appr-password", enroll_code)
+        reloaded = OperatorStore(self.dir / "operators.json", clock=clock)   # also after a restart
+        with self.assertRaises(AuthError):
+            reloaded.login("appr", "appr-password", enroll_code)
+        clock.t += 30
+        self.assertEqual(store.login("appr", "appr-password", totp_code(secret, clock.t)).operator, "appr")
+
     def test_second_factor_guessing_is_throttled_and_cannot_be_switched_off_with_the_password_alone(self):
         clock = Clock()
         store = OperatorStore(self.dir / "operators.json", clock=clock)
@@ -154,6 +172,7 @@ class TestPasswordGuessing(ApiBase):
         store.confirm_totp("appr", totp_code(secret, clock.t))
         with self.assertRaises(AuthError):                       # step 1 of a normal login is not a failure
             store.login("appr", "appr-password")
+        clock.t += 30                                            # the enrollment code is spent
         used = totp_code(secret, clock.t)
         self.assertEqual(store.login("appr", "appr-password", used).operator, "appr")
         with self.assertRaises(AuthError):                       # a code seen once (shoulder-surfed, logged) is spent
