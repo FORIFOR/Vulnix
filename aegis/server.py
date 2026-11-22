@@ -1650,7 +1650,8 @@ def _build_server(svc, a, data, first, seed, env_opt_out):
         tenancy = TenantRegistry(
             store, svc,
             lambda d: AssessmentService(d, a.lab_port, a.verify_seconds,
-                                        separate_l2_approver=a.separate_l2_approver or None),
+                                        separate_l2_approver=a.separate_l2_approver or None,
+                                        audit_anchor_root=Path(data)),
             Path(data))
     if not getattr(svc, "previous_session_clean", True):
         # a logout or sign-out-everywhere of the previous run may not be on disk
@@ -1710,6 +1711,11 @@ def _load_env_local(path: Path | None = None) -> int:
             key = key[len("export "):].strip()
         if not _ENV_KEY.fullmatch(key):
             continue
+        if key.startswith("VULNIX_AUDIT_ANCHOR_"):
+            # Who the audit anchor is (socket, helper user, source name) comes only from the
+            # operator's real environment: the service user can write .env.local and could
+            # otherwise point the service at a helper of its own (docs/AUDIT_ANCHOR.md).
+            continue
         val = val.strip()
         if len(val) >= 2 and val[0] == val[-1] and val[0] in "\"'":
             val = val[1:-1]                  # one matching pair of quotes, nothing more
@@ -1753,7 +1759,12 @@ def main() -> None:
     first = not seed.exists()
     start_lab(a.lab_port)
     svc = AssessmentService(data, a.lab_port, a.verify_seconds,
-                            separate_l2_approver=a.separate_l2_approver or None)
+                            separate_l2_approver=a.separate_l2_approver or None,
+                            audit_anchor_root=data)
+    anchor = svc.audit.anchor_status(max_age=None)
+    if anchor["enabled"]:
+        print("監査アンカー: " + ("照合済み（保護あり）" if anchor["protected"] else
+              f"照合できません（{anchor['error']}）。Worker の実行許可・有料送信・診断と所見の状態変更を拒否します"))
     try:
         srv = _build_server(svc, a, data, first, seed, env_opt_out)
     except BaseException:

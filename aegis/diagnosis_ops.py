@@ -629,8 +629,11 @@ class DiagnosisOperations:
                         or live is None or not nonce:
                     raise OpError(409, "この項目は承認を待っていません", "not_waiting")
                 if actor == job["requested_by"]:
-                    svc.audit.record("diagnosis.approval_denied", item=item_id, actor=actor,
-                                     reason="separation of duties")
+                    try:   # best effort: the denial stands whether or not it could be recorded
+                        svc.audit.record("diagnosis.approval_denied", item=item_id, actor=actor,
+                                         reason="separation of duties")
+                    except Exception:  # noqa: BLE001
+                        pass
                     raise OpError(403, "診断を依頼した本人は、その L2 検査を承認できません", "self_approval")
             except OpError as e:
                 return self._refuse_request(rec, e)
