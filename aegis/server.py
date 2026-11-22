@@ -35,7 +35,7 @@ from .audit import AuditWriteFailed
 from .control_verification import run_live_control_verification
 from .diagnosis_ops import OP_PERMISSION, member_permissions, permitted
 from .lab import set_lab_mode, start_lab
-from .operators import AuthError, LockedOut, MFAChallenge, OperatorStore
+from .operators import AuthError, ChangeNotSaved, LockedOut, MFAChallenge, OperatorStore
 from .ownership import parse_service_target
 from .policy import PolicyError
 from .real_software_cve import run_real_software_cve_comparison
@@ -161,6 +161,14 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
     # audit gaps of account-level removals are kept by the default service and written
     # to the platform log once it is writable again
     svc._platform_audit = paudit
+
+    def flush_platform_gaps(_entry):
+        # the platform log took a record: write deferred account-level records too. In a
+        # thread: the caller may hold the operator store's lock (no lock-order inversion)
+        if default_svc.has_platform_audit_gaps() and not default_svc._flushing_gaps:
+            threading.Thread(target=default_svc._flush_audit_gaps, kwargs={"log": "platform"},
+                             daemon=True, name="audit-gap-flush").start()
+    paudit.listeners.append(flush_platform_gaps)
     limits_lock = threading.Lock()
     signup_times: list[float] = []
     signup_attempts: list[float] = []
@@ -563,6 +571,9 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 except ApproverRequired:
                     return self._json(403, {"error": "この組織のメンバーではありません"})
                 status_payload = status_svc.system_status()
+                if "admin" in ops.roles_of(sess.operator):
+                    # account-level audit gaps: platform admins only, never in an org's status
+                    status_payload["platform_audit_gaps"] = default_svc.platform_audit_gaps()
                 return self._authorized_org_read(sess, org, lambda _: self._json(200, status_payload))
             if tenancy is not None and p.startswith("/api/orgs"):
                 previous_timeout = self.connection.gettimeout()
@@ -1012,7 +1023,8 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             except LockedOut as e:
                 return self._locked(e, sess.operator)
             except AuthError as e:
-                journal.not_committed("not_saved")
+                if isinstance(e, ChangeNotSaved):   # undone: the audit-first record did not happen
+                    journal.not_committed("not_saved")
                 return self._self_failure(sess, e)
             return self._json(200, {"ok": True})
 
@@ -1045,7 +1057,8 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             except LockedOut as e:
                 return self._locked(e, sess.operator)
             except AuthError as e:
-                journal.not_committed("not_saved")
+                if isinstance(e, ChangeNotSaved):   # undone: the audit-first record did not happen
+                    journal.not_committed("not_saved")
                 return self._self_failure(sess, e)
             return self._json(200, {"ok": True, "mfa_enabled": False})
 
@@ -1245,7 +1258,8 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             except AuditWriteFailed as e:
                 return self._json(503, {"error": str(e), "applied": False, "audit_failed": True})
             except AuthError as e:
-                journal.not_committed("not_saved")
+                if isinstance(e, ChangeNotSaved):   # undone: the audit-first record did not happen
+                    journal.not_committed("not_saved")
                 return self._admin_failure(sess, e, 409)
             return self._json(200, {"name": target, "changed": changed})
 

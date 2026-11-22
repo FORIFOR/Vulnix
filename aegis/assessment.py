@@ -411,8 +411,12 @@ class AssessmentService:
         self.audit.listeners.append(self._on_audit)
         self._lock = threading.RLock()
         # removals applied while the audit log could not be written (docs/AUDIT_BEFORE_STATE.md)
+        self._gaps_file_unusable = False
         self._audit_gaps = self._load_audit_gaps()
         self._flushing_gaps = False
+        if any(not g.get("persisted", True) for g in self._audit_gaps):
+            with contextlib.suppress(OSError):
+                self._save_audit_gaps_locked()
         self._platform_audit = None      # set by the server when the platform log is separate
         self.lab_port = lab_port
         self.verify_seconds = verify_seconds
@@ -909,55 +913,99 @@ class AssessmentService:
     def _audit_gaps_path(self) -> Path:
         return self.data_dir / "audit-gaps.json"
 
+    def _gap_problem(self, event: str, fields: dict) -> dict:
+        """A problem with the gap file itself: kept and shown like a gap (never dropped)."""
+        print(f"vulnix: audit gap file problem: {event} {fields}", file=sys.stderr)
+        return {"event": event, "fields": fields, "at": time.time(), "log": "org", "persisted": False,
+                "invalid": True}
+
     def _load_audit_gaps(self) -> list[dict]:
+        path = self._audit_gaps_path()
         try:
-            data = json.loads(self._audit_gaps_path().read_text(encoding="utf-8"))
+            raw = path.read_text(encoding="utf-8")
         except FileNotFoundError:
             return []
-        except (OSError, ValueError):
-            return [{"event": "audit_gaps.unreadable", "fields": {}, "at": time.time(), "log": "org"}]
-        return [g for g in data if isinstance(g, dict) and isinstance(g.get("event"), str)] \
-            if isinstance(data, list) else []
+        except OSError as e:
+            self._gaps_file_unusable = True      # never overwrite a file that could not be read
+            return [self._gap_problem("audit_gaps.unreadable", {"error": type(e).__name__})]
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            data = None
+        if not isinstance(data, list):
+            # moved aside, never overwritten: what it held may be the only trace of a gap
+            aside = path.with_name(f"{path.name}.corrupt-{int(time.time())}")
+            try:
+                os.replace(path, aside)
+                moved = aside.name
+            except OSError:
+                self._gaps_file_unusable = True
+                moved = None
+            return [self._gap_problem("audit_gaps.corrupt", {"moved_to": moved})]
+        gaps = []
+        for g in data:
+            if isinstance(g, dict) and isinstance(g.get("event"), str):
+                gaps.append(g)
+            else:                                 # kept, flagged: not silently dropped
+                gaps.append(self._gap_problem("audit_gaps.invalid_entry",
+                                              {"entry": json.loads(json.dumps(g, default=str))}))
+        return gaps
 
     def _save_audit_gaps_locked(self) -> None:
+        if self._gaps_file_unusable:
+            raise OSError("the audit gap file could not be read; it is not overwritten")
         path = self._audit_gaps_path()
         if not self._audit_gaps:
             with contextlib.suppress(FileNotFoundError):
                 path.unlink()
             return
-        tmp = path.with_suffix(".tmp")
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(json.dumps(self._audit_gaps, ensure_ascii=False, default=str))
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(tmp, path)
+        for g in self._audit_gaps:
+            g["persisted"] = True
+        try:
+            tmp = path.with_suffix(".tmp")
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps(self._audit_gaps, ensure_ascii=False, default=str))
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, path)
+        except OSError:
+            for g in self._audit_gaps:
+                g["persisted"] = False
+            raise
 
     def _note_audit_gap(self, event: str, fields: dict, log: str = "org") -> None:
         """A removal or stop was applied but its record could not be written: keep that
         fact (on disk, shown in the status) until the record can be written. Never raises."""
         with self._lock:
-            self._audit_gaps.append({"event": event, "fields": dict(fields), "at": time.time(), "log": log})
+            self._audit_gaps.append({"event": event, "fields": dict(fields), "at": time.time(), "log": log,
+                                     "persisted": False})
             try:
                 self._save_audit_gaps_locked()
-            except OSError:
-                pass            # still shown from memory
+            except OSError as e:
+                # shown from memory, marked as not durable, and said where an operator looks
+                print(f"vulnix: AUDIT GAP NOT PERSISTED ({type(e).__name__}): {event} - "
+                      "applied, but neither recorded nor saved", file=sys.stderr)
 
-    def _flush_audit_gaps(self) -> None:
-        """Called after a record was written: write the deferred records too."""
+    def _flush_audit_gaps(self, log: str | None = None) -> None:
+        """Called after a record was written: write the deferred records too (only those
+        of `log`, when given)."""
         with self._lock:
-            if not self._audit_gaps or self._flushing_gaps:
+            if self._flushing_gaps or not any(log is None or g.get("log", "org") == log
+                                              for g in self._audit_gaps):
                 return
             self._flushing_gaps = True
             try:
                 left = []
                 for gap in self._audit_gaps:
-                    log = self.audit if gap.get("log", "org") == "org" else self._platform_audit
+                    where = gap.get("log", "org")
+                    target = self.audit if where == "org" else self._platform_audit
+                    if (log is not None and where != log) or target is None:
+                        left.append(gap)
+                        continue
                     try:
-                        if log is None:
-                            raise LookupError("platform audit log not attached")
-                        log.record("audit.gap_recorded", gap_event=gap["event"], fields=gap.get("fields") or {},
-                                   applied_at=gap.get("at"), log=gap.get("log", "org"))
+                        target.record("audit.gap_recorded", gap_event=gap["event"], fields=gap.get("fields") or {},
+                                      applied_at=gap.get("at"), log=where)
                     except Exception:  # noqa: BLE001 - still not writable: kept for later
                         left.append(gap)
                 self._audit_gaps = left
@@ -966,9 +1014,22 @@ class AssessmentService:
             finally:
                 self._flushing_gaps = False
 
+    @staticmethod
+    def _public_gap(g: dict) -> dict:
+        return {"event": g["event"], "at": g.get("at"), "log": g.get("log", "org"),
+                "persisted": g.get("persisted", True) is not False, "invalid": bool(g.get("invalid"))}
+
     def audit_gaps(self) -> list[dict]:
+        """This organization's gaps (account-level gaps are shown to platform admins only)."""
         with self._lock:
-            return [{"event": g["event"], "at": g.get("at"), "log": g.get("log", "org")} for g in self._audit_gaps]
+            return [self._public_gap(g) for g in self._audit_gaps if g.get("log", "org") != "platform"]
+
+    def platform_audit_gaps(self) -> list[dict]:
+        with self._lock:
+            return [self._public_gap(g) for g in self._audit_gaps if g.get("log", "org") == "platform"]
+
+    def has_platform_audit_gaps(self) -> bool:
+        return any(g.get("log") == "platform" for g in list(self._audit_gaps))
 
     def _authority_reduced_locked(self, host: str) -> None:
         """Every withdrawal of authority goes through here, BEFORE it is committed:
@@ -2680,7 +2741,7 @@ class AssessmentService:
                 raise ValueError("承認したフィンガープリントが preview と一致しません")
             max_calls = min(int(approval["max_calls"]), int(pv.get("budget_max_calls", approval["max_calls"])))
             # audit first: a preview is approved (and used up) only once that is recorded
-            self.audit.record("planner_llm.approved", actor=actor, preview_id=approval["preview_id"],
+            self._audit_first("planner_llm.approved", actor=actor, preview_id=approval["preview_id"],
                               max_calls=max_calls, first_request_sha256=pv["first_request_sha256"])
             pv.update(used=True, approved_by=actor, approved_at=time.time(), approved_max_calls=max_calls)
             try:
@@ -5553,7 +5614,7 @@ class AssessmentService:
             # Audit first: an approval whose record could not be written (or anchored,
             # docs/AUDIT_ANCHOR.md) is not shown as decided and issues no approval.
             # (A rejection - also the emergency stop's - is applied first, as before.)
-            self.audit.record("approval.approved", request=aid, actor=actor,
+            self._audit_first("approval.approved", request=aid, actor=actor,
                               action=ap["action"], risk_level=ap["risk_level"])
         ap["status"] = status
         ap["decided_by"], ap["decided_at"] = actor, time.time()

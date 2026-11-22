@@ -11,6 +11,7 @@ No test here talks to the internet (the "real service" is a loopback stand-in).
 """
 import tests  # noqa: F401  (hermetic revocation-marker directory, no .env.local)
 import contextlib
+import io
 import json
 import os
 import tempfile
@@ -26,7 +27,7 @@ from unittest.mock import patch
 from aegis.assessment import AssessmentService
 from aegis.audit import AuditLog, AuditWriteFailed
 from aegis.gateway import State
-from aegis.operators import OperatorStore, generate_totp_secret, hash_password, totp_code
+from aegis.operators import AuthError, OperatorStore, generate_totp_secret, hash_password, totp_code
 from aegis.server import make_handler
 from aegis.tenancy import OrgStore, TenantRegistry, default_members_from
 from tests import test_real_service as rs
@@ -99,16 +100,19 @@ class TestLabGrantsAreAuditedFirst(LabServiceCase):
     def test_resume_does_not_resume_the_gateway_without_its_record(self):
         self.svc.gateway.pause("op")
         self.assertIs(self.svc.gateway.state, State.PAUSED)
-        with audit_fails("resume"), self.assertRaises(OSError):
+        with audit_fails("resume"), self.assertRaises(AuditWriteFailed) as cm:
             self.svc.gateway.resume("op")
+        self.assertIs(cm.exception.applied, False)
         self.assertIs(self.svc.gateway.state, State.PAUSED)
 
     def test_an_approval_is_not_given_without_its_record(self):
         # already audit-first before O5; kept here as a regression test
         self.svc.a.approvals["req_t"] = {"id": "req_t", "status": "pending", "action": "safe_reproduction",
                                          "risk_level": "L2"}
-        with audit_fails("approval.approved"), self.assertRaises(OSError):
+        self.svc.a.started_by = "op"            # separation of duties: a different person started it
+        with audit_fails("approval.approved"), self.assertRaises(AuditWriteFailed) as cm:
             self.svc.decide_approval("req_t", "approve", "appr")
+        self.assertIs(cm.exception.applied, False)
         self.assertEqual(self.svc.a.approvals["req_t"]["status"], "pending")
 
 
@@ -376,8 +380,9 @@ class TestHttpMembershipAndRoles(HttpCase):
         self.assertEqual(code, 503, body)
         self.assertIs(body.get("applied"), True)
         self.assertEqual(set(self.ops.roles_of("padmin2")), {"operator"})
-        self.assertEqual([(g["event"], g["log"]) for g in self.svc.system_status()["audit_gaps"]],
+        self.assertEqual([(g["event"], g["log"]) for g in self.svc.platform_audit_gaps()],
                          [("operator.roles_changed", "platform")])
+        self.assertEqual(self.svc.system_status()["audit_gaps"], [])     # not in the org's status
 
     def test_a_scan_start_over_http_is_refused_without_its_record(self):
         a = self.signup("alice")
@@ -453,8 +458,9 @@ class TestFollowUpLab(LabServiceCase):
             pv["pv_test"] = {"id": "pv_test", "run_by": "op", "at": time.time(),
                              "first_request_sha256": "b" * 64, "budget_max_calls": 6, "used": False}
             self.svc._save_previews_locked(pv)
-        with audit_fails("planner_llm.approved"), self.assertRaises(OSError):
+        with audit_fails("planner_llm.approved"), self.assertRaises(AuditWriteFailed) as cm:
             self.svc._take_preview_approval("appr", {"preview_id": "pv_test", "max_calls": 2}, ("approver",))
+        self.assertIs(cm.exception.applied, False)
         with self.svc._lock:
             self.assertFalse(self.svc._load_previews_locked()["pv_test"]["used"])
 
@@ -614,7 +620,147 @@ class TestFollowUpHttp(HttpCase):
         self.assertEqual(body["orgs"], [])               # no organization without its record
         self.assertIn("warning", body)
         self.assertIs(body.get("audit_failed"), True)
-        self.assertIn("auth.registered", [g["event"] for g in self.svc.system_status()["audit_gaps"]])
+        self.assertIn("auth.registered", [g["event"] for g in self.svc.platform_audit_gaps()])
+
+
+# ---- second review follow-up -----------------------------------------------------------
+class TestAccountChangesNotSavedAreNotInForce(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.seed = Path(self.tmp.name) / "operators.json"
+        self.seed.write_text(json.dumps({"operators": [
+            {"name": "padmin", "roles": ["operator", "approver", "admin"],
+             "password_hash": hash_password("padmin-pw-1")},
+            {"name": "plain", "roles": ["operator"], "password_hash": hash_password("plain-pw-12")},
+            {"name": "appr", "roles": ["operator", "approver"], "password_hash": hash_password("appr-pw-123")},
+            {"name": "mfauser", "roles": ["operator"], "password_hash": hash_password("mfauser-pw-1"),
+             "totp_secret": MFA_SECRET}]}))
+        self.ops = OperatorStore(self.seed)
+
+    @contextlib.contextmanager
+    def accounts_file_unwritable(self, after: int = 0):
+        """Writes of the accounts file fail (after the first `after` of them)."""
+        real = self.ops._atomic_write
+        seen = [0]
+
+        def write(path, data):
+            if Path(path) == self.seed:
+                seen[0] += 1
+                if seen[0] > after:
+                    return False
+            return real(path, data)
+        with patch.object(self.ops, "_atomic_write", side_effect=write):
+            yield
+
+    def test_a_password_that_cannot_be_saved_signs_nobody_in_until_it_is(self):
+        # kept (it protects the account) and retried; nobody signs in with either password meanwhile
+        with self.accounts_file_unwritable():
+            with self.assertRaises(AuthError):
+                self.ops.change_password("plain", "plain-pw-12", "plain-pw-NEW-34")
+            self.assertFalse(self.ops.trusted())
+            for pw in ("plain-pw-12", "plain-pw-NEW-34"):
+                with self.assertRaises(AuthError):
+                    self.ops.login("plain", pw)
+
+    def test_an_mfa_reset_that_cannot_be_saved_is_not_in_force(self):
+        with self.accounts_file_unwritable(), self.assertRaises(AuthError):
+            self.ops.reset_totp("mfauser", actor="padmin")
+        self.assertTrue(self.ops.totp_enabled("mfauser"))
+
+    def test_an_mfa_disable_that_cannot_be_saved_is_not_in_force(self):
+        # the code's use is saved (first write); the switch-off is not
+        with self.accounts_file_unwritable(after=1), self.assertRaises(AuthError):
+            self.ops.disable_totp("mfauser", "mfauser-pw-1", totp_code(MFA_SECRET))
+        self.assertTrue(self.ops.totp_enabled("mfauser"))
+
+    def test_a_role_grant_that_cannot_be_saved_is_not_in_force(self):
+        with self.accounts_file_unwritable(), self.assertRaises(AuthError):
+            self.ops.set_roles("plain", ["operator", "approver"], actor="padmin")
+        self.assertEqual(set(self.ops.roles_of("plain")), {"operator"})
+
+    def test_a_role_removal_that_cannot_be_saved_stays_in_force(self):
+        with self.accounts_file_unwritable(), self.assertRaises(AuthError):
+            self.ops.set_roles("appr", ["operator"], actor="padmin")
+        self.assertEqual(set(self.ops.roles_of("appr")), {"operator"})
+
+
+class TestAuditGapFile(LabServiceCase):
+    def reopen(self):
+        self.svc.workers.kill_all()
+        self.svc.close()
+        with patch.dict(os.environ, {}, clear=True):
+            self.svc = AssessmentService(self.dir, LAB_PORT, verify_seconds=0.1)
+        self.svc._may_switch_lab = False
+
+    def test_a_gap_that_cannot_be_saved_is_marked_and_reported(self):
+        (self.dir / "audit-gaps.json").mkdir()          # the file cannot be written
+        with self.svc._lock:
+            self.svc.a.state = "running"
+        err = io.StringIO()
+        with audit_fails("pause"), contextlib.redirect_stderr(err), self.assertRaises(AuditWriteFailed):
+            self.svc.pause("op")
+        gaps = self.svc.system_status()["audit_gaps"]
+        self.assertEqual([(g["event"], g["persisted"]) for g in gaps], [("pause", False)])
+        self.assertIn("AUDIT GAP NOT PERSISTED", err.getvalue())
+
+    def test_a_corrupt_gap_file_is_moved_aside_and_reported(self):
+        for content in ("{not json", '{"event": "pause"}'):
+            path = self.dir / "audit-gaps.json"
+            path.write_text(content, encoding="utf-8")
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.reopen()
+            aside = [p for p in self.dir.iterdir() if p.name.startswith("audit-gaps.json.corrupt-")]
+            self.assertTrue(aside, content)
+            self.assertIn(content, [p.read_text(encoding="utf-8") for p in aside])
+            gaps = self.svc.system_status()["audit_gaps"]
+            self.assertIn(("audit_gaps.corrupt", True), [(g["event"], g["invalid"]) for g in gaps])
+            for p in aside:
+                p.unlink()
+            self.svc.register_asset(name="flush.lab-alias", kind="Webアプリケーション", environment="検証環境")
+
+    def test_entries_without_an_event_are_kept_and_flagged(self):
+        (self.dir / "audit-gaps.json").write_text(json.dumps(
+            [{"no_event": 1}, {"event": "pause", "fields": {"actor": "op"}, "at": 1.0, "log": "org"}]))
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.reopen()
+        gaps = self.svc.system_status()["audit_gaps"]
+        self.assertEqual([(g["event"], g["invalid"]) for g in gaps],
+                         [("audit_gaps.invalid_entry", True), ("pause", False)])
+
+
+class TestPlatformGaps(HttpCase):
+    def platform_gap(self):
+        with audit_fails("auth.registered"):
+            self.assertEqual(self.req({}, "/auth/register", {"name": "carol", "password": "carol-Passw0rd!"})[0],
+                             200)
+        self.assertEqual([g["event"] for g in self.svc.platform_audit_gaps()], ["auth.registered"])
+
+    def test_platform_gaps_are_shown_to_platform_admins_only(self):
+        self.platform_gap()
+        # the deferred record stays unwritable here, so the gap is still open while it is looked at
+        hold = audit_fails("audit.gap_recorded")
+        hold.__enter__()
+        self.addCleanup(hold.__exit__, None, None, None)
+        member = self.login("plain", "plain-pw-12")         # a member of the default organization
+        for path in ("/system/status", "/assessments/scan_001"):
+            code, body = self.req(member, path, org="default")
+            self.assertEqual(code, 200, body)
+            self.assertNotIn("auth.registered", json.dumps(body))
+        admin = self.login("padmin", "padmin-pw-1")
+        code, body = self.req(admin, "/system/status", org="default")
+        self.assertEqual(code, 200, body)
+        self.assertEqual([g["event"] for g in body["platform_audit_gaps"]], ["auth.registered"])
+
+    def test_platform_gaps_are_written_after_the_next_platform_record(self):
+        self.platform_gap()
+        self.login("plain", "plain-pw-12")                  # auth.login: a platform record
+        deadline = time.time() + 5
+        while self.svc.platform_audit_gaps() and time.time() < deadline:
+            time.sleep(0.05)
+        self.assertEqual(self.svc.platform_audit_gaps(), [])
+        self.assertIn("auth.registered", [e["fields"]["gap_event"] for e in self.reg.platform_audit.entries()
+                                          if e["event"] == "audit.gap_recorded"])
 
 
 if __name__ == "__main__":

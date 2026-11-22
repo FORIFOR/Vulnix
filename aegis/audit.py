@@ -36,13 +36,14 @@ def is_anchored_event(event: str) -> bool:
     return event in ANCHORED_EVENTS or event.startswith(ANCHORED_PREFIXES)
 
 
-class AuditWriteFailed(RuntimeError):
+class AuditWriteFailed(ValueError):
     """An audit record could not be written (disk, chain or anchor check).
 
     Raised by a change that grants authority or starts work, BEFORE anything changed
     (audit first: no record, no change). Raised by a change that removes authority or
     stops work AFTER it was applied (`applied` is True): such a change is never held
-    back by a failing audit log, but the missing record is reported to the caller."""
+    back by a failing audit log, but the missing record is reported to the caller.
+    A ValueError, like AnchorError: callers treat it as a refusal."""
 
     def __init__(self, message: str, *, applied: bool = False):
         super().__init__(message)

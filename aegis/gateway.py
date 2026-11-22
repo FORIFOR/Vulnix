@@ -14,7 +14,7 @@ import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from .audit import AuditLog
+from .audit import AuditLog, AuditWriteFailed
 from .confinement import ConfinementError
 from .authz import ApprovalStore, AuthzError, Engagement, TokenAuthority
 from .network import EgressGuard, NetworkError, PinnedDestination
@@ -434,7 +434,10 @@ class Gateway:
                 raise AuthzError(f"cannot resume from {self._state.value}")
             self.engagement.check_active(self.clock())   # re-validate window & authz
             # audit first: work that cannot be recorded does not resume
-            self.audit.record("resume", actor=actor)
+            try:
+                self.audit.record("resume", actor=actor)
+            except Exception as e:  # noqa: BLE001 - disk, chain or anchor: not recorded
+                raise AuditWriteFailed("監査ログに記録できないため、再開しませんでした（何も変更していません）") from e
             self._state = State.RUNNING
 
     # ---- emergency stop (layer 6) ----------------------------------------
