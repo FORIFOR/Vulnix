@@ -1415,6 +1415,24 @@ class AssessmentService:
         return bool(self.separate_l2_approver or self._is_external_service_asset(name)
                     or self._in_ownership_flow(name))
 
+    def _approver_refused(self, approver_class: str | None) -> bool:
+        """Who may approve an L2 under separation of duties (owner decision 2026-11-23):
+        an account an administrator created ("registered") anywhere; a self-registered
+        one ("self_mfa") only on the bundled lab and only with its second factor on;
+        otherwise ("self") nowhere. None = an in-process caller that vouches for itself."""
+        if approver_class in (None, "registered"):
+            return False
+        if approver_class == "self_mfa":
+            name = self.a.asset.get("name")
+            return self._is_external_service_asset(name) or self._in_ownership_flow(name)
+        return True
+
+    @staticmethod
+    def approver_refusal_text(approver_class: str | None) -> str:
+        if approver_class == "self_mfa":
+            return "実在するサイトの L2 は、管理者が作成したアカウントだけが承認できます"
+        return "自己登録のアカウントは、2要素認証を有効にするまで L2 を承認できません（実在するサイトの L2 は承認できません）"
+
     def _is_external_service_asset(self, host: str | None = None) -> bool:
         """True only for a real service that completed ownership + scope
         confirmation. Everything else is the local simulated lab."""
@@ -2706,7 +2724,7 @@ class AssessmentService:
 
     def execute_artex_item(self, item_id: str, actor: str, *, roles=None,
                            request_authorized=None, exec_owner: str | None = None,
-                           approver_eligible: bool | None = None) -> dict:
+                           approver_class: str | None = None) -> dict:
         """Run ONE item of the ARTEX plan. The operation is rebuilt from Vulnix's catalog
         (never from what ARTEX or the stored proposal says); L1 goes through the Gateway
         under the L1 policy, L2 needs an approver and runs in the isolated worker."""
@@ -2741,10 +2759,10 @@ class AssessmentService:
                         self.audit.record("artex.item_denied", item=item_id, actor=actor,
                                           reason="approver role required")
                         raise ApproverRequired("ARTEX 計画の L2 検証には承認責任者の権限が必要です")
-                    if self._separation_required() and approver_eligible is False:
+                    if self._separation_required() and self._approver_refused(approver_class):
                         self.audit.record("artex.item_denied", item=item_id, actor=actor,
                                           reason="self-registered approver")
-                        raise ApproverRequired("自己登録のアカウントは L2 検証を承認できません")
+                        raise ApproverRequired(self.approver_refusal_text(approver_class))
                     requester = rec.get("requested_by")
                     if self._separation_required() and (
                             actor == requester or not requester or str(requester).startswith("policy:")):
@@ -4030,7 +4048,7 @@ class AssessmentService:
                              "この操作は実在するサイトでは使えません")
 
     def decide_approval(self, approval_id: str, decision: str, actor: str,
-                        approver_eligible: bool | None = None) -> None:
+                        approver_class: str | None = None) -> None:
         with self._lock:
             self._refuse_read_only_real_locked()
             ap = self.a.approvals.get(approval_id)
@@ -4042,14 +4060,15 @@ class AssessmentService:
                 # a rejection is always allowed (the safe direction); an approval needs a
                 # second person: not whoever started this run, not an unknown starter, not
                 # a self-registered identity. One person alone leaves it pending.
-                reason = ("self-registered approver" if approver_eligible is False else
+                refused = self._approver_refused(approver_class)
+                reason = ("self-registered approver" if refused else
                           "requester unknown" if not self.a.started_by else
                           "separation of duties" if actor == self.a.started_by else "")
                 if reason:
                     self.audit.record("approval.denied", request=approval_id, actor=actor,
                                       requested_by=self.a.started_by, reason=reason)
                     raise ApproverRequired(
-                        "自己登録のアカウントは L2 を承認できません" if approver_eligible is False else
+                        self.approver_refusal_text(approver_class) if refused else
                         "この実行の依頼者が記録されていないため、承認できません。実行をやり直してください"
                         if not self.a.started_by else
                         "診断を開始した本人は、その L2 を承認できません。別の承認責任者が承認してください")
@@ -4092,8 +4111,9 @@ class AssessmentService:
         Raises unless a different operator requested this item for this host recently."""
         if not self._separation_required():
             return None
-        if getattr(self._tls, "approver_eligible", None) is False:
-            raise ValueError("自己登録のアカウントは L2 検証を承認できません")
+        approver_class = getattr(self._tls, "approver_class", None)
+        if self._approver_refused(approver_class):
+            raise ValueError(self.approver_refusal_text(approver_class))
         req = self._l2_requests.get(finding_id)
         if (not req or req.get("check") != check_id or req.get("host") != self.a.asset.get("name")
                 or time.time() - float(req.get("requested_at", 0)) > L2_REQUEST_MAX_AGE_S):
@@ -4124,7 +4144,7 @@ class AssessmentService:
                     or self._l2_check_for_finding(finding_id) is not None)
 
     def verify_finding(self, finding_id: str, actor: str, *, roles=None,
-                       request_authorized=None, approver_eligible: bool | None = None) -> dict:
+                       request_authorized=None, approver_class: str | None = None) -> dict:
         """Execute a real Gateway + Worker probe for a specific finding on demand
         and attach the live HTTP response and SHA-256 audit hash.
 
@@ -4139,8 +4159,8 @@ class AssessmentService:
         if request_authorized is None:
             request_authorized = previous_authorized
         self._tls.request_authorized = request_authorized
-        previous_eligible = getattr(self._tls, "approver_eligible", None)
-        self._tls.approver_eligible = approver_eligible
+        previous_eligible = getattr(self._tls, "approver_class", None)
+        self._tls.approver_class = approver_class
         try:
             if request_authorized is not None and not request_authorized():
                 raise ApproverRequired("要求者の権限が失効したため、検査を開始しません")
@@ -4152,7 +4172,7 @@ class AssessmentService:
         finally:
             self._tls.gen = prev
             self._tls.request_authorized = previous_authorized
-            self._tls.approver_eligible = previous_eligible
+            self._tls.approver_class = previous_eligible
             self._end_operation()
 
     def _verify_finding(self, finding_id: str, actor: str, roles=None) -> dict:
@@ -4496,14 +4516,14 @@ class AssessmentService:
         return self.snapshot()
 
     # ---- P2: Post-patch defense verification & before/after comparison ------
-    def verify_fix(self, actor: str, *, approver_eligible: bool | None = None) -> dict:
+    def verify_fix(self, actor: str, *, approver_class: str | None = None) -> dict:
         """Apply patched defense configuration to the lab (or re-verify an
         external target after remediation) and re-run the exact same probe and
         reproduction checks through the Gateway to prove mitigation."""
         self._begin_operation()        # the active asset cannot be switched while this runs
         prev = getattr(self._tls, "gen", None)
-        previous_eligible = getattr(self._tls, "approver_eligible", None)
-        self._tls.approver_eligible = approver_eligible
+        previous_eligible = getattr(self._tls, "approver_class", None)
+        self._tls.approver_class = approver_class
         try:
             with self._lock:
                 self._refuse_read_only_real_locked()
@@ -4512,7 +4532,7 @@ class AssessmentService:
             raise ValueError("停止またはリセットされたため、再検証を中止しました") from None
         finally:
             self._tls.gen = prev
-            self._tls.approver_eligible = previous_eligible
+            self._tls.approver_class = previous_eligible
             self._end_operation()
 
     def _reset_artex_db(self) -> None:

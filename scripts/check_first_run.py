@@ -209,6 +209,23 @@ def main() -> None:
         report["checks"]["phone_no_horizontal_scroll"] = bob.evaluate(
             "document.documentElement.scrollWidth <= window.innerWidth")
         shot(bob, "06m-approve-390")
+        # bob signed up himself: until his second factor is on he may not approve an L2
+        # (owner decision 2026-11-23); the panel says so and nothing is approved
+        approve.click()
+        expect(panel(bob)).to_contain_text("2要素認証を有効にするまで", timeout=20000)
+        report["checks"]["self_registered_without_mfa_refused"] = True
+        bob.goto(base + "/settings")
+        bob.get_by_role("button", name="有効化する").click()
+        secret_el = bob.locator("dt", has_text="シークレット").locator("xpath=following-sibling::dd[1]")
+        expect(secret_el).to_be_visible(timeout=20000)
+        from aegis.operators import totp_code
+        bob.get_by_label("認証コード").fill(totp_code(secret_el.inner_text().strip(), time.time()))
+        bob.get_by_role("button", name="確定").click()
+        expect(bob.get_by_text("有効", exact=True).first).to_be_visible(timeout=20000)
+        report["checks"]["approver_turned_on_mfa"] = True
+        bob.goto(base + "/assessments/scan_001")
+        approve = panel(bob).get_by_role("button", name="この L2 検査を承認する")
+        expect(approve).to_be_visible(timeout=30000)
         approve.click()
         step("approver_joins_and_approves")
 

@@ -885,7 +885,7 @@ class TestThePlanThroughTheGateway(ServiceBase):
         plan = self.plan()
         with self.assertRaises(ApproverRequired):
             self.svc.execute_artex_item(self.item(plan, "l2_idor")["id"], "appr2",
-                                        roles=("operator", "approver"), approver_eligible=False)
+                                        roles=("operator", "approver"), approver_class="self")
         denied = [e["fields"] for e in self.svc.audit.entries() if e["event"] == "artex.item_denied"]
         self.assertEqual(denied[-1]["reason"], "self-registered approver")
 

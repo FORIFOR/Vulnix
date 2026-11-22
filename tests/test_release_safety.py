@@ -294,6 +294,7 @@ def _linux_confinement() -> bool:
 
 
 @unittest.skipUnless(_linux_confinement(), "needs Linux with cgroup v2, nft and root or passwordless sudo")
+@l2_requested_by_another()
 class TestOnLinuxWithTheRealKernelConfinement(ReleaseBase):
     """End to end on the real kernel: a real-service L2 worker carrying test tokens
     runs inside per-run cgroup + nftables confinement, and is killed and confirmed

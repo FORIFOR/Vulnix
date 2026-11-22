@@ -133,6 +133,14 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
     sse_open: dict[str, int] = {}
     signup_lock = threading.Lock()
 
+    def _approver_class(name: str) -> str:
+        """For L2 approvals under separation of duties: "registered" (an account an
+        administrator created), "self_mfa" (self-registered, second factor on: the bundled
+        lab only), "self". The service decides with the target pinned (_approver_refused)."""
+        if not ops.is_self_registered(name):
+            return "registered"
+        return "self_mfa" if ops.totp_enabled(name) else "self"
+
     def room(times: list[float], window: float, cap: int) -> bool:
         """Whether one more use fits, without recording it."""
         now = time.monotonic()
@@ -1519,7 +1527,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     # lock (a check here could be invalidated by a concurrent switch)
                     result = svc.verify_finding(
                         fid, actor, roles=tuple(sess.roles),
-                        approver_eligible=not ops.is_self_registered(actor),
+                        approver_class=_approver_class(actor),
                         request_authorized=live_request_authority(
                             sess, getattr(self, "_bound_org", DEFAULT_ORG),
                             approver="approver" in sess.roles))
@@ -1532,8 +1540,8 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     # the lab check are decided by the service, with the live roles
                     org = getattr(self, "_bound_org", DEFAULT_ORG)
                     approving = m.group(1) == "approve"
-                    if approving and svc._separation_required() and ops.is_self_registered(actor):
-                        return self._json(403, {"error": "自己登録のアカウントは L2 検査を承認できません",
+                    if approving and svc._separation_required() and svc._approver_refused(_approver_class(actor)):
+                        return self._json(403, {"error": svc.approver_refusal_text(_approver_class(actor)),
                                                 "reason": "self_registered"})
                     code, result = svc.diagnosis_ops.run(
                         m.group(1), key=self.headers.get("Idempotency-Key") or "", actor=actor,
@@ -1558,7 +1566,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     # L2 needs an approver: decided by the service, with the caller's roles
                     result = svc.execute_artex_item(
                         m.group(1), actor, roles=tuple(sess.roles),
-                        approver_eligible=not ops.is_self_registered(actor),
+                        approver_class=_approver_class(actor),
                         request_authorized=live_request_authority(
                             sess, getattr(self, "_bound_org", DEFAULT_ORG),
                             approver="approver" in sess.roles))
@@ -1586,7 +1594,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 elif p == base + "/verify-fix":
                     if "approver" not in sess.roles:
                         return self._json(403, {"error": "修正後の再検証には承認責任者の権限が必要です"})
-                    result = svc.verify_fix(actor, approver_eligible=not ops.is_self_registered(actor))
+                    result = svc.verify_fix(actor, approver_class=_approver_class(actor))
                     return self._authorized_org_read(
                         sess, getattr(self, "_bound_org", DEFAULT_ORG),
                         lambda _: self._json(200, result), reader=False, approver=True)
@@ -1610,7 +1618,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     if "approver" not in sess.roles:
                         return self._json(403, {"error": "承認には承認責任者の権限が必要です"})
                     svc.decide_approval(m.group(1), decision, actor,
-                                        approver_eligible=not ops.is_self_registered(actor))
+                                        approver_class=_approver_class(actor))
                 else:
                     return self._json(404, {"error": "not found"})
             except AuthError as e:
