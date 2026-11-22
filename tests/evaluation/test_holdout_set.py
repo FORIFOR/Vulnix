@@ -180,11 +180,12 @@ class TestHoldoutV3Set(unittest.TestCase):
 
     def test_the_judge_is_the_frozen_one(self):
         """The v3 record is unchanged, and the current judge is the one recorded as frozen
-        (JUDGE_IDENTITY_MATCH.md): any unrecorded change to the judge still fails here."""
+        (FROZEN_JUDGE_V5.md since the v5 change; JUDGE_IDENTITY_MATCH.md before it): any
+        unrecorded change to the judge still fails here."""
         self.assertEqual(set(self.V3_JUDGE), set(self.FROZEN_JUDGE))
         for path, digest in self.V3_JUDGE.items():
             self.assertIn(f"`{path}` | `{digest}`", self.doc, path)
-        frozen = (ROOT / "docs/evaluation/JUDGE_IDENTITY_MATCH.md").read_text()
+        frozen = (ROOT / "docs/evaluation/FROZEN_JUDGE_V5.md").read_text()
         for path in self.FROZEN_JUDGE + ("aegis/evidence.py",):
             digest = hashlib.sha256((ROOT / path).read_bytes()).hexdigest()
             self.assertIn(f"`{path}` | `{digest}`", frozen, path)

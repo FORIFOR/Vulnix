@@ -230,7 +230,7 @@ class TestThroughTheLabWorker(Case):
                      "base64_record"):
             with self.subTest(name):
                 self.assertNotEqual(self.judged(self.run_worker((200, NEAR_MISS[name])))[0], "supported")
-        big = {**OWNER, "padding": "x" * 5000}                      # longer than the Worker's excerpt
+        big = {**OWNER, "padding": "x" * 70000}                     # longer than the Worker's excerpt (64 KiB)
         r = self.run_worker((200, big))
         self.assertIs(r["response_truncated"], True)
         self.assertNotEqual(self.judged(r)[0], "supported")
