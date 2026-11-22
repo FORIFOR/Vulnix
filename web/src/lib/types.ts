@@ -1,3 +1,4 @@
+import type { AuditAnchorStatus } from "./auditAnchor";
 export type Severity = "critical" | "high" | "medium" | "low" | "info";
 export type Verdict = "candidate" | "detected" | "unverified" | "proven" | "not_reproduced" | "aborted";
 export type AssessmentState = "idle" | "running" | "paused" | "stopped" | "failed" | "completed";
@@ -194,6 +195,8 @@ export interface SecretsStatus {
 }
 
 export interface Snapshot {
+  /** Local audit anchor (docs/AUDIT_ANCHOR.md): protected only when enabled and the last check passed. */
+  audit_anchor?: AuditAnchorStatus | null;
   id: string;
   demo: boolean;
   target_url?: string;

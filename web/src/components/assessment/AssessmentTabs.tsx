@@ -316,7 +316,7 @@ export function AssessmentTabs({ id }: { id: string }) {
 
         {tab === "logs" && (
           <div className="min-w-0 space-y-4">
-            <EventTimeline entries={audit} chainValid={chainValid} />
+            <EventTimeline entries={audit} chainValid={chainValid} anchor={snap?.audit_anchor} />
             <RawLogViewer entries={audit} />
           </div>
         )}

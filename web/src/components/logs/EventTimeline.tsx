@@ -1,3 +1,4 @@
+import { auditAnchorLine, type AuditAnchorStatus } from "@/lib/auditAnchor";
 import { AUDIT_EVENT, fmtTime } from "@/lib/labels";
 import type { AuditEntry } from "@/lib/types";
 import { HelpPopover } from "../learning/HelpPopover";
@@ -40,7 +41,18 @@ function describe(e: AuditEntry): string {
   }
 }
 
-export function EventTimeline({ entries, chainValid }: { entries: AuditEntry[]; chainValid: boolean | null }) {
+const ANCHOR_TONE: Record<string, string> = {
+  ok: "text-emerald-800 dark:text-emerald-200",
+  off: "text-zinc-600 dark:text-zinc-400",
+  error: "text-red-700 dark:text-red-300",
+};
+
+export function EventTimeline({ entries, chainValid, anchor }: {
+  entries: AuditEntry[];
+  chainValid: boolean | null;
+  anchor?: AuditAnchorStatus | null;
+}) {
+  const anchorLine = auditAnchorLine(anchor);
   return (
     <div>
       <div className="mb-3 flex items-center text-sm">
@@ -52,6 +64,7 @@ export function EventTimeline({ entries, chainValid }: { entries: AuditEntry[]; 
         )}
         <HelpPopover term="audit_chain" />
       </div>
+      <p className={`-mt-2 mb-3 text-xs ${ANCHOR_TONE[anchorLine.tone]}`}>{anchorLine.text}</p>
       {entries.length === 0 ? (
         <p className="text-sm text-zinc-500">まだ記録はありません。</p>
       ) : (
