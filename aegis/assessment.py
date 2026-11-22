@@ -1415,23 +1415,19 @@ class AssessmentService:
         return bool(self.separate_l2_approver or self._is_external_service_asset(name)
                     or self._in_ownership_flow(name))
 
-    def _approver_refused(self, approver_class: str | None) -> bool:
-        """Who may approve an L2 under separation of duties (owner decision 2026-11-23):
-        an account an administrator created ("registered") anywhere; a self-registered
-        one ("self_mfa") only on the bundled lab and only with its second factor on;
-        otherwise ("self") nowhere. None = an in-process caller that vouches for itself."""
-        if approver_class in (None, "registered"):
-            return False
-        if approver_class == "self_mfa":
-            name = self.a.asset.get("name")
-            return self._is_external_service_asset(name) or self._in_ownership_flow(name)
-        return True
+    @staticmethod
+    def _approver_refused(approver_class: str | None) -> bool:
+        """Who may approve an L2 under separation of duties (owner decision 2026-11-23,
+        strict): only an account an administrator created ("registered"). A self-
+        registered account - also one with a second factor, also one that joined by an
+        invitation, also on the bundled lab - is never an independent approver.
+        None = an in-process caller that vouches for itself."""
+        return approver_class not in (None, "registered")
 
     @staticmethod
     def approver_refusal_text(approver_class: str | None) -> str:
-        if approver_class == "self_mfa":
-            return "実在するサイトの L2 は、管理者が作成したアカウントだけが承認できます"
-        return "自己登録のアカウントは、2要素認証を有効にするまで L2 を承認できません（実在するサイトの L2 は承認できません）"
+        return ("自己登録のアカウントは L2 を承認できません（2要素認証を有効にしても同じです）。"
+                "管理者が作成したアカウントで承認してください")
 
     def _is_external_service_asset(self, host: str | None = None) -> bool:
         """True only for a real service that completed ownership + scope

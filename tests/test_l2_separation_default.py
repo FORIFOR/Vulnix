@@ -144,28 +144,19 @@ class TestLegacyApproval(unittest.TestCase):
         self.assertEqual(self.svc.a.approvals[aid]["status"], "pending")
         self.assertEqual(self._denials()[-1]["reason"], "self-registered approver")
 
-    def test_a_self_registered_approver_with_a_second_factor_may_approve_on_the_lab_only(self):
-        # owner decision 2026-11-23: refused on real sites; on the bundled lab allowed
-        # only with the second factor on; the requester is refused in every case
+    def test_only_an_administrator_created_account_is_an_independent_approver(self):
+        # owner decision 2026-11-23 (strict): self-registration + 2FA is not enough,
+        # on the bundled lab as on a real site
         self.assertFalse(self.svc._approver_refused(None))
         self.assertFalse(self.svc._approver_refused("registered"))
-        self.assertFalse(self.svc._approver_refused("self_mfa"))           # the lab
-        self.assertTrue(self.svc._approver_refused("self"))
-        self.assertTrue(self.svc._approver_refused("anything else"))
-        with patch.object(self.svc, "_is_external_service_asset", return_value=True):
-            self.assertTrue(self.svc._approver_refused("self_mfa"))        # a real site
-            self.assertFalse(self.svc._approver_refused("registered"))
-        with patch.object(self.svc, "_in_ownership_flow", return_value=True):
-            self.assertTrue(self.svc._approver_refused("self_mfa"))
-        aid = self._pending("alice")
-        self.svc.decide_approval(aid, "approve", "bob", approver_class="self_mfa")
-        self.assertEqual(self.svc.a.approvals[aid]["status"], "approved")
-
-    def test_a_self_registered_approver_with_a_second_factor_is_still_not_the_requester(self):
+        for cls in ("self", "self_mfa", "anything else"):
+            self.assertTrue(self.svc._approver_refused(cls), cls)
         aid = self._pending("alice")
         with self.assertRaises(ApproverRequired):
-            self.svc.decide_approval(aid, "approve", "alice", approver_class="self_mfa")
+            self.svc.decide_approval(aid, "approve", "bob", approver_class="self_mfa")
         self.assertEqual(self.svc.a.approvals[aid]["status"], "pending")
+        self.svc.decide_approval(aid, "approve", "bob", approver_class="registered")
+        self.assertEqual(self.svc.a.approvals[aid]["status"], "approved")
 
     def test_the_requester_survives_a_restart_of_the_control_plane(self):
         self.svc.a.started_by = "alice"

@@ -294,7 +294,7 @@ export const DIAG_OP_REASON: Record<string, string> = {
   not_started: "診断ループを開始してから操作してください",
   not_waiting: "この項目は承認を待っていません",
   self_approval: "診断を依頼した本人は、その L2 検査を承認できません",
-  self_registered: "自己登録のアカウントは、設定で2要素認証を有効にするまで L2 検査を承認できません（実在するサイトの L2 は承認できません）",
+  self_registered: "自己登録のアカウントは L2 検査を承認できません（2要素認証を有効にしても同じです）。管理者が作成したアカウントで承認してください",
   needs_new_generation: "この仕様に基づく判定がすでにあります。変更は修正後の確認（新しい世代）で入力してください",
   no_proven_finding: "修正前に実証された所見がないため、修正後の確認は開始できません",
   emergency_stopped: "緊急停止中です",

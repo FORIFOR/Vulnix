@@ -135,11 +135,9 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
 
     def _approver_class(name: str) -> str:
         """For L2 approvals under separation of duties: "registered" (an account an
-        administrator created), "self_mfa" (self-registered, second factor on: the bundled
-        lab only), "self". The service decides with the target pinned (_approver_refused)."""
-        if not ops.is_self_registered(name):
-            return "registered"
-        return "self_mfa" if ops.totp_enabled(name) else "self"
+        administrator created) or "self" (signed up by itself, with or without 2FA or an
+        invitation). Only "registered" may approve (AssessmentService._approver_refused)."""
+        return "self" if ops.is_self_registered(name) else "registered"
 
     def room(times: list[float], window: float, cap: int) -> bool:
         """Whether one more use fits, without recording it."""
