@@ -169,10 +169,25 @@ class TestHoldoutV3Set(unittest.TestCase):
             digest = hashlib.sha256((FIX / name).read_bytes()).hexdigest()
             self.assertIn(f"`tests/evaluation/fixtures/{name}` | `{digest}`", self.doc, name)
 
+    # The judge v3 was measured with (HOLDOUT_V3.md §1). The judge changed afterwards (案2,
+    # docs/evaluation/JUDGE_IDENTITY_MATCH.md), so v3 no longer measures the current judge; the
+    # record of what it did measure must stay as written.
+    V3_JUDGE = {"aegis/diagnosis_judge.py": "8aae15f94b5d71537867de505209b982432f02e5528af248faf9d7fdc254ebea",
+                "aegis/workers/reproduction_probe.py":
+                    "2602c97f5ba5e682ffc0254d96cecb65554d30c4518b126fc60fc5e12a90075d",
+                "aegis/diagnosis_loop.py": "d973a752f8c744de6e466f8b822994c2887153f96d8186e8db7da51547f72de5",
+                "aegis/adaptive_plan_runner.py": "1dca57a756dfadc1f1be94de3e5efb05a53217c8ba49e578767c5fe482c31bb1"}
+
     def test_the_judge_is_the_frozen_one(self):
-        for path in self.FROZEN_JUDGE:
-            digest = hashlib.sha256((ROOT / path).read_bytes()).hexdigest()
+        """The v3 record is unchanged, and the current judge is the one recorded as frozen
+        (JUDGE_IDENTITY_MATCH.md): any unrecorded change to the judge still fails here."""
+        self.assertEqual(set(self.V3_JUDGE), set(self.FROZEN_JUDGE))
+        for path, digest in self.V3_JUDGE.items():
             self.assertIn(f"`{path}` | `{digest}`", self.doc, path)
+        frozen = (ROOT / "docs/evaluation/JUDGE_IDENTITY_MATCH.md").read_text()
+        for path in self.FROZEN_JUDGE + ("aegis/evidence.py",):
+            digest = hashlib.sha256((ROOT / path).read_bytes()).hexdigest()
+            self.assertIn(f"`{path}` | `{digest}`", frozen, path)
 
     def test_case_ids_and_behaviour_carry_no_answer(self):
         text = json.dumps(self.cases).lower()
