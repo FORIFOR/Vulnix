@@ -1,0 +1,969 @@
+{
+ "_about": "Fifth held-out diagnosis set (behaviour only, no labels). Created 2026-11-22 after the judge of docs/evaluation/FROZEN_JUDGE_V5.md was frozen (hashes in docs/evaluation/HOLDOUT_V5.md), and before that judge was run on it. owner_spec is the owner's written requirement (null: none written). Accounts: anon (no header), acct_A (test caller), acct_B (owner). Labels live in holdout_v5_truth.json, which no diagnosis code reads.",
+ "cases": {
+  "holdout-v5-001": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     200,
+     "soap_fault_fr"
+    ],
+    "acct_A": [
+     200,
+     "soap_fault_fr"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  },
+  "holdout-v5-002": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "gql_connection"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required",
+   "after_fix": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "gql_denied_partial"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   }
+  },
+  "holdout-v5-003": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "jsonapi_included"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required",
+   "after_fix": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "ndjson_export"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   }
+  },
+  "holdout-v5-004": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "odata_entity"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  },
+  "holdout-v5-005": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "account_tree"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": null
+  },
+  "holdout-v5-006": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "denied_echo"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  },
+  "holdout-v5-007": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     429,
+     "html_nginx_429"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  },
+  "holdout-v5-008": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "long_hal_b_first"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  },
+  "holdout-v5-009": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "odata_error_zh"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  },
+  "holdout-v5-010": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "hal_collection"
+    ],
+    "acct_B": [
+     503,
+     "html_maintenance_503"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  },
+  "holdout-v5-011": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "jsonapi_included"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  },
+  "holdout-v5-012": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "gql_rate_limited"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  },
+  "holdout-v5-013": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "account_tree"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  },
+  "holdout-v5-014": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "html_denied_it"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  },
+  "holdout-v5-015": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "html_card_b"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required",
+   "after_fix": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "html_card_masked"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   }
+  },
+  "holdout-v5-016": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "odata_own_entity"
+    ],
+    "acct_B": [
+     401,
+     "invalid_token"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  },
+  "holdout-v5-017": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "jsonapi_own_deep"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  },
+  "holdout-v5-018": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     200,
+     "gql_connection"
+    ],
+    "acct_A": [
+     200,
+     "gql_connection"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  },
+  "holdout-v5-019": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "paged_own_cursor"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  },
+  "holdout-v5-020": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "html_long_b_middle"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  },
+  "holdout-v5-021": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     200,
+     "gql_denied_ja"
+    ],
+    "acct_A": [
+     200,
+     "gql_denied_ja"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  },
+  "holdout-v5-022": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "openapi_doc"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  },
+  "holdout-v5-023": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     200,
+     "odata_entity"
+    ],
+    "acct_A": [
+     404,
+     "problem_not_found"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  },
+  "holdout-v5-024": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     404,
+     "problem_not_found"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "unspecified"
+  },
+  "holdout-v5-025": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "long_ndjson_b_last"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  },
+  "holdout-v5-026": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "data_uri_export"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  },
+  "holdout-v5-027": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "envelope_failure"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  },
+  "holdout-v5-028": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "support_ticket"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  },
+  "holdout-v5-029": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "odata_collection"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required",
+   "after_fix": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     403,
+     "odata_error_en"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   }
+  },
+  "holdout-v5-030": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "account_tree"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required",
+   "after_fix": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "gql_partial_leak"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   }
+  },
+  "holdout-v5-031": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "related_items"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  },
+  "holdout-v5-032": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "hal_collection"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required",
+   "after_fix": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     404,
+     "problem_not_found"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   }
+  },
+  "holdout-v5-033": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": false
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "odata_entity"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  },
+  "holdout-v5-034": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "notifications"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  },
+  "holdout-v5-035": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "html_state_blob"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  },
+  "holdout-v5-036": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "b64_own_record"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  },
+  "holdout-v5-037": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "html_card_b"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  },
+  "holdout-v5-038": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "gql_connection"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  },
+  "holdout-v5-039": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "long_odata_a_only"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  },
+  "holdout-v5-040": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     200,
+     "public_profile"
+    ],
+    "acct_A": [
+     200,
+     "public_profile"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "public"
+  }
+ }
+}

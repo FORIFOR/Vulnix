@@ -1,0 +1,9 @@
+{
+  "label_set": "holdout_v5",
+  "reviewer_kind": "human",
+  "reviewer": "",
+  "completed": "",
+  "labels_sha256": "",
+  "disagreements_resolved": false,
+  "notes": "Human review of tests/evaluation/fixtures/holdout_v5_truth.json (docs/evaluation/HOLDOUT_V5.md, rationale in docs/evaluation/holdout_v5_author_notes.md). Copy to label_signoff_holdout_v5.json only as the reviewer."
+}
