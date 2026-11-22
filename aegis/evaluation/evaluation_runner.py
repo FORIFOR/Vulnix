@@ -62,7 +62,8 @@ class Harness:
 _FIXTURES = Path(__file__).resolve().parents[2] / "tests/evaluation/fixtures"
 LABELS_FILE = _FIXTURES / "holdout_truth.json"
 # Every held-out set has its own label file and needs its own human sign-off.
-LABEL_FILES = {"holdout": LABELS_FILE, "holdout_v2": _FIXTURES / "holdout_v2_truth.json"}
+LABEL_FILES = {"holdout": LABELS_FILE, "holdout_v2": _FIXTURES / "holdout_v2_truth.json",
+               "holdout_v3": _FIXTURES / "holdout_v3_truth.json"}
 
 
 def labels_sha256(label_set: str = "holdout") -> str | None:
@@ -119,7 +120,8 @@ def run_case(case_id: str, case: dict, method: str, harness: Harness, *, truth: 
              limits: PlanLimits = LIMITS, label_signoff: dict | None = None,
              label_set: str | None = None) -> dict:
     # the label set follows the case: a second-set case is never gated by the first set's sign-off
-    own_set = "holdout_v2" if case_id.startswith("holdout-v2-") else "holdout"
+    own_set = ("holdout_v3" if case_id.startswith("holdout-v3-")
+               else "holdout_v2" if case_id.startswith("holdout-v2-") else "holdout")
     if label_set is not None and label_set != own_set:
         raise ValueError("the label set does not match the case")
     label_set = own_set

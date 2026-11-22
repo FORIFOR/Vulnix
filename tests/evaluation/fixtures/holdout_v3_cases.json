@@ -1,0 +1,735 @@
+{
+ "_about": "Third held-out diagnosis set (behaviour only, no labels). Created 2026-11-22 after the judge of docs/evaluation/JUDGE_OWNER_RECORD.md was frozen (hashes in docs/evaluation/HOLDOUT_V3.md), and before that judge was run on it. owner_spec is the owner's written requirement (null: none written). Accounts: anon (no header), acct_A (test caller), acct_B (owner). Labels live in holdout_v3_truth.json, which no diagnosis code reads.",
+ "cases": {
+  "holdout-v3-001": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "redacted_b"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  },
+  "holdout-v3-002": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "html_denied_de"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  },
+  "holdout-v3-003": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     200,
+     "json_refusal_ja"
+    ],
+    "acct_A": [
+     200,
+     "json_refusal_ja"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  },
+  "holdout-v3-004": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "count_only"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  },
+  "holdout-v3-005": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "json_refusal_nested"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  },
+  "holdout-v3-006": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "own_record_env"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  },
+  "holdout-v3-007": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     200,
+     "env_data_b"
+    ],
+    "acct_A": [
+     403,
+     "forbidden"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  },
+  "holdout-v3-008": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "camel_b"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "unspecified"
+  },
+  "holdout-v3-009": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "trunc_b_noid"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  },
+  "holdout-v3-010": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     429,
+     "rate_limited"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  },
+  "holdout-v3-011": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "env_list_b"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required",
+   "after_fix": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "b_html_table"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   }
+  },
+  "holdout-v3-012": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     200,
+     "echo_refusal"
+    ],
+    "acct_A": [
+     200,
+     "echo_refusal"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  },
+  "holdout-v3-013": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "cross_record"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required",
+   "after_fix": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "html_denied_de"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   }
+  },
+  "holdout-v3-014": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "field_hint"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  },
+  "holdout-v3-015": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "b64_b"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  },
+  "holdout-v3-016": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     200,
+     "b_html_table"
+    ],
+    "acct_A": [
+     200,
+     "b_html_table"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required",
+   "after_fix": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "env_data_b"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   }
+  },
+  "holdout-v3-017": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     429,
+     "rate_limited"
+    ],
+    "acct_A": [
+     503,
+     "html_unavailable"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  },
+  "holdout-v3-018": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "env_data_b"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required",
+   "after_fix": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     404,
+     "not_found"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   }
+  },
+  "holdout-v3-019": {
+   "root": {
+    "status": 200,
+    "body": "docs_with_link",
+    "link_header": false
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "cross_record"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  },
+  "holdout-v3-020": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "env_data_b"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": null
+  },
+  "holdout-v3-021": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     200,
+     "html_login_ja"
+    ],
+    "acct_A": [
+     200,
+     "html_login_ja"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  },
+  "holdout-v3-022": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "cross_record"
+    ],
+    "acct_B": [
+     401,
+     "session_expired"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  },
+  "holdout-v3-023": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "camel_b"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required",
+   "after_fix": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "json_refusal_ja"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   }
+  },
+  "holdout-v3-024": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     200,
+     "html_spa_redirect"
+    ],
+    "acct_A": [
+     200,
+     "html_spa_redirect"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  },
+  "holdout-v3-025": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     200,
+     "cross_record"
+    ],
+    "acct_A": [
+     200,
+     "cross_record"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "public"
+  },
+  "holdout-v3-026": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "escaped_b"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  },
+  "holdout-v3-027": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     200,
+     "html_login_fr"
+    ],
+    "acct_A": [
+     200,
+     "html_login_fr"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  },
+  "holdout-v3-028": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "trunc_refusal"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  },
+  "holdout-v3-029": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "trunc_b_ids"
+    ],
+    "acct_B": [
+     200,
+     "owner_record"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  },
+  "holdout-v3-030": {
+   "root": {
+    "status": 200,
+    "body": "docs",
+    "link_header": true
+   },
+   "resource": {
+    "anon": [
+     401,
+     "not_authenticated"
+    ],
+    "acct_A": [
+     200,
+     "json_refusal_ja"
+    ],
+    "acct_B": [
+     200,
+     "html_login_ja"
+    ]
+   },
+   "owner_spec": "authentication_required"
+  }
+ }
+}
