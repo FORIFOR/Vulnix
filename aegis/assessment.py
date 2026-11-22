@@ -410,6 +410,10 @@ class AssessmentService:
         self.audit.anchor_check()
         self.audit.listeners.append(self._on_audit)
         self._lock = threading.RLock()
+        # removals applied while the audit log could not be written (docs/AUDIT_BEFORE_STATE.md)
+        self._audit_gaps = self._load_audit_gaps()
+        self._flushing_gaps = False
+        self._platform_audit = None      # set by the server when the platform log is separate
         self.lab_port = lab_port
         self.verify_seconds = verify_seconds
         self._allowed_hosts: set[str] = {"lab.test", "api.lab.test"}
@@ -848,28 +852,36 @@ class AssessmentService:
             self.ledger.ownership_proofs.pop(name, None)
             self.ledger.assets.pop(name, None)
 
-    def _commit_grant_locked(self, before: dict, what: str, audited: str | None = None) -> None:
+    def _commit_grant_locked(self, before: dict, what: str) -> None:
         """Commit a change that grants authority, now. If it cannot be written it
-        is rolled back: nothing was granted, in memory or on disk. `audited` names the
-        audit-first record of this grant, which is then marked as not committed."""
+        is rolled back: nothing was granted, in memory or on disk."""
         try:
             self._sync_ledger_assets_locked()
             self.ledger.commit_or_rollback(before)
         except LedgerError:
             self._persist_error = self.ledger.error or "LedgerError"
-            if audited:
-                self._grant_not_committed(audited, "ledger")
             raise ValueError(f"権限台帳に保存できないため、{what}は記録されませんでした。保存先を確認してください") from None
+
+    def _commit_audited_grant_locked(self, before: dict, what: str, audited: str) -> None:
+        """`_commit_grant_locked` for a grant whose record was written first: if the
+        commit fails, that record is marked as not committed."""
+        try:
+            self._commit_grant_locked(before, what)
+        except Exception:
+            self._grant_not_committed(audited, "ledger")
+            raise
 
     # ---- audit before state (docs/AUDIT_BEFORE_STATE.md) -------------------------------
     def _audit_first(self, event: str, **fields) -> dict:
         """Write-ahead for a change that grants authority or starts work: recorded
         BEFORE anything changes. No record, no change: the caller changes nothing."""
         try:
-            return self.audit.record(event, **fields)
+            entry = self.audit.record(event, **fields)
         except Exception as e:  # noqa: BLE001 - disk, chain or anchor: all mean "not recorded"
             raise AuditWriteFailed("監査ログに記録できないため、この操作は行いませんでした（何も変更していません）。"
                                    "監査ログの保存先を確認してください") from e
+        self._flush_audit_gaps()
+        return entry
 
     def _grant_not_committed(self, event: str, reason: str) -> None:
         """An audit-first record whose change was then not applied (best effort)."""
@@ -884,12 +896,79 @@ class AssessmentService:
         returned, for the caller to report once the change is complete."""
         try:
             self.audit.record(event, **fields)
-            return None
         except Exception as e:  # noqa: BLE001
+            self._note_audit_gap(event, fields)
             err = AuditWriteFailed("操作は反映しました（権限の取り消し・停止は有効です）が、監査ログに記録できませんでした。"
                                    "監査ログの保存先を確認してください", applied=True)
             err.__cause__ = e
             return err
+        self._flush_audit_gaps()
+        return None
+
+    # ---- audit gaps: removals applied while the audit log could not be written ----------
+    def _audit_gaps_path(self) -> Path:
+        return self.data_dir / "audit-gaps.json"
+
+    def _load_audit_gaps(self) -> list[dict]:
+        try:
+            data = json.loads(self._audit_gaps_path().read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return []
+        except (OSError, ValueError):
+            return [{"event": "audit_gaps.unreadable", "fields": {}, "at": time.time(), "log": "org"}]
+        return [g for g in data if isinstance(g, dict) and isinstance(g.get("event"), str)] \
+            if isinstance(data, list) else []
+
+    def _save_audit_gaps_locked(self) -> None:
+        path = self._audit_gaps_path()
+        if not self._audit_gaps:
+            with contextlib.suppress(FileNotFoundError):
+                path.unlink()
+            return
+        tmp = path.with_suffix(".tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(self._audit_gaps, ensure_ascii=False, default=str))
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+
+    def _note_audit_gap(self, event: str, fields: dict, log: str = "org") -> None:
+        """A removal or stop was applied but its record could not be written: keep that
+        fact (on disk, shown in the status) until the record can be written. Never raises."""
+        with self._lock:
+            self._audit_gaps.append({"event": event, "fields": dict(fields), "at": time.time(), "log": log})
+            try:
+                self._save_audit_gaps_locked()
+            except OSError:
+                pass            # still shown from memory
+
+    def _flush_audit_gaps(self) -> None:
+        """Called after a record was written: write the deferred records too."""
+        with self._lock:
+            if not self._audit_gaps or self._flushing_gaps:
+                return
+            self._flushing_gaps = True
+            try:
+                left = []
+                for gap in self._audit_gaps:
+                    log = self.audit if gap.get("log", "org") == "org" else self._platform_audit
+                    try:
+                        if log is None:
+                            raise LookupError("platform audit log not attached")
+                        log.record("audit.gap_recorded", gap_event=gap["event"], fields=gap.get("fields") or {},
+                                   applied_at=gap.get("at"), log=gap.get("log", "org"))
+                    except Exception:  # noqa: BLE001 - still not writable: kept for later
+                        left.append(gap)
+                self._audit_gaps = left
+                with contextlib.suppress(OSError):
+                    self._save_audit_gaps_locked()
+            finally:
+                self._flushing_gaps = False
+
+    def audit_gaps(self) -> list[dict]:
+        with self._lock:
+            return [{"event": g["event"], "at": g.get("at"), "log": g.get("log", "org")} for g in self._audit_gaps]
 
     def _authority_reduced_locked(self, host: str) -> None:
         """Every withdrawal of authority goes through here, BEFORE it is committed:
@@ -906,7 +985,8 @@ class AssessmentService:
         with self._lock:
             return {"unstopped_workers": self._unstopped_now_locked(),
                     "persistence_error": self._persist_error,
-                    "authority_notice": self._authority_notice}
+                    "authority_notice": self._authority_notice,
+                    "audit_gaps": self.audit_gaps()}
 
     def _note_unstopped_locked(self, host: str, survivors: list[int], pool) -> None:
         # a confined run still being probed or torn down (its process is not a pid
@@ -1202,6 +1282,13 @@ class AssessmentService:
             if ok:
                 live = self._verified_external_hosts.get(host)
                 if live is not None:
+                    # audit first: addresses accepted without a record are not accepted
+                    # (and nothing is sent to them)
+                    try:
+                        self._audit_first("asset.addresses_reverified", host=host, method=method, new_addresses=new,
+                                          known_addresses=sorted(known), detail=detail)
+                    except AuditWriteFailed as e:
+                        raise NetworkError(f"{host} の新しい接続先を監査ログに記録できないため、送信を中止しました") from e
                     live["verified_addresses"] = sorted(known | set(addrs))
                     live["addresses_verified_at"] = time.time()
                     if new and not first_use and not address_bound:
@@ -1217,10 +1304,11 @@ class AssessmentService:
                 self._revoke_real_service_locked(
                     host, note="解決先のIPアドレスが変わり、所有を再確認できませんでした。所有確認からやり直してください")
                 self._save_state_locked()
-        self.audit.record("asset.addresses_reverified" if ok else "asset.scope_revoked_address_change",
-                          host=host, method=method, new_addresses=new, known_addresses=sorted(known),
-                          detail=detail)
         if not ok:
+            # a revocation: applied above whatever the audit log does, then recorded (a
+            # missing record is kept as an audit gap and written later)
+            self._audit_reduction("asset.scope_revoked_address_change", host=host, method=method,
+                                  new_addresses=new, known_addresses=sorted(known), detail=detail)
             raise NetworkError(
                 f"{host} が所有確認されていないアドレス {', '.join(new)} に解決されました。"
                 "所有を再確認できなかったため、診断範囲を取り消しました")
@@ -1545,8 +1633,7 @@ class AssessmentService:
                               sha256=src["sha256"])
             before = self.ledger.snapshot()
             self._accepted_profiles[profile_id] = src["sha256"]
-            self._commit_grant_locked(before, "プロファイルの承認",      # committed, or not accepted at all
-                                      audited="l2.profile_accepted")
+            self._commit_audited_grant_locked(before, "プロファイルの承認", "l2.profile_accepted")  # committed, or not accepted at all
             self.l2 = fresh
             self._apply_profile_acceptance_locked()
             self._save_state_locked()
@@ -2592,10 +2679,15 @@ class AssessmentService:
             if client_sha is not None and client_sha != pv["first_request_sha256"]:
                 raise ValueError("承認したフィンガープリントが preview と一致しません")
             max_calls = min(int(approval["max_calls"]), int(pv.get("budget_max_calls", approval["max_calls"])))
+            # audit first: a preview is approved (and used up) only once that is recorded
+            self.audit.record("planner_llm.approved", actor=actor, preview_id=approval["preview_id"],
+                              max_calls=max_calls, first_request_sha256=pv["first_request_sha256"])
             pv.update(used=True, approved_by=actor, approved_at=time.time(), approved_max_calls=max_calls)
-            self._save_previews_locked(previews)          # single use, before anything is sent
-        self.audit.record("planner_llm.approved", actor=actor, preview_id=approval["preview_id"],
-                          max_calls=max_calls, first_request_sha256=pv["first_request_sha256"])
+            try:
+                self._save_previews_locked(previews)      # single use, before anything is sent
+            except Exception:
+                self._grant_not_committed("planner_llm.approved", "preview_store")
+                raise
         return {"max_calls": max_calls, "first_request_sha256": pv["first_request_sha256"]}
 
     def _note_gateway_run(self, gateway, actor: str) -> None:
@@ -3402,7 +3494,7 @@ class AssessmentService:
                 # the card is written anywhere. If it cannot be, nothing was
                 # registered - and nothing else in the ledger is disturbed.
                 try:
-                    self._commit_grant_locked(ledger_before, "登録", audited="asset.challenge_issued")
+                    self._commit_audited_grant_locked(ledger_before, "登録", "asset.challenge_issued")
                 except ValueError:
                     if existing is None:
                         self._extra_assets = [x for x in self._extra_assets if x is not asset_rec]
@@ -3526,6 +3618,9 @@ class AssessmentService:
                 self.audit.record("asset.reverification_denied", actor=actor, host=host, method=method,
                                   reason="approver role required for a host that holds authority")
                 raise ApproverRequired("所有確認済みの対象の再確認には承認責任者の権限が必要です")
+            if verified and target_asset is None:
+                # removed while the lookup ran: nothing to record a proof for
+                raise ValueError("確認中に対象の登録が削除されました。対象URLを登録し直してください")
             if verified:
                 # audit first: a proof that cannot be recorded is not kept
                 self._audit_first("asset.ownership_verified", actor=actor, host=host, method=method,
@@ -3547,7 +3642,7 @@ class AssessmentService:
                         "port": int(target_asset.get("port") or parsed["port"]),
                     }
                     try:
-                        self._commit_grant_locked(before, "所有確認", audited="asset.ownership_verified")
+                        self._commit_audited_grant_locked(before, "所有確認", "asset.ownership_verified")
                     except ValueError:
                         target_asset["ownership_verified"] = False
                         target_asset.pop("ownership_proof", None)
@@ -3704,7 +3799,7 @@ class AssessmentService:
                 "proof_method": proof["method"],
                 "proof_verified_at": proof["verified_at"],
             }
-            self._commit_grant_locked(before, "範囲確認", audited="asset.scope_confirmed")
+            self._commit_audited_grant_locked(before, "範囲確認", "asset.scope_confirmed")
             self._authority_notice = None      # the operator has re-established authority since
             target_asset["authorization_ref"] = auth_ref
             target_asset["scope_confirmed"] = True
@@ -3930,6 +4025,7 @@ class AssessmentService:
                 "l2_separation_required": self._separation_required(),
                 "persistence_error": self._persist_error,
                 "authority_notice": self._authority_notice,
+                "audit_gaps": self.audit_gaps(),
                 "authority_generation": self.ledger.generation,
                 "unstopped_workers": self._unstopped_now_locked(),
                 "failure": self.a.failure,
@@ -3972,14 +4068,19 @@ class AssessmentService:
             self._ensure_active_window_locked()
             # audit first: a run that cannot be recorded does not start
             self._audit_first("assessment.start_requested", actor=actor)
-            self.a.started_by = actor
-            self._new_scan_usage_locked()
-            if getattr(self, "_may_switch_lab", True):
-                set_lab_mode("vulnerable")
-            self._set_state("running")
-            self._thread = threading.Thread(target=self._run, args=(self._run_generation,),
-                                            daemon=True, name="runner")
-            self._thread.start()
+            try:
+                self.a.started_by = actor
+                self._new_scan_usage_locked()
+                if getattr(self, "_may_switch_lab", True):
+                    set_lab_mode("vulnerable")
+                self._set_state("running")
+                self._thread = threading.Thread(target=self._run, args=(self._run_generation,),
+                                                daemon=True, name="runner")
+                self._thread.start()
+            except Exception:
+                # refused after its record: the record is marked as not started
+                self._grant_not_committed("assessment.start_requested", "refused_after_record")
+                raise
 
     def restart(self, actor: str = "operator") -> dict:
         """Reset a completed, stopped, or failed assessment and immediately start a fresh live run."""
@@ -4000,19 +4101,24 @@ class AssessmentService:
             self._ensure_active_window_locked()
             # audit first: a run that cannot be recorded does not start (nothing is cleared)
             self._audit_first("assessment.restarted", actor=actor, target=self.a.asset["name"])
-            self._reset_workspace_locked(end_stop=True)      # the one explicit way out of an emergency stop
-            if self._unstopped_now_locked():
-                # (an emergency stop, if there was one, is still in force)
-                raise ValueError("前の診断のWorkerの停止を確認できなかったため、新しい診断は開始できません")
-            self._ensure_active_window_locked()
-            self._new_scan_usage_locked()
-            if getattr(self, "_may_switch_lab", True):
-                set_lab_mode("vulnerable")
-            self.a.started_by = actor
-            self._set_state("running")
-            self._thread = threading.Thread(target=self._run, args=(self._run_generation,),
-                                            daemon=True, name="runner")
-            self._thread.start()
+            try:
+                self._reset_workspace_locked(end_stop=True)  # the one explicit way out of an emergency stop
+                if self._unstopped_now_locked():
+                    # (an emergency stop, if there was one, is still in force)
+                    raise ValueError("前の診断のWorkerの停止を確認できなかったため、新しい診断は開始できません")
+                self._ensure_active_window_locked()
+                self._new_scan_usage_locked()
+                if getattr(self, "_may_switch_lab", True):
+                    set_lab_mode("vulnerable")
+                self.a.started_by = actor
+                self._set_state("running")
+                self._thread = threading.Thread(target=self._run, args=(self._run_generation,),
+                                                daemon=True, name="runner")
+                self._thread.start()
+            except Exception:
+                # refused after its record (these checks need the reset): marked as not started
+                self._grant_not_committed("assessment.restarted", "refused_after_record")
+                raise
         return self.snapshot()
 
     def pause(self, actor: str) -> None:
@@ -4025,6 +4131,7 @@ class AssessmentService:
             try:
                 self.gateway.pause(actor)
             except Exception as e:  # noqa: BLE001
+                self._note_audit_gap("pause", {"actor": actor})
                 audit_error = AuditWriteFailed("一時停止しました（有効です）が、監査ログに記録できませんでした。"
                                                "監査ログの保存先を確認してください", applied=True)
                 audit_error.__cause__ = e
@@ -4075,6 +4182,11 @@ class AssessmentService:
             if self._unstopped_now_locked():
                 # e.g. a confined run left behind earlier: not a confirmed stop either
                 report["confirmed"] = False
+            if not getattr(rep, "audited", True):
+                # the stop happened; its record is kept as an audit gap and written later
+                self._note_audit_gap("emergency_stop", {"actor": actor, "killed": rep.killed_pids,
+                                                        "survivors": rep.survivors})
+                report["audit_incomplete"] = True
             self.a.stop_report = report
             for p in self.a.phases:
                 if p["status"] in ("pending", "running"):
@@ -4369,7 +4481,7 @@ class AssessmentService:
                 tool="reproduction_probe",
                 level="L2",
             )
-            apr = self.approval_store.approve(actor, "eng_demo", "lab", "safe_reproduction")
+            # audit first: the approval reference exists only once it is recorded
             self.audit.record(
                 "approval.approved",
                 request=f"req_{finding_id}",
@@ -4380,6 +4492,7 @@ class AssessmentService:
                 requested_by=(l2_request or {}).get("requested_by"),
                 separation_of_duties=self._separation_required(),
             )
+            apr = self.approval_store.approve(actor, "eng_demo", "lab", "safe_reproduction")
             try:
                 res, ev = self._exec(
                     "reproduction_probe",
@@ -4429,9 +4542,10 @@ class AssessmentService:
                 tool="reproduction_probe",
                 level="L2",
             )
-            apr = self.approval_store.approve(actor, "eng_demo", "lab", "safe_reproduction")
+            # audit first: the approval reference exists only once it is recorded
             self.audit.record("approval.approved", request=f"req_{finding_id}", actor=actor,
                               action="safe_reproduction", risk_level="L2")
+            apr = self.approval_store.approve(actor, "eng_demo", "lab", "safe_reproduction")
             res, ev = self._exec("reproduction_probe", "safe_reproduction",
                                  {"url": url, "check": "idor"}, approval_id=apr)
             if res and ev:
@@ -4468,9 +4582,10 @@ class AssessmentService:
                 tool="reproduction_probe",
                 level="L2",
             )
-            apr = self.approval_store.approve(actor, "eng_demo", "lab", "safe_reproduction")
+            # audit first: the approval reference exists only once it is recorded
             self.audit.record("approval.approved", request=f"req_{finding_id}", actor=actor,
                               action="safe_reproduction", risk_level="L2")
+            apr = self.approval_store.approve(actor, "eng_demo", "lab", "safe_reproduction")
             res, ev = self._exec("reproduction_probe", "safe_reproduction",
                                  {"url": url, "check": "sqli"}, approval_id=apr)
             if res and ev:
@@ -4507,9 +4622,10 @@ class AssessmentService:
                 tool="reproduction_probe",
                 level="L2",
             )
-            apr = self.approval_store.approve(actor, "eng_demo", "lab", "safe_reproduction")
+            # audit first: the approval reference exists only once it is recorded
             self.audit.record("approval.approved", request="req_f_banner", actor=actor,
                               action="safe_reproduction", risk_level="L2")
+            apr = self.approval_store.approve(actor, "eng_demo", "lab", "safe_reproduction")
             res, ev = self._exec("reproduction_probe", "safe_reproduction",
                                  {"url": url, "check": "cve_2021_41773"}, approval_id=apr)
             if res and ev:
@@ -4672,11 +4788,12 @@ class AssessmentService:
                         # under separation of duties every L2 run - a re-run too - needs a
                         # fresh request by a different person, used up by this run
                         and (rerun_request := self._take_rerun_request(fid, chk, actor)) is not None):
-                    apr_dn = self.approval_store.approve(actor, "eng_demo", "lab", "safe_reproduction")
+                    # audit first: the approval reference exists only once it is recorded
                     self.audit.record("approval.approved", request=f"req_reverify_{fid}", actor=actor,
                                       action="safe_reproduction", check=chk, risk_level="L2",
                                       requested_by=rerun_request.get("requested_by"),
                                       separation_of_duties=self._separation_required())
+                    apr_dn = self.approval_store.approve(actor, "eng_demo", "lab", "safe_reproduction")
                     try:
                         r_dn, e_dn = self._exec("reproduction_probe", "safe_reproduction",
                                                 {"url": url, "check": chk}, approval_id=apr_dn)
@@ -4696,9 +4813,10 @@ class AssessmentService:
                         })
         else:
             # 2. Re-run L2 reproduction probes with human approver authorization
-            apr_ref = self.approval_store.approve(actor, "eng_demo", "lab", "safe_reproduction")
+            # audit first: the approval reference exists only once it is recorded
             self.audit.record("approval.approved", request="req_reverify", actor=actor,
                               action="safe_reproduction", risk_level="L2")
+            apr_ref = self.approval_store.approve(actor, "eng_demo", "lab", "safe_reproduction")
             res_cve, ev_cve = self._exec("reproduction_probe", "safe_reproduction",
                                          {"url": url, "check": "cve_2021_41773"},
                                          approval_id=apr_ref)
@@ -5232,9 +5350,10 @@ class AssessmentService:
             return None, None
         auto_approval = approval_id is None
         if auto_approval:
-            approval_id = self.approval_store.approve(approval_actor, "eng_demo", "lab", action)
+            # audit first: the approval reference exists only once it is recorded
             self.audit.record("approval.auto", actor=approval_actor, action=action,
                               tool=tool, risk_level="L1")
+            approval_id = self.approval_store.approve(approval_actor, "eng_demo", "lab", action)
         try:
             try:
                 tok = self.tokens.issue(self.a.engagement, "lab", action, tool, approval_id,

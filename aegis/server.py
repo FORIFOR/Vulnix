@@ -121,13 +121,35 @@ def audit_first(audit, event: str, **fields) -> None:
         raise AuditWriteFailed(AUDIT_REFUSED) from e
 
 
-def audit_after(audit, event: str, **fields) -> bool:
-    """The record of an applied removal; False if it could not be written."""
+def audit_after(audit, event: str, gap_svc=None, gap_log: str = "org", **fields) -> bool:
+    """The record of an applied removal; False if it could not be written. A missing
+    record is kept as an audit gap of `gap_svc` (shown in its status, written later)."""
     try:
         audit.record(event, **fields)
-        return True
     except Exception:  # noqa: BLE001
+        if gap_svc is not None:
+            gap_svc._note_audit_gap(event, fields, log=gap_log)
         return False
+    if gap_svc is not None:
+        gap_svc._flush_audit_gaps()
+    return True
+
+
+class _Journal:
+    """Audit-first record of a store change (`journal=` of OrgStore / OperatorStore).
+    If the store then fails to save, the record is marked as not committed."""
+
+    def __init__(self, audit, event: str, **fields):
+        self.audit, self.event, self.fields, self.written = audit, event, fields, False
+
+    def __call__(self, **more):
+        audit_first(self.audit, self.event, **self.fields, **more)
+        self.written = True
+
+    def not_committed(self, reason: str) -> None:
+        if self.written:
+            with contextlib.suppress(Exception):
+                self.audit.record("grant.not_committed", grant=self.event, reason=reason)
 
 
 def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_auth: bool | None = None,
@@ -136,6 +158,9 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
     default_svc = svc
     # where account-level events go: a platform log when there are organizations
     paudit = tenancy.platform_audit if tenancy is not None else svc.audit
+    # audit gaps of account-level removals are kept by the default service and written
+    # to the platform log once it is writable again
+    svc._platform_audit = paudit
     limits_lock = threading.Lock()
     signup_times: list[float] = []
     signup_attempts: list[float] = []
@@ -830,7 +855,8 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             sess = self._session()
             if not sess:
                 return self._json(401, {"error": "ログインが必要です"})
-            reduces_power = p.endswith(("/emergency-stop", "/pause")) or p == "/api/operators/reset-mfa" or (
+            # (removing another account's second factor weakens its sign-in: not a reduction)
+            reduces_power = p.endswith(("/emergency-stop", "/pause")) or (
                 p == "/api/operators/roles" and isinstance(body.get("roles"), list)
                 and set(map(str, body["roles"])) <= set(ops.roles_of(str(body.get("name", "")).strip())))
             if not ops.trusted() and not reduces_power:
@@ -976,14 +1002,18 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             return self._dispatch(p, body, sess)
 
         def _change_password(self, body, sess):
+            journal = _Journal(paudit, "auth.password_changed", actor=sess.operator)
             try:
+                # audit first: a password that cannot be recorded is not changed
                 ops.change_password(sess.operator, str(body.get("current", "")),
-                                    str(body.get("new", "")), keep_token=sess.token)
+                                    str(body.get("new", "")), keep_token=sess.token, journal=journal)
+            except AuditWriteFailed as e:
+                return self._json(503, {"error": str(e), "applied": False, "audit_failed": True})
             except LockedOut as e:
                 return self._locked(e, sess.operator)
             except AuthError as e:
+                journal.not_committed("not_saved")
                 return self._self_failure(sess, e)
-            paudit.record("auth.password_changed", actor=sess.operator)
             return self._json(200, {"ok": True})
 
         def _totp_enroll(self, sess):
@@ -1005,14 +1035,18 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             return self._json(200, {"ok": True, "mfa_enabled": True})
 
         def _totp_disable(self, body, sess):
+            journal = _Journal(paudit, "auth.mfa_disabled", actor=sess.operator)
             try:
+                # audit first: the second factor is not removed without its record
                 ops.disable_totp(sess.operator, str(body.get("current", "")), str(body.get("code", "")) or None,
-                                 session_token=sess.token)
+                                 session_token=sess.token, journal=journal)
+            except AuditWriteFailed as e:
+                return self._json(503, {"error": str(e), "applied": False, "audit_failed": True})
             except LockedOut as e:
                 return self._locked(e, sess.operator)
             except AuthError as e:
+                journal.not_committed("not_saved")
                 return self._self_failure(sess, e)
-            paudit.record("auth.mfa_disabled", actor=sess.operator)
             return self._json(200, {"ok": True, "mfa_enabled": False})
 
         def _locked(self, e: LockedOut, name: str):
@@ -1117,18 +1151,21 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                                                                    "tenancy.invite_accepted",
                                                                    actor=sess.operator, roles=r))
                         else:
-                            org_id = tenancy.store.create_org(f"{display or sess.operator} の組織", sess.operator)
-                            tenancy.service(org_id).audit.record("tenancy.org_created", actor=sess.operator)
+                            self._create_org(f"{display or sess.operator} の組織", sess.operator)
                     except (TenancyError, AuditWriteFailed) as e:
                         tenancy_warning = str(e)     # signed in all the same; no organization yet
             finally:
                 signup_lock.release()
-            paudit.record("auth.registered", actor=sess.operator, roles=list(sess.roles),
-                             self_registered=True,
-                             requested_roles_ignored=[r for r in asked if r not in sess.roles])
+            # self-registration stays record-after (docs/AUDIT_BEFORE_STATE.md); a record that
+            # cannot be written is kept as an audit gap and the response stays clean
+            registered = audit_after(paudit, "auth.registered", gap_svc=default_svc, gap_log="platform",
+                                     actor=sess.operator, roles=list(sess.roles), self_registered=True,
+                                     requested_roles_ignored=[r for r in asked if r not in sess.roles])
             cookie = (f"{COOKIE}={sess.token}; HttpOnly; SameSite=Strict; Path=/; "
                       f"Max-Age={int(sess.expires - time.time())}")
             out = {"session": self._public_session(sess)}
+            if not registered:
+                out["audit_failed"] = True
             if tenancy is not None:
                 out["orgs"] = tenancy.store.orgs_of(sess.operator)
                 if tenancy_warning:
@@ -1166,7 +1203,8 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                                   attested_unchanged=set(before) == set(after))
                 except Exception as e:  # noqa: BLE001
                     if set(after) <= set(before) and set(after) != set(before):
-                        unrecorded.append(e)
+                        unrecorded.append({"actor": sess.operator, "target": target,
+                                           "before": list(before), "after": list(after)})
                         return
                     raise AuditWriteFailed(AUDIT_REFUSED) from e
             try:
@@ -1179,6 +1217,8 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                                  requested=roles[:8], error=str(e)[:200])
                 return self._admin_failure(sess, e, 409)
             if unrecorded:
+                # noted after the store's lock is released
+                default_svc._note_audit_gap("operator.roles_changed", unrecorded[0], log="platform")
                 return self._json(503, {"error": AUDIT_MISSING, "applied": True, "audit_failed": True,
                                         "name": target, "roles": list(after)})
             return self._json(200, {"name": target, "roles": list(after)})
@@ -1189,14 +1229,23 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             if "admin" not in sess.roles:
                 paudit.record("operator.recovery_denied", actor=sess.operator, target=target[:64], action=p)
                 return self._json(403, {"error": "この操作には管理者の権限が必要です"})
+            # audit first: both weaken another account's protection (a lock, a second
+            # factor), so neither happens without its record
+            if p == "/api/operators/unlock":
+                journal = _Journal(paudit, "operator.unlocked", actor=sess.operator, target=target[:64])
+            else:
+                journal = _Journal(paudit, "operator.mfa_reset", actor=sess.operator, target=target[:64])
             try:
                 if p == "/api/operators/unlock":
-                    changed = ops.unlock(target, actor=sess.operator, session_token=sess.token)
-                    paudit.record("operator.unlocked", actor=sess.operator, target=target[:64], was_locked=changed)
+                    changed = ops.unlock(target, actor=sess.operator, session_token=sess.token,
+                                         journal=lambda was: journal(was_locked=was))
                 else:
-                    changed = ops.reset_totp(target, actor=sess.operator, session_token=sess.token)
-                    paudit.record("operator.mfa_reset", actor=sess.operator, target=target[:64], had_mfa=changed)
+                    changed = ops.reset_totp(target, actor=sess.operator, session_token=sess.token,
+                                             journal=lambda had: journal(had_mfa=had))
+            except AuditWriteFailed as e:
+                return self._json(503, {"error": str(e), "applied": False, "audit_failed": True})
             except AuthError as e:
+                journal.not_committed("not_saved")
                 return self._admin_failure(sess, e, 409)
             return self._json(200, {"name": target, "changed": changed})
 
@@ -1235,19 +1284,36 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         return self._json(200, {"invites": tenancy.store.invites(org_id)})
                     return self._json(404, {"error": "not found"})
 
+        def _create_org(self, name, owner):
+            """Audit first, in the platform log (the organization's own log does not
+            exist yet); then a copy in the new organization's log (best effort)."""
+            journal = _Journal(paudit, "tenancy.org_created", actor=owner)
+            try:
+                org_id = tenancy.store.create_org(name, owner, journal=lambda oid: journal(org=oid))
+            except (TenancyError, AuditWriteFailed):
+                raise
+            except Exception:
+                journal.not_committed("not_saved")
+                raise
+            with contextlib.suppress(Exception):
+                tenancy.service(org_id).audit.record("tenancy.org_created", actor=owner)
+            return org_id
+
         def _tenancy_post(self, p, body, sess):
             st = tenancy.store
+            journals: list[_Journal] = []      # audit-first records of this request
             try:
                 if p == "/api/orgs":
-                    org_id = st.create_org(str(body.get("name", "")), sess.operator)
-                    tenancy.service(org_id).audit.record("tenancy.org_created", actor=sess.operator)
+                    org_id = self._create_org(str(body.get("name", "")), sess.operator)
                     return self._json(200, {"org": {"id": org_id, "name": st.org_name(org_id)},
                                             "orgs": st.orgs_of(sess.operator)})
                 if p == "/api/invites/accept":
-                    org_id, roles = st.accept_invite(
-                        str(body.get("token", "")), sess.operator,
-                        journal=lambda oid, r: audit_first(tenancy.service(oid).audit, "tenancy.invite_accepted",
-                                                           actor=sess.operator, roles=r))
+                    def accept_journal(oid, r):
+                        journals.append(_Journal(tenancy.service(oid).audit, "tenancy.invite_accepted",
+                                                 actor=sess.operator, roles=r))
+                        journals[-1]()
+                    org_id, roles = st.accept_invite(str(body.get("token", "")), sess.operator,
+                                                     journal=accept_journal)
                     return self._json(200, {"org": {"id": org_id, "name": st.org_name(org_id)}, "roles": roles,
                                             "orgs": st.orgs_of(sess.operator)})
                 org_id = self._org_for_management(sess, body)
@@ -1261,16 +1327,21 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         try:
                             audit.record("tenancy.member_roles_changed", actor=sess.operator, target=target,
                                          before=before, after=after)
+                            journals.append(_Journal(audit, "tenancy.member_roles_changed"))
+                            journals[-1].written = True
                         except Exception as e:  # noqa: BLE001
                             # a removal: no new organization role (viewer carries no power)
                             # and no new service role
                             if (set(service_roles(after)) <= set(service_roles(before))
                                     and set(after) <= set(before) | {"viewer"} and set(after) != set(before)):
-                                unrecorded.append(e)
+                                unrecorded.append({"actor": sess.operator, "target": target,
+                                                   "before": before, "after": after})
                                 return
                             raise AuditWriteFailed(AUDIT_REFUSED) from e
                     st.set_roles(org_id, sess.operator, target, body.get("roles"), journal=journal)
                     if unrecorded:
+                        osvc_gap = tenancy.service(org_id)
+                        osvc_gap._note_audit_gap("tenancy.member_roles_changed", unrecorded[0])
                         return self._json(503, {"error": AUDIT_MISSING, "applied": True, "audit_failed": True,
                                                 "members": st.members(org_id)})
                     return self._json(200, {"members": st.members(org_id)})
@@ -1278,23 +1349,24 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     target = str(body.get("name", "")).strip()
                     st.remove_member(org_id, sess.operator, target)
                     # a removal: applied whatever the audit log does, then recorded
-                    if not audit_after(audit, "tenancy.member_removed", actor=sess.operator, target=target):
+                    if not audit_after(audit, "tenancy.member_removed", gap_svc=tenancy.service(org_id),
+                                       actor=sess.operator, target=target):
                         return self._json(503, {"error": AUDIT_MISSING, "applied": True, "audit_failed": True,
                                                 "members": st.members(org_id)})
                     return self._json(200, {"members": st.members(org_id)})
                 if p == "/api/orgs/invites":
                     hours = body.get("ttl_hours", 168)
                     ttl = float(hours) * 3600 if isinstance(hours, (int, float)) else 168 * 3600
+                    journals.append(_Journal(audit, "tenancy.invite_created", actor=sess.operator))
                     iid, token = st.create_invite(
                         org_id, sess.operator, body.get("roles"), ttl,
-                        journal=lambda i, r: audit_first(audit, "tenancy.invite_created", actor=sess.operator,
-                                                         invite=i, roles=r))
+                        journal=lambda i, r: journals[-1](invite=i, roles=r))
                     # the token is shown once to the inviter; only its hash is stored
                     return self._json(200, {"id": iid, "token": token, "invites": st.invites(org_id)})
                 if p == "/api/orgs/invites/revoke":
                     st.revoke_invite(org_id, sess.operator, str(body.get("id", "")))
-                    if not audit_after(audit, "tenancy.invite_revoked", actor=sess.operator,
-                                       invite=str(body.get("id", ""))[:40]):
+                    if not audit_after(audit, "tenancy.invite_revoked", gap_svc=tenancy.service(org_id),
+                                       actor=sess.operator, invite=str(body.get("id", ""))[:40]):
                         return self._json(503, {"error": AUDIT_MISSING, "applied": True, "audit_failed": True,
                                                 "invites": st.invites(org_id)})
                     return self._json(200, {"invites": st.invites(org_id)})
@@ -1302,6 +1374,12 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 return self._json(503, {"error": str(e), "applied": False, "audit_failed": True})
             except TenancyError as e:
                 return self._json(403 if "権限" in str(e) or "メンバー" in str(e) else 400, {"error": str(e)})
+            except OSError:
+                # the store could not be saved: nothing changed (OrgStore._tx), so an
+                # audit-first record of this request is marked as not committed
+                for j in journals:
+                    j.not_committed("not_saved")
+                return self._json(500, {"error": "組織の情報を保存できなかったため、変更していません"})
             return self._json(404, {"error": "not found"})
 
         def _clear_cookie(self):
@@ -1692,18 +1770,23 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 # the withdrawal stands, but it is not reported as completed
                 return self._json(500, {"error": str(e), "stop_confirmed": False})
             except Exception as e:
+                # a missing audit record: 503, saying whether the change was applied (a
+                # removal or stop) or not (a grant); the message is fixed text
+                audit_failed = isinstance(e, AuditWriteFailed)
+                status = 503 if audit_failed else 409
+                extra = {"applied": e.applied, "audit_failed": True} if audit_failed else {}
                 if tenancy is not None and p in PLATFORM_POST_ROUTES:
                     # Platform jobs have no tenant grant to bind. Their exception
                     # text can contain operational details, so return a fixed error.
                     return self._authorized_platform_read(
-                        sess, lambda: self._json(409, {"error": "操作を完了できませんでした"}),
+                        sess, lambda: self._json(status, {"error": "操作を完了できませんでした", **extra}),
                         admin=p == "/api/l2-profiles/accept")
                 if tenancy is not None and not getattr(self, "_bound_org", None):
-                    return self._json(409, {"error": "操作を完了できませんでした"})
+                    return self._json(status, {"error": "操作を完了できませんでした", **extra})
                 error = str(e)
                 return self._authorized_org_read(
                     sess, getattr(self, "_bound_org", DEFAULT_ORG),
-                    lambda _: self._json(409, {"error": error}),
+                    lambda _: self._json(status, {"error": error, **extra}),
                     reader=p.endswith(("/pause", "/emergency-stop")))
             snapshot = svc.snapshot()
             return self._authorized_org_read(

@@ -42,6 +42,7 @@ class StopReport:
     killed_pids: list[int] = field(default_factory=list)
     survivors: list[int] = field(default_factory=list)
     confirmed: bool = False
+    audited: bool = True        # False: the stop happened but its record could not be written
 
 
 def deadline_report(tool_name: str, result: WorkerResult) -> WorkerResult:
@@ -464,6 +465,7 @@ class Gateway:
             # not undo it, but the stop is then not reported as confirmed
             audited = False
         mark("5_persist_audit")
+        rep.audited = audited
         rep.confirmed = not rep.survivors and not busy and audited and self.audit.verify()
         mark("6_confirmed" if rep.confirmed else "6_NOT_CONFIRMED")
         return rep

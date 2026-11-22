@@ -126,8 +126,15 @@ class AuditLog:
         self._prev = digest
         if anchored:
             # The record is on disk, but it does not count until its head is anchored:
-            # the caller gets an error and does not apply the change.
-            self._anchor_publish_locked(len(entries) + 1, digest)
+            # the caller gets an error and does not apply the change. The log says so.
+            try:
+                self._anchor_publish_locked(len(entries) + 1, digest)
+            except BaseException:
+                try:
+                    self._append_locked("audit.record_not_anchored", {"event": event, "hash": digest})
+                except Exception:  # noqa: BLE001 - best effort: the caller is refused anyway
+                    pass
+                raise
         return entry
 
     # ---- anchor (aegis/audit_anchor.py, docs/AUDIT_ANCHOR.md) -------------------------

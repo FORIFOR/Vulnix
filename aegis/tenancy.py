@@ -169,7 +169,9 @@ class OrgStore:
         return org
 
     # ---- writes ----------------------------------------------------------------
-    def create_org(self, name: str, owner: str) -> str:
+    def create_org(self, name: str, owner: str, *, journal=None) -> str:
+        """`journal(org_id)` is called before the organization exists; if it raises,
+        none is created (audit before state)."""
         name = str(name or "").strip()[:60]
         if not name:
             raise TenancyError("組織名を入力してください")
@@ -180,6 +182,8 @@ class OrgStore:
             if len(self._data["orgs"]) >= self._max_orgs:
                 raise TenancyError("現在、新しい組織を作成できません（β版の受け入れ上限に達しました）")
             oid = "org_" + secrets.token_hex(6)
+            if journal is not None:
+                journal(oid)
             self._data["orgs"][oid] = {"name": name, "created_at": self._clock(), "created_by": owner,
                                        "members": {owner: ["owner"]}}
             return oid

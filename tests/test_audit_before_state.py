@@ -15,6 +15,7 @@ import json
 import os
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -25,12 +26,13 @@ from unittest.mock import patch
 from aegis.assessment import AssessmentService
 from aegis.audit import AuditLog, AuditWriteFailed
 from aegis.gateway import State
-from aegis.operators import OperatorStore, hash_password
+from aegis.operators import OperatorStore, generate_totp_secret, hash_password, totp_code
 from aegis.server import make_handler
 from aegis.tenancy import OrgStore, TenantRegistry, default_members_from
 from tests import test_real_service as rs
 
 LAB_PORT = 18097
+MFA_SECRET = generate_totp_secret()
 
 
 @contextlib.contextmanager
@@ -135,8 +137,9 @@ class TestLabReductionsAreNeverBlocked(LabServiceCase):
     def test_a_rejection_stands_when_its_record_cannot_be_written(self):
         self.svc.a.approvals["req_t"] = {"id": "req_t", "status": "pending", "action": "safe_reproduction",
                                          "risk_level": "L2"}
-        with audit_fails("approval.rejected"), self.assertRaises(AuditWriteFailed):
+        with audit_fails("approval.rejected"), self.assertRaises(AuditWriteFailed) as cm:
             self.svc.decide_approval("req_t", "reject", "appr")
+        self.assertIs(cm.exception.applied, True)
         self.assertEqual(self.svc.a.approvals["req_t"]["status"], "rejected")
 
 
@@ -199,17 +202,19 @@ class TestRealServiceGrantsAreAuditedFirst(rs.RealServiceBase):
 
     def test_a_failed_recheck_revokes_even_when_its_record_cannot_be_written(self):
         self.onboard()
-        with audit_fails("asset.ownership_failed"), self.assertRaises(AuditWriteFailed):
+        with audit_fails("asset.ownership_failed"), self.assertRaises(AuditWriteFailed) as cm:
             self.svc.verify_asset_ownership(url_or_host=self.url, method="dns_txt", actor="appr",
                                             dns_lookup=lambda n: [])
+        self.assertIs(cm.exception.applied, True)
         self.assertNotIn(rs.HOST, self.svc._verified_external_hosts)
         self.assertNotIn(rs.HOST, self.svc._ownership_proofs)
 
     def test_deleting_an_asset_revokes_even_when_its_record_cannot_be_written(self):
         self.onboard()
         aid = self.svc.snapshot()["asset"]["id"]
-        with audit_fails("asset.deleted"), self.assertRaises(AuditWriteFailed):
+        with audit_fails("asset.deleted"), self.assertRaises(AuditWriteFailed) as cm:
             self.svc.delete_asset(aid, actor="appr")
+        self.assertIs(cm.exception.applied, True)
         self.assertNotIn(rs.HOST, self.svc._verified_external_hosts)
         self.assertNotIn(rs.HOST, [a["name"] for a in self.svc.assets()])
 
@@ -232,8 +237,8 @@ class TestProfileAcceptanceIsAuditedFirst(rs.RealServiceBase):
         self.assertNotIn("sample_api", self.svc.ledger.snapshot().get("accepted_profiles", {}))
 
 
-class TestHttpMembershipAndRoles(unittest.TestCase):
-    """Organization and account roles over HTTP (no new routes)."""
+class HttpCase(unittest.TestCase):
+    """A control plane with organizations, over HTTP (no new routes)."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -243,7 +248,9 @@ class TestHttpMembershipAndRoles(unittest.TestCase):
             {"name": "padmin", "roles": ["operator", "approver", "admin"],
              "password_hash": hash_password("padmin-pw-1")},
             {"name": "padmin2", "roles": ["operator", "admin"], "password_hash": hash_password("padmin-pw-2")},
-            {"name": "plain", "roles": ["operator"], "password_hash": hash_password("plain-pw-12")}]}))
+            {"name": "plain", "roles": ["operator"], "password_hash": hash_password("plain-pw-12")},
+            {"name": "mfauser", "roles": ["operator"], "password_hash": hash_password("mfauser-pw-1"),
+             "totp_secret": MFA_SECRET}]}))
         with patch.dict(os.environ, {}, clear=True):
             self.svc = AssessmentService(d, LAB_PORT, verify_seconds=30)
         self.ops = OperatorStore(seed)
@@ -298,6 +305,11 @@ class TestHttpMembershipAndRoles(unittest.TestCase):
         code, body = self.req(who, "/auth/login", {"name": name, "password": pw})
         self.assertEqual(code, 200, body)
         return who
+
+
+
+class TestHttpMembershipAndRoles(HttpCase):
+    """Organization and account roles over HTTP."""
 
     def test_an_invitation_is_not_created_without_its_record(self):
         a = self.signup("alice")
@@ -364,6 +376,8 @@ class TestHttpMembershipAndRoles(unittest.TestCase):
         self.assertEqual(code, 503, body)
         self.assertIs(body.get("applied"), True)
         self.assertEqual(set(self.ops.roles_of("padmin2")), {"operator"})
+        self.assertEqual([(g["event"], g["log"]) for g in self.svc.system_status()["audit_gaps"]],
+                         [("operator.roles_changed", "platform")])
 
     def test_a_scan_start_over_http_is_refused_without_its_record(self):
         a = self.signup("alice")
@@ -373,6 +387,234 @@ class TestHttpMembershipAndRoles(unittest.TestCase):
             code, body = self.req(a, "/assessments/scan_001/start", {}, org=org)
         self.assertNotEqual(code, 200, body)
         self.assertEqual(osvc.a.state, "idle")
+
+
+# ---- review follow-up (O5 second round) ------------------------------------------------
+class TestFollowUpLab(LabServiceCase):
+    def gaps(self, svc=None):
+        return [g["event"] for g in (svc or self.svc).system_status()["audit_gaps"]]
+
+    def test_a_restart_refused_after_its_record_is_marked_not_started(self):
+        with patch.object(self.svc, "_new_scan_usage_locked", side_effect=ValueError("refused late")):
+            with self.assertRaises(ValueError):
+                self.svc.restart("op")
+        self.assertEqual(self.svc.a.state, "idle")
+        self.assertEqual(events(self.svc, "grant.not_committed")[-1]["grant"], "assessment.restarted")
+
+    def test_a_start_refused_after_its_record_is_marked_not_started(self):
+        with patch.object(self.svc, "_new_scan_usage_locked", side_effect=ValueError("refused late")):
+            with self.assertRaises(ValueError):
+                self.svc.start(actor="op")
+        self.assertEqual(self.svc.a.state, "idle")
+        self.assertEqual(events(self.svc, "grant.not_committed")[-1]["grant"], "assessment.start_requested")
+
+    def test_a_missing_pause_record_is_kept_until_it_can_be_written(self):
+        with self.svc._lock:
+            self.svc.a.state = "running"
+        with audit_fails("pause"), self.assertRaises(AuditWriteFailed) as cm:
+            self.svc.pause("op")
+        self.assertIs(cm.exception.applied, True)
+        self.assertEqual(self.gaps(), ["pause"])
+        self.assertEqual([g["event"] for g in self.svc.snapshot()["audit_gaps"]], ["pause"])
+        # survives a restart of the control plane
+        self.svc.workers.kill_all()
+        self.svc.close()
+        with patch.dict(os.environ, {}, clear=True):
+            self.svc = AssessmentService(self.dir, LAB_PORT, verify_seconds=0.1)
+        self.svc._may_switch_lab = False
+        self.assertEqual(self.gaps(), ["pause"])
+        # the next record that can be written also writes the deferred one
+        self.svc.register_asset(name="later.lab-alias", kind="Webアプリケーション", environment="検証環境")
+        self.assertEqual(self.gaps(), [])
+        deferred = events(self.svc, "audit.gap_recorded")
+        self.assertEqual(deferred[-1]["gap_event"], "pause")
+        self.assertEqual(deferred[-1]["fields"]["actor"], "op")
+
+    def test_a_stop_whose_record_cannot_be_written_leaves_a_gap(self):
+        with self.svc._lock:
+            self.svc.a.state = "running"
+        with audit_fails("emergency_stop"):
+            report = self.svc.emergency_stop("op")
+        self.assertEqual(self.svc.a.state, "stopped")
+        self.assertFalse(report["confirmed"])
+        self.assertTrue(report["audit_incomplete"])
+        self.assertIn("emergency_stop", self.gaps())
+
+    def test_an_automatic_approval_is_withdrawn_when_its_record_fails(self):
+        with audit_fails("approval.auto"), self.assertRaises(Exception):
+            self.svc._exec("reproduction_probe", "safe_reproduction",
+                           {"url": self.svc.a.target_url, "check": "idor"})
+        self.assertEqual(self.svc.approval_store._approvals, {})
+
+
+    def test_a_preview_is_not_used_up_without_its_record(self):
+        with self.svc._lock:
+            pv = self.svc._load_previews_locked()
+            pv["pv_test"] = {"id": "pv_test", "run_by": "op", "at": time.time(),
+                             "first_request_sha256": "b" * 64, "budget_max_calls": 6, "used": False}
+            self.svc._save_previews_locked(pv)
+        with audit_fails("planner_llm.approved"), self.assertRaises(OSError):
+            self.svc._take_preview_approval("appr", {"preview_id": "pv_test", "max_calls": 2}, ("approver",))
+        with self.svc._lock:
+            self.assertFalse(self.svc._load_previews_locked()["pv_test"]["used"])
+
+
+class TestFollowUpAuditLog(unittest.TestCase):
+    def test_a_record_whose_anchor_cannot_be_published_is_marked(self):
+        from aegis.audit_anchor import AnchorError
+        with tempfile.TemporaryDirectory() as d:
+            log = AuditLog(Path(d) / "audit.jsonl")
+            log._anchor = object()                     # an anchor is configured ...
+            with patch.object(AuditLog, "_anchor_verify_locked", return_value=0), \
+                    patch.object(AuditLog, "_anchor_publish_locked", side_effect=AnchorError("anchor_unavailable")):
+                with self.assertRaises(AnchorError):     # ... but cannot take the new head
+                    log.record("approval.approved", request="req_x", actor="appr")
+            log._anchor = None
+            names = [e["event"] for e in log.entries()]
+            self.assertEqual(names[-2:], ["approval.approved", "audit.record_not_anchored"])
+            self.assertEqual(log.entries()[-1]["fields"]["event"], "approval.approved")
+
+
+class TestFollowUpRealService(rs.RealServiceBase):
+    def test_test_accounts_do_not_stay_live_when_they_cannot_be_saved(self):
+        self.onboard()
+        with patch.object(self.svc.secrets, "_save_all", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                self.svc.configure_asset_secrets(host=rs.HOST, tokens={"user_a_token": rs.TOKEN_A,
+                                                                       "user_b_token": rs.TOKEN_B}, actor="appr")
+        self.assertFalse(self.svc.secrets.has_any_token(rs.HOST))
+        self.assertEqual(events(self.svc, "grant.not_committed")[-1]["grant"], "secrets.configured")
+
+    def test_new_addresses_are_not_accepted_without_their_record(self):
+        from aegis.ownership import challenge_for_host
+        self.onboard()
+        ch = challenge_for_host(rs.HOST, self.svc._ownership_secret)
+        self.svc._proof_dns_lookup = self._token_lookup(ch)
+        ext = self.svc._verified_external_hosts[rs.HOST]
+        before = list(ext.get("verified_addresses") or [])
+        with audit_fails("asset.addresses_reverified"), self.assertRaises(Exception):
+            self.svc._require_addresses_covered_by_proof(rs.HOST, ext, ["203.0.113.9"])
+        self.assertEqual(list(self.svc._verified_external_hosts[rs.HOST].get("verified_addresses") or []), before)
+
+    def test_no_ownership_record_for_an_asset_removed_during_the_lookup(self):
+        ch = self.svc.issue_ownership_challenge(url=self.url, approver="appr")["challenge"]
+        token = self._token_lookup(ch)
+
+        def lookup_while_removed(name):
+            with self.svc._lock:
+                self.svc._extra_assets = [x for x in self.svc._extra_assets if x.get("name") != rs.HOST]
+            return token(name)
+        with self.assertRaises(ValueError):
+            self.svc.verify_asset_ownership(url_or_host=self.url, method="dns_txt", actor="appr",
+                                            dns_lookup=lookup_while_removed)
+        self.assertEqual(events(self.svc, "asset.ownership_verified"), [])
+        self.assertNotIn(rs.HOST, self.svc._ownership_proofs)
+
+    def test_a_missing_delete_record_is_kept_until_it_can_be_written(self):
+        self.onboard()
+        aid = self.svc.snapshot()["asset"]["id"]
+        with audit_fails("asset.deleted"), self.assertRaises(AuditWriteFailed) as cm:
+            self.svc.delete_asset(aid, actor="appr")
+        self.assertIs(cm.exception.applied, True)
+        self.assertEqual([g["event"] for g in self.svc.system_status()["audit_gaps"]], ["asset.deleted"])
+
+
+class TestFollowUpHttp(HttpCase):
+    def org_svc(self, who):
+        return self.reg.service(who["orgs"][0]["id"])
+
+    def test_pause_over_http_reports_503_applied(self):
+        a = self.signup("alice")
+        org = a["orgs"][0]["id"]
+        osvc = self.org_svc(a)
+        with osvc._lock:
+            osvc.a.state = "running"
+        with audit_fails("pause"):
+            code, body = self.req(a, "/assessments/scan_001/pause", {}, org=org)
+        self.assertEqual(code, 503, body)
+        self.assertIs(body.get("applied"), True)
+        self.assertEqual(osvc.a.state, "paused")
+
+    def test_a_grant_refused_over_http_reports_503_not_applied(self):
+        a = self.signup("alice")
+        org = a["orgs"][0]["id"]
+        with audit_fails("assessment.start_requested"):
+            code, body = self.req(a, "/assessments/scan_001/start", {}, org=org)
+        self.assertEqual(code, 503, body)
+        self.assertIs(body.get("applied"), False)
+
+    def test_a_member_removal_without_record_leaves_a_gap(self):
+        a, b = self.signup("alice"), self.signup("bobby")
+        org = a["orgs"][0]["id"]
+        token = self.req(a, "/orgs/invites", {"roles": ["runner"]}, org=org)[1]["token"]
+        self.assertEqual(self.req(b, "/invites/accept", {"token": token})[0], 200)
+        with audit_fails("tenancy.member_removed"):
+            self.assertEqual(self.req(a, "/orgs/members/remove", {"name": "bobby"}, org=org)[0], 503)
+        self.assertEqual([g["event"] for g in self.org_svc(a).system_status()["audit_gaps"]],
+                         ["tenancy.member_removed"])
+
+    def test_an_invitation_whose_store_save_fails_is_marked_not_committed(self):
+        a = self.signup("alice")
+        org = a["orgs"][0]["id"]
+        with patch.object(OrgStore, "_save", side_effect=OSError("disk full")):
+            code, body = self.req(a, "/orgs/invites", {"roles": ["viewer"]}, org=org)
+        self.assertEqual(code, 500, body)
+        self.assertEqual(self.reg.store.invites(org), [])
+        self.assertEqual(events(self.org_svc(a), "grant.not_committed")[-1]["grant"], "tenancy.invite_created")
+
+    def test_mfa_reset_is_refused_without_its_record(self):
+        admin = self.login("padmin", "padmin-pw-1")
+        with audit_fails("operator.mfa_reset"):
+            code, body = self.req(admin, "/operators/reset-mfa", {"name": "mfauser"})
+        self.assertEqual(code, 503, body)
+        self.assertIs(body.get("applied"), False)
+        self.assertTrue(self.ops.totp_enabled("mfauser"))
+
+    def test_unlock_is_refused_without_its_record(self):
+        with self.ops._lock:
+            _, key = self.ops._slot_locked("plain", assign=True)
+            self.ops._locked_until[key] = time.time() + 600
+        admin = self.login("padmin", "padmin-pw-1")
+        with audit_fails("operator.unlocked"):
+            code, body = self.req(admin, "/operators/unlock", {"name": "plain"})
+        self.assertEqual(code, 503, body)
+        self.assertGreater(self.ops._locked_until.get(key, 0), time.time())
+
+    def test_mfa_disable_is_refused_without_its_record(self):
+        who = {}
+        code, body = self.req(who, "/auth/login", {"name": "mfauser", "password": "mfauser-pw-1",
+                                                   "code": totp_code(MFA_SECRET)})
+        self.assertEqual(code, 200, body)
+        with audit_fails("auth.mfa_disabled"):
+            code, body = self.req(who, "/auth/totp/disable", {"current": "mfauser-pw-1",
+                                                               "code": totp_code(MFA_SECRET, time.time() + 30)})
+        self.assertEqual(code, 503, body)
+        self.assertTrue(self.ops.totp_enabled("mfauser"))
+
+    def test_a_password_change_is_refused_without_its_record(self):
+        who = self.login("plain", "plain-pw-12")
+        with audit_fails("auth.password_changed"):
+            code, body = self.req(who, "/auth/password", {"current": "plain-pw-12", "new": "plain-pw-NEW-34"})
+        self.assertEqual(code, 503, body)
+        self.login("plain", "plain-pw-12")              # the old password still works
+
+    def test_an_org_is_not_created_without_its_record(self):
+        a = self.signup("alice")
+        before = len(self.reg.store.orgs_of("alice"))
+        with audit_fails("tenancy.org_created"):
+            code, body = self.req(a, "/orgs", {"name": "B社"})
+        self.assertEqual(code, 503, body)
+        self.assertEqual(len(self.reg.store.orgs_of("alice")), before)
+
+    def test_sign_up_answers_cleanly_when_its_records_cannot_be_written(self):
+        with audit_fails("tenancy.org_created", "auth.registered"):
+            who = {}
+            code, body = self.req(who, "/auth/register", {"name": "carol", "password": "carol-Passw0rd!"})
+        self.assertEqual(code, 200, body)
+        self.assertEqual(body["orgs"], [])               # no organization without its record
+        self.assertIn("warning", body)
+        self.assertIs(body.get("audit_failed"), True)
+        self.assertIn("auth.registered", [g["event"] for g in self.svc.system_status()["audit_gaps"]])
 
 
 if __name__ == "__main__":

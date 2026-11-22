@@ -173,8 +173,17 @@ class EncryptedSecretStore:
         rec["updated_by"] = actor
         if before_commit is not None:
             before_commit(self.public_status(asset_id, profile, rec=rec))
+        previous = self._cache.get(asset_id)
         self._cache[asset_id] = rec
-        self._save_all()
+        try:
+            self._save_all()
+        except BaseException:
+            # not on disk: not stored at all (the new tokens must not stay usable in memory)
+            if previous is None:
+                self._cache.pop(asset_id, None)
+            else:
+                self._cache[asset_id] = previous
+            raise
         return self.public_status(asset_id, profile)
 
     def clear_credentials(self, asset_id: str) -> bool:
