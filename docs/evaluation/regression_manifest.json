@@ -7,5 +7,25 @@
     "tests/fixtures/access_control_loop_truth.json": "6fc4ba769b985a63bd857b24e8a7d430460cead6fe7fd13cf37e733922920adb",
     "tests/fixtures/access_control_loop_owner_specs.json": "462fe0aa10788a6b9d25cfd7a9daef32c272d011fed4550735dae7fd31e591e6"
   },
-  "rule": "frozen 2026-11-21: these 16 conditions are for development and regression only. A change to them needs a new manifest in its own PR."
+  "rule": "frozen 2026-11-21: these 16 conditions are for development and regression only. A change to them needs a new manifest in its own PR.",
+  "development_cases": {
+    "added": "2026-11-22",
+    "why": "the judge change in docs/evaluation/FAILURE_ANALYSIS.md was derived from these held-out cases; they are development / regression cases from now on and never score a judge or model change (docs/evaluation/JUDGE_OWNER_RECORD.md)",
+    "case_ids": [
+      "holdout-001",
+      "holdout-007",
+      "holdout-010",
+      "holdout-013",
+      "holdout-014",
+      "holdout-017",
+      "holdout-029",
+      "holdout-030"
+    ],
+    "files": {
+      "tests/evaluation/fixtures/holdout_cases.json": "bc5a083c83543b1d3986d5a6aa8fc6bdaea8aa66514172254c21f870cb149b24",
+      "tests/evaluation/fixtures/holdout_lab.py": "a716f2589f24b1a06841c3196f1769c8e65b92182b1f7ac189ffea187261f48d",
+      "tests/evaluation/fixtures/holdout_truth.json": "c82b58104ddc0881603052b504aca617bb56002f29d8bd50e320f1a8dc33114f",
+      "tests/evaluation/fixtures/holdout_truth_independent.json": "49fdd9fb78e56440dc18606c608bcfd785e31d10be327415bc7cbe144a872a8a"
+    }
+  }
 }

@@ -137,10 +137,12 @@ export const DIAG_RULE: Record<string, string> = {
   intended_public: "所有者の仕様で「公開」とされている",
   denied: "別のアカウントの要求は拒否された（401・403・404）",
   own_resource_only: "返ったのは、要求した本人の資源だった",
+  owner_record_absent: "200 が返ったが、所有者 B の対照で得た識別子も B の名前もなく、B の記録ではなかった",
   control_failed: "所有者本人でも資源を確認できず、比べられなかった",
   unrecognised_answer: "応答の形が想定と違い、判断できなかった",
   denied_without_auth: "認証なしの要求は拒否された",
   answered_without_auth_unverified: "認証なしで 200 が返ったが、保護された資源そのものかは確かめられない",
+  owner_record_absent_without_auth: "認証なしで 200 が返ったが、所有者 B の識別子も名前もなく、B の記録ではなかった",
   check_not_relevant: "この検査では、この仮説を判断できない",
 };
 
@@ -171,6 +173,12 @@ export const DIAG_ATTR_VALUE: Record<string, Record<string, string>> = {
     proven: "再現 成立", not_reproduced: "再現せず", unverified: "再現 未確認", incomplete: "再現 未完了",
   },
   own_resource: { true: "本人の資源だった", false: "" },
+  owner_identifiers_present: { true: "所有者 B の識別子あり", false: "所有者 B の識別子なし" },
+  owner_account_present: { true: "所有者 B の名前あり", false: "所有者 B の名前なし" },
+  body_kind: {
+    json_refusal: "本文 拒否の JSON", json_data: "本文 データの JSON", html_login: "本文 ログイン画面", html_refusal: "本文 拒否の画面", html_other: "本文 その他の HTML",
+    text: "本文 テキスト", empty: "本文なし", partial: "本文の一部しか読めていない",
+  },
   present: { true: "リンクあり", false: "リンクなし" },
   account_link: { true: "アカウント資源へのリンクあり", false: "アカウント資源へのリンクなし" },
   answer: { unreadable: "応答を読めない" },

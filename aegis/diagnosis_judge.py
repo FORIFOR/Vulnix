@@ -17,23 +17,41 @@ other_account_read  x  l2_idor
         owner spec missing / unspecified                   -> needs_spec  (spec_missing)
     acct_A gets 401/403/404 while the owner gets 200       -> contradicted (denied)
     acct_A gets 200 with its own resource (no marker)      -> contradicted (own_resource_only)
+    acct_A gets 200 carrying none of the owner control's identifiers (resource id,
+        secret marker) nor the owner's account name, read whole (the Worker's own
+        response_truncated is False), and the body is only a refusal: an error-only JSON
+        object or a page that is nothing but a sign-in form / a refusal heading
+                                                            -> contradicted (owner_record_absent)
+        (JSON data, a page with other content, or an envelope with data stays inconclusive:
+         "not vulnerable" is never inferred from the absence of identifiers alone)
     anything else                                          -> inconclusive (unrecognised_answer)
 
 unauthenticated_exposure  x  l1_http_probe (one GET without any account)
     401/403/404                                            -> contradicted (denied_without_auth)
-    200                                                    -> inconclusive (answered_without_auth_unverified)
-        (a status alone does not show that the protected resource itself was served)
+    200, the same comparison with the lab owner's control
+        identifiers and account name                       -> contradicted (owner_record_absent_without_auth)
+    200 otherwise                                          -> inconclusive (answered_without_auth_unverified)
+        (a status alone does not show that the protected resource itself was served; the
+        owner's identifiers in the answer are not taken as proof either: nothing here supports)
     anything else                                          -> inconclusive (unrecognised_answer)
+
+The two owner-record rules only ever contradict. Their risk is a miss: an answer with the
+owner's data stripped of every identifier and of the owner's name, as JSON, is closed
+(docs/evaluation/JUDGE_OWNER_RECORD.md).
 
 A check that does not test the claim                       -> inconclusive (check_not_relevant)
 """
 from __future__ import annotations
 
+import html
+import json
+import re
 import weakref
 from dataclasses import dataclass
+from urllib.parse import unquote
 
 from .diagnosis_state import DiagnosisState
-from .evidence import reproduction_verdict
+from .evidence import REPRODUCTION_MARKERS, reproduction_verdict
 
 _ISSUER = object()          # only this module holds it
 # The verdict objects this module made. A copy (dataclasses.replace, copy.copy) carries the
@@ -41,6 +59,56 @@ _ISSUER = object()          # only this module holds it
 _ISSUED: "weakref.WeakSet[Verdict]" = weakref.WeakSet()
 DENIED = (401, 403, 404)
 REQUIREMENTS = frozenset({"authentication_required", "public", "unspecified"})
+
+# The owner control of the registered lab. The lab Worker accepts B's control only when it
+# carries exactly these (aegis/workers/reproduction_probe.py run_lab_check), and the
+# diagnosis loop runs only on that lab, so an L1 GET is compared with them.
+LAB_OWNER_IDENTIFIERS = ("res_b_001", REPRODUCTION_MARKERS["idor"])
+LAB_OWNER_ACCOUNTS = ("acct_B",)
+L2_EXCERPT = 4096           # characters of A's answer the lab Worker keeps
+L1_BODY_CAP = 4096          # bytes of the body the L1 probe reads
+# body kinds an absent owner record may be read from (everything else stays unsettled)
+# Only answers that are themselves a refusal or a sign-in page count as "the owner's record is
+# absent". Arbitrary JSON data without the owner's identifiers does NOT: it may still be the
+# owner's data in another shape (holdout-v2-006), and calling that "not vulnerable" would be a
+# confident miss. Such answers stay inconclusive.
+ABSENCE_BODY_KINDS = ("json_refusal", "html_login", "html_refusal")
+# words a sign-in page uses
+_SIGN_IN = ("sign in", "log in", "login", "signin", "ログイン", "サインイン")
+# words a refusal page's own title / h1 uses
+_REFUSAL = ("forbidden", "access denied", "unauthorized", "unauthorised", "permission denied", "not authorized",
+            "403", "401", "アクセスが拒否", "権限がありません")
+_REFUSAL_WORDS = ("forbidden", "denied", "unauthorized", "unauthorised", "not allowed", "not permitted",
+                  "permission denied", "no permission", "access_denied", "not_authenticated", "login required")
+
+
+def _json_refusal(parsed) -> bool:
+    """A JSON body that is only an error / refusal object - never data in an envelope.
+    Every value must be a short scalar (or, for `errors`, a list of {code, message}
+    scalars), success flags must not say success, and the refusal words are looked for
+    in the error fields only (a word inside data, e.g. "permission": "admin", is data)."""
+    if not isinstance(parsed, dict) or not parsed:
+        return False
+    allowed = {"error", "errors", "message", "detail", "code", "status", "error_description", "request_id",
+               "ok", "success", "reason"}
+    if set(map(str, parsed)) - allowed:
+        return False
+    scalar = (str, int, float, bool, type(None))
+    for k, v in parsed.items():
+        if k == "errors":
+            if not (isinstance(v, list) and all(isinstance(e, dict) and set(map(str, e)) <= {"code", "message", "detail"}
+                                                and all(isinstance(x, scalar) for x in e.values()) for e in v)):
+                return False
+        elif not isinstance(v, scalar) or (isinstance(v, str) and len(v) > 200):
+            return False
+    if parsed.get("ok") is True or parsed.get("success") is True:
+        return False
+    words = [str(parsed.get(k, "")).lower() for k in ("error", "message", "detail", "reason", "error_description",
+                                                       "status", "code")]
+    words += [str(x).lower() for e in parsed.get("errors") or [] for x in e.values()]
+    text = " ".join(words)
+    return any(w in text for w in _REFUSAL_WORDS) or any(str(parsed.get(k)) in ("401", "403")
+                                                          for k in ("code", "status"))
 
 
 @dataclass(frozen=True, eq=False)
@@ -62,22 +130,138 @@ def _verdict(hid: str, to: str, evidence, rule: str) -> Verdict:
 
 
 # ---- fixed parsers: Worker output -> short observation attributes -------------------
+def _texts(body) -> list[str]:
+    """The answer as lower-case text, also with HTML entities, %-escapes and JSON escapes
+    undone, so an identifier hidden by an encoding still counts as present."""
+    if isinstance(body, str):
+        try:
+            parsed = json.loads(body)
+        except ValueError:
+            parsed = None
+        raw = [body] + ([json.dumps(parsed, ensure_ascii=False)] if isinstance(parsed, (dict, list)) else [])
+    else:
+        raw = [json.dumps(body, ensure_ascii=False)]
+    out = []
+    for t in raw:
+        js = re.sub(r"\\u([0-9a-fA-F]{4})", lambda m: chr(int(m.group(1), 16)), t)   # JavaScript \uXXXX
+        out += [t, html.unescape(t), unquote(t), unquote(html.unescape(t)), js, html.unescape(js)]
+    return [t.lower() for t in out]
+
+
+def _mentions(body, needles) -> bool:
+    texts = _texts(body)
+    return any(n.lower() in t for n in needles for t in texts)
+
+
+def _body_kind(body, complete: bool) -> str:
+    """json_refusal | json_data | html_login | html_refusal | html_other | text | empty | partial."""
+    if not complete:
+        return "partial"
+    if isinstance(body, str):
+        try:
+            parsed = json.loads(body)
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, (dict, list)):
+            body = parsed
+    if isinstance(body, (dict, list)):
+        return "json_refusal" if _json_refusal(body) else "json_data"
+    if not isinstance(body, str) or not body.strip():
+        return "empty"
+    low = body.strip().lower()
+    if not (low.startswith("<") and ("<html" in low or "<!doctype html" in low)):
+        return "text"
+    # The page must BE a sign-in or refusal page, not merely contain one (a profile page
+    # with a "change password" form, "Last login: ..." text, a heading that mentions
+    # "unauthorized"): one form with a password field and little else, or a refusal
+    # heading with little else. Anything more stays html_other (not decided).
+    forms = re.findall(r"<form\b[^>]*>(.*?)(?:</form>|$)", low, re.S)
+    outside = re.sub(r"<form\b.*?(?:</form>|$)", " ", low, flags=re.S)
+    outside = re.sub(r"<(script|style)\b.*?</\1>", " ", outside, flags=re.S)
+    visible = " ".join(re.sub(r"<[^>]+>", " ", outside).split())
+    if len(forms) == 1 and len(visible) <= 300:
+        form = forms[0]
+        password = re.search(r"""type\s*=\s*["']?password""", form)
+        # a sign-in form asks who you are (a user / email field, or says sign in / log in);
+        # a "change password" form on someone's own page does not
+        who = (re.search(r"""<input\b(?![^>]*type\s*=\s*["']?(?:password|hidden|submit))[^>]*>""", form)
+               or any(w in form + " " + visible for w in _SIGN_IN))
+        changing = any(w in form for w in ("change password", "new password", "current password",
+                                           "パスワードの変更", "新しいパスワード"))
+        if password and who and not changing:
+            return "html_login"
+    heading = " ".join(re.findall(r"<(?:title|h1)[^>]*>(.*?)</(?:title|h1)>", low, re.S))
+    if not forms and any(w in heading for w in _REFUSAL) and len(visible) <= 300:
+        return "html_refusal"
+    return "html_other"
+
+
+def _owner_facts(body, complete: bool, identifiers, accounts):
+    """(owner identifiers present, owner account name present, body kind) of one answer."""
+    return _mentions(body, identifiers), _mentions(body, accounts), _body_kind(body, complete)
+
+
+def _control_identifiers(control) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """The identifiers and account names of the owner's own control answer (Worker output)."""
+    if not isinstance(control, dict):
+        return (), ()
+    ids = tuple(v for v in (control.get("resource_id"), control.get("confidential_marker"))
+                if isinstance(v, str) and v.strip())
+    accounts = tuple(v for v in (control.get("resource_owner"), control.get("caller_account"))
+                     if isinstance(v, str) and v.strip())
+    return ids, accounts
+
+
 def check_attrs(catalog_id: str, result: dict) -> dict:
-    """The facts a check result adds, in words and small integers only."""
+    """The facts a check result adds, in words and small integers only.
+
+    The owner-record facts are read only from the Worker's own result: the answer and,
+    for l2_idor, the owner's control answer in the same result. They are added for a 200
+    answer that is neither a proven reproduction nor the requester's own resource (the
+    only answers the owner-record rules read), which also keeps the planner input within
+    its token cap."""
     if not isinstance(result, dict):
         return {"answer": "unreadable"}
     status = result.get("status") if isinstance(result.get("status"), int) else None
     if catalog_id == "l1_http_probe":
-        return {"status": status, "auth": "none"}
+        attrs = {"status": status, "auth": "none"}
+        body = result.get("body_prefix")
+        if status == 200 and isinstance(body, str):
+            n = len(body.encode("utf-8"))
+            headers = result.get("headers") if isinstance(result.get("headers"), dict) else {}
+            length = next((v for k, v in headers.items() if str(k).lower() == "content-length"), None)
+            complete = (str(length).strip() == str(n)) if length is not None else n < L1_BODY_CAP
+            present, named, kind = _owner_facts(body, complete, LAB_OWNER_IDENTIFIERS, LAB_OWNER_ACCOUNTS)
+            attrs.update({"owner_identifiers_present": present, "owner_account_present": named,
+                          "body_kind": kind})
+        return attrs
     if catalog_id == "l2_idor":
         response = result.get("response")
         own = (isinstance(response, dict) and response.get("caller_account") == "acct_A"
                and response.get("resource_owner") == "acct_A")
-        return {"status": status, "auth": "other_account",
-                "control": "established" if result.get("control_verified") is True else "missing",
-                "reproduction": reproduction_verdict(result, "idor"),
-                "own_resource": bool(own)}
+        reproduction = reproduction_verdict(result, "idor")
+        attrs = {"status": status, "auth": "other_account",
+                 "control": "established" if result.get("control_verified") is True else "missing",
+                 "reproduction": reproduction,
+                 "own_resource": bool(own)}
+        ids, accounts = _control_identifiers(result.get("control_response"))
+        if (status == 200 and reproduction != "proven" and not own and result.get("control_verified") is True
+                and ids and accounts and "response" in result):
+            # whole only when the Worker says it kept the whole body (an older result
+            # without the flag is never read as complete)
+            complete = result.get("response_truncated") is False
+            present, named, kind = _owner_facts(response, complete, ids, accounts)
+            attrs.update({"owner_identifiers_present": present, "owner_account_present": named,
+                          "body_kind": kind})
+        return attrs
     return {"status": status}
+
+
+def _owner_record_absent(a: dict) -> bool:
+    """The answer was read completely, is JSON or an HTML sign-in / refusal page, and
+    names neither the owner's control identifiers nor the owner's account."""
+    return (a.get("owner_identifiers_present") is False and a.get("owner_account_present") is False
+            and a.get("body_kind") in ABSENCE_BODY_KINDS)
 
 
 def _requirement(state: DiagnosisState, target_ref: str, generation: int) -> tuple[str, list[str]]:
@@ -124,10 +308,14 @@ def judge(state: DiagnosisState, hypothesis_id: str, catalog_id: str, evidence_i
             return _verdict(hypothesis_id, "contradicted", ev, "denied")
         if status == 200 and a.get("own_resource") is True:
             return _verdict(hypothesis_id, "contradicted", ev, "own_resource_only")
+        if status == 200 and a.get("own_resource") is False and _owner_record_absent(a):
+            return _verdict(hypothesis_id, "contradicted", ev, "owner_record_absent")
         return _verdict(hypothesis_id, "inconclusive", ev, "unrecognised_answer")
     if h["claim"] == "unauthenticated_exposure" and catalog_id == "l1_http_probe":
         if status in DENIED:
             return _verdict(hypothesis_id, "contradicted", ev, "denied_without_auth")
+        if status == 200 and _owner_record_absent(a):
+            return _verdict(hypothesis_id, "contradicted", ev, "owner_record_absent_without_auth")
         if status == 200:
             return _verdict(hypothesis_id, "inconclusive", ev, "answered_without_auth_unverified")
         return _verdict(hypothesis_id, "inconclusive", ev, "unrecognised_answer")
