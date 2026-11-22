@@ -33,6 +33,9 @@ from . import cve
 from .audit import AuditLog
 from .authz import ApprovalStore, AuthzError, Engagement, Target, TokenAuthority
 from .events import EventBus
+from .report_diagnosis import LEGEND as REPORT_LEGEND
+from .report_diagnosis import diagnosis_lines as diagnosis_report_lines
+from .report_diagnosis import undecided_lines as undecided_report_lines
 from .evidence import (EVIDENCE_LABELS, enforce_verdict, evidence_status,
                        evidence_summary, reproduction_note, reproduction_verdict)
 from .gateway import (LAB_REPRODUCTION_CHECKS, Gateway, State, http_probe_tool,
@@ -5878,6 +5881,7 @@ class AssessmentService:
             (f"- **前回診断との比較（架空のデモ履歴）**: 前回 `{hist['previous_assessment_id']}` ({hist['previous_score']}/100) → 差分 {hist['delta_score'] if hist['delta_score'] is not None else '未算出'}"
              if hist else "- **前回診断との比較**: 履歴なし（この対象の初回診断）"),
             "",
+            *REPORT_LEGEND,
             "## 証拠の概要と検証範囲",
             f"- **提案エンジン**: {s['planner']['note']}",
             (f"- **検証環境**: 所有確認済みの実サービス ({s['target_url']})。L1は読み取り専用の実測、"
@@ -5895,6 +5899,13 @@ class AssessmentService:
         lines.append("")
         lines.append("## 2. 診断結果と実証状況")
         real_findings = [f for f in s["findings"] if not f.get("demo_fixture")]
+        # an evidence record is called an audited fact only when the chain verifies AND its hash
+        # is one of the verified entries (docs/PRODUCT_COMPLETION.md D)
+        try:
+            audit_entries, chain_ok = self.audit.verified_entries()
+        except (OSError, ValueError, KeyError, TypeError):
+            audit_entries, chain_ok = [], False
+        verified_hashes = {e["hash"] for e in audit_entries} if chain_ok else set()
         if not real_findings:
             lines.append("- 実環境の検出結果はまだありません（未診断または検査前）。")
         for f in real_findings:
@@ -5915,12 +5926,16 @@ class AssessmentService:
                 "- **証拠**:",
             ])
             for ev in f.get("evidence", []):
-                lines.append(f"  - `{ev['evidence_id']}` ({ev['kind']}) 監査ハッシュ: `{ev.get('audit_hash') or 'なし'}`")
-            lines.append("- **修正方法**:")
+                h = ev.get("audit_hash")
+                tag = "【監査済みの事実】" if h and h in verified_hashes else "【監査ログで確認できない記録】"
+                lines.append(f"  - {tag} `{ev['evidence_id']}` ({ev['kind']}) 監査ハッシュ: `{h or 'なし'}`")
+            lines.append("- **修正方法**【固定の修正手順】:")
             for step in f["remediation"]["steps"]:
                 lines.append(f"  1. {step}")
             lines.append(f"- **修正後の確認方法**: {f['remediation']['how_to_verify']}")
             lines.append("")
+        if not s.get("defense_comparison"):
+            lines.extend(["## 3. 修正前後の防御比較（実証再検証）", "- まだ比較していません。", ""])
         if s.get("defense_comparison"):
             dc = s["defense_comparison"]
             lines.extend([
@@ -5932,7 +5947,11 @@ class AssessmentService:
                     f"  - {item['title']}: `{item['before_verdict']}` → `{item['after_verdict']}` (証拠 `{item['latest_evidence_id']}`)"
                 )
             lines.append("")
-        lines.append("## 4. 監査チェーン検証")
+        # the diagnosis loop (lab only) and what could not be decided (docs/PRODUCT_COMPLETION.md D)
+        view = self.diagnosis_view()
+        lines.extend(diagnosis_report_lines(view))
+        lines.extend(undecided_report_lines(view, real_findings, EVIDENCE_LABELS))
+        lines.append("## 6. 監査チェーン検証")
         lines.append(f"- **監査ログ件数**: {len(self.audit.entries())} 件")
         lines.append(f"- **SHA-256 ハッシュチェーン整合性**: {'✓ 整合性を確認（外部の真正性証明ではありません）' if self.audit.verify() else '✕ 不整合あり'}")
         return "\n".join(lines) + "\n"
