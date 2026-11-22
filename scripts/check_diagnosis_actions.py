@@ -45,6 +45,7 @@ from aegis.diagnosis_judge import fixed_rule_steps  # noqa: E402
 from aegis.operators import OperatorStore, hash_password  # noqa: E402
 from aegis.server import make_handler  # noqa: E402
 from aegis.tenancy import DEFAULT_ORG, OrgStore, TenantRegistry  # noqa: E402
+from scripts.axe_check import gate, run_axe  # noqa: E402
 from scripts.check_diagnosis_ui import Backend, free_port, titles, wait_for_web  # noqa: E402
 from tests import TEST_CONFINEMENT  # noqa: E402
 from tests.diagnosis_planner import view_from_text  # noqa: E402
@@ -109,7 +110,7 @@ def main() -> None:
         base = f"http://127.0.0.1:{web_port}"
         web = subprocess.Popen([str(ROOT / "web/node_modules/.bin/next"), "start" if args.production else "dev",
                                 "-H", "127.0.0.1", "-p", str(web_port)], cwd=ROOT / "web",
-                               env={**os.environ, "AEGIS_API": f"http://127.0.0.1:{port}"},
+                               env={**os.environ, "AEGIS_API": f"http://127.0.0.1:{port}", "NEXT_TELEMETRY_DISABLED": "1"},
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         stack.callback(web.terminate)
         wait_for_web(base, web)
@@ -154,6 +155,11 @@ def main() -> None:
             except Exception:  # noqa: BLE001
                 return r.status, {}
 
+        report["accessibility"] = {}
+
+        def axe(page, name: str) -> None:
+            report["accessibility"][name] = run_axe(page)
+
         def no_overflow(page) -> bool:
             return page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
 
@@ -161,17 +167,29 @@ def main() -> None:
             return sum(1 for e in svc.audit.entries()
                        if e["event"] == "result" and e["fields"].get("tool") == "reproduction_probe")
 
+        # ---- 0. the sign-in screen, as a first-time user sees it ---------------------------------
+        for scheme in ("light", "dark"):
+            ctx = browser.new_context(viewport={"width": 390, "height": 900}, color_scheme=scheme)
+            first = ctx.new_page()
+            first.on("pageerror", lambda e: page_errors.append(f"login: {e}"))
+            first.goto(base + "/login")
+            expect(first.get_by_role("button", name="ログイン", exact=True)).to_be_visible(timeout=20000)
+            axe(first, f"00m-login-390-{scheme}")
+            ctx.close()
+
         # ---- 1. qa starts -------------------------------------------------------------------
         qa = open_page("qa", 1280)
         expect(panel(qa)).to_contain_text("まだ診断ループを実行していません", timeout=20000)
         start = panel(qa).get_by_role("button", name="診断を開始")
         expect(start).to_be_visible()
         shot(qa, "01-not-started-start-button")
+        axe(qa, "01-not-started")
         start.click()
         expect(panel(qa)).to_contain_text("所有者の仕様の入力を待っています", timeout=20000)
         expect(panel(qa)).to_contain_text("対象資産の管理者が仕様を入力するのを待っています")
         report["checks"]["requester_has_no_spec_form"] = panel(qa).get_by_role("radio").count() == 0
         shot(qa, "02-waiting-for-owner-spec")
+        axe(qa, "02-waiting-for-owner-spec")
 
         viewer = open_page("viewer-v", 1024)
         expect(panel(viewer)).to_contain_text("所有者の仕様の入力を待っています", timeout=20000)
@@ -182,6 +200,7 @@ def main() -> None:
         owner = open_page("owner-alice", 1280)
         expect(panel(owner).get_by_role("radio", name="認証必須")).to_be_visible(timeout=20000)
         shot(owner, "03-owner-spec-form")
+        axe(owner, "03-owner-spec-form")
         panel(owner).get_by_role("radio", name="認証必須").check()
         panel(owner).get_by_role("button", name="仕様を記録する").click()
         expect(panel(qa)).to_contain_text("L2 検査の承認を待っています", timeout=30000)
@@ -197,6 +216,7 @@ def main() -> None:
         report["checks"]["requester_api_approval_status"] = code
         report["checks"]["requester_api_approval_refused"] = code == 403
         shot(qa, "04-requester-cannot-approve")
+        axe(qa, "04-requester-cannot-approve")
 
         # ---- 4. the approver approves on a phone ---------------------------------------------
         phone = open_page("approver-human", 390)
@@ -204,11 +224,13 @@ def main() -> None:
         expect(approve).to_be_visible(timeout=20000)
         report["checks"]["phone_approval_no_horizontal_scroll"] = no_overflow(phone)
         shot(phone, "05m-approver-390")
+        axe(phone, "05m-approver-390")
         approve.click()
         expect(panel(phone)).to_contain_text("所有者が「認証必須」とした資源を、別のアカウントが読めた", timeout=30000)
         expect(panel(qa)).to_contain_text("診断：終了しました", timeout=30000)
         report["checks"]["l2_runs_after_first_approval"] = l2_results()
         shot(qa, "06-finding-proven")
+        axe(qa, "06-finding-proven")
         f = svc.a.findings.get("f_idor") or {}
         from aegis.evidence import evidence_status
         report["checks"]["finding_proven"] = evidence_status(f) == "proven"
@@ -242,10 +264,15 @@ def main() -> None:
         report["checks"]["l2_approved_records"] = sum(1 for e in svc.audit.entries()
                                                       if e["event"] == "diagnosis.l2_approved")
         shot(qa, "07-fix-comparison")
+        axe(qa, "07-fix-comparison")
         phone.reload()
         expect(panel(phone)).to_contain_text("改善を確認", timeout=20000)
         report["checks"]["phone_fix_no_horizontal_scroll"] = no_overflow(phone)
         shot(phone, "07m-fix-comparison-390")
+        axe(phone, "07m-fix-comparison-390")
+        phone.emulate_media(color_scheme="dark")
+        axe(phone, "07m-fix-comparison-390-dark")
+        phone.emulate_media(color_scheme="light")
 
         # ---- 6. other organization, real site ---------------------------------------------------
         outsider = open_page("outsider", 1024)
@@ -277,10 +304,14 @@ def main() -> None:
         registry.close_all()
         svc.close()
     lab.shutdown()
+    # accessibility (WCAG 2.1 A/AA, axe-core): no serious or critical violation on any screen checked
+    checked, clean = gate(report.get("accessibility", {}))
+    report["checks"]["accessibility_screens_checked"] = checked
+    report["checks"]["accessibility_no_serious_violation"] = clean
     failed = [k for k, v in report["checks"].items() if v is False]
     expected = {"requester_api_approval_status": 403, "second_key_refused_status": 409, "l2_runs_total": 2,
                 "l2_approved_records": 2, "other_org_api_status": 403, "real_site_status": 404,
-                "l2_runs_after_first_approval": 1}
+                "l2_runs_after_first_approval": 1, "accessibility_screens_checked": 11}
     failed += [k for k, v in expected.items() if report["checks"].get(k) != v]
     report["ok"] = not failed and not page_errors
     print(json.dumps(report, ensure_ascii=False, indent=1))

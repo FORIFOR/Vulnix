@@ -89,7 +89,7 @@ export default function LoginPage() {
   };
 
   if (loading) {
-    return <main className="flex min-h-dvh items-center justify-center text-sm text-zinc-500">認証状態を確認しています…</main>;
+    return <main className="flex min-h-dvh items-center justify-center text-sm text-zinc-500 dark:text-zinc-400">認証状態を確認しています…</main>;
   }
 
   return (
@@ -101,7 +101,7 @@ export default function LoginPage() {
           </span>
           <div className="leading-tight">
             <div className="font-semibold">Vulnix</div>
-            <div className="text-xs text-zinc-500">Find. Prove. Secure. — AI Security Testing Platform</div>
+            <div className="text-xs text-zinc-500 dark:text-zinc-400">Find. Prove. Secure. — AI Security Testing Platform</div>
           </div>
         </div>
 
@@ -118,7 +118,7 @@ export default function LoginPage() {
             className={`rounded-lg py-2 transition ${
               mode === "login"
                 ? "bg-white text-zinc-900 shadow-xs dark:bg-zinc-900 dark:text-white"
-                : "text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
+                : "text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-200"
             }`}
           >
             ログイン
@@ -134,7 +134,7 @@ export default function LoginPage() {
             className={`rounded-lg py-2 transition ${
               mode === "register"
                 ? "bg-white text-zinc-900 shadow-xs dark:bg-zinc-900 dark:text-white"
-                : "text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
+                : "text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-200"
             }`}
           >
             新規アカウント登録
@@ -194,7 +194,7 @@ export default function LoginPage() {
             >
               {busy ? "確認中…" : "ログイン"}
             </button>
-            <p className="mt-4 text-xs leading-relaxed text-zinc-500">
+            <p className="mt-4 text-xs leading-relaxed text-zinc-500 dark:text-zinc-400">
               {selfRegistration
                 ? "アカウントをお持ちでない場合は上の「新規アカウント登録」から登録できます。"
                 : "アカウントは管理者が作成します（設定 → アカウントとロール）。"}
@@ -215,7 +215,7 @@ export default function LoginPage() {
               aria-describedby="reg-name-hint"
               className="mb-1 w-full rounded-lg border border-zinc-300 px-3 py-2 text-sm dark:border-zinc-600 dark:bg-zinc-950"
             />
-            <p id="reg-name-hint" className="mb-3 text-xs text-zinc-500">
+            <p id="reg-name-hint" className="mb-3 text-xs text-zinc-500 dark:text-zinc-400">
               本名やメールアドレスは使わないでください。ユーザー名は、同じ組織のメンバーに表示されます。
             </p>
 
@@ -259,7 +259,7 @@ export default function LoginPage() {
               </div>
             </div>
 
-            <p className="mb-4 text-xs text-zinc-500">登録後、サイトの診断を始められます。追加の承認が必要な操作は管理者が担当します。</p>
+            <p className="mb-4 text-xs text-zinc-500 dark:text-zinc-400">登録後、サイトの診断を始められます。追加の承認が必要な操作は管理者が担当します。</p>
 
             {err && (
               <p role="alert" className="mb-3 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-800 dark:bg-red-950/40 dark:text-red-200">
@@ -274,7 +274,7 @@ export default function LoginPage() {
             >
               {busy ? "登録中…" : "アカウントを登録して開始"}
             </button>
-            <p className="mt-3 text-[11px] text-zinc-500">
+            <p className="mt-3 text-[11px] text-zinc-500 dark:text-zinc-400">
               アカウントを守るため、登録後に設定から2要素認証を有効にできます。
             </p>
           </form>
