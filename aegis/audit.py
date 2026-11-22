@@ -1,6 +1,7 @@
 """Append-only, hash-chained audit log (JSONL). Tampering breaks verify()."""
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -10,6 +11,8 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
+from .audit_anchor import AnchorError, source_id_for, symlink_on_path
+
 try:
     import fcntl
 except ImportError:  # Windows has no flock; refusing writes is safer than racing budgets.
@@ -17,12 +20,38 @@ except ImportError:  # Windows has no flock; refusing writes is safer than racin
 
 GENESIS = "0" * 64
 
+# Records that authorize a Worker, a paid send, or a change of diagnosis / finding
+# state. With an anchor (aegis/audit_anchor.py) each is written only after the log
+# matched the anchored head, and is not reported as written until its own head is
+# anchored. Finding verdicts and evidence are taken from "result" records (their
+# audit_hash); L2 runs start from "approval.approved" / "artex.item_approved".
+ANCHORED_EVENTS = frozenset({
+    "allow", "planner_llm.forwarding", "advisor.safe_send_requested", "result",
+    "approval.approved", "artex.item_approved",
+})
+ANCHORED_PREFIXES = ("diagnosis.",)
+
+
+def is_anchored_event(event: str) -> bool:
+    return event in ANCHORED_EVENTS or event.startswith(ANCHORED_PREFIXES)
+
 
 class AuditLog:
-    def __init__(self, path: str | Path):
+    def __init__(self, path: str | Path, anchor=None, anchor_root: str | Path | None = None):
         if fcntl is None:
             raise RuntimeError("audit file locking requires POSIX flock")
         self.path = Path(path)
+        # Optional separately privileged anchor (AnchorClient). None: behaviour as before.
+        # The source id is "<installation name>:<log path relative to the data root>", not
+        # a resolved path: a symlinked or renamed log cannot pose as a new source.
+        self._anchor = anchor
+        self._anchor_root = Path(anchor_root) if anchor_root is not None else self.path.parent
+        self.anchor_source = (source_id_for(getattr(anchor, "source_name", ""), self._anchor_root, self.path)
+                              if anchor is not None else None)
+        self._anchor_seen = 0             # highest head this object saw or anchored
+        self._anchor_error: str | None = "not_checked" if anchor is not None else None
+        self._anchor_last_seq: int | None = None
+        self._anchor_checked_at: float | None = None
         self._lock = threading.Lock()
         self._prev = GENESIS
         self._known_size = self.path.stat().st_size if self.path.exists() else 0
@@ -55,11 +84,17 @@ class AuditLog:
 
     def _append_locked(self, event: str, fields: dict) -> dict:
         current_size = self.path.stat().st_size if self.path.exists() else 0
-        if (event in ("allow", "planner_llm.forwarding")
+        anchored = self._anchor is not None and is_anchored_event(event)
+        entries = None
+        if (anchored or event in ("allow", "planner_llm.forwarding")
                 or current_size != self._known_size):
             # These records authorize a Worker or paid model send. A durable
             # append alone is insufficient if an older entry was altered.
             entries, valid = self.verified_entries()
+            if anchored:
+                # ... nor if newer entries were removed (log and reservation file
+                # rolled back together): compare with the separately held head.
+                self._anchor_verify_locked(entries, valid)
             tail = entries[-1]["hash"] if entries else GENESIS
             if not valid or not self._is_continuation(entries):
                 raise ValueError("audit chain invalid")
@@ -76,7 +111,95 @@ class AuditLog:
             os.fsync(f.fileno())
             self._known_size = f.tell()
         self._prev = digest
+        if anchored:
+            # The record is on disk, but it does not count until its head is anchored:
+            # the caller gets an error and does not apply the change.
+            self._anchor_publish_locked(len(entries) + 1, digest)
         return entry
+
+    # ---- anchor (aegis/audit_anchor.py, docs/AUDIT_ANCHOR.md) -------------------------
+    def _anchor_failed(self, reason: str) -> None:
+        self._anchor_error = reason
+        self._anchor_checked_at = time.time()
+
+    def _anchor_verify_locked(self, entries: list[dict], valid: bool) -> int:
+        """The log must still contain the anchored head, unchanged. Raises AnchorError."""
+        try:
+            if self.anchor_source is None:
+                raise AnchorError("anchor_misconfigured")
+            if symlink_on_path(self._anchor_root, self.path):
+                raise AnchorError("symlink")
+            if not valid:
+                raise AnchorError("chain_invalid")
+            head = self._anchor.head(self.anchor_source)
+            seq = head["seq"] if head else 0
+            if seq < self._anchor_seen:
+                # the helper forgot (or lost) a head this service anchored
+                raise AnchorError("anchor_regressed")
+            if len(entries) < seq:
+                raise AnchorError("rollback")
+            if seq and entries[seq - 1].get("hash") != head["hash"]:
+                raise AnchorError("fork")
+        except AnchorError as e:
+            self._anchor_failed(e.reason)
+            raise
+        except Exception:  # noqa: BLE001 - anything unexpected: not verified
+            self._anchor_failed("anchor_unavailable")
+            raise AnchorError("anchor_unavailable") from None
+        self._anchor_seen = seq
+        self._anchor_error, self._anchor_last_seq = None, seq
+        self._anchor_checked_at = time.time()
+        return seq
+
+    def _anchor_publish_locked(self, seq: int, digest: str) -> None:
+        try:
+            self._anchor.anchor(self.anchor_source, seq, digest)
+        except AnchorError as e:
+            self._anchor_failed(e.reason)
+            raise
+        except Exception:  # noqa: BLE001
+            self._anchor_failed("anchor_unavailable")
+            raise AnchorError("anchor_unavailable") from None
+        self._anchor_seen = max(self._anchor_seen, seq)
+        self._anchor_error, self._anchor_last_seq = None, seq
+        self._anchor_checked_at = time.time()
+
+    def anchor_check(self) -> dict:
+        """Verify the log against the anchor now (startup, status). Verify only: entries
+        after the anchored head (non-critical records, or a critical one whose anchoring
+        failed and was therefore reported as failed) are NOT anchored here; the next
+        critical record anchors the head after it. Never raises: the result is in the
+        returned status, and every anchored record re-checks anyway."""
+        if self._anchor is not None:
+            with self._lock, self._exclusive_file():
+                try:
+                    entries, valid = self.verified_entries()
+                except Exception:  # noqa: BLE001 - an unreadable log (or a symlink) is not valid
+                    entries, valid = [], False
+                try:
+                    self._anchor_verify_locked(entries, valid)
+                except AnchorError:
+                    pass
+        return self._anchor_status_now()
+
+    def anchor_status(self, max_age: float | None = 2.0) -> dict:
+        """{"enabled", "protected", "last_seq", "error"}. "protected" only when enabled and
+        the most recent check (at most `max_age` seconds old) succeeded."""
+        if (self._anchor is not None and max_age is not None
+                and (self._anchor_checked_at is None or time.time() - self._anchor_checked_at > max_age)):
+            return self.anchor_check()
+        return self._anchor_status_now()
+
+    def _anchor_status_now(self) -> dict:
+        enabled = self._anchor is not None
+        error = self._anchor_error if enabled else None
+        if enabled and error is None and getattr(self._anchor, "verified_peer_uid", None) == os.getuid():
+            # The helper answered as the service's own user (development / tests): it works,
+            # but it cannot protect against that user, so it is never shown as protection.
+            error = "same_user"
+        return {"enabled": enabled, "protected": enabled and error is None,
+                "last_seq": self._anchor_last_seq if enabled else None,
+                "error": error}
 
     def record_with_budget(self, event: str, *, reserve_micro_usd: int,
                            cap_micro_usd: int, **fields) -> dict:
@@ -97,6 +220,11 @@ class AuditLog:
             entries, valid = self.verified_entries()
             if not valid or not self._is_continuation(entries):
                 raise ValueError("audit chain invalid")
+            if self._anchor is not None:
+                # before the floor below is raised: a send refused by this check consumes no
+                # budget. (One whose record is appended but then cannot be anchored keeps its
+                # reservation, like any failed send.)
+                self._anchor_verify_locked(entries, valid)
             self._prev = entries[-1]["hash"] if entries else GENESIS
             spent = 0
             for previous in entries:
@@ -144,6 +272,19 @@ class AuditLog:
         return entry
 
     def entries(self) -> list[dict]:
+        if self._anchor is not None:
+            # anchored: never read through a symlink (it could point at an older copy)
+            try:
+                fd = os.open(self.path, os.O_RDONLY | os.O_NOFOLLOW)
+            except FileNotFoundError:
+                return []
+            except OSError as e:
+                if e.errno == errno.ELOOP:
+                    raise AnchorError("symlink") from None
+                raise
+            with os.fdopen(fd, "r") as f:
+                text = f.read()
+            return [json.loads(l) for l in text.splitlines() if l.strip()]
         if not self.path.exists():
             return []
         return [json.loads(l) for l in self.path.read_text().splitlines() if l.strip()]
