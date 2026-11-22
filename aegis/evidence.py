@@ -190,15 +190,73 @@ def _names_only(value, wanted: str) -> bool:
     return _scalar_is(value, wanted)
 
 
-def _record_paths(node, ancestors=()):
-    """(dict, its ancestor dicts) for every dict in a parsed JSON answer."""
+def _record_paths(node, ancestors=(), keyed=()):
+    """(dict, its ancestor dicts, its keyed ancestors) for every dict in a parsed JSON answer.
+    The keyed ancestors are the enclosing dicts reached through dict keys only (nearest first):
+    a list on the way up ends them, so an item of a list never shares a record with the object
+    that holds the list."""
     if isinstance(node, dict):
-        yield node, ancestors
+        yield node, ancestors, keyed
         for v in node.values():
-            yield from _record_paths(v, ancestors + (node,))
+            if isinstance(v, dict):
+                yield from _record_paths(v, ancestors + (node,), (node,) + keyed)
+            else:
+                yield from _record_paths(v, ancestors + (node,), ())
     elif isinstance(node, list):
         for v in node:
-            yield from _record_paths(v, ancestors)
+            yield from _record_paths(v, ancestors, ())
+
+
+# The keys of standard API envelopes under which a resource keeps its own fields (JSON:API
+# attributes, GraphQL / HAL field objects). The marker may come from these only - never from
+# an example, a template, a related or previous object (independent review of the v5 judge).
+_ENVELOPE_KEYS = frozenset({"attributes", "fields", "node", "secret", "record", "embedded"})
+_CALLER_KEYS = ("caller", "requester", "requestedby", "viewer")
+
+
+def _envelope_descendants(d: dict) -> list[dict]:
+    """The dicts below `d` reached only through envelope keys (no list on the path)."""
+    out, stack = [], [d]
+    while stack:
+        cur = stack.pop()
+        for k, v in cur.items():
+            if isinstance(v, dict) and _key(k) in _ENVELOPE_KEYS:
+                out.append(v)
+                stack.append(v)
+    return out
+
+
+def _all_scalars(objs) -> list[tuple[str, object]]:
+    out = []
+    for o in objs:
+        stack = [(None, o)]
+        while stack:
+            k, v = stack.pop()
+            if isinstance(v, dict):
+                stack.extend(v.items())
+            elif isinstance(v, list):
+                stack.extend((k, x) for x in v)
+            else:
+                out.append((_key(k) if k is not None else "", v))
+    return out
+
+
+def _keyed_descendants(d: dict, *, skip_owner: bool = False) -> list[dict]:
+    """The dicts below `d` reached through dict keys only (no list on the path): the
+    attributes object of a JSON:API resource, a GraphQL field object, a HAL embedded object.
+    With `skip_owner`, nothing under an owner key ("owner" in the key) is included."""
+    out, stack = [], [d]
+    while stack:
+        cur = stack.pop()
+        for k, v in cur.items():
+            if isinstance(v, dict) and not (skip_owner and "owner" in _key(k)):
+                out.append(v)
+                stack.append(v)
+    return out
+
+
+def _direct_scalars(d: dict) -> list:
+    return [v for v in d.values() if not isinstance(v, (dict, list))]
 
 
 def owner_record_read_by_other_account(result: dict | None) -> bool:
@@ -218,9 +276,15 @@ def _owner_record_match(result: dict | None, *, whole: bool) -> bool:
         as a whole identifier, after the same normalisations the absence rule uses (case,
         HTML entities, %-escapes, JSON escapes, JavaScript \\uXXXX);
       * the answer does not present itself as another resource or as A's own:
-          - JSON: one object holds both identifiers; in that object an id field (id,
-            resource_id, record_id, any case) names only B's resource, and every owner field
-            ("owner" in the key) in it, below it or in the objects around it names B;
+          - JSON: one record holds both identifiers as whole field values. A record is one
+            object, or (standard API envelopes: JSON:API data.attributes, a GraphQL field
+            object, a HAL embedded object) an object whose own field is B's resource id and
+            whose descendant reached through dict keys only - never through a list - has the
+            marker as its own field. In the record, in every object reached from it through
+            dict keys (except under an owner key) and in every object enclosing it through
+            dict keys, an id field (id, resource_id, record_id, any case) names only B's
+            resource; every owner field ("owner" in the key) in it, below it or in the
+            objects around it names B;
           - HTML / text (no structure to read): the answer does not name acct_A at all.
     A base64 or otherwise re-encoded record does not match (stays undecided)."""
     import json
@@ -241,22 +305,53 @@ def _owner_record_match(result: dict | None, *, whole: bool) -> bool:
         except ValueError:
             parsed = response
     if isinstance(parsed, (dict, list)):
-        holders = [(d, anc) for d, anc in _record_paths(parsed)
+        holders = [(d, anc, keyed) for d, anc, keyed in _record_paths(parsed)
                    if _has_token(t := normalised_texts(d), rid) and _has_token(t, marker)]
         # the smallest objects that hold both: no object inside them holds both
-        records = [(d, anc) for d, anc in holders
-                   if not any(o is not d and any(a is d for a in oanc) for o, oanc in holders)]
+        records = [(d, anc, keyed) for d, anc, keyed in holders
+                   if not any(o is not d and any(a is d for a in oanc) for o, oanc, _ in holders)]
         if not records:
             return False
-        for d, anc in records:
-            # the record itself carries both identifiers as whole field values (not inside a
-            # string blob - JSON in a string, prose - nor spread over separate list items)
-            values = [v for v in d.values() if not isinstance(v, (dict, list))]
-            if not (any(_scalar_is(v, rid) for v in values) and any(_scalar_is(v, marker) for v in values)):
+        for d, anc, keyed in records:
+            # the record carries both identifiers as whole field values (not inside a string
+            # blob - JSON in a string, prose, a URL - nor spread over separate list items or
+            # sibling objects): B's resource id as a field of the object itself, the marker as
+            # a field of it or of an object below it reached through dict keys only
+            below = _envelope_descendants(d)
+            if not (any(_scalar_is(v, rid) for v in _direct_scalars(d))
+                    and any(_scalar_is(v, marker) for o in [d] + below for v in _direct_scalars(o))):
                 return False
-            if any(_key(k) in _ID_KEYS and not _scalar_is(v, rid) for k, v in d.items()):
+            # a refusal that echoes the requested id is not B's record
+            if any(_key(k) in ("error", "errors") for k in d) or any(
+                    _key(k) in ("status", "message") and isinstance(v, str)
+                    and any(w in v.lower() for w in ("forbidden", "denied", "unauthorized", "not allowed"))
+                    for k, v in d.items()):
                 return False
-            around = list(anc) + [o for o, _ in _record_paths(d)]
+            # anything in or around the record that names another id, or names A outside a
+            # caller field, means it is not (only) B's record read by A
+            # the record and its own sub-objects: every id field and every field naming A;
+            # the objects that enclose it: only their own direct fields naming A (a page id,
+            # sibling results or a viewer object beside the record are not the record)
+            enclosing = [(_key(k), v) for o in anc for k, v in o.items() if not isinstance(v, (dict, list))]
+            for k, v in enclosing:
+                if (isinstance(v, str) and _scalar_is(v, requester) and "owner" not in k
+                        and not any(c in k for c in _CALLER_KEYS)):
+                    return False
+            for k, v in _all_scalars([d] + _keyed_descendants(d)):
+                if not isinstance(v, str):
+                    continue
+                # any "...id" field (uuid, res_id, noteId, ...) naming something other than B's
+                # resource or B (caller fields excepted) points at another record
+                if (k.endswith("id") and "owner" not in k and not any(c in k for c in _CALLER_KEYS)
+                        and not _scalar_is(v, rid) and not _scalar_is(v, b)):
+                    return False
+                if _scalar_is(v, requester) and not any(c in k for c in _CALLER_KEYS) and "owner" not in k:
+                    return False
+            # no object of the record, nor an enclosing one, names another resource
+            same_record = [d] + _keyed_descendants(d, skip_owner=True) + list(keyed)
+            if any(_key(k) in _ID_KEYS and not _scalar_is(v, rid) for o in same_record for k, v in o.items()):
+                return False
+            around = list(anc) + [o for o, _, _ in _record_paths(d)]
             if any("owner" in _key(k) and not _names_only(v, b) for o in around for k, v in o.items()):
                 return False
         return True

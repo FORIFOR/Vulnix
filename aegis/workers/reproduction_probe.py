@@ -58,6 +58,12 @@ LAB_DENY = (403,)
 REDACTED = "[REDACTED_SECRET]"
 MAX_BODY = 262144      # bytes read per response when evaluating content conditions
 EXCERPT = 4096         # characters of the subject response kept as evidence
+# The lab IDOR check keeps more of A's answer, so a long record (B's record late in a list,
+# a long history) is read whole (docs/evaluation/FROZEN_JUDGE_V5.md). MAX_BODY bytes always
+# decode to at least this many characters (UTF-8 is at most 4 bytes per character), so
+# response_truncated is decided from what was read. The owner control and the other lab
+# checks keep EXCERPT (tests/test_judge_identity_match.py TestLongBodies checks the bound).
+LAB_IDOR_EXCERPT = 65536
 
 
 def _scrub(obj, secrets_to_redact: list[str]):
@@ -169,7 +175,8 @@ def run_lab_check(a) -> dict:
                     "control_response": control_body,
                     "connected_ip": a.ip, "connected_port": a.port}
     obs = _fetch(a, spec["path"], spec["headers"])
-    raw_body = obs["body"][:EXCERPT]
+    keep = LAB_IDOR_EXCERPT if a.check == "idor" else EXCERPT
+    raw_body = obs["body"][:keep]
     try:
         parsed_body = json.loads(raw_body)
     except ValueError:
@@ -202,7 +209,7 @@ def run_lab_check(a) -> dict:
         "deny_statuses": list(LAB_DENY),
         "response": parsed_body if parsed_body is not None else raw_body,
         # the judge may read "the owner's record is absent" only from a body it saw whole
-        "response_truncated": bool(obs.get("truncated")) or len(obs["body"]) > EXCERPT,
+        "response_truncated": bool(obs.get("truncated")) or len(obs["body"]) > keep,
         "control_status": control_obs["status"] if control_obs else None,
         "control_verified": control_verified if control_obs else None,
         "control_response": control_body,
