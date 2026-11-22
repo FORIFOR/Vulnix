@@ -31,6 +31,7 @@ from pathlib import Path
 
 from . import cve
 from .audit import AuditLog
+from .audit_anchor import client_from_env as anchor_client_from_env
 from .authz import ApprovalStore, AuthzError, Engagement, Target, TokenAuthority
 from .events import EventBus
 from .evidence import (EVIDENCE_LABELS, enforce_verdict, evidence_status,
@@ -310,7 +311,8 @@ class AssessmentService:
                  separate_l2_approver: bool | None = None,
                  l2_confinement=None,
                  revocation_marker_dirs: list[Path] | None = None,
-                 real_site_read_only: bool = True):
+                 real_site_read_only: bool = True,
+                 audit_anchor=None, audit_anchor_root: Path | None = None):
         self.data_dir = Path(data_dir)
         # A service used outside the HTTP server still refuses real-site L2 and
         # re-checks by default. The trusted caller must explicitly select legacy mode.
@@ -359,7 +361,17 @@ class AssessmentService:
         ).hexdigest()
         self._state_mac_key = hashlib.sha256(self.secrets._master_key + b":vulnix-state-authority-v1").digest()
         self.bus = EventBus()
-        self.audit = AuditLog(self.data_dir / "audit.jsonl")
+        # Optional local audit anchor (docs/AUDIT_ANCHOR.md): VULNIX_AUDIT_ANCHOR_SOCKET set
+        # makes it required; unset leaves the audit log exactly as before.
+        # The anchor's source id is the log's path relative to the data ROOT (the server's
+        # --data-dir; an organization's directory lies below it), never a resolved path.
+        self.audit = AuditLog(self.data_dir / "audit.jsonl",
+                              anchor=audit_anchor if audit_anchor is not None else anchor_client_from_env(),
+                              anchor_root=audit_anchor_root if audit_anchor_root is not None else self.data_dir)
+        # Verified at start. A failure does not stop the server: it is shown in the
+        # snapshot, and every Worker authorization, paid send and diagnosis / finding
+        # change is refused for as long as the check fails (each re-checks).
+        self.audit.anchor_check()
         self.audit.listeners.append(self._on_audit)
         self._lock = threading.RLock()
         self.lab_port = lab_port
@@ -3761,6 +3773,7 @@ class AssessmentService:
                             "seq": self._model_conn["seq"] + 1}
 
     def snapshot(self) -> dict:
+        audit_anchor = self.audit.anchor_status()      # outside the service lock (socket I/O)
         with self._lock:
             e = self.a.engagement
             t = e.targets["lab"]
@@ -3827,6 +3840,7 @@ class AssessmentService:
                     for tk in self.artex.tasks
                 ],
                 "last_seq": self.bus.last_seq,
+                "audit_anchor": audit_anchor,
             }
 
     def logs(self) -> dict:
@@ -5229,12 +5243,20 @@ class AssessmentService:
 
     def _decide(self, aid, decision, actor, notify=True):
         ap = self.a.approvals[aid]
-        ap["status"] = "approved" if decision == "approve" else "rejected"
+        status = "approved" if decision == "approve" else "rejected"
+        if status == "approved":
+            # Audit first: an approval whose record could not be written (or anchored,
+            # docs/AUDIT_ANCHOR.md) is not shown as decided and issues no approval.
+            # (A rejection - also the emergency stop's - is applied first, as before.)
+            self.audit.record("approval.approved", request=aid, actor=actor,
+                              action=ap["action"], risk_level=ap["risk_level"])
+        ap["status"] = status
         ap["decided_by"], ap["decided_at"] = actor, time.time()
         if ap["status"] == "approved":
             ap["approval_ref"] = self.approval_store.approve(actor, "eng_demo", "lab", ap["action"])
-        self.audit.record("approval." + ap["status"], request=aid, actor=actor,
-                          action=ap["action"], risk_level=ap["risk_level"])
+        else:
+            self.audit.record("approval.rejected", request=aid, actor=actor,
+                              action=ap["action"], risk_level=ap["risk_level"])
         self._save_state_locked()
         self._publish_approval(aid)
         if notify and aid in self._approval_events:
@@ -5935,7 +5957,47 @@ class AssessmentService:
         lines.append("## 4. 監査チェーン検証")
         lines.append(f"- **監査ログ件数**: {len(self.audit.entries())} 件")
         lines.append(f"- **SHA-256 ハッシュチェーン整合性**: {'✓ 整合性を確認（外部の真正性証明ではありません）' if self.audit.verify() else '✕ 不整合あり'}")
+        lines.append(f"- **巻き戻し検知（ローカル監査アンカー）**: {_anchor_report_line(s.get('audit_anchor'))}")
         return "\n".join(lines) + "\n"
+
+
+_ANCHOR_ERRORS_JA = {
+    "not_checked": "未確認",
+    "chain_invalid": "監査ログのハッシュチェーンが不整合",
+    "rollback": "監査ログが記録済みの位置より短い（巻き戻し）",
+    "fork": "記録済みの位置の内容が異なる（書き換え）",
+    "anchor_regressed": "アンカー側の記録が後退した",
+    "anchor_unavailable": "アンカーに接続できない",
+    "anchor_bad_response": "アンカーの応答が不正",
+    "anchor_corrupt": "アンカーの記録ファイルが壊れている",
+    "anchor_store_unwritable": "アンカーが記録ファイルに書き込めない",
+    "anchor_store_unreadable": "アンカーが記録ファイルを読めない",
+    "same_user": "アンカーがサービスと同じ OS ユーザーで動いている（開発用。保護にはなりません）",
+    "symlink": "監査ログまたはその途中のディレクトリがシンボリックリンク",
+    "anchor_misconfigured": "アンカーの設定（ソケット・UID・名前・データルート）が不完全",
+    "anchor_peer_mismatch": "ソケットの相手が指定されたアンカーのユーザーではない",
+    "anchor_peer_unverified": "ソケットの相手のユーザーを確認できない",
+    "anchor_unregistered_source": "アンカーにこの記録元が登録されていない",
+}
+
+
+_ANCHOR_SCOPE_NOTE = ("対象は組織ごとの監査ログです。プラットフォーム全体の platform-audit.jsonl と"
+                      "有料送信の合計 platform-advisor-spend.json は対象外です。")
+
+
+def _anchor_report_line(st: dict | None) -> str:
+    """Say "protected" only when the anchor was enabled and its last check succeeded."""
+    if not st or not st.get("enabled"):
+        return ("✕ 無効（監査ログと予約ファイルを両方とも古い状態へ巻き戻された場合、"
+                "このレポートでは検知できません）")
+    if st.get("protected") is True:
+        return (f"✓ 保護あり（別権限のアンカーと照合済み・{st.get('last_seq')} 件目まで）。"
+                + _ANCHOR_SCOPE_NOTE)
+    reason = _ANCHOR_ERRORS_JA.get(str(st.get("error")), str(st.get("error")))
+    if st.get("error") == "same_user":
+        return f"✕ 保護なし（{reason}）。" + _ANCHOR_SCOPE_NOTE
+    return (f"✕ 保護なし（{reason}）。Worker の実行許可・有料送信・診断と所見の状態変更を"
+            "停止しています。" + _ANCHOR_SCOPE_NOTE)
 
 
 class _Stopped(Exception):

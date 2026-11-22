@@ -92,6 +92,33 @@ jobs:
           if grep -q "skipped" linux-e2e.log; then echo "Linux confinement tests were skipped"; exit 1; fi
           grep -q "^OK" linux-e2e.log
 
+      - name: Local audit anchor as a separate OS user (rollback of log + reservation file detected)
+        run: |
+          # docs/AUDIT_ANCHOR.md. The helper runs as its own system user; this job's user
+          # may only connect to its socket (directory group), never touch its files.
+          # The script never skips: any missing precondition fails the step.
+          set -euo pipefail
+          PY="$(command -v python3)"
+          GROUP="$(id -gn)"
+          sudo useradd --system --no-create-home --shell /usr/sbin/nologin vulnix-anchor
+          sudo install -d -o root -g root -m 0755 /opt/vulnix-anchor
+          sudo install -o root -g root -m 0644 aegis/audit_anchor.py /opt/vulnix-anchor/audit_anchor.py
+          sudo install -d -o vulnix-anchor -g vulnix-anchor -m 0700 /var/lib/vulnix-anchor
+          sudo install -d -o vulnix-anchor -g "$GROUP" -m 0750 /run/vulnix-anchor
+          (cd / && sudo -u vulnix-anchor "$PY" /opt/vulnix-anchor/audit_anchor.py serve \
+            --dir /var/lib/vulnix-anchor --socket /run/vulnix-anchor/anchor.sock --socket-mode 666 --allow-source ci) \
+            > anchor-helper.log 2>&1 &
+          for _ in $(seq 100); do [ -S /run/vulnix-anchor/anchor.sock ] && break; sleep 0.1; done
+          if ! python3 scripts/audit_anchor_ci.py --socket /run/vulnix-anchor/anchor.sock \
+              --anchor-dir /var/lib/vulnix-anchor --helper-uid "$(id -u vulnix-anchor)" \
+              --source-name ci 2>&1 | tee audit-anchor-ci.log; then
+            cat anchor-helper.log; exit 1
+          fi
+          grep -q "^AUDIT ANCHOR CI: OK$" audit-anchor-ci.log
+          # the helper's own file verifies, and holds what the service anchored
+          (cd / && sudo -u vulnix-anchor "$PY" /opt/vulnix-anchor/audit_anchor.py verify --dir /var/lib/vulnix-anchor)
+          sudo pkill -u vulnix-anchor || true
+
       - name: Verify Linux Kernel nftables NetNS Isolation & Emergency Stop (P0)
         run: |
           sudo python3 -m aegis.control_verification
