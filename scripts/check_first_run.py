@@ -110,7 +110,7 @@ def main() -> None:
         browser = p.chromium.launch(headless=True) if args.chromium else p.chromium.launch(channel="chrome", headless=True)
         stack.callback(browser.close)
         page_errors: list[str] = []
-        passwords = {n: secrets.token_urlsafe(16) for n in ("alice", "bob-approver")}
+        passwords = {n: secrets.token_urlsafe(16) for n in ("alice", "bob-approver", "carol-verified")}
         t0 = time.monotonic()
         last = [t0]
 
@@ -209,7 +209,53 @@ def main() -> None:
         report["checks"]["phone_no_horizontal_scroll"] = bob.evaluate(
             "document.documentElement.scrollWidth <= window.innerWidth")
         shot(bob, "06m-approve-390")
+        # bob signed up himself (from the invitation): a self-registered account is never an
+        # independent approver - also not with a second factor (owner decision 2026-11-23)
         approve.click()
+        expect(panel(bob)).to_contain_text("自己登録のアカウントは L2 検査を承認できません", timeout=20000)
+        report["checks"]["self_registered_approver_refused"] = True
+        bob.goto(base + "/settings")
+        bob.get_by_role("button", name="有効化する").click()
+        secret_el = bob.locator("dt", has_text="シークレット").locator("xpath=following-sibling::dd[1]")
+        expect(secret_el).to_be_visible(timeout=20000)
+        from aegis.operators import totp_code
+        bob.get_by_label("認証コード").fill(totp_code(secret_el.inner_text().strip(), time.time()))
+        bob.get_by_role("button", name="確定").click()
+        expect(bob.get_by_text("有効", exact=True).first).to_be_visible(timeout=20000)
+        bob.goto(base + "/assessments/scan_001")
+        approve = panel(bob).get_by_role("button", name="この L2 検査を承認する")
+        expect(approve).to_be_visible(timeout=30000)
+        approve.click()
+        expect(panel(bob)).to_contain_text("自己登録のアカウントは L2 検査を承認できません", timeout=20000)
+        report["checks"]["self_registered_with_mfa_still_refused"] = True
+        shot(bob, "06m-refused-390")
+
+        # the platform administrator creates an account for a verified approver; alice
+        # invites that account, it joins and approves
+        ops.create_account("carol-verified", passwords["carol-verified"], display="carol",
+                           actor="platform-admin")
+        alice.goto(base + "/settings")
+        alice.get_by_label("招待する役割").select_option("approver")
+        alice.get_by_role("button", name="招待リンクを作成").click()
+        link_el = alice.get_by_label("招待リンク")
+        expect(link_el).to_be_visible(timeout=20000)
+        second_invite = link_el.input_value()
+        carol = new_page("carol-verified", 1280)
+        carol.goto(base + "/login")
+        carol.locator("#name").fill("carol-verified")
+        carol.locator("#password").fill(passwords["carol-verified"])
+        carol.get_by_role("button", name="ログイン", exact=True).click()
+        carol.wait_for_url(re.compile(r".*/(dashboard|welcome).*"), timeout=30000)
+        carol.goto(second_invite)
+        join = carol.get_by_role("button", name="参加する")
+        expect(join).to_be_visible(timeout=30000)
+        join.click()
+        expect(carol.get_by_text("として参加しました")).to_be_visible(timeout=20000)
+        carol.goto(base + "/assessments/scan_001")
+        approve = panel(carol).get_by_role("button", name="この L2 検査を承認する")
+        expect(approve).to_be_visible(timeout=30000)
+        approve.click()
+        report["checks"]["administrator_created_approver_approved"] = True
         step("approver_joins_and_approves")
 
         # ---- 5. alice reads the finding and the report -----------------------------------------
@@ -230,8 +276,8 @@ def main() -> None:
         expect(panel(alice).get_by_role("radio", name="認証必須")).to_be_visible(timeout=30000)
         panel(alice).get_by_role("radio", name="認証必須").check()
         panel(alice).get_by_role("button", name="仕様を記録する").click()
-        bob.reload()
-        approve = panel(bob).get_by_role("button", name="この L2 検査を承認する")
+        carol.reload()
+        approve = panel(carol).get_by_role("button", name="この L2 検査を承認する")
         expect(approve).to_be_visible(timeout=30000)
         approve.click()
         expect(panel(alice)).to_contain_text("改善を確認", timeout=30000)
@@ -244,7 +290,7 @@ def main() -> None:
         report["page_errors"] = page_errors
         checked, clean = axe_gate(report["accessibility"])
         report["checks"]["accessibility_screens_checked"] = checked
-        report["checks"]["accessibility_no_serious_violation"] = clean and checked == 8
+        report["checks"]["accessibility_no_serious_violation"] = clean and checked == 9   # 9 screens incl. the refused approver
         backend.shutdown()
         backend.drop_all()
         backend.server_close()

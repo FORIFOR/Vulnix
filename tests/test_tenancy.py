@@ -157,7 +157,7 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
                     raise TimeoutError("binding test did not release the request")
             return bound
 
-        with patch.object(handler, "_bind", paused_bind), patch.object(svc, "start", side_effect=started.set):
+        with patch.object(handler, "_bind", paused_bind), patch.object(svc, "start", side_effect=lambda *_a, **_k: started.set()):
             thread = threading.Thread(target=lambda: response.append(
                 self.req(who, "/assessments/scan_001/start", {}, org=org_id)))
             thread.start()
@@ -1172,7 +1172,7 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
                     raise TimeoutError("membership test did not release the request")
             return bound
 
-        with patch.object(handler, "_bind", paused_bind), patch.object(svc, "start", side_effect=started.set):
+        with patch.object(handler, "_bind", paused_bind), patch.object(svc, "start", side_effect=lambda *_a, **_k: started.set()):
             thread = threading.Thread(target=lambda: response.append(
                 self.req(member, "/assessments/scan_001/start", {}, org=org_id)))
             thread.start()
@@ -1214,7 +1214,7 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
         response = []
         original_record = svc.audit.record
 
-        def paused_start():
+        def paused_start(*_args, **_kwargs):
             entered.set()
             if not release.wait(5):
                 raise TimeoutError("start test did not release the request")

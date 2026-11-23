@@ -59,3 +59,53 @@ class LoopbackTestConfinement:
 
 
 TEST_CONFINEMENT = LoopbackTestConfinement()
+
+
+def l2_requested_by_another(requester: str = "op"):
+    """Class decorator for tests of OTHER properties of a real-site L2 run (boundary
+    proofs, token scrubbing, confinement, persistence...). Separation of duties is on by
+    default and always on for a real site: an L2 run needs a request by a different
+    operator first. Before a human approver calls `verify_finding`, this files that
+    request as `requester` (never the approver). It is applied per class, never to a
+    shared base, so the separation tests themselves (tests/test_l2_separation_default.py,
+    tests/test_access_control.py) see the rule unaided."""
+    from unittest.mock import patch
+
+    def decorate(cls):
+        from aegis.assessment import AssessmentService
+        real = AssessmentService.verify_finding
+
+        def verify_finding(svc, finding_id, actor, *args, **kwargs):
+            if actor and actor != requester and not str(actor).startswith("policy:"):
+                ids = list(svc.a.findings) if finding_id == "all" else [finding_id]
+                for fid in ids:
+                    try:
+                        svc.request_l2_run(fid, requester)
+                    except Exception:   # not a requestable L2 item: verify_finding answers for itself
+                        pass
+            return real(svc, finding_id, actor, *args, **kwargs)
+
+        real_fix = AssessmentService.verify_fix
+
+        def verify_fix(svc, actor, *args, **kwargs):
+            # a re-verification re-runs an L2 item only on a fresh request by another person
+            if actor and actor != requester and not str(actor).startswith("policy:"):
+                for fid in list(svc.a.findings):
+                    try:
+                        svc.request_l2_run(fid, requester)
+                    except Exception:
+                        pass
+            return real_fix(svc, actor, *args, **kwargs)
+
+        original_setup = cls.setUp
+
+        def setUp(self):
+            for name, fn in (("verify_finding", verify_finding), ("verify_fix", verify_fix)):
+                p = patch.object(AssessmentService, name, fn)
+                p.start()
+                self.addCleanup(p.stop)
+            original_setup(self)
+
+        cls.setUp = setUp
+        return cls
+    return decorate

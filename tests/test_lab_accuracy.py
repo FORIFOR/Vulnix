@@ -39,7 +39,7 @@ class TestLabAccuracy(unittest.TestCase):
             svc = AssessmentService(Path(tmp), lab_port, verify_seconds=0.01)
             svc._may_switch_lab = False
             try:
-                svc.start()
+                svc.start("operator")      # the requester; "audit" approves its L2
                 deadline = time.monotonic() + 10
                 while time.monotonic() < deadline:
                     snap = svc.snapshot()

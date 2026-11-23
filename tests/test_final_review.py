@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from aegis import cve, operators as ops_mod, router as router_mod
-from tests import TEST_CONFINEMENT
+from tests import TEST_CONFINEMENT, l2_requested_by_another
 from aegis.assessment import ApproverRequired, AssessmentService
 from aegis.network import NetworkError
 from aegis.operators import AuthError, LockedOut, OperatorStore, totp_code
@@ -35,6 +35,7 @@ class Ready(ApiBase):
 
 
 # ------------------------------------------------------------------ core controls
+@l2_requested_by_another()
 class TestApproverDecisionCannotBeRacedAround(Ready):
     def test_service_refuses_an_operator_even_when_no_http_check_ran_first(self):
         with self.assertRaises(ApproverRequired):
@@ -115,6 +116,7 @@ class TestPersistenceCannotBeWedgedQuietly(Ready):
         self.assertEqual(self.fake.seen, [])
 
 
+@l2_requested_by_another()
 class TestPathOverridesStayInsideTheAcceptedProfile(Ready):
     def test_an_approver_cannot_point_a_token_bearing_request_at_an_arbitrary_path(self):
         for key, value in (("note_b_path", "/api/admin/export?all=1"),      # outside the allowed pattern
@@ -387,6 +389,7 @@ class TestCveMatchingIsNotCrossWired(unittest.TestCase):
 
 
 # ------------------------------------------------------------------ export
+@l2_requested_by_another()
 class TestExport(Ready):
     def test_l1_observations_are_not_labelled_as_l2_and_identifiers_are_removed(self):
         self.svc.a.findings["f_headers"]["title"] += f" seen at {HOST.upper()}:8443 and 203.0.113.9 / 2001:db8::1"

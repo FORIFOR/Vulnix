@@ -139,8 +139,8 @@ AssessmentService（aegis/assessment.py）
 
 | # | 内容 | 場所 |
 |---|---|---|
-| O1 | **設計の判断が必要（所有者の決定待ち）。** 手動の ARTEX の L2 と旧来の実行の承認（`/approvals/{id}`）では、依頼者≠承認者を確かめるのは `AEGIS_SEPARATE_L2_APPROVER=1` のときだけです。既定では、組織の owner が自分で計画し、自分で L2 を実行できます。診断ループの承認 API は常に拒否します。`docs/DIAGNOSIS_ACTIONS.md` §1 の記述（`execute_artex_item` は本人の承認を拒否）は、コードでは条件付きです。対象は登録済みラボだけです | `aegis/assessment.py:353-355`, `:2700-2703`, `:3980-3988`、`aegis/server.py:1603-1609`、`aegis/diagnosis_ops.py:631-637` |
-| O2 | 自己登録アカウントの L2 承認の拒否も、同じ設定のときだけです。依頼者≠承認者はアカウント名の比較なので、公開登録が有効なら第二のアカウントで満たせます | `aegis/server.py:1533-1535`, `aegis/diagnosis_ops.py:582`, `:631` |
+| O1 | **案Aで対応（Draft PR、所有者の決定 2026-11-23）：分離を既定で有効にし、無効化は認可ラボ専用に限定。以下は対応前の記述。** 手動の ARTEX の L2 と旧来の実行の承認（`/approvals/{id}`）では、依頼者≠承認者を確かめるのは `AEGIS_SEPARATE_L2_APPROVER=1` のときだけです。既定では、組織の owner が自分で計画し、自分で L2 を実行できます。診断ループの承認 API は常に拒否します。`docs/DIAGNOSIS_ACTIONS.md` §1 の記述（`execute_artex_item` は本人の承認を拒否）は、コードでは条件付きです。対象は登録済みラボだけです | `aegis/assessment.py:353-355`, `:2700-2703`, `:3980-3988`、`aegis/server.py:1603-1609`、`aegis/diagnosis_ops.py:631-637` |
+| O2 | **案Aで対応（Draft PR）：自己登録アカウントの承認拒否を既定で有効にし、旧来の承認と手動の ARTEX L2 にも適用。以下は対応前の記述。** 自己登録アカウントの L2 承認の拒否も、同じ設定のときだけです。依頼者≠承認者はアカウント名の比較なので、公開登録が有効なら第二のアカウントで満たせます | `aegis/server.py:1533-1535`, `aegis/diagnosis_ops.py:582`, `:631` |
 | O3 | **確認済みの欠陥（修正 PR あり）。** `_exec` は、Worker の後に監査ログの**最後の** `result` 記録をその実行のものとして使っていました。同じ組織の別の Worker がその間に終わると、証拠が他の実行の監査記録を指します（`tests/test_exec_result_entry.py` で再現）。修正：トークンの `jti` が一致する記録だけを使い、見つからなければ結果を記録しない（PR #118） | `aegis/assessment.py:5097` |
 | O4 | **確認済みの欠陥（修正 PR あり）。** TOTP の登録確認に使ったコードが「使用済み」として記録されず、同じ時間窓でログインと無効化に使えました（`tests/test_attack_regressions.py::TestPasswordGuessing::test_the_code_that_confirmed_enrollment_cannot_sign_in` で再現）。修正：確認に使ったステップを使用済みとして保存（PR #118） | `aegis/operators.py:815-833` |
 | O5 | 診断ループ以外の状態変更には、処理の後に監査を書くものがあります（例：`assessment.start_requested`、`asset.registered`） | `aegis/server.py:1483-1486`, `aegis/assessment.py:2988` |
@@ -259,7 +259,7 @@ AEGIS_API=http://127.0.0.1:8787 npm --prefix web run start             # http://
 | `VULNIX_NO_ENV_LOCAL=1` | `.env.local` を読まない（必須） |
 | `VULNIX_REAL_SERVICE_DIAGNOSIS=0` | 実サイトへの通信をすべて止める（レビューでは必須） |
 | `VULNIX_PUBLIC_SIGNUP=1` | 自己登録を有効にする（組織間の試験に使う。`DEVELOPMENT.md` の例） |
-| `AEGIS_SEPARATE_L2_APPROVER=1`（または `--separate-l2-approver`） | 依頼者と承認者の分離を手動の ARTEX・自己登録アカウントにも適用（O1・O2 の比較に） |
+| `AEGIS_SEPARATE_L2_APPROVER` | 既定で有効（案A）。`0` は認可ラボ専用の構成（`VULNIX_REAL_SERVICE_DIAGNOSIS=0` など）でだけ受け付けます |
 | `VULNIX_MULTI_TENANT=0` | 組織なしの単一サービス（既定は組織あり） |
 | `VULNIX_AUDIT_ANCHOR_SOCKET` / `_UID` / `_SOURCE` | 監査アンカー（3つとも実環境で設定。`.env.local` からは読まない） |
 | `VULNIX_DIAGNOSIS_APPROVAL_TIMEOUT` / `_APPROVAL_VALID` / `_SPEC_TIMEOUT` | 承認待ち（900秒）・承認の有効期限（300秒）・仕様待ち（24時間） |
