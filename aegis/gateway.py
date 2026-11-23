@@ -14,7 +14,7 @@ import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from .audit import AuditLog
+from .audit import AuditLog, AuditWriteFailed
 from .confinement import ConfinementError
 from .authz import ApprovalStore, AuthzError, Engagement, TokenAuthority
 from .network import EgressGuard, NetworkError, PinnedDestination
@@ -42,6 +42,7 @@ class StopReport:
     killed_pids: list[int] = field(default_factory=list)
     survivors: list[int] = field(default_factory=list)
     confirmed: bool = False
+    audited: bool = True        # False: the stop happened but its record could not be written
 
 
 def deadline_report(tool_name: str, result: WorkerResult) -> WorkerResult:
@@ -432,8 +433,12 @@ class Gateway:
             if self._state is not State.PAUSED:
                 raise AuthzError(f"cannot resume from {self._state.value}")
             self.engagement.check_active(self.clock())   # re-validate window & authz
+            # audit first: work that cannot be recorded does not resume
+            try:
+                self.audit.record("resume", actor=actor)
+            except Exception as e:  # noqa: BLE001 - disk, chain or anchor: not recorded
+                raise AuditWriteFailed("監査ログに記録できないため、再開しませんでした（何も変更していません）") from e
             self._state = State.RUNNING
-            self.audit.record("resume", actor=actor)
 
     # ---- emergency stop (layer 6) ----------------------------------------
     def emergency_stop(self, actor: str, confirm_timeout_s: float = 5.0) -> StopReport:
@@ -463,6 +468,7 @@ class Gateway:
             # not undo it, but the stop is then not reported as confirmed
             audited = False
         mark("5_persist_audit")
+        rep.audited = audited
         rep.confirmed = not rep.survivors and not busy and audited and self.audit.verify()
         mark("6_confirmed" if rep.confirmed else "6_NOT_CONFIRMED")
         return rep

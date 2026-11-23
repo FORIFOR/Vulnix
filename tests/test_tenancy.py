@@ -1212,7 +1212,7 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
         entered, release, logged_out = threading.Event(), threading.Event(), threading.Event()
         response_waiting, release_response = threading.Event(), threading.Event()
         response = []
-        original_record = svc.audit.record
+        original_snapshot = svc.snapshot
 
         def paused_start(*_args, **_kwargs):
             entered.set()
@@ -1223,15 +1223,16 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
             self.ops.logout(who["cookie"].split("=", 1)[1])
             logged_out.set()
 
-        def paused_record(event, *args, **kwargs):
-            if event == "assessment.start_requested":
+        def paused_snapshot(*args, **kwargs):
+            # between the start (audited first, inside the service) and its response
+            if entered.is_set():
                 response_waiting.set()
                 if not release_response.wait(5):
                     raise TimeoutError("start response test did not release")
-            return original_record(event, *args, **kwargs)
+            return original_snapshot(*args, **kwargs)
 
         with patch.object(svc, "start", side_effect=paused_start), \
-                patch.object(svc.audit, "record", side_effect=paused_record):
+                patch.object(svc, "snapshot", side_effect=paused_snapshot):
             request = threading.Thread(target=lambda: response.append(
                 self.req(who, "/assessments/scan_001/start", {}, org=org_id)))
             request.start()

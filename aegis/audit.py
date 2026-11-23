@@ -36,6 +36,20 @@ def is_anchored_event(event: str) -> bool:
     return event in ANCHORED_EVENTS or event.startswith(ANCHORED_PREFIXES)
 
 
+class AuditWriteFailed(ValueError):
+    """An audit record could not be written (disk, chain or anchor check).
+
+    Raised by a change that grants authority or starts work, BEFORE anything changed
+    (audit first: no record, no change). Raised by a change that removes authority or
+    stops work AFTER it was applied (`applied` is True): such a change is never held
+    back by a failing audit log, but the missing record is reported to the caller.
+    A ValueError, like AnchorError: callers treat it as a refusal."""
+
+    def __init__(self, message: str, *, applied: bool = False):
+        super().__init__(message)
+        self.applied = applied
+
+
 class AuditLog:
     def __init__(self, path: str | Path, anchor=None, anchor_root: str | Path | None = None):
         if fcntl is None:
@@ -113,8 +127,15 @@ class AuditLog:
         self._prev = digest
         if anchored:
             # The record is on disk, but it does not count until its head is anchored:
-            # the caller gets an error and does not apply the change.
-            self._anchor_publish_locked(len(entries) + 1, digest)
+            # the caller gets an error and does not apply the change. The log says so.
+            try:
+                self._anchor_publish_locked(len(entries) + 1, digest)
+            except BaseException:
+                try:
+                    self._append_locked("audit.record_not_anchored", {"event": event, "hash": digest})
+                except Exception:  # noqa: BLE001 - best effort: the caller is refused anyway
+                    pass
+                raise
         return entry
 
     # ---- anchor (aegis/audit_anchor.py, docs/AUDIT_ANCHOR.md) -------------------------

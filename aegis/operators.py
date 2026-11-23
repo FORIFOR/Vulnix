@@ -53,6 +53,10 @@ class AuthError(Exception):
     pass
 
 
+class ChangeNotSaved(AuthError):
+    """An account change could not be saved and was undone in memory: not in force."""
+
+
 class MFAChallenge(AuthError):
     """Password was correct but a valid TOTP code is still required."""
 
@@ -409,9 +413,12 @@ class OperatorStore:
                             "このままでは再起動後に元へ戻ります。データディレクトリの書き込み権限を確認してください")
 
     @_revocation
-    def change_password(self, name: str, current: str, new: str, *, keep_token: str | None = None) -> None:
+    def change_password(self, name: str, current: str, new: str, *, keep_token: str | None = None,
+                        journal=None) -> None:
         """Verify the current password, set a new one, and revoke this operator's
-        other sessions (the one making the change, keep_token, is kept)."""
+        other sessions (the one making the change, keep_token, is kept).
+        `journal()` is called after every check and before the change; if it raises,
+        nothing changes (audit before state)."""
         with self._lock:
             op = self._ops.get(name)
         self._check_not_locked(name)
@@ -426,10 +433,15 @@ class OperatorStore:
         new_hash = hash_password(new)
         with self._lock:
             self._require_self_locked(name, keep_token)
+            if journal is not None:
+                journal()
             op.password_hash = new_hash
             keep = session_key(keep_token) if keep_token else None
             for key in [k for k, s in self._sessions.items() if s.operator == name and k != keep]:
                 del self._sessions[key]
+        # Not undone when it cannot be saved: replacing a password protects the account (the
+        # old one may be known), so the new one is kept and saved by the next retry; no
+        # sign-in is accepted until then (trusted() is False). Its audit record stands.
         try:
             self._persist_operators(strict=True)   # else the OLD password works again after a restart
         finally:
@@ -590,14 +602,17 @@ class OperatorStore:
         if acting is None or "admin" not in acting.roles:
             raise AuthError("管理者の権限がありません")
 
-    def unlock(self, target: str, *, actor: str, session_token: str | None = None) -> bool:
+    def unlock(self, target: str, *, actor: str, session_token: str | None = None, journal=None) -> bool:
         """An admin lifts a lock early (recovery for a legitimate user). The lock
         also ends by itself after AUTH_LOCK_SECONDS, is not kept across a restart,
         and can be lifted from the machine itself with an `unlock.request` file."""
         with self._lock:
             self._require_admin_locked(actor, session_token)
             tab, key = self._slot_locked(target)
-            was_locked = self._locked_until.pop(key, 0.0) > self._clock()
+            was_locked = self._locked_until.get(key, 0.0) > self._clock()
+            if journal is not None:
+                journal(was_locked)         # audit before state: raises => nothing changes
+            self._locked_until.pop(key, None)
             tab.pop(key, None)
             return was_locked
 
@@ -761,10 +776,12 @@ class OperatorStore:
 
     @_revocation
     def set_roles(self, target: str, roles: list[str] | tuple[str, ...], *, actor: str,
-                  session_token: str | None = None) -> tuple[tuple[str, ...], tuple[str, ...]]:
+                  session_token: str | None = None, journal=None) -> tuple[tuple[str, ...], tuple[str, ...]]:
         """Replace `target`'s roles. Returns (before, after). The caller (server)
         has already established that `actor` is an authenticated admin; this
-        re-checks it, and refuses changes that would defeat the model."""
+        re-checks it, and refuses changes that would defeat the model.
+        `journal(before, after)` is called after every check and before the change;
+        if it raises, nothing changes (audit before state)."""
         unknown = [r for r in roles if r not in ROLES]
         if unknown:
             raise AuthError(f"不明なロールです: {', '.join(unknown)}")
@@ -782,8 +799,18 @@ class OperatorStore:
             if "admin" in before and "admin" not in new_roles and not any(
                     "admin" in o.roles for n, o in self._ops.items() if n != target):
                 raise AuthError("最後の管理者から管理者ロールを外すことはできません")
+            if journal is not None:
+                journal(before, new_roles)
             op.roles = new_roles
-        self._persist_operators(strict=True)
+        try:
+            self._persist_operators(strict=True)
+        except AuthError:
+            if not set(new_roles) <= set(before):
+                with self._lock:            # a grant that is not on disk is not in force either
+                    op.roles = before
+                raise ChangeNotSaved("ロールの変更を保存できなかったため、権限は付与していません。"
+                                "データディレクトリの書き込み権限を確認してください") from None
+            raise                           # a removal stays in force (fail-safe)
         return before, new_roles
 
     # ---- two-factor (TOTP) enrollment ------------------------------------
@@ -838,7 +865,7 @@ class OperatorStore:
                             "データディレクトリの書き込み権限を確認してください") from None
 
     def disable_totp(self, name: str, current_password: str, code: str | None = None,
-                     *, session_token: str | None = None) -> None:
+                     *, session_token: str | None = None, journal=None) -> None:
         """Turning the second factor off needs BOTH factors: the password and a
         current code. (Lost device: an admin resets it with `reset_totp`.)"""
         with self._lock:
@@ -853,12 +880,21 @@ class OperatorStore:
         self._clear_failures(name)
         with self._lock:
             self._require_self_locked(name, session_token)
+            if journal is not None:
+                journal()                   # audit before state: raises => nothing changes
+            old_secret = op.totp_secret
             op.totp_secret = None
             self._pending_totp.pop(name, None)
-        self._persist_operators()
+        try:
+            self._persist_operators(strict=True)
+        except AuthError:
+            with self._lock:                # not on disk: the second factor stays in force
+                op.totp_secret = old_secret
+            raise ChangeNotSaved("2要素認証の無効化を保存できなかったため、無効にしていません。"
+                            "データディレクトリの書き込み権限を確認してください") from None
 
     @_revocation
-    def reset_totp(self, target: str, *, actor: str, session_token: str | None = None) -> bool:
+    def reset_totp(self, target: str, *, actor: str, session_token: str | None = None, journal=None) -> bool:
         """Recovery for a lost authenticator: an admin (never the account itself)
         removes the second factor and signs the account out everywhere."""
         with self._lock:
@@ -869,12 +905,21 @@ class OperatorStore:
             if op is None:
                 raise AuthError("対象のアカウントが見つかりません")
             had = bool(op.totp_secret)
+            if journal is not None:
+                journal(had)                # audit before state: raises => nothing changes
+            old_secret = op.totp_secret
             op.totp_secret = None
             self._pending_totp.pop(target, None)
             for key in [k for k, s in self._sessions.items() if s.operator == target]:
                 del self._sessions[key]
         try:
-            self._persist_operators(strict=True)
+            try:
+                self._persist_operators(strict=True)
+            except AuthError:
+                with self._lock:            # not on disk: the second factor stays (the sign-outs stand)
+                    op.totp_secret = old_secret
+                raise ChangeNotSaved("2要素認証のリセットを保存できなかったため、リセットしていません。"
+                                "データディレクトリの書き込み権限を確認してください") from None
         finally:
             self._persist_sessions(strict=True)
         return had
