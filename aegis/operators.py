@@ -19,6 +19,10 @@ authorization for the UI; it does NOT replace the Gateway's execution token.
 Accounts may optionally enroll a TOTP second factor (RFC 6238). It is opt-in,
 so a local operator is never locked out by a default; once enrolled, login
 requires a current code in addition to the password.
+
+A password is replaced in two durable phases with a per-account credential
+generation, so a failed or interrupted change never brings the old password back
+(docs/PASSWORD_CHANGE_DURABILITY.md).
 """
 from __future__ import annotations
 
@@ -55,6 +59,53 @@ class AuthError(Exception):
 
 class ChangeNotSaved(AuthError):
     """An account change could not be saved and was undone in memory: not in force."""
+
+
+CREDENTIAL_STATE_NAME = "operators.credential-state.json"
+UNSAVED_MESSAGE = ("認証情報を保存できないため、パスワードを変更できません。"
+                   "データディレクトリの書き込み権限を確認してください")
+BLOCKED_MESSAGE = ("このアカウントはパスワードの変更が完了していないため、ログインを停止しています。"
+                   "管理者にパスワードのリセットを依頼してください")
+
+
+def credential_digest(password_hash: str) -> str:
+    """What the audit log keeps of a password hash: its SHA-256, never the hash itself."""
+    return hashlib.sha256(password_hash.encode("utf-8")).hexdigest()
+
+
+def audit_credential_generations(paths) -> dict[str, tuple[int, str | None]]:
+    """account -> (highest credential generation recorded, digest of that hash) in the
+    given audit logs. An intent is cancelled by a `grant.not_committed` naming the same
+    account, generation AND hash digest (every new hash has a fresh salt, so an abort
+    can never cancel a different change that happened to reuse the generation). A line that cannot be parsed raises: the caller then
+    cannot vouch for any account (fail closed)."""
+    live: dict[tuple[str, int], str | None] = {}
+    for path in paths:
+        path = Path(path)
+        if not path.exists():
+            continue
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            entry = json.loads(line)
+            fields = entry.get("fields") if isinstance(entry, dict) else None
+            if not isinstance(fields, dict):
+                continue
+            acct, gen = fields.get("account"), fields.get("credential_generation")
+            if not isinstance(acct, str) or not isinstance(gen, int) or isinstance(gen, bool) or gen <= 0:
+                continue
+            digest = fields.get("hash_digest")
+            if entry.get("event") == "grant.not_committed":
+                if isinstance(digest, str) and live.get((acct, gen)) == digest:
+                    live.pop((acct, gen), None)
+                continue
+            if live.get((acct, gen)) is None:
+                live[(acct, gen)] = digest if isinstance(digest, str) else None
+    out: dict[str, tuple[int, str | None]] = {}
+    for (acct, gen), digest in live.items():
+        if gen > out.get(acct, (0, None))[0]:
+            out[acct] = (gen, digest)
+    return out
 
 
 class MFAChallenge(AuthError):
@@ -162,6 +213,7 @@ class Operator:
     totp_secret: str | None = None     # set => a second factor is required at login
     created_by: str | None = None      # admin who created it; "self" = self-registered (development mode)
     totp_last_counter: int = -1        # last accepted TOTP time step (replay protection)
+    credential_generation: int = 0     # bumped by every committed password change
 
 
 @dataclass
@@ -186,8 +238,19 @@ def _revocation(method):
 class OperatorStore:
     """Thread-safe operator + session store backed by a JSON seed file."""
 
-    def __init__(self, seed_path: Path, clock=time.time, sessions_path: Path | None = None):
+    def __init__(self, seed_path: Path, clock=time.time, sessions_path: Path | None = None,
+                 credential_generations=None):
         self.seed_path = Path(seed_path)
+        # Two-phase password changes (docs/PASSWORD_CHANGE_DURABILITY.md): accounts with a
+        # change in progress (phase 1 written, phase 2 not) live in a sibling file;
+        # `credential_generations()` reads the audit trail at startup (rollback check).
+        self.credential_state_path = self.seed_path.with_name(CREDENTIAL_STATE_NAME)
+        self._credential_generations = credential_generations
+        self._pending: dict[str, dict] = {}     # name -> {"generation", "reason"} (on disk)
+        self._blocked: dict[str, str] = {}      # name -> reason, derived at startup (audit check)
+        self._audit_gen: dict[str, int] = {}    # highest generation the audit trail showed
+        self._gen_used: dict[str, int] = {}     # highest generation this process handed out
+        self._retrying: dict[str, int] = {}     # committed in memory, phase 2 not yet on disk
         # Sessions survive a control-plane restart so operators are not all
         # logged out when the process is bounced. Kept in a sibling 0600 file.
         self.sessions_path = Path(sessions_path) if sessions_path else self.seed_path.with_name("sessions.json")
@@ -227,9 +290,14 @@ class OperatorStore:
                                                 o["password_hash"],
                                                 tuple(r for r in o["roles"] if r in ROLES),
                                                 o.get("totp_secret"), o.get("created_by"),
-                                                int(o.get("totp_last_counter", -1)))
+                                                int(o.get("totp_last_counter", -1)),
+                                                int(o.get("credential_generation", 0)))
             self._ensure_admin()
+            self._check_credential_state()
             return None
+        # (a deleted accounts file: fresh random passwords, so no old password works; the
+        # new accounts start above every generation seen, so they are not taken for a rollback)
+        floors = self._fresh_generation_floors()
         # First run: generate the accounts with random passwords and write the seed.
         generated = {"operator": secrets.token_urlsafe(12),
                      "approver": secrets.token_urlsafe(12),
@@ -241,11 +309,15 @@ class OperatorStore:
         ]
         out = {"operators": []}
         for name, display, roles, pw in defaults:
-            self._ops[name] = Operator(name, display, hash_password(pw), roles)
+            gen = floors.get(name, 0) + 1 if floors.get(name) else 0
+            self._ops[name] = Operator(name, display, hash_password(pw), roles, credential_generation=gen)
             out["operators"].append({"name": name, "display": display,
                                      "roles": list(roles),
-                                     "password_hash": self._ops[name].password_hash})
+                                     "password_hash": self._ops[name].password_hash,
+                                     **({"credential_generation": gen} if gen else {})})
         self._write_private(self.seed_path, json.dumps(out, ensure_ascii=False, indent=2))
+        if os.path.lexists(self.credential_state_path):
+            self._persist_credential_state()
         # Write plaintext to a 0600 side file the operator reads themselves;
         # it is never printed to logs or returned over the API.
         cred = self.seed_path.with_name("operators.initial-credentials.txt")
@@ -257,6 +329,155 @@ class OperatorStore:
         self.credentials_path = cred
         return generated
 
+    # ---- credential generations (docs/PASSWORD_CHANGE_DURABILITY.md) --------
+    def _read_credential_state(self) -> tuple[dict[str, dict], bool]:
+        """(markers, corrupt). A missing file has no markers."""
+        try:
+            raw = json.loads(self.credential_state_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return {}, False
+        except (OSError, ValueError):
+            return {}, True
+        pending = raw.get("pending") if isinstance(raw, dict) else None
+        if not isinstance(pending, dict):
+            return {}, True
+        out = {}
+        for name, m in pending.items():
+            gen = m.get("generation") if isinstance(m, dict) else None
+            if not isinstance(gen, int) or isinstance(gen, bool):
+                return {}, True
+            out[str(name)] = {"generation": gen, "reason": str(m.get("reason", "in_progress"))[:32]}
+        return out, False
+
+    def _audit_generations(self) -> dict[str, tuple[int, str | None]] | None:
+        """None when the audit trail could not be read."""
+        try:
+            gens = self._credential_generations()
+            return gens if isinstance(gens, dict) else None
+        except Exception:  # noqa: BLE001 - any failure means "cannot vouch"
+            return None
+
+    def _fresh_generation_floors(self) -> dict[str, int]:
+        markers, _ = self._read_credential_state()
+        floors = {n: m["generation"] for n, m in markers.items()}
+        if self._credential_generations is not None:
+            for n, (gen, _digest) in (self._audit_generations() or {}).items():
+                floors[n] = max(floors.get(n, 0), gen)
+        return floors
+
+    def _check_credential_state(self) -> None:
+        """At startup: an account whose change is in progress, or whose accounts-file
+        state is behind what the audit trail recorded (an older copy restored, phase 1
+        lost, a marker removed), does not sign in until an admin reset or an offline
+        recovery (scripts/recover_account.py)."""
+        markers, corrupt = self._read_credential_state()
+        if corrupt:
+            # which account was mid-change is unknown: none signs in until recovered
+            markers = {n: {"generation": o.credential_generation + 1, "reason": "state_unreadable"}
+                       for n, o in self._ops.items()}
+            self.recovery_events.append({"event": "auth.credential_state_unreadable",
+                                         "accounts": len(markers)})
+        for name, m in markers.items():
+            op = self._ops.get(name)
+            if op is not None and m["generation"] > op.credential_generation:
+                self._pending[name] = m
+        stale = set(markers) != set(self._pending)
+        if self._credential_generations is not None:
+            gens = self._audit_generations()
+            for name, op in self._ops.items():
+                if gens is None:
+                    if op.credential_generation > 0 or name in self._pending:
+                        self._blocked[name] = "audit_unreadable"
+                    continue
+                gen, digest = gens.get(name, (0, None))
+                self._audit_gen[name] = gen
+                if gen > op.credential_generation:
+                    self._blocked[name] = "behind_audit"
+                elif (gen == op.credential_generation and gen > 0 and digest
+                      and not hmac.compare_digest(digest, credential_digest(op.password_hash))):
+                    self._blocked[name] = "hash_mismatch"
+            for name, why in sorted(self._blocked.items()):
+                self.recovery_events.append({"event": "auth.credential_state_inconsistent",
+                                             "account": name[:64], "reason": why})
+        if corrupt or stale:
+            self._persist_credential_state()
+
+    def _blocked_reason_locked(self, name: str) -> str | None:
+        op = self._ops.get(name)
+        marker = self._pending.get(name)
+        if op is not None and marker and marker["generation"] > op.credential_generation:
+            return marker.get("reason") or "in_progress"
+        return self._blocked.get(name)
+
+    def blocked_accounts(self) -> dict[str, str]:
+        """name -> why sign-in is refused (a password change not completed, or state
+        inconsistent with the audit trail)."""
+        with self._lock:
+            return {n: r for n in self._ops if (r := self._blocked_reason_locked(n))}
+
+    def _persist_credential_state(self) -> bool:
+        with self._lock:
+            payload = {"version": 1, "pending": {n: dict(m) for n, m in self._pending.items()}}
+            written = self._atomic_write(self.credential_state_path, json.dumps(payload, ensure_ascii=False))
+            (self._unsaved.discard if written else self._unsaved.add)("credstate")
+        return written
+
+    def _replace_password(self, name: str, new_hash: str, journal, *, keep_key: str | None = None,
+                          check=None) -> int:
+        """The two phases. 0) the auth state on disk is the one in force; 1) the audit
+        intent (account, new generation, digest of the new hash); 2) phase 1: the
+        account is durably marked "change in progress" (sign-in refused; the old hash
+        stays on disk but is unusable) - if that cannot be written nothing changed;
+        3) phase 2: the new hash and generation are written and the marker cleared. If
+        phase 2 cannot be written the change stays in force here (untrusted, retried)
+        and after a restart the account stays blocked. Returns the new generation."""
+        if not self.trusted():
+            raise AuthError(UNSAVED_MESSAGE)
+        digest = credential_digest(new_hash)
+        with self._lock:
+            op = self._ops.get(name)
+            if op is None:
+                raise AuthError("対象のアカウントが見つかりません")
+            if check is not None:
+                check()
+            previous = self._pending.get(name)
+            gen = max(op.credential_generation, (previous or {}).get("generation", 0),
+                      self._audit_gen.get(name, 0), self._gen_used.get(name, 0)) + 1
+            if journal is not None:
+                journal(account=name, credential_generation=gen, hash_digest=digest)   # raises => nothing
+            self._gen_used[name] = gen
+            self._pending[name] = {"generation": gen, "reason": "in_progress"}
+        if not self._persist_credential_state():                        # phase 1
+            with self._lock:                # nothing on disk changed: nothing changes here either
+                if (self._pending.get(name) or {}).get("generation") == gen:   # still ours
+                    if previous is None:
+                        self._pending.pop(name, None)
+                    else:
+                        self._pending[name] = previous
+                self._unsaved.discard("credstate")
+            raise ChangeNotSaved("パスワードの変更を開始できなかったため、変更していません（現在のパスワードのままです）。"
+                                 "データディレクトリの書き込み権限を確認してください")
+        with self._lock:                                                # phase 2
+            op.password_hash = new_hash
+            op.credential_generation = gen
+            self._blocked.pop(name, None)
+            for key in [k for k, s in self._sessions.items() if s.operator == name and k != keep_key]:
+                del self._sessions[key]
+        # Not undone when it cannot be saved: replacing a password protects the account (the
+        # old one may be known), so the new one is kept and saved by the next retry; no
+        # sign-in is accepted until then (trusted() is False). After a restart before that,
+        # phase 1 on disk keeps this account blocked. Its audit record stands.
+        try:
+            try:
+                self._persist_operators(strict=True)
+            except AuthError:
+                with self._lock:
+                    self._retrying[name] = gen
+                raise
+        finally:
+            self._persist_sessions(strict=True)    # the other sessions' revocation is written regardless
+        return gen
+
     def _ensure_admin(self) -> None:
         """An installation created before the admin role existed has nobody who can
         grant roles. Create one admin account with a random password, written only
@@ -266,7 +487,9 @@ class OperatorStore:
             return
         name = "admin" if "admin" not in self._ops else "admin-" + secrets.token_hex(3)
         password = secrets.token_urlsafe(12)
-        self._ops[name] = Operator(name, "管理者", hash_password(password), ("operator", "admin"))
+        floor = self._fresh_generation_floors().get(name, 0)   # a new account, not a rolled-back one
+        self._ops[name] = Operator(name, "管理者", hash_password(password), ("operator", "admin"),
+                                   credential_generation=floor + 1 if floor else 0)
         self._persist_operators()
         cred = self.seed_path.with_name("operators.admin-credentials.txt")
         self._write_private(
@@ -300,7 +523,8 @@ class OperatorStore:
                     sess = Session("", s["operator"], (), float(s["created"]), float(s["expires"]))
                 except (KeyError, TypeError, ValueError):
                     continue
-                if len(key) == 64 and sess.expires > now and sess.operator in self._ops:
+                if (len(key) == 64 and sess.expires > now and sess.operator in self._ops
+                        and not self._blocked_reason_locked(sess.operator)):
                     self._sessions[key] = sess
         # Rewrite so the file sheds expired/stale entries on load.
         self._persist_sessions()
@@ -321,6 +545,8 @@ class OperatorStore:
             self._persist_operators()
         if "sessions" in pending:
             self._persist_sessions()
+        if "credstate" in pending:
+            self._persist_credential_state()
         with self._lock:
             return not self._unsaved
 
@@ -403,22 +629,39 @@ class OperatorStore:
                  "password_hash": o.password_hash,
                  **({"totp_secret": o.totp_secret} if o.totp_secret else {}),
                  **({"created_by": o.created_by} if o.created_by else {}),
-                 **({"totp_last_counter": o.totp_last_counter} if o.totp_last_counter >= 0 else {})}
+                 **({"totp_last_counter": o.totp_last_counter} if o.totp_last_counter >= 0 else {}),
+                 **({"credential_generation": o.credential_generation} if o.credential_generation else {})}
                 for o in self._ops.values()
             ]}
             written = self._atomic_write(self.seed_path, json.dumps(payload, ensure_ascii=False, indent=2))
             (self._unsaved.discard if written else self._unsaved.add)("operators")
+            done = []
+            if written:
+                # phase 2 is on disk: the markers it supersedes go (harmless if that
+                # write fails - a marker at or below the committed generation is ignored)
+                done = [n for n, m in self._pending.items()
+                        if n in self._ops and m["generation"] <= self._ops[n].credential_generation]
+                for n in done:
+                    self._pending.pop(n, None)
+                for n, gen in list(self._retrying.items()):
+                    if n in self._ops and self._ops[n].credential_generation >= gen:
+                        del self._retrying[n]
+                        self.recovery_events.append({"event": "auth.password_change_committed", "account": n,
+                                                     "credential_generation": gen, "after_retry": True})
+        if done:
+            self._persist_credential_state()
         if strict and not written:
             raise AuthError("変更は現在のプロセスには反映されましたが、ファイルへの保存に失敗しました。"
                             "このままでは再起動後に元へ戻ります。データディレクトリの書き込み権限を確認してください")
 
     @_revocation
     def change_password(self, name: str, current: str, new: str, *, keep_token: str | None = None,
-                        journal=None) -> None:
-        """Verify the current password, set a new one, and revoke this operator's
-        other sessions (the one making the change, keep_token, is kept).
-        `journal()` is called after every check and before the change; if it raises,
-        nothing changes (audit before state)."""
+                        journal=None) -> int:
+        """Verify the current password, set a new one (two phases, see _replace_password),
+        and revoke this operator's other sessions (the one making the change, keep_token,
+        is kept). `journal(account=, credential_generation=, hash_digest=)` is called after
+        every check and before the change; if it raises, nothing changes (audit before
+        state). Returns the new credential generation."""
         with self._lock:
             op = self._ops.get(name)
         self._check_not_locked(name)
@@ -426,26 +669,51 @@ class OperatorStore:
             self._note_failure(name)
             raise AuthError("現在のパスワードが違います")
         self._clear_failures(name)      # the current password was right: not a guess, whatever follows
+        with self._lock:
+            if self._blocked_reason_locked(name):
+                # the hash on disk may be the very password the change was replacing
+                raise AuthError(BLOCKED_MESSAGE)
         if len(new) < MIN_PASSWORD_LEN:
             raise AuthError(f"新しいパスワードは{MIN_PASSWORD_LEN}文字以上にしてください")
         if new == current:
             raise AuthError("現在と異なるパスワードを設定してください")
         new_hash = hash_password(new)
-        with self._lock:
+
+        def check():
             self._require_self_locked(name, keep_token)
-            if journal is not None:
-                journal()
-            op.password_hash = new_hash
-            keep = session_key(keep_token) if keep_token else None
-            for key in [k for k, s in self._sessions.items() if s.operator == name and k != keep]:
-                del self._sessions[key]
-        # Not undone when it cannot be saved: replacing a password protects the account (the
-        # old one may be known), so the new one is kept and saved by the next retry; no
-        # sign-in is accepted until then (trusted() is False). Its audit record stands.
-        try:
-            self._persist_operators(strict=True)   # else the OLD password works again after a restart
-        finally:
-            self._persist_sessions(strict=True)    # the other sessions' revocation is written regardless
+            if self._blocked_reason_locked(name):
+                raise AuthError(BLOCKED_MESSAGE)
+        return self._replace_password(name, new_hash, journal,
+                                      keep_key=session_key(keep_token) if keep_token else None, check=check)
+
+    @_revocation
+    def reset_password(self, target: str, new_password: str, *, actor: str, session_token: str | None = None,
+                       journal=None) -> int:
+        """An admin (never the account itself) sets a new password for `target`: also the
+        way out of a blocked account. Audit first and two-phase like change_password;
+        every session of `target` is revoked. Returns the new credential generation."""
+        with self._lock:
+            self._require_admin_locked(actor, session_token)
+            if target == actor:
+                raise AuthError("自分自身のパスワードはリセットできません。パスワードの変更を使ってください")
+            if target not in self._ops:
+                raise AuthError("対象のアカウントが見つかりません")
+        if len(new_password or "") < MIN_PASSWORD_LEN:
+            raise AuthError(f"パスワードは{MIN_PASSWORD_LEN}文字以上にしてください")
+        new_hash = hash_password(new_password)
+        return self._replace_password(target, new_hash, journal,
+                                      check=lambda: self._require_admin_locked(actor, session_token))
+
+    @_revocation
+    def recover_account(self, target: str, *, journal) -> tuple[str, int]:
+        """Host-side recovery (scripts/recover_account.py, server stopped): a fresh
+        temporary password, two-phase and audit-first. Returns (password, generation);
+        the caller writes the password to a 0600 file, never to a log."""
+        if journal is None:
+            raise AuthError("復旧は監査ログに記録してから行います")
+        password = secrets.token_urlsafe(15)
+        gen = self._replace_password(target, hash_password(password), journal)
+        return password, gen
 
     # ---- sign-in throttling ----------------------------------------------
     @staticmethod
@@ -645,6 +913,13 @@ class OperatorStore:
         if not op or not ok:
             self._note_failure(name)
             raise AuthError("ユーザー名またはパスワードが違います")
+        with self._lock:
+            blocked = self._blocked_reason_locked(name)
+        if blocked:
+            # whichever password this is (the one being replaced, typically), it does not sign in;
+            # the attempt still counts, so a blocked account is no oracle for unlimited guesses
+            self._note_failure(name)
+            raise AuthError(BLOCKED_MESSAGE)
         # Second factor: only enforced for accounts that enrolled one (opt-in,
         # so a local operator can never be locked out by a default).
         if op.totp_secret and not self._accept_totp(op, code):
@@ -687,6 +962,8 @@ class OperatorStore:
         op = self._ops.get(sess.operator)
         if op is None:
             del self._sessions[key]
+            return None
+        if self._blocked_reason_locked(sess.operator):
             return None
         # the caller gets the token it presented; the store keeps only its hash
         return Session(token, sess.operator, op.roles, sess.created, sess.expires)
@@ -752,8 +1029,10 @@ class OperatorStore:
                 self._require_admin_locked(_created_by, _acting_token)
             if clean_name in self._ops:
                 raise AuthError("このユーザー名は既に登録されています")
+            floor = self._audit_gen.get(clean_name, 0)   # a name reused after deletion: a new account
             self._ops[clean_name] = Operator(clean_name, clean_display, pw_hash, clean_roles,
-                                             created_by=_created_by)
+                                             created_by=_created_by,
+                                             credential_generation=floor + 1 if floor else 0)
             sess = Session(secrets.token_urlsafe(32), clean_name, clean_roles, now, now + SESSION_TTL)
             if _issue_session:
                 self._sessions[session_key(sess.token)] = Session("", clean_name, (), now, sess.expires)
@@ -874,6 +1153,9 @@ class OperatorStore:
         if not op or not verify_password(current_password, op.password_hash):
             self._note_failure(name)
             raise AuthError("現在のパスワードが違います")
+        with self._lock:
+            if self._blocked_reason_locked(name):
+                raise AuthError(BLOCKED_MESSAGE)
         if op.totp_secret and not self._accept_totp(op, code):
             self._note_failure(name)
             raise AuthError("現在の認証コード（2要素）が必要です")

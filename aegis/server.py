@@ -35,7 +35,8 @@ from .audit import AuditWriteFailed
 from .control_verification import run_live_control_verification
 from .diagnosis_ops import OP_PERMISSION, member_permissions, permitted
 from .lab import set_lab_mode, start_lab
-from .operators import AuthError, ChangeNotSaved, LockedOut, MFAChallenge, OperatorStore
+from .operators import (AuthError, ChangeNotSaved, LockedOut, MFAChallenge, OperatorStore,
+                        audit_credential_generations)
 from .ownership import parse_service_target
 from .policy import PolicyError
 from .real_software_cve import run_real_software_cve_comparison
@@ -139,17 +140,24 @@ class _Journal:
     """Audit-first record of a store change (`journal=` of OrgStore / OperatorStore).
     If the store then fails to save, the record is marked as not committed."""
 
+    # identify the change that was not made (a credential generation, see
+    # aegis/operators.audit_credential_generations: its intent is then void)
+    _CARRIED = ("account", "credential_generation", "hash_digest")
+
     def __init__(self, audit, event: str, **fields):
         self.audit, self.event, self.fields, self.written = audit, event, fields, False
+        self.more: dict = {}
 
     def __call__(self, **more):
         audit_first(self.audit, self.event, **self.fields, **more)
+        self.more = more
         self.written = True
 
     def not_committed(self, reason: str) -> None:
         if self.written:
+            carried = {k: self.more[k] for k in self._CARRIED if k in self.more}
             with contextlib.suppress(Exception):
-                self.audit.record("grant.not_committed", grant=self.event, reason=reason)
+                self.audit.record("grant.not_committed", grant=self.event, reason=reason, **carried)
 
 
 def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_auth: bool | None = None,
@@ -887,7 +895,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 return self._totp_disable(body, sess)
             if p == "/api/operators/roles":
                 return self._set_roles(body, sess)
-            if p in ("/api/operators/unlock", "/api/operators/reset-mfa"):
+            if p in ("/api/operators/unlock", "/api/operators/reset-mfa", "/api/operators/reset-password"):
                 return self._admin_recovery(p, body, sess)
             if tenancy is not None:
                 if p.startswith("/api/orgs") or p == "/api/invites/accept":
@@ -1016,8 +1024,8 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             journal = _Journal(paudit, "auth.password_changed", actor=sess.operator)
             try:
                 # audit first: a password that cannot be recorded is not changed
-                ops.change_password(sess.operator, str(body.get("current", "")),
-                                    str(body.get("new", "")), keep_token=sess.token, journal=journal)
+                gen = ops.change_password(sess.operator, str(body.get("current", "")),
+                                          str(body.get("new", "")), keep_token=sess.token, journal=journal)
             except AuditWriteFailed as e:
                 return self._json(503, {"error": str(e), "applied": False, "audit_failed": True})
             except LockedOut as e:
@@ -1026,6 +1034,9 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 if isinstance(e, ChangeNotSaved):   # undone: the audit-first record did not happen
                     journal.not_committed("not_saved")
                 return self._self_failure(sess, e)
+            # the change is in force (its intent is recorded); a missing completion is a gap
+            audit_after(paudit, "auth.password_change_committed", default_svc, "platform",
+                        account=sess.operator, credential_generation=gen)
             return self._json(200, {"ok": True})
 
         def _totp_enroll(self, sess):
@@ -1244,6 +1255,22 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 return self._json(403, {"error": "この操作には管理者の権限が必要です"})
             # audit first: both weaken another account's protection (a lock, a second
             # factor), so neither happens without its record
+            if p == "/api/operators/reset-password":
+                # also the way out of an account blocked by an unfinished password change
+                # (docs/PASSWORD_CHANGE_DURABILITY.md); audit first and two-phase
+                journal = _Journal(paudit, "operator.password_reset", actor=sess.operator, target=target[:64])
+                try:
+                    gen = ops.reset_password(target, str(body.get("password", "")), actor=sess.operator,
+                                             session_token=sess.token, journal=journal)
+                except AuditWriteFailed as e:
+                    return self._json(503, {"error": str(e), "applied": False, "audit_failed": True})
+                except AuthError as e:
+                    if isinstance(e, ChangeNotSaved):
+                        journal.not_committed("not_saved")
+                    return self._admin_failure(sess, e, 409)
+                audit_after(paudit, "auth.password_change_committed", default_svc, "platform",
+                            account=target, credential_generation=gen, reset_by=sess.operator)
+                return self._json(200, {"name": target, "changed": True})
             if p == "/api/operators/unlock":
                 journal = _Journal(paudit, "operator.unlocked", actor=sess.operator, target=target[:64])
             else:
@@ -1813,7 +1840,14 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
 
 
 def _build_server(svc, a, data, first, seed, env_opt_out):
-    ops = OperatorStore(seed)
+    # Rollback check of password changes (docs/PASSWORD_CHANGE_DURABILITY.md): both logs,
+    # since account events go to the platform log only when organizations are on.
+    logs = [Path(data) / "audit.jsonl", Path(data) / "platform-audit.jsonl"]
+    ops = OperatorStore(seed, credential_generations=lambda: audit_credential_generations(logs))
+    blocked = ops.blocked_accounts()
+    if blocked:
+        print("パスワードの変更が完了していない、または監査ログと一致しないため、次のアカウントのログインを停止しています: "
+              + ", ".join(sorted(blocked)) + "（管理者のリセット、または python3 -m scripts.recover_account で復旧）")
     tenancy = None
     if os.environ.get("VULNIX_MULTI_TENANT", "1") != "0":
         # organizations: the existing workspace is the default organization; each new

@@ -1802,6 +1802,33 @@ class TestSecondReviewFixes(TestTenantIsolationOverHttp):
         self.assertEqual(codes, [200, 429])
 
 
+class TestPasswordResetRoute(TestTenantIsolationOverHttp):
+    """/api/operators/reset-password (docs/PASSWORD_CHANGE_DURABILITY.md): platform admins only."""
+
+    def test_other_org_owner_cannot_reset_a_password(self):
+        a, b = self.signup("alice"), self.signup("bobby")
+        self.assertEqual(self.req({}, "/operators/reset-password",
+                                  {"name": "bobby", "password": "taken-over-Passw0rd!"})[0], 401)
+        code, _ = self.req(a, "/operators/reset-password", {"name": "bobby", "password": "taken-over-Passw0rd!"})
+        self.assertEqual(code, 403)                      # owning an organization is not platform admin
+        self.assertEqual(self.req({}, "/auth/login", {"name": "bobby", "password": "taken-over-Passw0rd!"})[0], 401)
+        self.assertEqual(self.req(b, "/auth/me")[1]["session"]["operator"], "bobby")
+
+    def test_platform_admin_reset_is_recorded_first_and_signs_the_target_out(self):
+        b = self.signup("bobby")
+        admin = self.login("padmin", "padmin-pw-1")
+        code, body = self.req(admin, "/operators/reset-password", {"name": "bobby", "password": "reset-Passw0rd!77"})
+        self.assertEqual(code, 200, body)
+        self.assertIsNone(self.req(b, "/auth/me")[1]["session"])     # signed out everywhere
+        self.assertEqual(self.req({}, "/auth/login", {"name": "bobby", "password": "bobby-Passw0rd!"})[0], 401)
+        self.assertEqual(self.req({}, "/auth/login", {"name": "bobby", "password": "reset-Passw0rd!77"})[0], 200)
+        rec = [e["fields"] for e in self.reg.platform_audit.entries() if e["event"] == "operator.password_reset"][-1]
+        self.assertEqual((rec["account"], rec["credential_generation"]), ("bobby", 1))
+        self.assertIn("hash_digest", rec)
+        org_logs = [e["event"] for e in self.reg.service(b["orgs"][0]["id"]).audit.entries()]
+        self.assertNotIn("operator.password_reset", org_logs)
+
+
 class TestThirdReviewFixes(TestTenantIsolationOverHttp):
     """Third independent review."""
 
