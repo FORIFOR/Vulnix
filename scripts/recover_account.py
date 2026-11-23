@@ -64,6 +64,27 @@ def main(argv: list[str] | None = None) -> int:
         lock.close()
 
 
+def _unusable_log(path: Path) -> bool:
+    """True when the server could not use this log: a line that is not JSON, or not a
+    complete audit record (an object with string event/prev/hash, as the hash chain
+    requires). The same standard as the server's own chain check, so every log that
+    stops the server can be moved aside here."""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return True
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            return True
+        if not isinstance(entry, dict) or not all(isinstance(entry.get(k), str) for k in ("event", "prev", "hash")):
+            return True
+    return False
+
+
 def _quarantine(data: Path) -> list[dict]:
     """Move every audit log that cannot be parsed aside (never deleted)."""
     moved = []
@@ -71,13 +92,8 @@ def _quarantine(data: Path) -> list[dict]:
         path = data / name
         if not path.is_file():
             continue
-        try:
-            for line in path.read_text(encoding="utf-8").splitlines():
-                if line.strip():
-                    json.loads(line)
+        if not _unusable_log(path):
             continue
-        except (ValueError, OSError):
-            pass
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         target = path.with_name(f"{name}.quarantined-{int(time.time())}")
         os.rename(path, target)

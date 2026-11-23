@@ -456,6 +456,17 @@ class TestReviewFixes(Base):
             self.assertIn("auth.account_recovered_offline", events)   # the log this mode uses
             self.assertIn("audit.log_quarantined", events)
 
+    def test_a_log_line_without_a_chain_hash_is_quarantined_too(self):
+        # re-review: valid JSON that is not an audit record ({}) also makes the log
+        # unusable for the server; the recovery tool must be a way out for it as well
+        with patch.dict(os.environ, {"VULNIX_MULTI_TENANT": "0"}):
+            self.audit = AuditLog(self.dir / "audit.jsonl")
+            self.change(self.open())
+            (self.dir / "platform-audit.jsonl").write_text("{}\n")
+            pw = self.recover("--quarantine-unreadable-audit")
+            self.assertTrue(list(self.dir.glob("platform-audit.jsonl.quarantined-*")))
+            self.assertTrue(self.signs_in(self.open(), "root", pw))
+
     def test_unreadable_mode_log_refuses_to_start(self):
         from aegis.operators import CredentialStateUnverifiable
         self.change()
