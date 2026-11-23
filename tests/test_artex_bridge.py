@@ -1434,6 +1434,11 @@ class TestRealArtexPlanner(ServiceBase):
             self.assertFalse(iso["host_loopback_canary_arrived"], iso)
             self.assertEqual(set(iso["relay_endpoints"].values()), {"OK"}, iso)
             self.assertTrue(iso["hidden_paths_ok"], iso)
+            # the minimal root (pivot_root, old root detached) and the relay's own uid and filter
+            self.assertTrue(iso["minimal_root"], iso)
+            self.assertTrue(iso["absent_paths_ok"], iso)
+            self.assertTrue(iso["relay_separate_uid"], iso)
+            self.assertEqual(iso["relay_seccomp"], "2", iso)
             for k in ("netlink_socket", "vsock_socket", "bpf_syscall"):
                 self.assertTrue(str(iso[k]).startswith("DENIED"), (k, iso))
             self.assertLessEqual(iso["procs_visible"], 2, iso)       # own PID namespace
@@ -1561,6 +1566,374 @@ def shutil_rmtree(p):
 
 
 
+# ---- the planner's minimal root and the relay's filter (pure Python, any OS) ----------
+
+LD_X86 = "/lib64/ld-linux-x86-64.so.2"
+# an Ubuntu 24.04-like (merged /usr) host as the plan sees it
+UBUNTU = {
+    "/lib": ("link", "usr/lib"), "/lib64": ("link", "usr/lib64"), "/bin": ("link", "usr/bin"),
+    "/usr/lib/x86_64-linux-gnu/libc.so.6": "file",
+    "/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2": "file",
+    "/usr/lib64/ld-linux-x86-64.so.2": ("link", "../lib/x86_64-linux-gnu/ld-linux-x86-64.so.2"),
+    "/usr/lib/python3.12/os.py": "file", "/usr/lib/locale/C.utf8/LC_CTYPE": "file",
+    "/usr/share/keyrings/ubuntu-archive-keyring.gpg": "file", "/usr/local/bin/x": "file",
+    "/usr/bin/setpriv": ("elf", LD_X86), "/usr/bin/umount": ("elf", LD_X86), "/usr/bin/sudo": ("elf", LD_X86),
+    "/usr/sbin/pivot_root": ("elf", LD_X86),
+    "/usr/bin/python3": ("link", "python3.12"), "/usr/bin/python3.12": ("elf", LD_X86),
+    "/etc/passwd": "file", "/sys/kernel/x": "file", "/home/runner/x": "file", "/srv/vulnix/data/state.json": "file",
+    "/tmp/vulnix-artex-abc/artex-vulnix-planner": ("elf", LD_X86), "/tmp/vulnix-worker-xyz/_sandbox_launch.py": "file",
+}
+UBUNTU_PYTHON = {"dirs": ["/usr/lib/python3.12"], "files": ["/usr/bin/python3"], "multiarch": ["x86_64-linux-gnu"]}
+
+
+class FakeFS:
+    def __init__(self, entries):
+        self.e = dict(entries)
+        self.dirs = {"/"}
+        for p in self.e:
+            parts = p.split("/")
+            self.dirs |= {"/".join(parts[:i]) or "/" for i in range(2, len(parts))}
+
+    def islink(self, p):
+        return isinstance(self.e.get(p), tuple) and self.e[p][0] == "link"
+
+    def readlink(self, p):
+        return self.e[p][1]
+
+    def isdir(self, p):
+        return p in self.dirs and p not in self.e
+
+    def exists(self, p):
+        return p in self.e or p in self.dirs
+
+    def elf_interp(self, p):
+        v = self.e.get(p)
+        return v[1] if isinstance(v, tuple) and v[0] == "elf" else None
+
+
+def fake_owner(fs=UBUNTU, python=UBUNTU_PYTHON):
+    import subprocess as sp
+
+    from aegis.confinement import KernelConfinement
+    o = KernelConfinement(runner=lambda a, **k: sp.CompletedProcess(a, 0, "", ""), platform="linux", euid=0,
+                          which=lambda t: f"/usr/bin/{t}")
+    o.fresh_identity = lambda: 4242
+    o._fs = FakeFS(fs)
+    o._python = dict(python)
+    return o
+
+
+def ns_session_and_argv(owner=None):
+    from aegis.confinement import ConfinementSession
+    o = owner or fake_owner()
+    with patch.object(type(o), "staged_workers", lambda self: Path("/tmp/vulnix-worker-xyz")):
+        sess = ConfinementSession(o, "127.0.0.1", 18080, extra_endpoints=(("127.0.0.1", 5432),),
+                                  namespaces={"hide": ab.planner_hidden_paths(["/srv/vulnix/data/state.json"]),
+                                              "keep": ["/tmp/vulnix-artex-abc"]})
+        argv = sess.wrap(["/tmp/vulnix-artex-abc/artex-vulnix-planner"], interpreter="/usr/bin/python3")
+    return sess, argv
+
+
+def plan_for(**kw):
+    from aegis.confinement import minimal_root_plan
+    args = {"rw": ["/tmp/vulnix-artex-abc"], "ro": ["/tmp/vulnix-worker-xyz"],
+            "programs": ["/usr/bin/setpriv", "/usr/bin/python3", "/tmp/vulnix-artex-abc/artex-vulnix-planner"],
+            "loaders_of": ["/usr/bin/umount"], "python": UBUNTU_PYTHON,
+            "hidden": ab.planner_hidden_paths(["/srv/vulnix/data/state.json"]), "fs": FakeFS(UBUNTU)}
+    args.update(kw)
+    return minimal_root_plan(**args)
+
+
+class TestThePlannersMinimalRootPlan(unittest.TestCase):
+    """The mount plan is built in Python and checked here on any OS; the kernel side
+    (TestMinimalRootOnLinux) proves the view from inside on Linux CI."""
+
+    def test_the_plan_holds_exactly_what_the_planner_needs(self):
+        self.assertEqual(set(plan_for()), {
+            ("rw", "/tmp/vulnix-artex-abc"),
+            ("ro", "/tmp/vulnix-worker-xyz"),
+            ("symlink", "/lib", "usr/lib"), ("symlink", "/lib64", "usr/lib64"),
+            ("ro", "/usr/lib/x86_64-linux-gnu"), ("ro", "/usr/lib64"), ("ro", "/usr/lib/python3.12"),
+            ("symlink", "/usr/bin/python3", "python3.12"),
+            ("file", "/usr/bin/python3.12", "/usr/bin/python3.12"),
+            ("file", "/usr/bin/setpriv", "/usr/bin/setpriv"),
+        })
+
+    def test_no_system_area_configuration_or_old_root_is_in_the_plan(self):
+        from aegis.confinement import plan_mountpoints, plan_paths
+        plan = plan_for()
+        paths = plan_paths(plan)
+        under = lambda p, d: p == d or p.startswith(d.rstrip("/") + "/")      # noqa: E731
+        # nothing at all from these
+        for bad in ("/sys", "/proc", "/etc", "/home", "/root", "/run", "/var", "/usr/share", "/usr/local",
+                    "/usr/sbin", "/boot", "/srv", "/opt", "/dev", "/usr/bin/sudo", "/usr/bin/umount"):
+            self.assertFalse([p for p in paths if under(p, bad)], bad)
+        # never a directory bound whole that holds these (single files only)
+        for bad in ("/", "/usr", "/usr/bin", "/usr/lib", "/tmp"):
+            self.assertFalse([e for e in plan if e[0] in ("ro", "rw") and under(bad, e[1])], bad)
+        self.assertEqual(plan_mountpoints(plan) & {"/sys", "/etc", "/home", "/usr", "/usr/bin"}, set())
+        # /tmp is a mount point only as the run's private tmpfs: the host's /tmp is never bound
+        self.assertIn("/tmp", plan_mountpoints(plan))
+        self.assertFalse([e for e in plan if e[0] != "symlink" and e[1] == "/tmp"])
+        # read-write: the work directory and nothing else
+        self.assertEqual([e for e in plan if e[0] == "rw"], [("rw", "/tmp/vulnix-artex-abc")])
+
+    def test_a_dangerous_or_missing_source_refuses_the_plan(self):
+        from aegis.confinement import ConfinementError
+        for kw in ({"rw": ["/"]}, {"ro": ["/etc"]}, {"ro": ["/sys/fs"]}, {"ro": ["/usr"]}, {"ro": ["/usr/bin"]},
+                   {"ro": ["/proc/self"]}, {"ro": ["/run/secrets"]}, {"ro": ["/home"]},
+                   {"ro": ["/srv/vulnix"]},                                  # holds the data directory
+                   {"ro": ["/tmp/does-not-exist"]}, {"programs": ["/usr/bin/missing"]},
+                   {"python": {**UBUNTU_PYTHON, "dirs": ["/usr"]}}):
+            with self.subTest(kw=kw), self.assertRaises(ConfinementError):
+                plan_for(**kw)
+
+    def test_the_script_switches_root_and_detaches_the_old_one(self):
+        from aegis.confinement import DEV_NODES, OLDROOT, VXROOT, minimal_root_script
+        plan = plan_for()
+        lines = minimal_root_script(plan, umount="/usr/bin/umount", pivot_root="/usr/sbin/pivot_root")
+        script = "\n".join(lines)
+        self.assertEqual(lines[0], "set -eu")
+        self.assertEqual(lines[-1], 'exec "$@"')
+        self.assertEqual(lines[-4:-1], [f"/usr/sbin/pivot_root . {OLDROOT[1:]}", "cd /",
+                                        f"{OLDROOT}/usr/bin/umount -n -l {OLDROOT}"])
+        self.assertLess(lines.index(f"mount -n -o remount,ro,nosuid,nodev {VXROOT}"), len(lines) - 4)
+        self.assertIn(f"mount -n -t tmpfs -o mode=0755,nosuid,nodev,size=4m vxroot {VXROOT}", lines)
+        # ARTEX's private /tmp (its work dir /tmp/vulnix-artex-planner): an empty, size-limited
+        # tmpfs, mounted before anything of the plan is bound beneath it
+        tmp = lines.index(f"mount -n -t tmpfs -o mode=1777,nosuid,nodev,noexec,size=64m vxtmp {VXROOT}/tmp")
+        self.assertLess(tmp, min(i for i, ln in enumerate(lines) if ln.startswith("mount -n --bind ")))
+        self.assertNotIn("sysfs", script)
+        self.assertNotIn("--rbind", script)
+        self.assertIn(f"mount -n -t proc -o hidepid=invisible,subset=pid,nosuid,nodev,noexec vxproc {VXROOT}/proc",
+                      lines)
+        # every bind source is in the plan (or one of the device nodes), every bind is
+        # remounted with its flags: read-only except the work directory
+        binds = [ln.split()[3:5] for ln in lines if ln.startswith("mount -n --bind ")]
+        sources = {b[0] for b in binds}
+        self.assertEqual(sources, {e[1] for e in plan if e[0] != "symlink"} | {f"/dev/{n}" for n in DEV_NODES})
+        for src, dst in binds:
+            if src.startswith("/dev/"):
+                continue
+            want = "nosuid,nodev" if src == "/tmp/vulnix-artex-abc" else "ro,nosuid,nodev"
+            self.assertIn(f"mount -n -o remount,bind,{want} {dst}", lines, src)
+        self.assertEqual(len([b for b in binds if b[0].startswith("/dev/")]), len(DEV_NODES))
+        self.assertEqual(set(DEV_NODES), {"null", "zero", "full", "random", "urandom"})
+
+    def test_the_probe_must_find_these_absent_and_the_verdict_checks_every_part(self):
+        sess, _ = ns_session_and_argv()
+        absent = sess._must_be_absent()
+        for p in ("/sys", "/etc/passwd", "/etc", "/home", "/root", "/var", "/run", "/usr/share", "/usr/local",
+                  "/usr/bin/sudo", "/srv/vulnix/data", "/opt", "/boot",
+                  str(Path(ab.__file__).with_name("confinement.py")), str(Path(ab.__file__).with_name("server.py"))):
+            self.assertIn(p, absent)
+        self.assertNotIn("/tmp", absent)                       # holds the work directory
+        good = self.seen(sess)
+        sess.relay_evidence = {"ok": True, "relay_uid": 5000, "relay_separate_uid": True, "relay_seccomp": "2"}
+        ok, ev = sess._ns_verdict(good, None)
+        self.assertTrue(ok, ev)
+        self.assertTrue(ev["minimal_root"] and ev["absent_paths_ok"], ev)
+        bad = {
+            "/sys mounted": {"mounts": good["mounts"] + [["/sys", "sysfs", "sysfs"]]},
+            "host root": {"mounts": [["/", "ext4", "/dev/sda1"]] + good["mounts"][1:]},
+            "old root left": {"oldroot": ["etc", "home"]},
+            "host /tmp": {"mounts": [m if m[0] != "/tmp" else ["/tmp", "ext4", "/dev/sda1"] for m in good["mounts"]]},
+            "no /tmp": {"mounts": [m for m in good["mounts"] if m[0] != "/tmp"]},
+            "old root gone?": {"oldroot": "GONE:FileNotFoundError"},
+            "passwd visible": {"absent": {**good["absent"], "/etc/passwd": False}},
+            "list incomplete": {"absent": {k: v for k, v in good["absent"].items() if k != "/sys"}},
+            "no mounts": {"mounts": []},
+        }
+        for why, change in bad.items():
+            with self.subTest(why):
+                self.assertFalse(sess._ns_verdict({**good, **change}, None)[0])
+        sess.relay_evidence = {"ok": False}
+        self.assertFalse(sess._ns_verdict(good, None)[0])
+
+    @staticmethod
+    def seen(sess):
+        from aegis.confinement import plan_mountpoints
+        mounts = [["/", "tmpfs", "vxroot"], ["/tmp", "tmpfs", "vxtmp"]] + [
+            [m, "x", "y"] for m in sorted(plan_mountpoints(sess._plan)) if m not in ("/", "/tmp")]
+        return {"netns": "net:[4026532999]", "ifaces": ["lo"], "canary": "BLOCKED:TimeoutError",
+                "relay": {"5432": "OK", "18080": "OK"},
+                "hidden": {h: "GONE:FileNotFoundError" for h in sess.ns["hide"] if h != "/tmp"}
+                | {"/tmp": ["vulnix-artex-abc", "vulnix-worker-xyz"]},
+                "netlink": "DENIED:PermissionError", "vsock": "DENIED:PermissionError", "bpf": "DENIED:1",
+                "procs_visible": 1, "seccomp": ["2"], "mounts": mounts, "oldroot": [],
+                "absent": {p: True for p in sess._must_be_absent()}}
+
+    def test_a_failed_root_switch_is_reported_and_nothing_starts(self):
+        import subprocess as sp
+
+        from aegis.confinement import ROOT_FAIL_MARK, ConfinementError
+        o = fake_owner()
+        calls = []
+
+        def runner(argv, **kw):
+            calls.append(argv)
+            if any("pivot_root" in str(a) for a in argv):           # the probe's chain
+                return sp.CompletedProcess(argv, 1, "", "pivot_root: failed\n" + ROOT_FAIL_MARK + "\n")
+            if argv[-3:] == ["list", "table", "inet"] or "list" in argv:
+                return sp.CompletedProcess(argv, 0, 'socket cgroupv2 level 1 "x" jump confined', "")
+            return sp.CompletedProcess(argv, 0, "", "")
+        o._run = runner
+        sess, _ = ns_session_and_argv(o)
+        sess._setup_netns = lambda: None
+        sess.relay_evidence = {"ok": True}
+        with patch("aegis.confinement._table_is_live", lambda *a: True), \
+                patch.object(sys, "executable", "/usr/bin/python3"), \
+                patch.object(type(o), "staged_workers", lambda self: Path("/tmp/vulnix-worker-xyz")):
+            with self.assertRaises(ConfinementError) as cm:
+                sess._apply_and_verify()
+        self.assertIn("最小ルート", str(cm.exception))
+        self.assertIn("pivot_root: failed", str(cm.exception))
+
+
+class TestTheRelaysOwnSeccompAllowlist(unittest.TestCase):
+    # numbers of calls the relay must never make (x86_64, aarch64)
+    FORBIDDEN = {
+        "open": (2, None), "openat": (257, 56), "openat2": (437, 437), "execve": (59, 221),
+        "execveat": (322, 281), "fork": (57, None), "vfork": (58, None), "bind": (49, 200), "listen": (50, 201),
+        "socketpair": (53, 199), "ptrace": (101, 117), "kill": (62, 129), "tkill": (200, 130),
+        "tgkill": (234, 131), "mount": (165, 40), "umount2": (166, 39), "pivot_root": (155, 41),
+        "chroot": (161, 51), "unshare": (272, 97), "setns": (308, 268), "bpf": (321, 280),
+        "io_uring_setup": (425, 425), "process_vm_readv": (310, 270), "setuid": (105, 146),
+        "prctl": (157, 167), "seccomp": (317, 277), "memfd_create": (319, 279), "pidfd_getfd": (438, 438),
+        "unlinkat": (263, 35), "mkdirat": (258, 34),
+    }
+
+    def relay(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "_relay", Path(ab.__file__).with_name("workers") / "_ns_relay.py")
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        return m
+
+    def run_filter(self, m, machine, nr, args=(0, 0), arch=None):
+        import struct
+        prog = m.relay_filter_program(machine)
+        ins = [struct.unpack("HBBI", prog[i:i + 8]) for i in range(0, len(prog), 8)]
+        data = {0: nr, 4: m.RELAY_ARCHES[machine]["arch"] if arch is None else arch, 16: args[0], 24: args[1]}
+        pc, acc = 0, 0
+        for _ in range(400):
+            code, jt, jf, k = ins[pc]
+            if code == 0x20:
+                acc = data[k]
+                pc += 1
+            elif code == 0x15:
+                pc += 1 + (jt if acc == k else jf)
+            elif code == 0x35:
+                pc += 1 + (jt if acc >= k else jf)
+            elif code == 0x45:
+                pc += 1 + (jt if acc & k else jf)
+            elif code == 0x06:
+                return k
+        self.fail("no return")
+
+    def test_forbidden_calls_fail_and_the_allowlist_has_none_of_them(self):
+        m = self.relay()
+        for i, machine in enumerate(("x86_64", "aarch64")):
+            names = set(m.RELAY_ALLOW[machine])
+            self.assertFalse(names & set(self.FORBIDDEN), names & set(self.FORBIDDEN))
+            for name, nrs in self.FORBIDDEN.items():
+                if nrs[i] is None:
+                    continue
+                with self.subTest(machine=machine, call=name):
+                    self.assertEqual(self.run_filter(m, machine, nrs[i]), m.RET_ERRNO | m.EPERM)
+            for name, nr in m.RELAY_ALLOW[machine].items():
+                self.assertEqual(self.run_filter(m, machine, nr), m.RET_ALLOW, (machine, name))
+            self.assertLess(len(m.relay_filter_program(machine)) // 8, 256)
+
+    def test_arguments_are_checked_for_socket_clone_and_ioctl(self):
+        m = self.relay()
+        for machine, cfg in m.RELAY_ARCHES.items():
+            f = lambda nr, *a: self.run_filter(m, machine, nr, (*a, 0, 0)[:2])      # noqa: E731
+            eperm = m.RET_ERRNO | m.EPERM
+            self.assertEqual(f(cfg["socket"], 2), m.RET_ALLOW)                        # AF_INET
+            for domain in (1, 10, 16, 17, 40):          # unix, inet6, netlink, packet, vsock
+                self.assertEqual(f(cfg["socket"], domain), eperm, domain)
+            thread = 0x3D0F00                            # glibc pthread_create's flags
+            self.assertEqual(f(cfg["clone"], thread), m.RET_ALLOW)
+            self.assertEqual(f(cfg["clone"], 0x01200011), eperm)                       # fork()
+            self.assertEqual(f(cfg["clone"], thread | 0x40000000), eperm)              # + CLONE_NEWNET
+            self.assertEqual(f(cfg["clone"], thread | 0x10000000), eperm)              # + CLONE_NEWUSER
+            self.assertEqual(f(cfg["clone3"]), m.RET_ERRNO | m.ENOSYS)
+            self.assertEqual(f(cfg["ioctl"], 3, 0x5421), m.RET_ALLOW)                  # FIONBIO
+            self.assertEqual(f(cfg["ioctl"], 0, 0x5412), eperm)                        # TIOCSTI
+            self.assertEqual(self.run_filter(m, machine, 0, arch=0x40000003), m.RET_KILL_PROCESS)  # i386
+            self.assertEqual(self.run_filter(m, machine, 0x40000000), m.RET_KILL_PROCESS)          # x32
+
+    def test_the_filter_is_in_place_before_ready_and_after_the_uid_drop(self):
+        src = (Path(ab.__file__).with_name("workers") / "_ns_relay.py").read_text()
+        main = src[src.index("def main()"):]
+        self.assertLess(main.index("os.setuid(uid)"), main.index("install_relay_filter()"))
+        self.assertLess(main.index("install_relay_filter()"), main.index('print("READY"'))
+        self.assertIn("sys.exit(97)", main[main.index("install_relay_filter()"):main.index('print("READY"')])
+        self.assertNotIn("create_connection", src)            # no name lookup in the relay
+
+    def test_the_relay_gets_a_uid_of_its_own_checked_from_outside(self):
+        import subprocess as sp
+
+        from aegis.confinement import ConfinementError
+        zero = "0000000000000000"
+        good = {"Uid": "5000\t5000\t5000\t5000", "Gid": "5000\t5000\t5000\t5000", "NoNewPrivs": "1",
+                "Seccomp": "2", "CapInh": zero, "CapPrm": zero, "CapEff": zero, "CapBnd": zero, "CapAmb": zero}
+        cases = [(good, None), ({**good, "Seccomp": "0"}, "seccomp"),
+                 # setuid() alone leaves the bounding set full: CI run 45067537375
+                 ({**good, "CapBnd": "000001ffffffffff"}, "CapBnd_zero"),
+                 ({**good, "NoNewPrivs": "0"}, "no_new_privs"), ({**good, "Gid": "0\t0\t0\t0"}, "gid"),
+                 ({k: v for k, v in good.items() if k != "CapAmb"}, "CapAmb_zero")]
+        for fields, failing in cases:
+            should_pass = failing is None
+            o = fake_owner()
+            ids = iter([4242, 4242, 5000])                          # planner, collision, relay
+            o.fresh_identity = lambda: next(ids)
+            status = "".join(f"{k}:\t{v}\n" for k, v in fields.items())
+
+            def runner(argv, **kw):
+                if argv[-1].endswith("cgroup.procs"):
+                    return sp.CompletedProcess(argv, 0, "777\n", "")
+                if argv[-1] == "/proc/777/status":
+                    return sp.CompletedProcess(argv, 0, status, "")
+                return sp.CompletedProcess(argv, 0, "", "")
+            o._run = runner
+            launched = []
+
+            def popen(argv, **kw):
+                launched.append(argv)
+                r, w = os.pipe()
+                os.write(w, b"READY\n")
+                os.close(w)
+                p = sp.Popen.__new__(sp.Popen)
+                p.stdout = os.fdopen(r, "r")
+                self.addCleanup(p.stdout.close)
+                return p
+            o._popen = popen
+            sess, _ = ns_session_and_argv(o)
+            with patch.object(type(o), "staged_workers", lambda self: Path("/tmp/vulnix-worker-xyz")):
+                if should_pass:
+                    sess._setup_netns()
+                    self.assertEqual(sess.relay_uid, 5000)
+                    self.assertNotEqual(sess.relay_uid, sess.uid)
+                    self.assertEqual(launched[0][-3], "5000")           # <name> <uid> <port> <port>
+                    self.assertEqual(sess.relay_evidence["relay_seccomp"], "2")
+                else:
+                    with self.assertRaises(ConfinementError) as cm:
+                        sess._setup_netns()
+                    self.assertEqual(sess.relay_evidence["failed"], [failing], str(cm.exception))
+                    self.assertIn(failing, str(cm.exception))          # the message names the failed check
+
+    def test_the_relay_empties_its_bounding_set_before_dropping_root(self):
+        src = (Path(ab.__file__).with_name("workers") / "_ns_relay.py").read_text()
+        main = src[src.index("def main()"):]
+        self.assertLess(main.index("drop_bounding_set(libc)"), main.index("os.setuid(uid)"))
+        self.assertLess(main.index("own_caps()"), main.index("install_relay_filter()"))
+        for cap in ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"):
+            self.assertIn(f'"{cap}"', main[main.index("own_caps()") - 200:main.index("install_relay_filter()")])
+
+
 class TestPlannerSeccompProfileAndNamespaceChain(unittest.TestCase):
     def launcher(self):
         import importlib.util
@@ -1598,35 +1971,32 @@ class TestPlannerSeccompProfileAndNamespaceChain(unittest.TestCase):
         r = sp.run([sys.executable, "-I", str(launcher), "--profile=planner"], capture_output=True)
         self.assertEqual(r.returncode, 97)
 
-    def test_the_namespace_chain_hides_and_binds_back_and_is_root_until_the_drop(self):
-        import subprocess as sp
-
-        from aegis.confinement import ConfinementSession, KernelConfinement
-        o = KernelConfinement(runner=lambda a, **k: sp.CompletedProcess(a, 0, "", ""), platform="linux",
-                              euid=0, which=lambda t: f"/usr/bin/{t}")
-        o.fresh_identity = lambda: 4242
+    def test_the_namespace_chain_builds_a_minimal_root_and_is_root_until_the_drop(self):
+        from aegis.confinement import OLDROOT, ROOT_FAIL_MARK, VXROOT
+        sess, argv = ns_session_and_argv()
         work = "/tmp/vulnix-artex-abc"
-        with patch.object(type(o), "staged_workers", lambda self: Path("/tmp/vulnix-worker-xyz")):
-            sess = ConfinementSession(o, "127.0.0.1", 18080, extra_endpoints=(("127.0.0.1", 5432),),
-                                      namespaces={"hide": ab.planner_hidden_paths(["/srv/vulnix/data/state.json"]),
-                                                  "keep": [work]})
-            argv = sess.wrap(["/tmp/vulnix-artex-abc/artex-vulnix-planner"], interpreter="/usr/bin/python3")
         i = argv.index("netns")
         self.assertEqual(argv[i:i + 3], ["netns", "exec", sess.name])
         script = argv[argv.index("-c", i) + 1]
+        lines = script.splitlines()
+        self.assertEqual(lines[0], "set -eu")
+        self.assertIn(ROOT_FAIL_MARK, lines[1])                            # a failed step says so
         self.assertIn("mount -n --make-rprivate /", script)
         self.assertNotIn("mount -t", script.replace("mount -n -t", ""))   # every mount without utab
-        for h in ("/home", "/root", "/tmp", "/var", "/dev/shm", "/run", "/opt", "/srv", "/Users", "/Volumes",
-                  "/srv/vulnix/data"):
-            self.assertIn(f"vxhide {h}", script)
-        # the stash (/mnt) is covered only after the bind-backs and its unmount
-        self.assertLess(script.index("umount -n -l /mnt"), script.index("vxhide /mnt"))
-        self.assertLess(script.rindex("mount -n --bind /mnt/k0"), script.index("umount -n -l /mnt"))
+        self.assertNotIn("--rbind", script)                               # no sub-mounts come along
+        # the hidden directories are never created or bound in the new root
+        for h in ("/home", "/root", "/var", "/dev/shm", "/run", "/opt", "/srv", "/Users", "/Volumes",
+                  "/srv/vulnix/data", "/etc", "/sys", "/boot", "/usr/share", "/usr/local"):
+            self.assertFalse([ln for ln in lines if f"{VXROOT}{h} " in ln + " " or f"{VXROOT}{h}/" in ln], h)
+        self.assertIn(f"mount -n --bind {work} {VXROOT}{work}", script)
+        self.assertIn(f"mount -n -o remount,bind,nosuid,nodev {VXROOT}{work}", script)   # read-write
+        self.assertIn("hidepid=invisible,subset=pid", script)
+        # the switch: root read-only, pivot_root, the old root detached, then the program
+        pivot = lines.index(f"/usr/bin/pivot_root . {OLDROOT[1:]}")
+        self.assertLess(lines.index(f"mount -n -o remount,ro,nosuid,nodev {VXROOT}"), pivot)
+        self.assertEqual(lines[pivot + 1:], ["cd /", f"{OLDROOT}/usr/bin/umount -n -l {OLDROOT}", 'exec "$@"'])
         self.assertIn("--ipc", argv)
         self.assertIn("--pid", argv)
-        self.assertIn("cd /", script)
-        self.assertIn(f"mount -n --bind /mnt/k0 {work}", script.replace("'", ""))
-        self.assertIn("hidepid=invisible", script)
         self.assertLess(argv.index("netns"), argv.index("/usr/bin/setpriv"))   # mounts before the drop
         self.assertIn("--profile=planner", argv)
         self.assertEqual(sess.ns["ports"], [5432, 18080])
@@ -1757,6 +2127,161 @@ class TestNamespaceConfinementStopsOnLinux(unittest.TestCase):
             self.assertTrue(s.empty())
             self.assertFalse(s.leftover)
             self.assertFalse(os.path.exists(f"/run/netns/{s.name}"))
+
+
+@unittest.skipUnless(os.environ.get("VULNIX_ARTEX_CONFINE") == "1" and sys.platform.startswith("linux"),
+                     "real kernel namespace confinement only in Linux CI")
+class TestMinimalRootOnLinux(unittest.TestCase):
+    """The planner's view on the real kernel: pivot_root into the minimal root, the old
+    root detached; checked from inside by a program started exactly like ARTEX."""
+
+    # what is tried from inside; each must exist on the host (checked) and not inside
+    HOST_ONLY = ["/etc/passwd", "/usr/bin/sudo", "/usr/share/keyrings/ubuntu-archive-keyring.gpg",
+                 "/sys/kernel/uevent_seqnum", "/usr/local/bin", "/home"]
+
+    def session(self, port, work, secret, **kw):
+        from aegis.confinement import KernelConfinement
+        return KernelConfinement(**kw).session(
+            "127.0.0.1", port, forbidden_paths=[secret], limits=ab.ARTEX_LIMITS,
+            namespaces={"hide": ab.planner_hidden_paths([secret]), "keep": [work]})
+
+    def dirs(self):
+        import shutil
+        work = tempfile.mkdtemp(prefix="vulnix-artex-")
+        os.chmod(work, 0o755)
+        data = tempfile.mkdtemp(prefix="vulnix-data-")
+        self.addCleanup(lambda: shutil.rmtree(work, True))
+        self.addCleanup(lambda: shutil.rmtree(data, True))
+        secret = Path(data) / "state.json"
+        secret.write_text("{}")
+        return work, str(secret)
+
+    def test_inside_the_view_only_the_plan_exists(self):
+        import subprocess as sp
+        import urllib.parse
+
+        from aegis import confinement as cf
+        here = os.path.realpath(__file__)
+        vulnix = [here, os.path.realpath(cf.__file__)]
+        other_pid = f"/proc/{os.getpid()}/status"            # the test process: another PID
+        tried = [p for p in self.HOST_ONLY if os.path.lexists(p)] + vulnix + [other_pid]
+        for must in ("/etc/passwd", "/usr/bin/sudo", "/sys/kernel/uevent_seqnum", other_pid, *vulnix):
+            self.assertTrue(os.path.lexists(must), must)    # the test means something on this host
+        stdlib = os.__file__
+        code = (
+            "import json,os\n"
+            "out={'seen':{}}\n"
+            f"for p in {tried!r}:\n"
+            "    try:\n"
+            "        (os.listdir(p) if os.path.isdir(p) else open(p,'rb').read(1)); out['seen'][p]='READ'\n"
+            "    except OSError as e:\n"
+            "        out['seen'][p]='DENIED:'+type(e).__name__\n"
+            "for d in ('/sys','/.oldroot','/etc','/'):\n"
+            "    try:\n"
+            "        out[d]=sorted(os.listdir(d))\n"
+            "    except OSError as e:\n"
+            "        out[d]='GONE:'+type(e).__name__\n"
+            "out['mounts']=sorted(l.split()[4] for l in open('/proc/self/mountinfo'))\n"
+            "out['pids']=sorted(d for d in os.listdir('/proc') if d.isdigit())\n"
+            # positive controls: the probe itself works
+            f"out['stdlib']=len(open({stdlib!r},'rb').read(10))\n"
+            "open('/dev/null','wb').write(b'x'); out['devnull']='OK'\n"
+            "os.mkdir('/tmp/vulnix-artex-planner',0o700); out['tmp_workdir']='OK'\n"
+            "print(json.dumps(out))\n")
+        with MockLLM() as mock:
+            work, secret = self.dirs()
+            sess = self.session(urllib.parse.urlsplit(mock.url).port, work, secret)
+            with sess:
+                ev = sess.evidence
+                self.assertTrue(ev["minimal_root"], ev)
+                self.assertTrue(ev["absent_paths_ok"], ev)
+                self.assertTrue(ev["relay_separate_uid"], ev)
+                self.assertEqual(ev["relay_seccomp"], "2", ev)
+                self.assertNotEqual(sess.relay_uid, sess.uid)
+                r = sp.run(sess.wrap([sys.executable, "-I", "-c", code], interpreter=sys.executable),
+                           stdin=sp.DEVNULL, capture_output=True, text=True, timeout=60, cwd=work,
+                           env={"PATH": "/usr/bin:/bin"})
+                self.assertEqual(r.returncode, 0, r.stderr[-2000:])
+                out = json.loads(r.stdout.strip().splitlines()[-1])
+        for p in tried:
+            self.assertTrue(out["seen"][p].startswith("DENIED:"), (p, out["seen"][p]))
+        self.assertTrue(str(out["/sys"]).startswith("GONE:"), out["/sys"])
+        self.assertTrue(str(out["/etc"]).startswith("GONE:"), out["/etc"])
+        self.assertEqual(out["/.oldroot"], [])
+        self.assertNotIn("sys", out["/"])
+        self.assertNotIn("home", out["/"])
+        self.assertNotIn("/sys", out["mounts"])
+        self.assertFalse([m for m in out["mounts"] if m.startswith("/.oldroot")], out["mounts"])
+        self.assertLessEqual(len(out["pids"]), 2, out["pids"])            # its own PID namespace
+        self.assertEqual(out["stdlib"], 10)
+        self.assertEqual(out["devnull"], "OK")
+        self.assertEqual(out["tmp_workdir"], "OK")                         # ARTEX's work dir
+        self.assertFalse(os.path.exists("/tmp/vulnix-artex-planner"))     # private: not the host's /tmp
+
+    def test_a_root_switch_that_fails_means_nothing_starts(self):
+        import urllib.parse
+
+        from aegis.confinement import ConfinementError, _system_which
+        broken = lambda t: "/usr/bin/false" if t == "pivot_root" else _system_which(t)      # noqa: E731
+        with MockLLM() as mock:
+            work, secret = self.dirs()
+            sess = self.session(urllib.parse.urlsplit(mock.url).port, work, secret, which=broken)
+            with self.assertRaises(ConfinementError) as cm:
+                with sess:
+                    self.fail("the session must not be entered")
+            self.assertIn("最小ルート", str(cm.exception))
+            self.assertFalse(sess.leftover)
+            self.assertFalse(os.path.exists(f"/run/netns/{sess.name}"))
+
+
+@unittest.skipUnless(sys.platform.startswith("linux") and __import__("platform").machine() in ("x86_64", "aarch64"),
+                     "seccomp is Linux only")
+class TestRelaySeccompOnLinux(unittest.TestCase):
+    """The relay's own filter on the real kernel (no root needed): what the relay does
+    still works; anything outside the allowlist fails with EPERM."""
+
+    def test_outside_the_allowlist_every_call_fails(self):
+        import subprocess as sp
+        relay = str(Path(ab.__file__).with_name("workers") / "_ns_relay.py")
+        code = (
+            "import importlib.util,json,os,socket,threading\n"
+            f"spec=importlib.util.spec_from_file_location('r',{relay!r}); m=importlib.util.module_from_spec(spec)\n"
+            "spec.loader.exec_module(m)\n"
+            "lst=socket.socket(); lst.bind(('127.0.0.1',0)); lst.listen(4); port=lst.getsockname()[1]\n"
+            "ppid=os.getppid(); out={}\n"
+            "m.install_relay_filter()\n"
+            "def t(name,fn):\n"
+            "    try:\n"
+            "        fn(); out[name]='OK'\n"
+            "    except OSError as e:\n"
+            "        out[name]='EPERM' if e.errno==1 else 'ERR:%s' % e.errno\n"
+            "def relay_path():\n"
+            "    c=socket.socket(socket.AF_INET,socket.SOCK_STREAM); c.settimeout(5); c.connect(('127.0.0.1',port))\n"
+            "    c.settimeout(None); a,_=lst.accept(); got=[]\n"
+            "    th=threading.Thread(target=lambda: got.append(a.recv(16))); th.start()\n"
+            "    c.sendall(b'ping'); th.join(5)\n"
+            "    if got!=[b'ping']: raise OSError(99,'no data')\n"
+            "    c.shutdown(socket.SHUT_RDWR); c.close(); a.close()\n"
+            "def fork():\n"
+            "    if os.fork()==0: os._exit(0)\n"
+            "t('relay_path',relay_path)\n"
+            "t('open_file',lambda: open('/etc/hostname','rb').read())\n"
+            "t('execve',lambda: os.execv('/usr/bin/true',['true']))\n"
+            "t('fork',fork)\n"
+            "t('unix_socket',lambda: socket.socket(socket.AF_UNIX))\n"
+            "t('inet6_socket',lambda: socket.socket(socket.AF_INET6))\n"
+            "t('bind',lambda: socket.socket().bind(('127.0.0.1',0)))\n"
+            "t('listen',lambda: lst.listen(8))\n"
+            "t('kill',lambda: os.kill(ppid,0))\n"
+            "t('mkdir',lambda: os.mkdir('/tmp/vulnix-relay-must-not-exist'))\n"
+            "print(json.dumps(out),flush=True)\n")
+        r = sp.run([sys.executable, "-I", "-c", code], capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr[-2000:])
+        out = json.loads(r.stdout.strip().splitlines()[-1])
+        self.assertEqual(out.pop("relay_path"), "OK", out)          # positive control
+        self.assertEqual(out, {k: "EPERM" for k in ("open_file", "execve", "fork", "unix_socket", "inet6_socket",
+                                                    "bind", "listen", "kill", "mkdir")})
+        self.assertFalse(os.path.exists("/tmp/vulnix-relay-must-not-exist"))
 
 
 @unittest.skipUnless(os.environ.get("VULNIX_ARTEX_REAL_BIN"), "real ARTEX overlay binary only in Linux CI")
