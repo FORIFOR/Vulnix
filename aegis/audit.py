@@ -28,6 +28,10 @@ GENESIS = "0" * 64
 ANCHORED_EVENTS = frozenset({
     "allow", "planner_llm.forwarding", "advisor.safe_send_requested", "result",
     "approval.approved", "artex.item_approved",
+    # credential changes (docs/PASSWORD_CHANGE_DURABILITY.md): the intent and its abort, so
+    # a log truncated to before a password change is detected at startup
+    "auth.password_changed", "operator.password_reset", "auth.account_recovered_offline",
+    "auth.credential_change_aborted",
 })
 ANCHORED_PREFIXES = ("diagnosis.",)
 

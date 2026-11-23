@@ -331,7 +331,12 @@ class TenantRegistry:
         self._lock = threading.Lock()
         # account-level events (sign-up, sign-in, MFA, roles, refused org access) of every
         # tenant: never in an organization's own audit log or event stream
-        self.platform_audit = AuditLog(Path(data_dir) / "platform-audit.jsonl")
+        # anchored like the default log when an anchor is configured (same helper, its own
+        # source id): password-change records live here (docs/PASSWORD_CHANGE_DURABILITY.md)
+        default_audit = getattr(default_svc, "audit", None)
+        self.platform_audit = AuditLog(Path(data_dir) / "platform-audit.jsonl",
+                                       anchor=getattr(default_audit, "_anchor", None),
+                                       anchor_root=getattr(default_audit, "_anchor_root", None) or Path(data_dir))
         # Every organization, including the legacy default one, shares this
         # process-wide lab. No tenant may change its mode during another run.
         default_svc._may_switch_lab = False
