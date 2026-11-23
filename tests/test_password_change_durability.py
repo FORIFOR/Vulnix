@@ -37,8 +37,12 @@ class Base(unittest.TestCase):
         self.store = self.open()
 
     def reader(self):
-        from aegis.operators import audit_credential_generations
-        return audit_credential_generations([self.dir / "audit.jsonl", self.dir / "platform-audit.jsonl"])
+        try:
+            from aegis.operators import credential_history_reader
+        except ImportError:         # before the review fixes
+            from aegis.operators import audit_credential_generations
+            return audit_credential_generations([self.dir / "audit.jsonl", self.dir / "platform-audit.jsonl"])
+        return credential_history_reader(self.dir)()
 
     def open(self):
         try:
@@ -211,7 +215,7 @@ class TestPhaseOneAndAuditFailures(Base):
         self.assertEqual(self.seed.read_bytes(), before)
         self.assertTrue(self.signs_in(self.store, "op", OLD))
         self.assertFalse(self.signs_in(self.store, "op", NEW))
-        aborted = self.events("grant.not_committed")[-1]
+        aborted = self.events("auth.credential_change_aborted")[-1]
         self.assertEqual((aborted["account"], aborted["credential_generation"]), ("op", 1))
         again = self.restart()
         self.assertTrue(self.signs_in(again, "op", OLD))        # the intent is explicitly aborted
@@ -365,13 +369,14 @@ class TestRollbackMissingCorrupt(Base):
                              journal=self.journal("operator.password_reset", actor="root", target="op"))
         self.assertTrue(self.signs_in(again, "op", "reset-password-77"))
 
-    def test_unreadable_audit_blocks_accounts_with_a_generation(self):
+    def test_unreadable_audit_refuses_to_start(self):
+        from aegis.operators import CredentialStateUnverifiable
         self.change()
+
         def unreadable():
             raise ValueError("audit log cannot be read")
-        again = OperatorStore(self.seed, credential_generations=unreadable)
-        self.assert_blocked(again)
-        self.assertTrue(self.signs_in(again, "root", "root-password-1"))   # generation 0: nothing to check
+        with self.assertRaises(CredentialStateUnverifiable):
+            OperatorStore(self.seed, credential_generations=unreadable)
 
     def test_blocked_account_cannot_unblock_itself_with_the_old_password(self):
         with self.failing(self.store, "operators.json"), self.assertRaises(AuthError):
@@ -416,6 +421,179 @@ class TestSuccess(Base):
         again = self.restart()
         self.assertTrue(self.signs_in(again, "op", "third-password-56"))
         self.assertFalse(self.signs_in(again, "op", NEW))
+
+
+# ---- review of PR #126 ------------------------------------------------------------------
+class TestReviewFixes(Base):
+    def recover(self, *extra, account="root", code=0):
+        from scripts import recover_account
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            rc = recover_account.main(["--data-dir", str(self.dir), "--account", account, *extra])
+        self.assertEqual(rc, code)
+        if code:
+            return None
+        return (self.dir / "operators.recovery-credentials.txt").read_text().split("パスワード: ")[1].strip()
+
+    def test_junk_in_an_unused_platform_log_does_not_disable_the_check(self):
+        # single-tenant: account events go to audit.jsonl (reviewer's s3.py)
+        from aegis.operators import CredentialStateUnverifiable
+        with patch.dict(os.environ, {"VULNIX_MULTI_TENANT": "0"}):
+            self.audit = AuditLog(self.dir / "audit.jsonl")
+            old = self.seed.read_text()
+            self.change(self.open())
+            self.seed.write_text(old)
+            (self.dir / "operators.credential-state.json").unlink(missing_ok=True)
+            (self.dir / "platform-audit.jsonl").write_text("garbage\n")
+            with self.assertRaises(CredentialStateUnverifiable):
+                self.open()
+            self.recover(code=4)                                   # not without the explicit flag
+            pw = self.recover("--quarantine-unreadable-audit")
+            again = self.open()
+            self.assertTrue(self.signs_in(again, "root", pw))
+            self.assert_blocked(again)                             # nothing else is vouched for
+            self.assertTrue(list(self.dir.glob("platform-audit.jsonl.quarantined-*")))
+            events = [json.loads(line)["event"] for line in (self.dir / "audit.jsonl").read_text().splitlines()]
+            self.assertIn("auth.account_recovered_offline", events)   # the log this mode uses
+            self.assertIn("audit.log_quarantined", events)
+
+    def test_unreadable_mode_log_refuses_to_start(self):
+        from aegis.operators import CredentialStateUnverifiable
+        self.change()
+        with open(self.dir / "platform-audit.jsonl", "a") as fh:
+            fh.write("{torn\n")
+        with self.assertRaises(CredentialStateUnverifiable):
+            self.open()
+
+    def test_missing_log_with_past_changes_is_a_rollback(self):
+        self.change()
+        (self.dir / "platform-audit.jsonl").unlink()
+        again = self.restart()
+        self.assert_blocked(again)
+        self.assertTrue(self.signs_in(again, "root", "root-password-1"))
+
+    def test_audit_derived_block_is_kept_in_the_marker_file(self):
+        old = self.seed.read_bytes()
+        self.change()
+        self.seed.write_bytes(old)
+        self.restart()                                             # detects the rollback ...
+        self.assert_blocked(OperatorStore(self.seed))              # ... and a store without the check still refuses
+
+    def test_reregistered_account_is_not_locked_out_after_restart(self):
+        self.change()                                              # op at generation 1 in the audit
+        self.seed.unlink()
+        again = self.restart()                                     # regenerated default accounts
+        again.register("op", "op-again-password-3")
+        self.assertTrue(self.signs_in(self.restart(), "op", "op-again-password-3"))
+
+    def test_reregistered_name_with_existing_file(self):
+        self.change()
+        raw = json.loads(self.seed.read_text())
+        raw["operators"] = [o for o in raw["operators"] if o["name"] != "op"]
+        self.seed.write_text(json.dumps(raw))
+        again = self.restart()
+        again.register("op", "op-again-password-3")
+        self.assertGreater(again.credential_fields("op")["credential_generation"], 1)
+        self.assertTrue(self.signs_in(self.restart(), "op", "op-again-password-3"))
+
+    def test_reset_lifts_the_sign_in_lock(self):
+        from aegis.operators import LockedOut
+        for _ in range(6):
+            try:
+                self.store.login("op", "wrong-password-0")
+            except (AuthError, LockedOut):
+                pass
+        with self.assertRaises(LockedOut):
+            self.store.login("op", OLD)
+        self.store.reset_password("op", "reset-password-77", actor="root",
+                                  journal=self.journal("operator.password_reset", actor="root", target="op"))
+        self.assertTrue(self.signs_in(self.store, "op", "reset-password-77"))
+
+    def test_phase_two_failure_message_says_the_account_locks(self):
+        with self.failing(self.store, "operators.json"), self.assertRaises(AuthError) as cm:
+            self.change()
+        self.assertIn("ロック", str(cm.exception))
+        self.assertNotIn("元へ戻ります", str(cm.exception))
+
+    def test_listener_failure_after_the_intent_is_written_voids_it(self):
+        def boom(entry):
+            if entry["event"] == "auth.password_changed":
+                raise RuntimeError("listener failed")
+        self.audit.listeners.append(boom)
+        with self.assertRaises(AuditWriteFailed):
+            self.change()
+        self.assertTrue(self.events("auth.password_changed"))     # the intent did reach the disk
+        self.assertTrue(self.signs_in(self.restart(), "op", OLD))  # but it is voided, not a silent lockout
+
+    def test_recovery_file_is_never_written_through_a_link(self):
+        target = self.dir / "elsewhere.txt"
+        os.symlink(target, self.dir / "operators.recovery-credentials.txt")
+        before = self.seed.read_bytes()
+        self.recover(account="op", code=2)
+        self.assertFalse(target.exists())
+        self.assertEqual(self.seed.read_bytes(), before)
+
+
+class TestAnchoredPlatformLog(unittest.TestCase):
+    """With an anchor, deleting or truncating the log that holds the intent is detected."""
+
+    def setUp(self):
+        from tests.test_audit_anchor import Helper, _short_tmp
+        tmp = tempfile.TemporaryDirectory(dir=_short_tmp())
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        self.dir = root / "data"
+        self.dir.mkdir()
+        self.helper = Helper(root / "anchor", root / "a.sock").start()
+        self.addCleanup(self.helper.stop)
+        self.seed = self.dir / "operators.json"
+        self.seed.write_text(json.dumps({"operators": [
+            {"name": "root", "display": "r", "roles": ["operator", "admin"],
+             "password_hash": hash_password("root-password-1")},
+            {"name": "op", "display": "o", "roles": ["operator"], "password_hash": hash_password(OLD)}]}))
+
+    def client(self):
+        from tests.test_audit_anchor import separate_client
+        return separate_client(self.helper.socket)
+
+    def open(self):
+        from aegis.operators import credential_history_reader
+        return OperatorStore(self.seed, credential_generations=credential_history_reader(self.dir, anchor=self.client()))
+
+    def signs_in(self, store, name, pw):
+        return Base.signs_in(self, store, name, pw)
+
+    def changed(self):
+        from aegis.server import _Journal
+        audit = AuditLog(self.dir / "platform-audit.jsonl", anchor=self.client(), anchor_root=self.dir)
+        old = self.seed.read_bytes()
+        self.open().change_password("op", OLD, NEW, journal=_Journal(audit, "auth.password_changed", actor="op"))
+        return audit, old
+
+    def test_deleted_log_and_restored_accounts_file_are_detected(self):
+        _audit, old = self.changed()
+        (self.dir / "platform-audit.jsonl").unlink()
+        self.seed.write_bytes(old)
+        (self.dir / "operators.credential-state.json").unlink(missing_ok=True)
+        again = self.open()
+        self.assertFalse(self.signs_in(again, "op", OLD))
+        self.assertFalse(self.signs_in(again, "root", "root-password-1"))     # nothing can be vouched for
+        self.assertFalse(self.signs_in(OperatorStore(self.seed), "op", OLD))  # kept on disk
+
+    def test_appended_abort_cannot_void_an_anchored_intent(self):
+        audit, old = self.changed()
+        intent = [e for e in audit.entries() if e["event"] == "auth.password_changed"][-1]["fields"]
+        AuditLog(self.dir / "platform-audit.jsonl").record(     # appended without the anchor
+            "auth.credential_change_aborted", account="op", credential_generation=intent["credential_generation"],
+            hash_digest=intent["hash_digest"])
+        self.seed.write_bytes(old)
+        (self.dir / "operators.credential-state.json").unlink(missing_ok=True)
+        self.assertFalse(self.signs_in(self.open(), "op", OLD))
+
+    def test_unchanged_anchored_log_signs_in_normally(self):
+        self.changed()
+        again = self.open()
+        self.assertTrue(self.signs_in(again, "op", NEW))
+        self.assertTrue(self.signs_in(again, "root", "root-password-1"))
 
 
 if __name__ == "__main__":

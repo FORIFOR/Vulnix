@@ -73,18 +73,48 @@ def credential_digest(password_hash: str) -> str:
     return hashlib.sha256(password_hash.encode("utf-8")).hexdigest()
 
 
-def audit_credential_generations(paths) -> dict[str, tuple[int, str | None]]:
+# Audit records of a credential change (docs/PASSWORD_CHANGE_DURABILITY.md). The intents
+# are anchored events (aegis/audit.py), so with an anchor a truncated log is detected.
+CREDENTIAL_INTENT_EVENTS = ("auth.password_changed", "operator.password_reset", "auth.account_recovered_offline")
+CREDENTIAL_ABORT_EVENT = "auth.credential_change_aborted"
+# anchor errors that are evidence the log was rolled back or altered (not just unreachable)
+_ANCHOR_EVIDENCE = frozenset({"rollback", "fork", "chain_invalid", "anchor_regressed", "symlink"})
+
+
+class AuditHistoryUnreadable(Exception):
+    """An audit log the credential check depends on cannot be read or parsed."""
+
+
+class AuditHistoryUnverified(Exception):
+    """An anchored audit log does not match its anchor (or the anchor cannot be asked)."""
+
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
+        self.evidence = reason in _ANCHOR_EVIDENCE
+
+
+class CredentialStateUnverifiable(RuntimeError):
+    """The accounts cannot be checked against the audit trail: the server does not start."""
+
+
+def audit_credential_generations(paths, *, trusted_upto: dict | None = None) -> dict[str, tuple[int, str | None]]:
     """account -> (highest credential generation recorded, digest of that hash) in the
-    given audit logs. An intent is cancelled by a `grant.not_committed` naming the same
-    account, generation AND hash digest (every new hash has a fresh salt, so an abort
-    can never cancel a different change that happened to reuse the generation). A line that cannot be parsed raises: the caller then
-    cannot vouch for any account (fail closed)."""
+    given audit logs. Any record carrying `account` + `credential_generation` counts. An
+    intent is cancelled by a `auth.credential_change_aborted` naming the same account,
+    generation AND hash digest (every new hash has a fresh salt, so an abort can never
+    cancel a different change that reused the generation). For an anchored log,
+    `trusted_upto[str(path)]` is the anchored head: an abort after it is ignored (an
+    appended, unanchored line cannot cancel an intent). A line that cannot be parsed
+    raises: the caller then cannot vouch for any account (fail closed)."""
+    trusted_upto = trusted_upto or {}
     live: dict[tuple[str, int], str | None] = {}
     for path in paths:
         path = Path(path)
         if not path.exists():
             continue
-        for line in path.read_text(encoding="utf-8").splitlines():
+        limit = trusted_upto.get(str(path))
+        for seq, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
             if not line.strip():
                 continue
             entry = json.loads(line)
@@ -95,8 +125,8 @@ def audit_credential_generations(paths) -> dict[str, tuple[int, str | None]]:
             if not isinstance(acct, str) or not isinstance(gen, int) or isinstance(gen, bool) or gen <= 0:
                 continue
             digest = fields.get("hash_digest")
-            if entry.get("event") == "grant.not_committed":
-                if isinstance(digest, str) and live.get((acct, gen)) == digest:
+            if entry.get("event") == CREDENTIAL_ABORT_EVENT:
+                if (limit is None or seq <= limit) and isinstance(digest, str) and live.get((acct, gen)) == digest:
                     live.pop((acct, gen), None)
                 continue
             if live.get((acct, gen)) is None:
@@ -106,6 +136,57 @@ def audit_credential_generations(paths) -> dict[str, tuple[int, str | None]]:
         if gen > out.get(acct, (0, None))[0]:
             out[acct] = (gen, digest)
     return out
+
+
+def read_credential_history(logs) -> dict[str, tuple[int, str | None]]:
+    """`logs`: AuditLog objects (or paths). An anchored log is first checked against its
+    anchor (a deleted or truncated log is detected there); then the records are read."""
+    paths, upto = [], {}
+    for log in logs:
+        if isinstance(log, (str, Path)):
+            paths.append(Path(log))
+            continue
+        if getattr(log, "_anchor", None) is not None:
+            status = log.anchor_check()
+            if status.get("error") not in (None, "same_user"):   # same_user: verified, just not protective
+                raise AuditHistoryUnverified(str(status["error"]))
+            upto[str(log.path)] = status.get("last_seq") or 0
+        paths.append(Path(log.path))
+    try:
+        return audit_credential_generations(paths, trusted_upto=upto)
+    except (ValueError, OSError, TypeError, AttributeError) as e:
+        raise AuditHistoryUnreadable(f"{type(e).__name__}") from e
+
+
+def multi_tenant_enabled() -> bool:
+    return os.environ.get("VULNIX_MULTI_TENANT", "1") != "0"
+
+
+def credential_audit_logs(data_dir, *, default_log=None, anchor=None):
+    """(logs the check reads, log account events are written to) for this data directory
+    in the current mode: the platform log when organizations are on (the default), else
+    the default log - plus the other one when it exists (an earlier mode's history)."""
+    from .audit import AuditLog
+    data = Path(data_dir)
+    if anchor is None and default_log is not None:
+        anchor = getattr(default_log, "_anchor", None)
+    try:
+        default = default_log or AuditLog(data / "audit.jsonl", anchor=anchor, anchor_root=data)
+        platform_path = data / "platform-audit.jsonl"
+        platform = (AuditLog(platform_path, anchor=anchor, anchor_root=data)
+                    if multi_tenant_enabled() or platform_path.exists() else None)
+    except (ValueError, OSError, KeyError, TypeError) as e:     # a line that is not JSON, etc.
+        raise AuditHistoryUnreadable(f"{type(e).__name__}") from e
+    logs = [default] + ([platform] if platform is not None else [])
+    return logs, (platform if multi_tenant_enabled() else default)
+
+
+def credential_history_reader(data_dir, *, default_log=None, anchor=None):
+    """The `credential_generations=` callback of the server and the recovery tool."""
+    def read():
+        logs, _writer = credential_audit_logs(data_dir, default_log=default_log, anchor=anchor)
+        return read_credential_history(logs)
+    return read
 
 
 class MFAChallenge(AuthError):
@@ -239,13 +320,16 @@ class OperatorStore:
     """Thread-safe operator + session store backed by a JSON seed file."""
 
     def __init__(self, seed_path: Path, clock=time.time, sessions_path: Path | None = None,
-                 credential_generations=None):
+                 credential_generations=None, allow_unverified: bool = False):
         self.seed_path = Path(seed_path)
         # Two-phase password changes (docs/PASSWORD_CHANGE_DURABILITY.md): accounts with a
         # change in progress (phase 1 written, phase 2 not) live in a sibling file;
         # `credential_generations()` reads the audit trail at startup (rollback check).
         self.credential_state_path = self.seed_path.with_name(CREDENTIAL_STATE_NAME)
         self._credential_generations = credential_generations
+        # only the offline recovery tool: open even when the audit trail cannot be read
+        # (every account is then refused sign-in) instead of refusing to start
+        self._allow_unverified = allow_unverified
         self._pending: dict[str, dict] = {}     # name -> {"generation", "reason"} (on disk)
         self._blocked: dict[str, str] = {}      # name -> reason, derived at startup (audit check)
         self._audit_gen: dict[str, int] = {}    # highest generation the audit trail showed
@@ -298,6 +382,7 @@ class OperatorStore:
         # (a deleted accounts file: fresh random passwords, so no old password works; the
         # new accounts start above every generation seen, so they are not taken for a rollback)
         floors = self._fresh_generation_floors()
+        self._audit_gen.update(floors)      # every name seen: a later registration starts above it
         # First run: generate the accounts with random passwords and write the seed.
         generated = {"operator": secrets.token_urlsafe(12),
                      "approver": secrets.token_urlsafe(12),
@@ -350,11 +435,12 @@ class OperatorStore:
         return out, False
 
     def _audit_generations(self) -> dict[str, tuple[int, str | None]] | None:
-        """None when the audit trail could not be read."""
+        """None when the audit trail could not be read (only for fresh accounts, whose
+        random passwords nobody knew before: nothing to protect)."""
         try:
             gens = self._credential_generations()
             return gens if isinstance(gens, dict) else None
-        except Exception:  # noqa: BLE001 - any failure means "cannot vouch"
+        except Exception:  # noqa: BLE001
             return None
 
     def _fresh_generation_floors(self) -> dict[str, int]:
@@ -365,11 +451,39 @@ class OperatorStore:
                 floors[n] = max(floors.get(n, 0), gen)
         return floors
 
+    def _block_locked(self, name: str, reason: str, *, persist: bool) -> None:
+        """Refuse sign-in for `name`. Persisted: a marker above every generation seen, so a
+        store opened later - even without the audit check - still refuses it, until an
+        admin reset or an offline recovery writes a newer generation."""
+        op = self._ops.get(name)
+        if op is None:
+            return
+        if not persist:
+            self._blocked.setdefault(name, reason)
+            return
+        current = self._pending.get(name)
+        if current and current["generation"] > op.credential_generation:
+            return                          # already blocked on disk (keep the first reason)
+        gen = max(op.credential_generation, self._audit_gen.get(name, 0),
+                  (current or {}).get("generation", 0)) + 1
+        self._pending[name] = {"generation": gen, "reason": reason}
+
+    def block_all(self, reason: str) -> bool:
+        """Every account is refused sign-in until reset (e.g. after the recovery tool set an
+        unreadable audit log aside: nothing can be vouched for). True if saved."""
+        with self._lock:
+            for name in list(self._ops):
+                self._block_locked(name, reason, persist=True)
+        return self._persist_credential_state()
+
     def _check_credential_state(self) -> None:
         """At startup: an account whose change is in progress, or whose accounts-file
-        state is behind what the audit trail recorded (an older copy restored, phase 1
-        lost, a marker removed), does not sign in until an admin reset or an offline
-        recovery (scripts/recover_account.py)."""
+        state does not match what the audit trail recorded (an older copy restored, phase
+        1 lost, a marker removed, its history missing), does not sign in until an admin
+        reset or an offline recovery (scripts/recover_account.py). Such a block is written
+        to the marker file. An audit trail that cannot be read stops the start
+        (CredentialStateUnverifiable); an anchored one that does not match its anchor
+        blocks every account."""
         markers, corrupt = self._read_credential_state()
         if corrupt:
             # which account was mid-change is unknown: none signs in until recovered
@@ -381,26 +495,59 @@ class OperatorStore:
             op = self._ops.get(name)
             if op is not None and m["generation"] > op.credential_generation:
                 self._pending[name] = m
-        stale = set(markers) != set(self._pending)
+        changed = corrupt or set(markers) != set(self._pending)
         if self._credential_generations is not None:
-            gens = self._audit_generations()
-            for name, op in self._ops.items():
-                if gens is None:
-                    if op.credential_generation > 0 or name in self._pending:
-                        self._blocked[name] = "audit_unreadable"
-                    continue
-                gen, digest = gens.get(name, (0, None))
-                self._audit_gen[name] = gen
-                if gen > op.credential_generation:
-                    self._blocked[name] = "behind_audit"
-                elif (gen == op.credential_generation and gen > 0 and digest
-                      and not hmac.compare_digest(digest, credential_digest(op.password_hash))):
-                    self._blocked[name] = "hash_mismatch"
-            for name, why in sorted(self._blocked.items()):
+            before = {n: dict(m) for n, m in self._pending.items()}
+            try:
+                gens = self._credential_generations()
+                if not isinstance(gens, dict):
+                    raise AuditHistoryUnreadable("not a mapping")
+            except AuditHistoryUnverified as e:
+                # deleted / truncated / forked: evidence, kept on disk; unreachable: this run only
+                for name in list(self._ops):
+                    self._block_locked(name, "audit_" + e.reason, persist=e.evidence)
+                self.recovery_events.append({"event": "auth.credential_audit_unverified", "reason": e.reason})
+                gens = None
+            except Exception as e:  # noqa: BLE001 - unreadable: nothing can be vouched for
+                if not self._allow_unverified:
+                    raise CredentialStateUnverifiable(
+                        "監査ログを読み取れないため、アカウントの状態（パスワード変更の履歴）を確認できません。"
+                        "コントロールプレーンを起動しません。docs/PASSWORD_CHANGE_DURABILITY.md の手順"
+                        "（python3 -m scripts.recover_account --quarantine-unreadable-audit）で復旧してください") from e
+                for name in list(self._ops):
+                    self._block_locked(name, "audit_unreadable", persist=False)
+                gens = None
+            if gens is not None:
+                for name, (gen, _digest) in gens.items():
+                    self._audit_gen[name] = gen     # also names that no longer exist (re-registration)
+                for name, op in self._ops.items():
+                    gen, digest = gens.get(name, (0, None))
+                    d = op.credential_generation
+                    if gen > d:
+                        self._block_locked(name, "behind_audit", persist=True)
+                    elif (gen == d and gen > 0 and digest
+                          and not hmac.compare_digest(digest, credential_digest(op.password_hash))):
+                        self._block_locked(name, "hash_mismatch", persist=True)
+                    elif d > 0 and gen == 0:
+                        # the file shows past changes the audit trail has no record of
+                        self._block_locked(name, "history_missing", persist=True)
+            changed = changed or self._pending != before
+            blocked = {n: self._blocked_reason_locked(n) for n in self._ops}
+            for name, why in sorted((n, r) for n, r in blocked.items() if r and r != "in_progress"):
                 self.recovery_events.append({"event": "auth.credential_state_inconsistent",
                                              "account": name[:64], "reason": why})
-        if corrupt or stale:
+        if changed:
             self._persist_credential_state()
+
+    def credential_fields(self, name: str) -> dict:
+        """Audit fields of an account's current credential (for a creation record), so a
+        later restore of an older incarnation of the same name is detected."""
+        with self._lock:
+            op = self._ops.get(name)
+            if op is None or op.credential_generation <= 0:
+                return {}
+            return {"account": name, "credential_generation": op.credential_generation,
+                    "hash_digest": credential_digest(op.password_hash)}
 
     def _blocked_reason_locked(self, name: str) -> str | None:
         op = self._ops.get(name)
@@ -473,7 +620,10 @@ class OperatorStore:
             except AuthError:
                 with self._lock:
                     self._retrying[name] = gen
-                raise
+                raise AuthError("新しいパスワードは現在のプロセスでは有効ですが、ファイルへの保存に失敗しました。"
+                                "保存できるまで新しいログインは受け付けません。保存前に再起動した場合、"
+                                "このアカウントは古いパスワードに戻らずロックされ、管理者のリセットが必要です。"
+                                "データディレクトリの書き込み権限を確認してください") from None
         finally:
             self._persist_sessions(strict=True)    # the other sessions' revocation is written regardless
         return gen
@@ -701,8 +851,10 @@ class OperatorStore:
         if len(new_password or "") < MIN_PASSWORD_LEN:
             raise AuthError(f"パスワードは{MIN_PASSWORD_LEN}文字以上にしてください")
         new_hash = hash_password(new_password)
-        return self._replace_password(target, new_hash, journal,
-                                      check=lambda: self._require_admin_locked(actor, session_token))
+        gen = self._replace_password(target, new_hash, journal,
+                                     check=lambda: self._require_admin_locked(actor, session_token))
+        self._clear_failures(target)        # a fresh start: the sign-in lock is lifted too
+        return gen
 
     @_revocation
     def recover_account(self, target: str, *, journal) -> tuple[str, int]:
@@ -713,6 +865,7 @@ class OperatorStore:
             raise AuthError("復旧は監査ログに記録してから行います")
         password = secrets.token_urlsafe(15)
         gen = self._replace_password(target, hash_password(password), journal)
+        self._clear_failures(target)
         return password, gen
 
     # ---- sign-in throttling ----------------------------------------------

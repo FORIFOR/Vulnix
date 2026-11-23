@@ -35,8 +35,8 @@ from .audit import AuditWriteFailed
 from .control_verification import run_live_control_verification
 from .diagnosis_ops import OP_PERMISSION, member_permissions, permitted
 from .lab import set_lab_mode, start_lab
-from .operators import (AuthError, ChangeNotSaved, LockedOut, MFAChallenge, OperatorStore,
-                        audit_credential_generations)
+from .operators import (CREDENTIAL_ABORT_EVENT, AuthError, ChangeNotSaved, CredentialStateUnverifiable,
+                        LockedOut, MFAChallenge, OperatorStore, credential_history_reader)
 from .ownership import parse_service_target
 from .policy import PolicyError
 from .real_software_cve import run_real_software_cve_comparison
@@ -140,8 +140,8 @@ class _Journal:
     """Audit-first record of a store change (`journal=` of OrgStore / OperatorStore).
     If the store then fails to save, the record is marked as not committed."""
 
-    # identify the change that was not made (a credential generation, see
-    # aegis/operators.audit_credential_generations: its intent is then void)
+    # a credential change (aegis/operators.py) is identified by these; its abort record
+    # carries them, which voids exactly that intent (docs/PASSWORD_CHANGE_DURABILITY.md)
     _CARRIED = ("account", "credential_generation", "hash_digest")
 
     def __init__(self, audit, event: str, **fields):
@@ -149,15 +149,32 @@ class _Journal:
         self.more: dict = {}
 
     def __call__(self, **more):
-        audit_first(self.audit, self.event, **self.fields, **more)
         self.more = more
+        try:
+            audit_first(self.audit, self.event, **self.fields, **more)
+        except AuditWriteFailed:
+            # The record may be on disk all the same (a listener or the anchor failed after
+            # the write). For a credential change that would leave an intent behind that
+            # blocks the account at the next start: void it explicitly (best effort).
+            self._abort_credential("record_failed")
+            raise
         self.written = True
 
+    def _carried(self) -> dict:
+        return {k: self.more[k] for k in self._CARRIED if k in self.more}
+
+    def _abort_credential(self, reason: str) -> bool:
+        carried = self._carried()
+        if len(carried) != len(self._CARRIED):
+            return False
+        with contextlib.suppress(Exception):
+            self.audit.record(CREDENTIAL_ABORT_EVENT, grant=self.event, reason=reason, **carried)
+        return True
+
     def not_committed(self, reason: str) -> None:
-        if self.written:
-            carried = {k: self.more[k] for k in self._CARRIED if k in self.more}
+        if self.written and not self._abort_credential(reason):
             with contextlib.suppress(Exception):
-                self.audit.record("grant.not_committed", grant=self.event, reason=reason, **carried)
+                self.audit.record("grant.not_committed", grant=self.event, reason=reason)
 
 
 def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_auth: bool | None = None,
@@ -1122,7 +1139,8 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 except AuthError as e:
                     return self._admin_failure(caller, e, 400)
                 paudit.record("operator.created", actor=caller.operator, target=op.name, roles=list(op.roles),
-                                 requested_roles_ignored=[r for r in asked if r not in op.roles])
+                                 requested_roles_ignored=[r for r in asked if r not in op.roles],
+                                 **ops.credential_fields(op.name))   # a reused name: its new incarnation
                 return self._json(200, {"created": {"name": op.name, "display": op.display, "roles": list(op.roles)}})
             if not self_registration_allowed():
                 paudit.record("auth.registration_refused", name=name[:32])
@@ -1184,7 +1202,8 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             # cannot be written is kept as an audit gap and the response stays clean
             registered = audit_after(paudit, "auth.registered", gap_svc=default_svc, gap_log="platform",
                                      actor=sess.operator, roles=list(sess.roles), self_registered=True,
-                                     requested_roles_ignored=[r for r in asked if r not in sess.roles])
+                                     requested_roles_ignored=[r for r in asked if r not in sess.roles],
+                                     **ops.credential_fields(sess.operator))
             cookie = (f"{COOKIE}={sess.token}; HttpOnly; SameSite=Strict; Path=/; "
                       f"Max-Age={int(sess.expires - time.time())}")
             out = {"session": self._public_session(sess)}
@@ -1840,10 +1859,13 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
 
 
 def _build_server(svc, a, data, first, seed, env_opt_out):
-    # Rollback check of password changes (docs/PASSWORD_CHANGE_DURABILITY.md): both logs,
-    # since account events go to the platform log only when organizations are on.
-    logs = [Path(data) / "audit.jsonl", Path(data) / "platform-audit.jsonl"]
-    ops = OperatorStore(seed, credential_generations=lambda: audit_credential_generations(logs))
+    # Rollback check of password changes (docs/PASSWORD_CHANGE_DURABILITY.md): the log this
+    # mode writes account events to (and the other one if it exists), checked against the
+    # audit anchor when one is configured. Unreadable: the server does not start.
+    try:
+        ops = OperatorStore(seed, credential_generations=credential_history_reader(data, default_log=svc.audit))
+    except CredentialStateUnverifiable as e:
+        raise SystemExit(str(e)) from None
     blocked = ops.blocked_accounts()
     if blocked:
         print("パスワードの変更が完了していない、または監査ログと一致しないため、次のアカウントのログインを停止しています: "

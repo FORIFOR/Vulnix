@@ -12,37 +12,41 @@ to the accounts file, never to the terminal or a log.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import os
 import sys
+import time
 from pathlib import Path
 
-from aegis.audit import AuditLog
-from aegis.operators import AuthError, OperatorStore, audit_credential_generations
+from aegis.audit_anchor import client_from_env as anchor_client_from_env
+from aegis.operators import (AuditHistoryUnreadable, AuthError, CredentialStateUnverifiable, OperatorStore,
+                             credential_audit_logs, credential_history_reader)
 
 try:
     import fcntl
 except ImportError:  # pragma: no cover - POSIX only, like the control plane's own lock
     fcntl = None
 
-
-def _audit_log_for(data: Path) -> Path:
-    """Where the server records account events (server.make_handler: the platform log
-    when organizations are on, the default)."""
-    platform = data / "platform-audit.jsonl"
-    if platform.exists() or os.environ.get("VULNIX_MULTI_TENANT", "1") != "0":
-        return platform
-    return data / "audit.jsonl"
+RECOVERY_FILE = "operators.recovery-credentials.txt"
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Recover an operator account (control plane stopped).")
     ap.add_argument("--data-dir", required=True)
     ap.add_argument("--account", required=True)
+    ap.add_argument("--quarantine-unreadable-audit", action="store_true",
+                    help="An audit log that cannot be parsed is moved aside (kept, renamed) and a fresh one "
+                         "started; every account is then refused sign-in until reset, except the one recovered")
     a = ap.parse_args(argv)
     data = Path(a.data_dir)
     seed = data / "operators.json"
     if not seed.is_file():
         print(f"アカウントファイルがありません: {seed}", file=sys.stderr)
+        return 2
+    if os.path.lexists(seed.with_name(RECOVERY_FILE)):
+        print(f"前回の復旧ファイルが残っています。内容を確認して削除してから実行してください: {seed.with_name(RECOVERY_FILE)}",
+              file=sys.stderr)
         return 2
     if fcntl is None:
         print("このプラットフォームではコントロールプレーンの停止を確認できないため、実行しません。", file=sys.stderr)
@@ -55,15 +59,61 @@ def main(argv: list[str] | None = None) -> int:
             print("コントロールプレーンが動作中です（データディレクトリが使用中）。停止してから実行してください。",
                   file=sys.stderr)
             return 3
-        return _recover(data, seed, a.account)
+        return _recover(data, seed, a.account, a.quarantine_unreadable_audit)
     finally:
         lock.close()
 
 
-def _recover(data: Path, seed: Path, account: str) -> int:
-    logs = [data / "audit.jsonl", data / "platform-audit.jsonl"]
-    store = OperatorStore(seed, credential_generations=lambda: audit_credential_generations(logs))
-    audit = AuditLog(_audit_log_for(data))
+def _quarantine(data: Path) -> list[dict]:
+    """Move every audit log that cannot be parsed aside (never deleted)."""
+    moved = []
+    for name in ("audit.jsonl", "platform-audit.jsonl"):
+        path = data / name
+        if not path.is_file():
+            continue
+        try:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if line.strip():
+                    json.loads(line)
+            continue
+        except (ValueError, OSError):
+            pass
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        target = path.with_name(f"{name}.quarantined-{int(time.time())}")
+        os.rename(path, target)
+        moved.append({"log": name, "moved_to": target.name, "sha256": digest})
+    return moved
+
+
+def _recover(data: Path, seed: Path, account: str, quarantine: bool) -> int:
+    anchor = anchor_client_from_env()
+    reader = credential_history_reader(data, anchor=anchor)
+    moved: list[dict] = []
+    try:
+        store = OperatorStore(seed, credential_generations=reader)
+    except CredentialStateUnverifiable:
+        if not quarantine:
+            print("監査ログを読み取れないため、アカウントの状態を確認できません。読み取れない監査ログを退避して"
+                  "復旧する場合は --quarantine-unreadable-audit を付けて実行してください"
+                  "（退避したログは削除されません。全アカウントがリセットされるまでログインできなくなります）。",
+                  file=sys.stderr)
+            return 4
+        moved = _quarantine(data)
+        store = OperatorStore(seed, credential_generations=reader)
+        if not store.block_all("audit_quarantined"):
+            print("アカウントの状態を保存できませんでした（何も復旧していません）。", file=sys.stderr)
+            return 1
+    try:
+        _logs, audit = credential_audit_logs(data, anchor=anchor)
+    except AuditHistoryUnreadable as e:
+        print(f"監査ログを開けません: {e}", file=sys.stderr)
+        return 1
+    for m in moved:
+        try:
+            audit.record("audit.log_quarantined", actor="host", **m)
+        except Exception as e:  # noqa: BLE001
+            print(f"監査ログに記録できないため、復旧しませんでした: {e}", file=sys.stderr)
+            return 1
 
     def journal(**fields):
         audit.record("auth.account_recovered_offline", actor="host", **fields)
@@ -71,7 +121,7 @@ def _recover(data: Path, seed: Path, account: str) -> int:
     try:
         password, gen = store.recover_account(account, journal=journal)
     except (AuthError, ValueError, OSError) as e:
-        # ValueError/OSError from the audit log: not recorded, so nothing changed
+        # ValueError/OSError from the audit log (disk, chain, anchor): not recorded, nothing changed
         print(f"復旧できませんでした: {e}", file=sys.stderr)
         return 1
     notes = list(store.recovery_events)
@@ -83,14 +133,20 @@ def _recover(data: Path, seed: Path, account: str) -> int:
         except Exception as e:  # noqa: BLE001 - the change itself is in force (its intent is recorded)
             print(f"警告: 監査ログへの完了の記録に失敗しました: {e}", file=sys.stderr)
             break
-    cred = seed.with_name("operators.recovery-credentials.txt")
-    store._write_private(
-        cred,
-        "Aegis アカウント復旧（ホスト上の操作・このファイルは手元で確認してください）\n"
-        "ログイン後すぐにパスワードを変更し、このファイルは削除してください。\n\n"
-        f"ユーザー名: {account}\nパスワード: {password}\n")
+    cred = seed.with_name(RECOVERY_FILE)
+    # created fresh, 0600, never through a link left in its place
+    fd = os.open(cred, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write("Aegis アカウント復旧（ホスト上の操作・このファイルは手元で確認してください）\n"
+                 "ログイン後すぐにパスワードを変更し、このファイルは削除してください。\n\n"
+                 f"ユーザー名: {account}\nパスワード: {password}\n")
+        fh.flush()
+        os.fsync(fh.fileno())
     print(f"アカウント {account} を復旧しました（資格情報の世代 {gen}、監査ログに記録済み）。")
     print(f"一時パスワード（平文・600権限）: {cred}")
+    if moved:
+        print("読み取れない監査ログを退避しました: " + ", ".join(m["moved_to"] for m in moved)
+              + "。他のアカウントは、このアカウントでログインしてからリセットしてください。")
     print("手順: 1) コントロールプレーンを起動する  2) このアカウントでログインし、直ちにパスワードを変更する"
           "  3) 上のファイルを削除する  4) 管理者は他にブロックされたアカウントがあればリセットする")
     return 0
