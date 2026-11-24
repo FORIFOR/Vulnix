@@ -1,9 +1,7 @@
-"""A fail-closed, offline-testable Cloud Run OIDC ownership proof primitive.
+"""Fail-closed Cloud Run OIDC ownership challenge validation.
 
-The caller must supply a signature-verifying Google ID-token verifier and an
-authoritative tenant/host -> service-account-subject binding. This module does
-not grant diagnostic scope; AssessmentService must make that decision after a
-proof succeeds. No API route enables this unfinished integration.
+The SQLite store binds the registered subject, host, tenant and requester. This
+module grants no scope; AssessmentService commits a signed proof afterward.
 """
 from __future__ import annotations
 
@@ -11,11 +9,11 @@ import hashlib
 import json
 import math
 import secrets
-import threading
 import time
 from typing import Callable, Mapping
 
 from .ownership import default_well_known_fetcher, meta_tag_matches, parse_service_target
+from .cloud_run_store import ChallengeStore
 
 CHALLENGE_TTL_S = 300
 GOOGLE_ISSUERS = frozenset({"accounts.google.com", "https://accounts.google.com"})
@@ -24,8 +22,8 @@ GOOGLE_ISSUERS = frozenset({"accounts.google.com", "https://accounts.google.com"
 class CloudRunProof:
     """Bind a one-use challenge to the current tenant, host, user and OIDC sub.
 
-    verify_id_token(token, audience) must verify the JWT signature against
-    trusted Google keys before returning claims. The host fetcher must use HTTPS
+    verify_id_token(token, audience) verifies the JWT signature against trusted
+    Google keys before returning claims. The host fetcher must use HTTPS
     443, certificate verification, a pinned public address and no redirects;
     the default ownership fetcher has those properties.
     """
@@ -33,19 +31,17 @@ class CloudRunProof:
     def __init__(
         self,
         *,
-        registered_subject: Callable[[str, str], str | None],
+        store: ChallengeStore,
         verify_id_token: Callable[[str, str], Mapping],
-        fetch_html: Callable[[str], str] = default_well_known_fetcher,
+        fetch_html: Callable[[str], str] | None = None,
         now: Callable[[], float] = time.time,
         new_challenge: Callable[[], str] = lambda: secrets.token_urlsafe(32),
     ):
-        self._registered_subject = registered_subject
+        self._store = store
         self._verify_id_token = verify_id_token
-        self._fetch_html = fetch_html
+        self._fetch_html = fetch_html or default_well_known_fetcher
         self._now = now
         self._new_challenge = new_challenge
-        self._pending: dict[str, dict] = {}
-        self._lock = threading.Lock()
 
     @staticmethod
     def _host(value: str) -> str:
@@ -60,8 +56,8 @@ class CloudRunProof:
         if not tenant or not requester:
             raise ValueError("tenant and requester are required")
         host = self._host(host)
-        subject = self._registered_subject(tenant, host)
-        if not isinstance(subject, str) or not subject:
+        binding = self._store.binding(tenant, host)
+        if not binding:
             raise ValueError("host and OIDC subject must be registered for this tenant")
         challenge = self._new_challenge()
         if not isinstance(challenge, str) or len(challenge) < 32:
@@ -70,14 +66,8 @@ class CloudRunProof:
             json.dumps([tenant, host, challenge], separators=(",", ":")).encode()).hexdigest()
         audience = f"urn:vulnix:cloud-run-proof:{audience_hash}"
         issued_at = self._now()
-        with self._lock:
-            if challenge in self._pending:
-                raise ValueError("challenge collision")
-            self._pending[challenge] = {
-                "tenant": tenant, "host": host, "requester": requester,
-                "subject": subject, "audience": audience,
-                "expires_at": issued_at + CHALLENGE_TTL_S,
-            }
+        self._store.issue(challenge, tenant, host, requester, audience,
+                          binding[1], issued_at, issued_at + CHALLENGE_TTL_S)
         return {
             "challenge": challenge, "audience": audience,
             "proof_token": f"vulnix-cloud-run={challenge}",
@@ -86,26 +76,25 @@ class CloudRunProof:
 
     def finish(self, *, challenge: str, tenant: str, host: str,
                requester: str, id_token: str) -> bool:
-        # Consume before any callback or network access. All failures, including
-        # a verifier exception, spend the challenge and cannot be retried.
-        if not isinstance(challenge, str):
-            return False
-        with self._lock:
-            pending = self._pending.pop(challenge, None)
-        if pending is None or self._now() > pending["expires_at"]:
+        # The caller first authenticates the requester and checks organization
+        # membership. Wrong requester/host/tenant must not spend someone else's proof.
+        if not isinstance(challenge, str) or not isinstance(tenant, str) or not isinstance(requester, str):
             return False
         try:
             host = self._host(host)
         except (ValueError, TypeError):
             return False
-        if ((tenant, host, requester) !=
-                (pending["tenant"], pending["host"], pending["requester"])):
-            return False
         try:
-            current_subject = self._registered_subject(tenant, host)
+            binding = self._store.binding(tenant, host)
         except Exception:
             return False
-        if current_subject != pending["subject"]:
+        if not binding:
+            return False
+        try:
+            pending = self._store.consume(challenge, tenant, host, requester, binding[1], self._now())
+        except Exception:
+            return False
+        if pending is None:
             return False
         if not isinstance(id_token, str) or not id_token:
             return False
@@ -117,7 +106,7 @@ class CloudRunProof:
             iat, exp = claims.get("iat"), claims.get("exp")
             if (claims.get("iss") not in GOOGLE_ISSUERS
                     or claims.get("aud") != pending["audience"]
-                    or claims.get("sub") != pending["subject"]
+                    or claims.get("sub") != binding[0]
                     or not isinstance(iat, (int, float)) or isinstance(iat, bool)
                     or not isinstance(exp, (int, float)) or isinstance(exp, bool)
                     or not math.isfinite(iat) or not math.isfinite(exp)
@@ -125,7 +114,7 @@ class CloudRunProof:
                 return False
             html = self._fetch_html(f"https://{host}/")
             return (self._now() <= pending["expires_at"]
-                    and self._registered_subject(tenant, host) == pending["subject"]
+                    and self._store.binding(tenant, host) == binding
                     and meta_tag_matches(html, f"vulnix-cloud-run={challenge}"))
         except Exception:
             return False

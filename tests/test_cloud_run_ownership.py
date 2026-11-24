@@ -1,13 +1,19 @@
 """Offline Cloud Run OIDC ownership contract; no Google or real host traffic."""
 import unittest
+import tempfile
+from pathlib import Path
 
 from aegis.cloud_run_ownership import CloudRunProof
+from aegis.cloud_run_store import SQLiteCloudRunStore
 
 
 class TestCloudRunProof(unittest.TestCase):
     def setUp(self):
         self.now = 1_800_000_000
-        self.bindings = {("tenant-a", "app.example.com"): "service-account-sub-a"}
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.store = SQLiteCloudRunStore(Path(self.temp.name) / "challenges.sqlite3")
+        self.store.register("tenant-a", "app.example.com", "service-account-sub-a", self.now)
         self.html = ""
         self.claims = {}
         self.calls = []
@@ -21,7 +27,7 @@ class TestCloudRunProof(unittest.TestCase):
             return self.html
 
         self.proof = CloudRunProof(
-            registered_subject=lambda tenant, host: self.bindings.get((tenant, host)),
+            store=self.store,
             verify_id_token=verify, fetch_html=fetch, now=lambda: self.now,
             new_challenge=lambda: "challenge-0123456789abcdef0123456789abcdef",
         )
@@ -91,7 +97,7 @@ class TestCloudRunProof(unittest.TestCase):
         self.now = 1_800_000_000
         issued = self.issue()
         def revoke(_url):
-            self.bindings[("tenant-a", "app.example.com")] = "service-account-sub-b"
+            self.store.register("tenant-a", "app.example.com", "service-account-sub-b", self.now)
             return self.html
         self.proof._fetch_html = revoke
         self.assertFalse(self.finish(issued))
@@ -104,8 +110,7 @@ class TestCloudRunProof(unittest.TestCase):
     def test_wrong_requester_and_changed_binding_are_rejected(self):
         issued = self.issue()
         self.assertFalse(self.finish(issued, requester="operator-b"))
-        issued = self.issue()
-        self.bindings[("tenant-a", "app.example.com")] = "service-account-sub-b"
+        self.store.register("tenant-a", "app.example.com", "service-account-sub-b", self.now)
         self.assertFalse(self.finish(issued))
 
     def test_invalid_claims_and_unregistered_host_are_rejected(self):
@@ -134,7 +139,7 @@ class TestCloudRunProof(unittest.TestCase):
     def test_binding_lookup_failure_and_malformed_challenge_are_closed(self):
         issued = self.issue()
         self.assertFalse(self.finish(issued, challenge=[]))
-        self.proof._registered_subject = lambda _tenant, _host: (_ for _ in ()).throw(OSError("store unavailable"))
+        self.store.revoke("tenant-a", "app.example.com")
         self.assertFalse(self.finish(issued))
         self.assertEqual(self.calls, [])
 

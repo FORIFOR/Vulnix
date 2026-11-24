@@ -1,8 +1,8 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState } from "react";
-import { postJSON } from "@/lib/api";
+import { useEffect, useState } from "react";
+import { getJSON, postJSON } from "@/lib/api";
 import type { Asset, OwnershipChallenge, Snapshot } from "@/lib/types";
 import { useSession } from "@/lib/useSession";
 
@@ -38,6 +38,9 @@ interface ScopeResponse {
   snapshot: Snapshot;
 }
 
+interface CloudBinding { subject: string | null; configured: boolean; ownership_verified: boolean; scope_confirmed: boolean }
+interface CloudChallenge { challenge: string; audience: string; proof_token: string; host_url: string; expires_at: number }
+
 const FALLBACK_PROHIBITED = [
   "データの取得・変更・削除",
   "ログインの試行や攻撃的な検査",
@@ -71,7 +74,7 @@ function CopyRow({ label, value }: { label: string; value: string }) {
 
 export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, notice }: Props) {
   const router = useRouter();
-  const { googleOwnership, optionalStatusCheck } = useSession();
+  const { googleOwnership, optionalStatusCheck, session } = useSession();
   const [otherWays, setOtherWays] = useState(Boolean(notice));
   const resumeAt = initialAsset?.challenge ? (initialAsset.ownership_verified ? 2 : 1) : 0;
   const [step, setStep] = useState(resumeAt);
@@ -85,6 +88,33 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
   const [statusCheckConsent, setStatusCheckConsent] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [cloudBinding, setCloudBinding] = useState<CloudBinding | null>(null);
+  const [cloudSubject, setCloudSubject] = useState("");
+  const [cloudChallenge, setCloudChallenge] = useState<CloudChallenge | null>(null);
+  const [cloudToken, setCloudToken] = useState("");
+  const [cloudStatus, setCloudStatus] = useState("未設定");
+  const cloudHost = (() => { try { return new URL(url).hostname; } catch { return ""; } })();
+  const cloudAdmin = session?.roles.includes("admin") ?? false;
+
+  useEffect(() => {
+    if (!open || !cloudAdmin || !cloudHost || step === 0) return;
+    let active = true;
+    getJSON<CloudBinding>(`/api/assets/cloud-run/binding?host=${encodeURIComponent(cloudHost)}`)
+      .then((binding) => {
+        if (!active) return;
+        setCloudBinding(binding);
+        setCloudSubject(binding.subject ?? "");
+        setCloudStatus(binding.configured ? (binding.ownership_verified ? "検証成功" : "検証待ち") : "未設定");
+      }).catch(() => { if (active) setCloudStatus("未設定"); });
+    return () => { active = false; };
+  }, [open, cloudAdmin, cloudHost, step]);
+
+  useEffect(() => {
+    if (!cloudChallenge) return;
+    const delay = Math.max(0, cloudChallenge.expires_at * 1000 - Date.now());
+    const timer = window.setTimeout(() => setCloudStatus("期限切れ"), delay);
+    return () => window.clearTimeout(timer);
+  }, [cloudChallenge]);
 
   if (!open) return null;
 
@@ -140,6 +170,42 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
       setVerifyDetail(res.verification.detail);
       if (res.verified) setStep(2);
     });
+
+  const registerCloud = () => run(async () => {
+    const binding = await postJSON<CloudBinding & { assets: Asset[] }>("/api/assets/cloud-run/register",
+      { host: cloudHost, subject: cloudSubject.trim() });
+    setCloudBinding(binding);
+    setCloudChallenge(null);
+    setCloudStatus("検証待ち");
+    onAssetsChanged(binding.assets);
+  });
+
+  const issueCloud = () => run(async () => {
+    const issued = await postJSON<CloudChallenge>("/api/assets/cloud-run/issue", { host: cloudHost });
+    setCloudChallenge(issued);
+    setCloudStatus("検証待ち");
+  });
+
+  const finishCloud = () => run(async () => {
+    if (!cloudChallenge) return;
+    if (Date.now() / 1000 >= cloudChallenge.expires_at) { setCloudStatus("期限切れ"); return; }
+    const res = await postJSON<VerifyResponse>("/api/assets/cloud-run/finish",
+      { host: cloudHost, challenge: cloudChallenge.challenge, id_token: cloudToken.trim() });
+    onAssetsChanged(res.assets);
+    setCloudChallenge(null);
+    setCloudToken("");
+    setVerifyDetail(res.verification.detail);
+    setCloudStatus(res.verified ? "検証成功" : "検証待ち");
+    if (res.verified) setStep(2);
+  });
+
+  const revokeCloud = () => run(async () => {
+    const res = await postJSON<{ assets: Asset[] }>("/api/assets/cloud-run/revoke", { host: cloudHost });
+    onAssetsChanged(res.assets);
+    setCloudBinding(null);
+    setCloudChallenge(null);
+    setCloudStatus("失効");
+  });
 
   const confirmScope = () =>
     run(async () => {
@@ -224,6 +290,35 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
 
         {step === 1 && challenge && (
           <div className="space-y-3 text-sm">
+            {cloudAdmin && (
+              <section className="space-y-2 rounded-xl border border-zinc-300 p-3 text-xs dark:border-zinc-700">
+                <h3 className="font-semibold">Cloud Run OIDC 所有確認</h3>
+                <p role="status">状態: {cloudStatus}</p>
+                <label className="block">登録するサービスアカウントの sub
+                  <input value={cloudSubject} onChange={(e) => setCloudSubject(e.target.value)}
+                    className="mt-1 w-full rounded border border-zinc-300 px-2 py-1 dark:border-zinc-700 dark:bg-zinc-950" />
+                </label>
+                <div className="flex gap-2">
+                  <button type="button" disabled={busy || !cloudSubject.trim()} onClick={registerCloud} className="rounded border px-2 py-1 disabled:opacity-50">主体を登録</button>
+                  <button type="button" disabled={busy || !cloudBinding?.configured} onClick={revokeCloud} className="rounded border px-2 py-1 disabled:opacity-50">登録を解除</button>
+                  <button type="button" disabled={busy || !cloudBinding?.configured} onClick={issueCloud} className="rounded border px-2 py-1 disabled:opacity-50">チャレンジ発行</button>
+                </div>
+                {cloudChallenge && (
+                  <div className="space-y-2">
+                    <CopyRow label="対象" value={cloudChallenge.host_url} />
+                    <CopyRow label="aud" value={cloudChallenge.audience} />
+                    <CopyRow label="meta" value={`<meta name="vulnix-verify" content="${cloudChallenge.proof_token}">`} />
+                    <p>有効期限: {new Date(cloudChallenge.expires_at * 1000).toLocaleString()}</p>
+                    <label className="block">Google署名付き ID トークン
+                      <textarea value={cloudToken} onChange={(e) => setCloudToken(e.target.value)}
+                        className="mt-1 w-full rounded border border-zinc-300 px-2 py-1 dark:border-zinc-700 dark:bg-zinc-950" />
+                    </label>
+                    <button type="button" disabled={busy || !cloudToken.trim()} onClick={finishCloud}
+                      className="rounded border px-2 py-1 disabled:opacity-50">Cloud Run で確認</button>
+                  </div>
+                )}
+              </section>
+            )}
             {notice && (
               <p role="status" className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
                 {notice}

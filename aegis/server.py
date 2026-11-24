@@ -365,7 +365,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
 
         def _touches_real_site(self, p: str, osvc) -> bool:
             """Requests that would send traffic to a registered real site."""
-            if p == "/api/assets/verify-ownership":
+            if p in ("/api/assets/verify-ownership", "/api/assets/cloud-run/finish"):
                 return True
             if p == "/api/assets/select":
                 # switching the workspace onto a real site is the step before diagnosing it
@@ -387,7 +387,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             The ownership check itself is allowed (rate-limited); switching to a site and
             starting the run are allowed (the service requires proven ownership and a
             confirmed scope); every other assessment action on a real site is refused."""
-            if p in ("/api/assets/verify-ownership", "/api/assets/select"):
+            if p in ("/api/assets/verify-ownership", "/api/assets/cloud-run/finish", "/api/assets/select"):
                 return ""
             if p.endswith(_L1_ONLY_ROUTES):
                 return ""
@@ -715,6 +715,11 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             """Reads of one organization's data, from that organization's service only."""
             if p == "/api/assets":
                 return self._json(200, svc.assets())
+            if p == "/api/assets/cloud-run/binding":
+                if not sess or "admin" not in sess.roles:
+                    return self._json(403, {"error": "組織管理者の権限が必要です"})
+                host = (parse_qs(u.query).get("host") or [""])[0]
+                return self._json(200, svc.cloud_run_binding(getattr(self, "_bound_org", DEFAULT_ORG), host))
             if p == "/api/assets/secrets-status":
                 q = parse_qs(u.query)
                 host = (q.get("host") or [None])[0]
@@ -974,7 +979,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         except Exception:   # noqa: BLE001 - when in doubt, count it
                             real_site_traffic = True
                     if real_site_traffic and read_only_real:
-                        if p == "/api/assets/verify-ownership":
+                        if p in ("/api/assets/verify-ownership", "/api/assets/cloud-run/finish"):
                             limited = (verify_times, verify_all, OWNERSHIP_CHECKS_PER_ORG_PER_HOUR,
                                        OWNERSHIP_CHECKS_PLATFORM_PER_HOUR,
                                        "所有確認は1時間あたりの上限に達しました。DNS の設定が反映されるまで少し待ってからお試しください")
@@ -1507,6 +1512,46 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     return self._authorized_org_read(
                         sess, getattr(self, "_bound_org", DEFAULT_ORG),
                         lambda _: self._json(200, payload), reader=False)
+                elif p == "/api/assets/cloud-run/register":
+                    if "admin" not in sess.roles:
+                        return self._json(403, {"error": "組織管理者の権限が必要です"})
+                    res = svc.register_cloud_run_subject(
+                        tenant=getattr(self, "_bound_org", DEFAULT_ORG),
+                        host=str(body.get("host") or ""), subject=str(body.get("subject") or ""),
+                        actor=actor,
+                        grant_guard=lambda: live_grant_roles(sess, getattr(self, "_bound_org", DEFAULT_ORG)))
+                    return self._authorized_org_read(sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                                                     lambda _: self._json(200, {**res, "assets": svc.assets()}),
+                                                     reader=False)
+                elif p == "/api/assets/cloud-run/revoke":
+                    if "admin" not in sess.roles:
+                        return self._json(403, {"error": "組織管理者の権限が必要です"})
+                    res = svc.revoke_cloud_run_subject(
+                        tenant=getattr(self, "_bound_org", DEFAULT_ORG),
+                        host=str(body.get("host") or ""), actor=actor,
+                        grant_guard=lambda: live_grant_roles(sess, getattr(self, "_bound_org", DEFAULT_ORG)))
+                    return self._authorized_org_read(sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                                                     lambda _: self._json(200, {**res, "assets": svc.assets()}),
+                                                     reader=False)
+                elif p == "/api/assets/cloud-run/issue":
+                    with live_grant_roles(sess, getattr(self, "_bound_org", DEFAULT_ORG)):
+                        res = svc.issue_cloud_run_challenge(
+                            tenant=getattr(self, "_bound_org", DEFAULT_ORG),
+                            host=str(body.get("host") or ""), requester=actor)
+                    return self._authorized_org_read(sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                                                     lambda _: self._json(200, res), reader=False)
+                elif p == "/api/assets/cloud-run/finish":
+                    host = str(body.get("host") or "")
+                    if svc.real_service_has_authority(host) and "approver" not in sess.roles:
+                        return self._json(403, {"error": "所有確認済みの対象の再確認には承認責任者の権限が必要です"})
+                    with live_grant_roles(sess, getattr(self, "_bound_org", DEFAULT_ORG)) as current_roles:
+                        res = svc.finish_cloud_run_challenge(
+                            tenant=getattr(self, "_bound_org", DEFAULT_ORG), host=host,
+                            requester=actor, challenge=str(body.get("challenge") or ""),
+                            id_token=str(body.get("id_token") or ""), roles=tuple(current_roles))
+                    return self._authorized_org_read(sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                                                     lambda _: self._json(200, {**res, "assets": svc.assets()}),
+                                                     reader=False)
                 elif p == "/api/assets/google/start":
                     # Step 2 through Google: a one-time, short-lived state bound to this
                     # account, organization and host; the browser goes to Google with it

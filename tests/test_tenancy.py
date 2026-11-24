@@ -140,6 +140,41 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
         self.svc.close()
         self.tmp.cleanup()
 
+    def test_cloud_run_routes_are_scoped_to_member_and_admin(self):
+        a, b = self.signup("cloudalice"), self.signup("cloudbob")
+        a_org, b_org = a["orgs"][0]["id"], b["orgs"][0]["id"]
+        host = "cloud.example.com"
+        self.assertEqual(self.req(a, "/assets/challenge", {"url": f"https://{host}/"}, a_org)[0], 200)
+        code, binding = self.req(a, "/assets/cloud-run/register", {"host": host, "subject": "sub-a"}, a_org)
+        self.assertEqual(code, 200, binding)
+        self.assertTrue(binding["configured"])
+        issued_code, issued = self.req(a, "/assets/cloud-run/issue", {"host": host}, a_org)
+        self.assertEqual(issued_code, 200, issued)
+        for path, body in (("/assets/cloud-run/binding?host=" + host, None),
+                           ("/assets/cloud-run/register", {"host": host, "subject": "sub-b"}),
+                           ("/assets/cloud-run/issue", {"host": host}),
+                           ("/assets/cloud-run/finish", {"host": host, "challenge": issued["challenge"],
+                                                           "id_token": "fake"}),
+                           ("/assets/cloud-run/revoke", {"host": host})):
+            with self.subTest(path=path):
+                self.assertEqual(self.req(b, path, body, a_org)[0], 403)
+        self.assertEqual(self.req(b, "/assets/cloud-run/issue", {"host": host}, b_org)[0], 409)
+        self.assertEqual(self.req(a, "/assets/cloud-run/binding?host=" + host, org=a_org)[1]["subject"], "sub-a")
+        _, invite = self.reg.store.create_invite(a_org, "cloudalice", ["runner"])
+        self.reg.store.accept_invite(invite, "cloudbob")
+        self.assertEqual(self.req(b, "/assets/cloud-run/register",
+                                  {"host": host, "subject": "sub-b"}, a_org)[0], 403)
+        self.assertEqual(self.req(b, "/assets/cloud-run/revoke", {"host": host}, a_org)[0], 403)
+        wrong_requester = self.req(b, "/assets/cloud-run/finish",
+                                   {"host": host, "challenge": issued["challenge"], "id_token": "fake"}, a_org)
+        self.assertEqual(wrong_requester[0], 200)
+        self.assertFalse(wrong_requester[1]["verified"])
+        binding_version = self.reg.service(a_org).cloud_run_store.binding(a_org, host)[1]
+        self.assertIsNotNone(self.reg.service(a_org).cloud_run_store.consume(
+            issued["challenge"], a_org, host, "cloudalice", binding_version, time.time()))
+        self.assertEqual(self.req(a, "/assets/cloud-run/revoke", {"host": host}, a_org)[0], 200)
+        self.assertFalse(self.req(a, "/assets/cloud-run/binding?host=" + host, org=a_org)[1]["configured"])
+
     def test_logout_after_org_binding_cannot_start_a_scan(self):
         who = self.signup("latebinding")
         org_id = who["orgs"][0]["id"]
