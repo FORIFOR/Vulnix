@@ -32,7 +32,7 @@ jobs:
 
       - name: Python static checks (ruff, pinned)
         run: |
-          python3 -m pip install --quiet ruff==0.6.9
+          python3 -m pip install --quiet ruff==0.6.9 -r requirements-oidc.txt
           ruff check aegis tests
 
       - name: Run Python Unit & Integration Test Suite
@@ -424,8 +424,15 @@ jobs:
         run: |
           npm --prefix web ci
           npm --prefix web run build
+          python3 -m pip install --quiet -r requirements-oidc.txt
           python3 -m pip install --quiet playwright==1.56.0
           python3 -m playwright install --with-deps chromium
+
+      - name: Cloud Run ownership browser path with offline signed token
+        run: |
+          VULNIX_NO_ENV_LOCAL=1 python3 -m scripts.check_cloud_run_ownership_ui \
+            > "$RUNNER_TEMP/cloud-run-ownership-ui.json"
+          test -s "$RUNNER_TEMP/cloud-run-ownership-ui.json"
 
       - name: Owned-site 390px browser path with real ARTEX and local model
         env:
@@ -472,6 +479,7 @@ jobs:
             ${{ runner.temp }}/initial-mixed-holdout.json
             ${{ runner.temp }}/status-selection-holdout.json
             ${{ runner.temp }}/access-holdout-real-artex.json
+            ${{ runner.temp }}/cloud-run-ownership-ui.json
             ${{ runner.temp }}/first-prompt-selection.json
             ${{ runner.temp }}/status-first-prompt.json
             ${{ runner.temp }}/access-link-holdout.json

@@ -64,6 +64,11 @@ from .service_diag import (analyze_l1_service_response, analyze_status_marker_re
                            build_l2_candidates, clean_target_text, compute_finding_risk_score,
                            sanitize_http_probe_payload)
 from .google_ownership import METHOD as GOOGLE_METHOD, covering_property
+from .cloud_run_store import SQLiteCloudRunStore
+from .cloud_run_ownership import CloudRunProof
+from .google_oidc import verify_google_id_token
+
+CLOUD_RUN_METHOD = "cloud_run_oidc"
 
 SEVERITY_WEIGHT = {"critical": 40, "high": 25, "medium": 10, "low": 3, "info": 0}
 VERDICT_FACTOR = {"proven": 1.0, "detected": 0.6, "candidate": 0.0, "unverified": 0.0, "aborted": 0.0,
@@ -392,6 +397,7 @@ class AssessmentService:
         self._l2_requests: dict[str, dict] = {}
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.state_path = self.data_dir / "state.json"
+        self.cloud_run_store = SQLiteCloudRunStore(self.data_dir / "cloud-run-challenges.sqlite3")
         self.secrets = EncryptedSecretStore(self.data_dir)
         self._ownership_secret = hashlib.sha256(
             self.secrets._master_key + b":vulnix-ownership-v1"
@@ -1187,6 +1193,13 @@ class AssessmentService:
             return None
         if ext.get("held_since"):
             return None          # held after an unclean shutdown: needs re-approval
+        if ext.get("proof_method") == CLOUD_RUN_METHOD:
+            try:
+                binding = self.cloud_run_store.binding(str(ext.get("tenant") or ""), h)
+            except Exception:
+                return None
+            if not binding or binding[1] != ext.get("cloud_run_version"):
+                return None
         try:
             ipaddress.ip_address(h)
             return None          # a real service is always a DNS name, never an address
@@ -1301,7 +1314,11 @@ class AssessmentService:
         new = [a for a in addrs if a not in known]
         first_use = not known
         stale = time.time() - float(ext.get("addresses_verified_at") or 0) > ADDRESS_PROOF_MAX_AGE_S
-        if not new and not stale:
+        method = str(ext.get("proof_method") or "dns_txt")
+        # A new Cloud Run proof can have a different verified IP set while the
+        # scope record still remembers addresses accepted under the old proof.
+        # Check the current signed proof even for an otherwise familiar address.
+        if not new and not stale and method != CLOUD_RUN_METHOD:
             return
         with self._lock:
             # the name lookup may have taken long: nothing more is looked up or
@@ -1309,19 +1326,30 @@ class AssessmentService:
             if self._withdrawn_since_locked(host, ext, epoch0):
                 raise NetworkError(f"{host} の診断許可は取り消しまたは停止済みです。所有の再確認は行いません")
         token = challenge_for_host(host, self._ownership_secret)["token"]
-        method = str(ext.get("proof_method") or "dns_txt")
         ok, detail, address_bound = False, "", False
         try:
-            if method == GOOGLE_METHOD:
+            if method == CLOUD_RUN_METHOD:
+                proof = self._ownership_proofs.get(host) or {}
+                covered = set(proof.get("verified_addresses") or [])
+                fresh = isinstance(proof.get("verified_at"), (int, float)) and \
+                    0 <= time.time() - float(proof["verified_at"]) <= OWNERSHIP_PROOF_MAX_AGE_S
+                binding_ok = (self.cloud_run_store.binding(str(proof.get("tenant") or ""), host)
+                              or (None, None))[1] == proof.get("cloud_run_version")
+                ok = bool(fresh and binding_ok and proof.get("method") == method
+                          and covered and set(addrs).issubset(covered))
+                address_bound = ok
+                detail = ("所有確認時に各接続先の meta タグを確認済み" if ok else
+                          "所有確認時に証明されていない接続先のため再確認が必要です")
+            elif method == GOOGLE_METHOD:
                 # Google cannot be asked again (no token is kept). The first use, while
                 # the proof is fresh, binds the name like a DNS proof does; any later new
                 # or stale address needs a new proof made by the owner.
                 proof = self._ownership_proofs.get(host) or {}
                 fresh = isinstance(proof.get("verified_at"), (int, float)) and \
                     0 <= time.time() - float(proof["verified_at"]) <= OWNERSHIP_PROOF_MAX_AGE_S
-                ok = bool(first_use and fresh and proof.get("method") == GOOGLE_METHOD)
-                detail = ("Google での所有確認（初回の接続先を記録）" if ok else
-                          "Google での確認は再実行できないため、所有確認のやり直しが必要です")
+                ok = bool(first_use and fresh and proof.get("method") == method)
+                detail = ("Google 所有確認後の初回接続先を記録" if ok else
+                          "所有確認または登録が失効したため再確認が必要です")
             elif method == "well_known":
                 # binds the ADDRESS: the file is fetched from each address itself
                 fetch = self._proof_file_fetch or fetch_proof_file_pinned
@@ -3418,6 +3446,7 @@ class AssessmentService:
         memory; the asset record and the authority then leave the ledger in the
         same commit (the first save after this)."""
         gone = str(name).rstrip(".").lower()
+        self.cloud_run_store.revoke_host(gone)
         if not (self._in_ownership_flow(gone) or gone in self._ownership_proofs):
             return
         self._verified_external_hosts.pop(gone, None)
@@ -3450,6 +3479,115 @@ class AssessmentService:
             if hmac.compare_digest(str(proof.get("token_sha256") or ""), expected):
                 return prop, float(verified_at)
         return None
+
+    def cloud_run_binding(self, tenant: str, host: str) -> dict:
+        host = CloudRunProof._host(host)
+        with self._lock:
+            asset = self._asset_record(host)
+            if not asset or not self._in_ownership_flow(host):
+                raise ValueError("先に登録済みの HTTPS 443 対象を選んでください")
+            binding = self.cloud_run_store.binding(tenant, host)
+            proof = self._ownership_proofs.get(host) or {}
+            return {"host": host, "subject": binding[0] if binding else None,
+                    "configured": bool(binding),
+                    "ownership_verified": bool(binding and proof.get("verified") is True
+                                               and proof.get("method") == CLOUD_RUN_METHOD
+                                               and proof.get("tenant") == tenant
+                                               and proof.get("cloud_run_version") == binding[1]
+                                               and not proof.get("held_since")),
+                    "scope_confirmed": self._external_entry(host) is not None}
+
+    def register_cloud_run_subject(self, *, tenant: str, host: str, subject: str,
+                                   actor: str, grant_guard=None) -> dict:
+        host = CloudRunProof._host(host)
+        if not isinstance(subject, str) or not re.fullmatch(r"[A-Za-z0-9._:@-]{1,256}", subject):
+            raise ValueError("無効な OIDC 主体です")
+        with (grant_guard() if grant_guard else contextlib.nullcontext()) as current_roles, self._lock:
+            if current_roles is not None and "admin" not in current_roles:
+                raise ValueError("組織管理者の権限が必要です")
+            asset = self._asset_record(host)
+            if not asset or not self._in_ownership_flow(host) or \
+                    (asset.get("scheme"), asset.get("port")) != ("https", 443):
+                raise ValueError("登録済みの HTTPS 443 対象が必要です")
+            self._require_working_store()
+            self._audit_first("asset.cloud_run_subject_registered", actor=actor, host=host)
+            self._revoke_real_service_locked(host, note="Cloud Run 主体の登録が変更されました")
+            self._save_state_locked()
+            self.cloud_run_store.register(tenant, host, subject, time.time())
+            return self.cloud_run_binding(tenant, host)
+
+    def revoke_cloud_run_subject(self, *, tenant: str, host: str, actor: str,
+                                 grant_guard=None) -> dict:
+        host = CloudRunProof._host(host)
+        with (grant_guard() if grant_guard else contextlib.nullcontext()) as current_roles, self._lock:
+            if current_roles is not None and "admin" not in current_roles:
+                raise ValueError("組織管理者の権限が必要です")
+            self.cloud_run_store.revoke(tenant, host)
+            if self._in_ownership_flow(host):
+                self._revoke_real_service_locked(host, note="Cloud Run 主体が失効しました")
+                self._save_state_locked()
+            audit_error = self._audit_reduction("asset.cloud_run_subject_revoked", actor=actor, host=host)
+            self._raise_if_unstopped("Cloud Run 所有証明を失効しました")
+            if audit_error:
+                raise audit_error
+            return {"host": host, "revoked": True}
+
+    def issue_cloud_run_challenge(self, *, tenant: str, host: str, requester: str) -> dict:
+        host = CloudRunProof._host(host)
+        with self._lock:
+            if self.gateway.state is State.STOPPED or self._stop_flag().exists():
+                raise ValueError("緊急停止中はチャレンジを発行できません")
+            asset = self._asset_record(host)
+            if not asset or not self._in_ownership_flow(host) or \
+                    (asset.get("scheme"), asset.get("port")) != ("https", 443):
+                raise ValueError("登録済みの HTTPS 443 対象が必要です")
+            proof = CloudRunProof(store=self.cloud_run_store, verify_id_token=verify_google_id_token)
+            issued = proof.issue(tenant, host, requester)
+            self._audit_first("asset.cloud_run_challenge_issued", actor=requester, host=host,
+                              expires_at=issued["expires_at"])
+            return issued
+
+    def finish_cloud_run_challenge(self, *, tenant: str, host: str, requester: str,
+                                   challenge: str, id_token: str, roles=None,
+                                   grant_guard=None, resolve_addresses=None, fetch_pinned=None,
+                                   verify_id_token=None) -> dict:
+        host = CloudRunProof._host(host)
+        with self._lock:
+            if self.gateway.state is State.STOPPED or self._stop_flag().exists():
+                raise ValueError("緊急停止中は所有確認を行いません")
+            asset = self._asset_record(host)
+            if not asset or not self._in_ownership_flow(host):
+                raise ValueError("対象が登録されていません")
+            endpoint = (str(asset.get("scheme")), int(asset.get("port") or 0))
+            version = self.cloud_run_store.binding(tenant, host)
+            epoch0 = self.gateway._launch_epoch
+        def may_continue():
+            with self._lock:
+                return (self.gateway.state is not State.STOPPED
+                        and not self._stop_flag().exists()
+                        and self.gateway._launch_epoch == epoch0
+                        and self._asset_record(host) is not None)
+        kwargs = {"store": self.cloud_run_store,
+                  "verify_id_token": verify_id_token or verify_google_id_token,
+                  "may_continue": may_continue}
+        if resolve_addresses is not None:
+            kwargs["resolve_addresses"] = resolve_addresses
+        if fetch_pinned is not None:
+            kwargs["fetch_pinned"] = fetch_pinned
+        proof = CloudRunProof(**kwargs)
+        addresses = proof.finish(challenge=challenge, tenant=tenant, host=host,
+                                 requester=requester, id_token=id_token)
+        if not addresses or not may_continue():
+            return {"host": host, "verified": False, "l2_auto_approved": False,
+                    "verification": {"detail": "Cloud Run 所有確認に失敗しました"}}
+        if not version:
+            raise ValueError("登録が失効しました")
+        return self.verify_asset_ownership(
+            url_or_host=host, method=CLOUD_RUN_METHOD, actor=requester,
+            roles=roles, grant_guard=grant_guard, google_endpoint=endpoint,
+            cloud_run_tenant=tenant, cloud_run_version=version[1],
+            cloud_run_addresses=addresses,
+        )
 
     def issue_ownership_challenge(
         self,
@@ -3504,6 +3642,9 @@ class AssessmentService:
                 well_known_url=ch["well_known_url"],
                 authorization_ref=internal_auth_ref,
             )
+            # A registration refresh also invalidates every outstanding Cloud Run
+            # challenge, even when the URL and registered subject appear unchanged.
+            self.cloud_run_store.rotate_host(host)
             ledger_before = self.ledger.snapshot()
             endpoint_revoked = False
             self._real_service_hosts.add(host)
@@ -3608,6 +3749,9 @@ class AssessmentService:
         google_property: str | None = None,
         google_endpoint: tuple[str, int] | None = None,
         google_verified_at: float | None = None,
+        cloud_run_tenant: str | None = None,
+        cloud_run_version: str | None = None,
+        cloud_run_addresses: list[str] | None = None,
         grant_guard=None,
     ) -> dict:
         """Step 2 of the 5-step registration flow: verify ownership via DNS TXT,
@@ -3627,7 +3771,15 @@ class AssessmentService:
                 raise ValueError("先に対象URLを登録して検証トークンを発行してください")
         ch = challenge_for_host(host, self._ownership_secret)
 
-        if method == GOOGLE_METHOD:
+        if method == CLOUD_RUN_METHOD:
+            if not cloud_run_tenant or not cloud_run_version or not cloud_run_addresses:
+                raise ValueError("Cloud Run の検証済みチャレンジが必要です")
+            res = {"verified": True, "method": CLOUD_RUN_METHOD,
+                   "checked_target": f"https://{host}/", "verified_at": time.time(),
+                   "detail": "Google署名と登録主体、ホスト上のチャレンジを確認しました",
+                   "tenant": cloud_run_tenant, "cloud_run_version": cloud_run_version,
+                   "verified_addresses": sorted(set(cloud_run_addresses))}
+        elif method == GOOGLE_METHOD:
             now = time.time()
             if (google_verified_at is not None and
                     (not isinstance(google_verified_at, (int, float))
@@ -3668,19 +3820,25 @@ class AssessmentService:
         # organization membership through the signed ledger commit, so a mid-flight
         # removal or logout cannot grant ownership from an old role snapshot.
         with (grant_guard() if grant_guard else contextlib.nullcontext(roles)) as current_roles, self._lock:
+            if self.gateway.state is State.STOPPED or self._stop_flag().exists():
+                raise ValueError("緊急停止中は所有確認結果を記録しません")
             target_asset = next(
                 (x for x in self._extra_assets if x.get("name", "").lower() == host),
                 None,
             )
             if target_asset is None and self.a.asset.get("name", "").lower() == host:
                 target_asset = self.a.asset
-            if method == GOOGLE_METHOD and google_endpoint is not None and (
+            if method in (GOOGLE_METHOD, CLOUD_RUN_METHOD) and google_endpoint is not None and (
                     target_asset is None
                     or (str(target_asset.get("scheme") or "https"), int(target_asset.get("port") or 0))
                     != google_endpoint):
                 # the registration changed while Google was being asked: the property was
                 # checked against the old scheme / port, so nothing is recorded
                 raise ValueError("確認中にサイトの登録内容が変わりました。もう一度お試しください")
+            if method == CLOUD_RUN_METHOD:
+                binding = self.cloud_run_store.binding(cloud_run_tenant, host)
+                if binding is None or binding[1] != cloud_run_version:
+                    raise ValueError("確認中に Cloud Run 主体の登録が変更または失効しました")
             if (current_roles is not None and "approver" not in current_roles
                     and (host in self._ownership_proofs or host in self._verified_external_hosts)):
                 # Decided now, under the lock, and BEFORE anything is changed: someone
@@ -3799,10 +3957,13 @@ class AssessmentService:
             proof_ok = (
                 isinstance(proof, dict) and proof.get("verified") is True
                 and not proof.get("held_since")          # held after an unclean shutdown: prove again
-                and proof.get("method") in (*OWNERSHIP_METHODS, GOOGLE_METHOD)
+                and proof.get("method") in (*OWNERSHIP_METHODS, GOOGLE_METHOD, CLOUD_RUN_METHOD)
                 and proof.get("host") == host
                 and hmac.compare_digest(str(proof.get("token_sha256") or ""), expected)
                 and isinstance(proof.get("verified_at"), (int, float))
+                and (proof.get("method") != CLOUD_RUN_METHOD or
+                     (self.cloud_run_store.binding(str(proof.get("tenant") or ""), host) or (None, None))[1]
+                     == proof.get("cloud_run_version"))
             )
             # The `ownership_verified` flag alone is never enough: the legacy lab
             # registration can set it from a checkbox. Only a recorded challenge
@@ -3835,7 +3996,9 @@ class AssessmentService:
                     f"確認しようとしたURL（{parsed['scheme']}・ポート{parsed['port']}）は、"
                     f"所有確認を行った宛先（{scheme}・ポート{port}）と一致しません")
             target_asset["scheme"], target_asset["port"] = scheme, port
-            if proof["method"] in HTTP_PROOF_METHODS and (scheme, port) != ("https", 443) and not allow_loopback_test:
+            if (proof["method"] in (*HTTP_PROOF_METHODS, CLOUD_RUN_METHOD)
+                    and (scheme, port) != ("https", 443)
+                    and (proof["method"] == CLOUD_RUN_METHOD or not allow_loopback_test)):
                 # the HTTP proof was served by the HTTPS service on 443; it says
                 # nothing about who operates another port of the same host
                 raise ValueError("HTTP による所有確認で診断できるのは https の443番ポートだけです。"
@@ -3869,6 +4032,8 @@ class AssessmentService:
                 "confirmed_at": now,
                 "proof_method": proof["method"],
                 "proof_verified_at": proof["verified_at"],
+                "tenant": proof.get("tenant"),
+                "cloud_run_version": proof.get("cloud_run_version"),
             }
             self._commit_audited_grant_locked(before, "範囲確認", "asset.scope_confirmed")
             self._authority_notice = None      # the operator has re-established authority since
