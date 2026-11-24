@@ -1314,7 +1314,11 @@ class AssessmentService:
         new = [a for a in addrs if a not in known]
         first_use = not known
         stale = time.time() - float(ext.get("addresses_verified_at") or 0) > ADDRESS_PROOF_MAX_AGE_S
-        if not new and not stale:
+        method = str(ext.get("proof_method") or "dns_txt")
+        # A new Cloud Run proof can have a different verified IP set while the
+        # scope record still remembers addresses accepted under the old proof.
+        # Check the current signed proof even for an otherwise familiar address.
+        if not new and not stale and method != CLOUD_RUN_METHOD:
             return
         with self._lock:
             # the name lookup may have taken long: nothing more is looked up or
@@ -1322,7 +1326,6 @@ class AssessmentService:
             if self._withdrawn_since_locked(host, ext, epoch0):
                 raise NetworkError(f"{host} の診断許可は取り消しまたは停止済みです。所有の再確認は行いません")
         token = challenge_for_host(host, self._ownership_secret)["token"]
-        method = str(ext.get("proof_method") or "dns_txt")
         ok, detail, address_bound = False, "", False
         try:
             if method == CLOUD_RUN_METHOD:

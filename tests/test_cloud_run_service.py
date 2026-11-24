@@ -88,6 +88,25 @@ class TestCloudRunService(unittest.TestCase):
             self.svc._resolve_host(self.host)
         self.assertIsNone(self.svc._external_entry(self.host))
 
+    def test_new_proof_cannot_inherit_addresses_from_old_proof(self):
+        issued = self.svc.issue_cloud_run_challenge(tenant="tenant-a", host=self.host, requester="alice")
+        self.assertTrue(self.finish(issued)["verified"])
+        self.svc.confirm_asset_scope(url_or_host=f"https://{self.host}/", approver="bob")
+        self.svc._custom_resolver = lambda _host: ["8.8.8.8"]
+        self.assertEqual(self.svc._resolve_host(self.host), ["8.8.8.8"])
+        issued = self.svc.issue_cloud_run_challenge(tenant="tenant-a", host=self.host, requester="alice")
+        now = time.time()
+        renewed = self.svc.finish_cloud_run_challenge(
+            tenant="tenant-a", host=self.host, requester="alice", challenge=issued["challenge"],
+            id_token="offline-token", resolve_addresses=lambda _host: ["8.8.4.4"],
+            fetch_pinned=lambda _host, _ip: f'<head><meta name="vulnix-verify" content="{issued["proof_token"]}"></head>',
+            verify_id_token=lambda _token, aud: {"iss": "https://accounts.google.com", "aud": aud,
+                "sub": "sub-a", "iat": now - 1, "exp": now + 120})
+        self.assertTrue(renewed["verified"])
+        with self.assertRaises(Exception):
+            self.svc._resolve_host(self.host)
+        self.assertIsNone(self.svc._external_entry(self.host))
+
     def test_stop_before_finish_prevents_fetch_and_grant(self):
         issued = self.svc.issue_cloud_run_challenge(tenant="tenant-a", host=self.host, requester="alice")
         self.svc.emergency_stop("admin-a")
