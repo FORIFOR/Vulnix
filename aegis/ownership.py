@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import http.client
+from html.parser import HTMLParser
 import ipaddress
 import ssl
 import re
@@ -79,15 +80,46 @@ def parse_service_target(raw_input: str, *, default_lab_port: int = 18081) -> di
     }
 
 
+OWNERSHIP_METHODS = ("dns_txt", "well_known", "meta_tag", "verification_code")
+HTTP_PROOF_METHODS = ("well_known", "meta_tag", "verification_code")
+
+
+def meta_tag_matches(body: str | None, token: str) -> bool:
+    """Match an actual meta element with one exact proof name and content value."""
+    if not token or not body:
+        return False
+
+    class _Verifier(HTMLParser):
+        matched = False
+
+        def handle_starttag(self, tag, attrs):
+            if tag != "meta":
+                return
+            names = [v for k, v in attrs if k == "name"]
+            contents = [v for k, v in attrs if k == "content"]
+            if names == ["vulnix-verify"] and contents == [token]:
+                self.matched = True
+
+    parser = _Verifier()
+    parser.feed(str(body))
+    return parser.matched
+
+
 def challenge_for_host(host: str, salt: str = "vulnix-ownership-v1") -> dict:
     digest = hashlib.sha256(f"{salt}:{host.lower()}".encode("utf-8")).hexdigest()[:24]
     token = f"vulnix-verify={digest}"
+    lower = host.lower()
     return {
         "token": token,
-        "dns_txt_name": f"_vulnix-verify.{host.lower()}",
+        "dns_txt_name": f"_vulnix-verify.{lower}",
         "dns_txt_value": token,
-        "well_known_url": f"https://{host.lower()}/.well-known/vulnix-verify.txt",
+        "well_known_url": f"https://{lower}/.well-known/vulnix-verify.txt",
         "well_known_content": token,
+        "meta_tag_url": f"https://{lower}/",
+        "meta_tag_name": "vulnix-verify",
+        "meta_tag_content": token,
+        "meta_tag_html": f'<meta name="vulnix-verify" content="{token}">',
+        "code": token,
     }
 
 
@@ -145,7 +177,7 @@ def resolve_public_addresses(host: str) -> list[str]:
 
 
 def fetch_proof_file_pinned(host: str, address: str, *, path: str = "/.well-known/vulnix-verify.txt",
-                            timeout: float = 5.0) -> str:
+                            timeout: float = 5.0, max_bytes: int = 2048) -> str:
     """GET the proof file over TLS from exactly `address`, verifying the certificate
     for `host`. The name is NOT resolved again here, so the address that was
     checked is the address that is contacted (no DNS-rebinding window), and a
@@ -163,16 +195,22 @@ def fetch_proof_file_pinned(host: str, address: str, *, path: str = "/.well-know
     try:
         conn.request("GET", path, headers={"Host": host, "User-Agent": "vulnix-ownership-verifier/1.0"})
         resp = conn.getresponse()
-        return resp.read(2048).decode("utf-8", "replace") if resp.status == 200 else ""
+        return resp.read(max_bytes).decode("utf-8", "replace") if resp.status == 200 else ""
     finally:
         conn.close()
 
 
 def default_well_known_fetcher(url: str) -> str:
-    """Resolve once, validate every address, then fetch from the validated address."""
-    host = urlsplit(url).hostname or ""
+    """Resolve once, validate every address, then fetch the requested path from
+    the validated address."""
+    parts = urlsplit(url)
+    host = parts.hostname or ""
+    path = parts.path or "/"
+    if parts.query:
+        path = f"{path}?{parts.query}"
     addresses = resolve_public_addresses(host)
-    return fetch_proof_file_pinned(host, addresses[0])  # pragma: no cover - live network
+    max_bytes = 2048 if path == "/.well-known/vulnix-verify.txt" else 65536
+    return fetch_proof_file_pinned(host, addresses[0], path=path, max_bytes=max_bytes)  # pragma: no cover - live network
 
 
 def _txt_values(record: str) -> list[str]:
@@ -241,4 +279,50 @@ def verify_ownership_challenge(
             ),
         }
 
-    raise ValueError("method must be dns_txt or well_known")
+    if method == "meta_tag":
+        fetcher = http_fetcher or default_well_known_fetcher
+        target_url = chal["meta_tag_url"]
+        try:
+            body = fetcher(target_url)
+        except Exception as e:
+            return {
+                "verified": False,
+                "method": "meta_tag",
+                "checked_target": target_url,
+                "expected_token": token,
+                "verified_at": None,
+                "detail": f"トップページ ({target_url}) の取得に失敗しました: {e}",
+            }
+        matched = meta_tag_matches(body, token)
+        return {
+            "verified": matched,
+            "method": "meta_tag",
+            "checked_target": target_url,
+            "expected_token": token,
+            "verified_at": now if matched else None,
+            "detail": (
+                f"トップページ ({target_url}) の meta タグで検証トークンを確認しました。"
+                if matched
+                else f"トップページ ({target_url}) に `<meta name=\"vulnix-verify\" content=\"{token}\">` が見つかりませんでした。"
+            ),
+        }
+
+    if method == "verification_code":
+        # 管理画面にコードを貼るだけでは所有証明にならない。貼ったコードが
+        # 公開トップページの meta タグに反映されていることを検証する。
+        result = verify_ownership_challenge(
+            host,
+            "meta_tag",
+            expected_token=token,
+            txt_lookup=txt_lookup,
+            http_fetcher=http_fetcher,
+        )
+        result["method"] = "verification_code"
+        result["detail"] = (
+            "管理画面に設定された検証コードを公開ページで確認しました。"
+            if result["verified"]
+            else "管理画面の検証コードが公開ページに反映されていません。" + result["detail"]
+        )
+        return result
+
+    raise ValueError(f"method must be one of {OWNERSHIP_METHODS}")

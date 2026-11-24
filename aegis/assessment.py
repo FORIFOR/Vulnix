@@ -43,7 +43,8 @@ from .gateway import (LAB_REPRODUCTION_CHECKS, Gateway, State, http_probe_tool,
                       reproduction_probe_tool, status_marker_tool)
 from .lab import get_lab_mode, set_lab_mode
 from .network import EgressGuard, NetworkError, system_resolver
-from .ownership import (PROHIBITED_ACTIONS_SUMMARY, fetch_proof_file_pinned, proof_file_matches, public_address,
+from .ownership import (HTTP_PROOF_METHODS, OWNERSHIP_METHODS, PROHIBITED_ACTIONS_SUMMARY,
+                        fetch_proof_file_pinned, meta_tag_matches, proof_file_matches, public_address,
                         challenge_for_host, parse_service_target,
                         verify_ownership_challenge)
 from .authority_ledger import AuthorityLedger, LedgerError, canonical, default_revocation_marker_dirs
@@ -1327,6 +1328,15 @@ class AssessmentService:
                 ok = all(proof_file_matches(fetch(host, a), token) for a in (new or addrs))
                 address_bound = ok
                 detail = "検証ファイルを各アドレスから取得して確認"
+            elif method in ("meta_tag", "verification_code"):
+                # binds the ADDRESS: the root HTML is fetched from each address itself
+                if self._proof_file_fetch is not None:
+                    fetch_root = lambda h, a: self._proof_file_fetch(h, a)
+                else:
+                    fetch_root = lambda h, a: fetch_proof_file_pinned(h, a, path="/", max_bytes=65536)
+                ok = all(meta_tag_matches(fetch_root(host, a), token) for a in (new or addrs))
+                address_bound = ok
+                detail = "トップページの meta タグを各アドレスから取得して確認"
             else:
                 # binds the NAME only: it shows the DNS zone is still the owner's,
                 # not that a new address is (dangling record, takeover of a released IP)
@@ -3789,7 +3799,7 @@ class AssessmentService:
             proof_ok = (
                 isinstance(proof, dict) and proof.get("verified") is True
                 and not proof.get("held_since")          # held after an unclean shutdown: prove again
-                and proof.get("method") in ("dns_txt", "well_known", GOOGLE_METHOD)
+                and proof.get("method") in (*OWNERSHIP_METHODS, GOOGLE_METHOD)
                 and proof.get("host") == host
                 and hmac.compare_digest(str(proof.get("token_sha256") or ""), expected)
                 and isinstance(proof.get("verified_at"), (int, float))
@@ -3825,10 +3835,10 @@ class AssessmentService:
                     f"確認しようとしたURL（{parsed['scheme']}・ポート{parsed['port']}）は、"
                     f"所有確認を行った宛先（{scheme}・ポート{port}）と一致しません")
             target_asset["scheme"], target_asset["port"] = scheme, port
-            if proof["method"] == "well_known" and (scheme, port) != ("https", 443) and not allow_loopback_test:
-                # the proof file was served by the HTTPS service on 443; it says
+            if proof["method"] in HTTP_PROOF_METHODS and (scheme, port) != ("https", 443) and not allow_loopback_test:
+                # the HTTP proof was served by the HTTPS service on 443; it says
                 # nothing about who operates another port of the same host
-                raise ValueError("検証ファイルによる所有確認で診断できるのは https の443番ポートだけです。"
+                raise ValueError("HTTP による所有確認で診断できるのは https の443番ポートだけです。"
                                  "他のポートを診断するには DNS TXT で所有確認してください")
 
             # audit first: a scope that cannot be recorded is not granted

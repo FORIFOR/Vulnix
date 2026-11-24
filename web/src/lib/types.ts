@@ -281,6 +281,11 @@ export interface OwnershipChallenge {
   dns_txt_value: string;
   well_known_url: string;
   well_known_content: string;
+  meta_tag_url?: string;
+  meta_tag_name?: string;
+  meta_tag_content?: string;
+  meta_tag_html?: string;
+  code?: string;
 }
 
 export interface Asset {
