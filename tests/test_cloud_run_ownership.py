@@ -111,7 +111,8 @@ class TestCloudRunProof(unittest.TestCase):
     def test_invalid_claims_and_unregistered_host_are_rejected(self):
         with self.assertRaises(ValueError):
             self.proof.issue("tenant-a", "other.example.com", "operator-a")
-        for bad in ({"aud": "wrong"}, {"iss": "https://evil.example"}, {"exp": self.now - 1}):
+        for bad in ({"aud": "wrong"}, {"iss": "https://evil.example"},
+                    {"exp": self.now - 1}, {"exp": float("nan")}):
             issued = self.issue()
             self.claims.update(bad)
             self.assertFalse(self.finish(issued))
@@ -129,6 +130,13 @@ class TestCloudRunProof(unittest.TestCase):
         self.proof._verify_id_token = lambda _token, _audience: self.claims
         self.proof._fetch_html = lambda _url: (_ for _ in ()).throw(OSError("unavailable"))
         self.assertFalse(self.finish(issued))
+
+    def test_binding_lookup_failure_and_malformed_challenge_are_closed(self):
+        issued = self.issue()
+        self.assertFalse(self.finish(issued, challenge=[]))
+        self.proof._registered_subject = lambda _tenant, _host: (_ for _ in ()).throw(OSError("store unavailable"))
+        self.assertFalse(self.finish(issued))
+        self.assertEqual(self.calls, [])
 
 
 if __name__ == "__main__":

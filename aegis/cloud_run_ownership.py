@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import secrets
 import threading
 import time
@@ -48,6 +49,8 @@ class CloudRunProof:
 
     @staticmethod
     def _host(value: str) -> str:
+        if not isinstance(value, str):
+            raise ValueError("host must be a string")
         target = parse_service_target(value)
         if target["is_local_lab"] or (target["scheme"], target["port"]) != ("https", 443):
             raise ValueError("Cloud Run proof requires a registered HTTPS 443 host")
@@ -85,18 +88,24 @@ class CloudRunProof:
                requester: str, id_token: str) -> bool:
         # Consume before any callback or network access. All failures, including
         # a verifier exception, spend the challenge and cannot be retried.
+        if not isinstance(challenge, str):
+            return False
         with self._lock:
             pending = self._pending.pop(challenge, None)
         if pending is None or self._now() > pending["expires_at"]:
             return False
         try:
             host = self._host(host)
-        except ValueError:
+        except (ValueError, TypeError):
             return False
         if ((tenant, host, requester) !=
                 (pending["tenant"], pending["host"], pending["requester"])):
             return False
-        if self._registered_subject(tenant, host) != pending["subject"]:
+        try:
+            current_subject = self._registered_subject(tenant, host)
+        except Exception:
+            return False
+        if current_subject != pending["subject"]:
             return False
         if not isinstance(id_token, str) or not id_token:
             return False
@@ -111,6 +120,7 @@ class CloudRunProof:
                     or claims.get("sub") != pending["subject"]
                     or not isinstance(iat, (int, float)) or isinstance(iat, bool)
                     or not isinstance(exp, (int, float)) or isinstance(exp, bool)
+                    or not math.isfinite(iat) or not math.isfinite(exp)
                     or iat > now + 60 or exp <= now or iat >= exp):
                 return False
             html = self._fetch_html(f"https://{host}/")
