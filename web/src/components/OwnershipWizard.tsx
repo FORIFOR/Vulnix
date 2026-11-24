@@ -16,7 +16,7 @@ interface Props {
   notice?: string | null;
 }
 
-type Method = "dns_txt" | "well_known";
+type Method = "dns_txt" | "well_known" | "meta_tag" | "verification_code";
 
 interface ChallengeResponse {
   asset: Asset;
@@ -270,6 +270,26 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
                   <CopyRow label="URL" value={challenge.well_known_url} />
                   <CopyRow label="内容" value={challenge.well_known_content} />
                 </dl>
+              </label>
+              <label className={`block cursor-pointer rounded-xl border p-3 ${method === "meta_tag" ? "border-zinc-900 dark:border-white" : "border-zinc-200 dark:border-zinc-800"}`}>
+                <span className="flex items-center gap-2 text-xs font-semibold">
+                  <input type="radio" name="own-method" checked={method === "meta_tag"} onChange={() => setMethod("meta_tag")} />
+                  トップページの &lt;head&gt; に meta タグを追加
+                </span>
+                <dl className="mt-2 space-y-1.5">
+                  <CopyRow label="URL" value={challenge.meta_tag_url || challenge.well_known_url.replace(/\/\.well-known\/vulnix-verify\.txt$/, "/")} />
+                  <CopyRow label="タグ" value={challenge.meta_tag_html || `<meta name="vulnix-verify" content="${challenge.token}">`} />
+                </dl>
+              </label>
+              <label className={`block cursor-pointer rounded-xl border p-3 ${method === "verification_code" ? "border-zinc-900 dark:border-white" : "border-zinc-200 dark:border-zinc-800"}`}>
+                <span className="flex items-center gap-2 text-xs font-semibold">
+                  <input type="radio" name="own-method" checked={method === "verification_code"} onChange={() => setMethod("verification_code")} />
+                  管理画面に検証コードを設定（公開ページへ反映）
+                </span>
+                <dl className="mt-2 space-y-1.5">
+                  <CopyRow label="コード" value={challenge.code || challenge.token} />
+                </dl>
+                <p className="mt-2 text-xs text-zinc-500">このコードは同じ対象の再確認に使えます。確認結果は範囲確定まで24時間有効で、診断中も接続先を定期的に再確認します。</p>
               </label>
             </fieldset>
             {verifyDetail && (

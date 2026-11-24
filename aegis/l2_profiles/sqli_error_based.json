@@ -1,0 +1,90 @@
+{
+  "id": "sqli_error_based",
+  "label": "SQLインジェクション（エラーベース・読み取りのみ／汎用ひな形）",
+  "spec_note": "公開リポジトリ用の汎用ひな形です。PostgreSQL の構造化されたエラーベース応答のみを対象とし、データ変更やブラインド/時間ベース抽出は行いません。適用ホストは空で placeholder のため、このままでは実行されません。実サイト向けの確定済みプロファイルは <データディレクトリ>/l2_profiles/ に配置し、管理画面で SHA-256 を承認してください。",
+  "applies_to": {
+    "hosts": []
+  },
+  "tokens": {
+    "user_a_token": {
+      "label": "認証済みの検証用アカウント"
+    }
+  },
+  "paths": {
+    "search_path": {
+      "label": "未確定：文字列を受け取る検索API（正常系）",
+      "default": "/api/items?q=test"
+    },
+    "search_injected_path": {
+      "label": "未確定：同上にシングルクォートを1つ注入した読み取りリクエスト",
+      "default": "/api/items?q=test%27"
+    }
+  },
+  "checks": [
+    {
+      "id": "sqli_error_string",
+      "category": "sqli",
+    "label": "SQLi候補：文字列パラメータのエラー差分（エラーベース）",
+      "spec_status": "placeholder",
+      "spec_evidence": [],
+      "spec_note": "仕様未照合。実際の検索APIパス・正常応答マーカー・エラー応答条件を確定して spec_evidence を記録してください。",
+      "finding": {
+        "id": "f_sqli_error",
+        "title": "SQLi候補（エラーベースのSQLエラー証拠）",
+        "severity": "high",
+        "category": "インジェクション",
+        "help_term": "sqli",
+        "summary": "文字列パラメータに単一引用符を1つ注入し、DB の構文エラーが応答に現れるか非破壊・読み取り専用で確認します。SQLエラー証拠だけではデータ抽出や認証回避の成立を示しません。",
+        "impact": "パラメータバインドが使われていない場合、認証回避や意図しないデータ抽出に至る恐れがあります。",
+        "steps": [
+          "SQL の組み立てに文字列結合を使わず、パラメータバインド（プリペアドステートメント）を使う",
+          "DB のエラーメッセージやスタックトレースを HTTP 応答に含めない"
+        ],
+        "how_to_verify": "正常クエリが 2xx で正常マーカーを返し、単一引用符注入クエリで DB エラーが現れず安全に処理されることを同じ実行内で確認します。"
+      },
+      "subject": {
+        "token": "user_a_token",
+        "path": "search_injected_path",
+        "headers": {}
+      },
+      "preconditions": [
+        {
+          "name": "baseline_ok",
+          "label": "正常クエリが 2xx で正常に応答する",
+          "token": "user_a_token",
+          "path": "search_path",
+          "expect": {
+            "status": [
+              200
+            ],
+            "body_contains": [
+              "REPLACE_WITH_NORMAL_MARKER"
+            ]
+          }
+        }
+      ],
+      "owner_control_exception": "同一アカウントの正常検索クエリ（baseline_ok）を陽性対照として置くため、別アカウントの所有者対照は不要。",
+      "denied": {
+        "status": [
+          200,
+          400
+        ],
+        "body_not_contains": [
+          "SQLSTATE"
+        ]
+      },
+      "exposed": {
+        "status": [
+          500
+        ],
+        "content_type": "application/json",
+        "body_contains": [
+          "SQLSTATE"
+        ],
+        "json_fields": {
+          "error.code": "42601"
+        }
+      }
+    }
+  ]
+}
