@@ -59,6 +59,11 @@ class TestCloudRunProof(unittest.TestCase):
         self.claims["sub"] = "service-account-sub-b"
         self.assertFalse(self.finish(issued))
 
+    def test_empty_id_token_is_rejected_before_verifier_or_network(self):
+        issued = self.issue()
+        self.assertFalse(self.finish(issued, id_token=""))
+        self.assertEqual(self.calls, [])
+
     def test_other_tenant_is_rejected_before_token_or_network(self):
         issued = self.issue()
         self.assertFalse(self.finish(issued, tenant="tenant-b"))
@@ -74,6 +79,22 @@ class TestCloudRunProof(unittest.TestCase):
         self.now += 301
         self.assertFalse(self.finish(issued))
         self.assertEqual(self.calls, [])
+
+    def test_expiry_or_binding_change_during_fetch_is_rejected(self):
+        issued = self.issue()
+        def expire(_url):
+            self.now += 301
+            return self.html
+        self.proof._fetch_html = expire
+        self.assertFalse(self.finish(issued))
+
+        self.now = 1_800_000_000
+        issued = self.issue()
+        def revoke(_url):
+            self.bindings[("tenant-a", "app.example.com")] = "service-account-sub-b"
+            return self.html
+        self.proof._fetch_html = revoke
+        self.assertFalse(self.finish(issued))
 
     def test_replay_is_rejected(self):
         issued = self.issue()

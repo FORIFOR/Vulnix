@@ -98,6 +98,8 @@ class CloudRunProof:
             return False
         if self._registered_subject(tenant, host) != pending["subject"]:
             return False
+        if not isinstance(id_token, str) or not id_token:
+            return False
         try:
             claims = self._verify_id_token(id_token, pending["audience"])
             now = self._now()
@@ -112,6 +114,8 @@ class CloudRunProof:
                     or iat > now + 60 or exp <= now or iat >= exp):
                 return False
             html = self._fetch_html(f"https://{host}/")
-            return meta_tag_matches(html, f"vulnix-cloud-run={challenge}")
+            return (self._now() <= pending["expires_at"]
+                    and self._registered_subject(tenant, host) == pending["subject"]
+                    and meta_tag_matches(html, f"vulnix-cloud-run={challenge}"))
         except Exception:
             return False
