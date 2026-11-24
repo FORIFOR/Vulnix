@@ -1325,17 +1325,26 @@ class AssessmentService:
         method = str(ext.get("proof_method") or "dns_txt")
         ok, detail, address_bound = False, "", False
         try:
-            if method in (GOOGLE_METHOD, CLOUD_RUN_METHOD):
+            if method == CLOUD_RUN_METHOD:
+                proof = self._ownership_proofs.get(host) or {}
+                covered = set(proof.get("verified_addresses") or [])
+                fresh = isinstance(proof.get("verified_at"), (int, float)) and \
+                    0 <= time.time() - float(proof["verified_at"]) <= OWNERSHIP_PROOF_MAX_AGE_S
+                binding_ok = (self.cloud_run_store.binding(str(proof.get("tenant") or ""), host)
+                              or (None, None))[1] == proof.get("cloud_run_version")
+                ok = bool(fresh and binding_ok and proof.get("method") == method
+                          and covered and set(addrs).issubset(covered))
+                address_bound = ok
+                detail = ("所有確認時に各接続先の meta タグを確認済み" if ok else
+                          "所有確認時に証明されていない接続先のため再確認が必要です")
+            elif method == GOOGLE_METHOD:
                 # Google cannot be asked again (no token is kept). The first use, while
                 # the proof is fresh, binds the name like a DNS proof does; any later new
                 # or stale address needs a new proof made by the owner.
                 proof = self._ownership_proofs.get(host) or {}
                 fresh = isinstance(proof.get("verified_at"), (int, float)) and \
                     0 <= time.time() - float(proof["verified_at"]) <= OWNERSHIP_PROOF_MAX_AGE_S
-                binding_ok = (method == GOOGLE_METHOD or
-                              (self.cloud_run_store.binding(str(proof.get("tenant") or ""), host) or (None, None))[1]
-                              == proof.get("cloud_run_version"))
-                ok = bool(first_use and fresh and binding_ok and proof.get("method") == method)
+                ok = bool(first_use and fresh and proof.get("method") == method)
                 detail = ("Google 所有確認後の初回接続先を記録" if ok else
                           "所有確認または登録が失効したため再確認が必要です")
             elif method == "well_known":
@@ -3523,6 +3532,8 @@ class AssessmentService:
     def issue_cloud_run_challenge(self, *, tenant: str, host: str, requester: str) -> dict:
         host = CloudRunProof._host(host)
         with self._lock:
+            if self.gateway.state is State.STOPPED or self._stop_flag().exists():
+                raise ValueError("緊急停止中はチャレンジを発行できません")
             asset = self._asset_record(host)
             if not asset or not self._in_ownership_flow(host) or \
                     (asset.get("scheme"), asset.get("port")) != ("https", 443):
@@ -3535,21 +3546,35 @@ class AssessmentService:
 
     def finish_cloud_run_challenge(self, *, tenant: str, host: str, requester: str,
                                    challenge: str, id_token: str, roles=None,
-                                   grant_guard=None, fetch_html=None, verify_id_token=None) -> dict:
+                                   grant_guard=None, resolve_addresses=None, fetch_pinned=None,
+                                   verify_id_token=None) -> dict:
         host = CloudRunProof._host(host)
         with self._lock:
+            if self.gateway.state is State.STOPPED or self._stop_flag().exists():
+                raise ValueError("緊急停止中は所有確認を行いません")
             asset = self._asset_record(host)
             if not asset or not self._in_ownership_flow(host):
                 raise ValueError("対象が登録されていません")
             endpoint = (str(asset.get("scheme")), int(asset.get("port") or 0))
             version = self.cloud_run_store.binding(tenant, host)
+            epoch0 = self.gateway._launch_epoch
+        def may_continue():
+            with self._lock:
+                return (self.gateway.state is not State.STOPPED
+                        and not self._stop_flag().exists()
+                        and self.gateway._launch_epoch == epoch0
+                        and self._asset_record(host) is not None)
         kwargs = {"store": self.cloud_run_store,
-                  "verify_id_token": verify_id_token or verify_google_id_token}
-        if fetch_html is not None:
-            kwargs["fetch_html"] = fetch_html
+                  "verify_id_token": verify_id_token or verify_google_id_token,
+                  "may_continue": may_continue}
+        if resolve_addresses is not None:
+            kwargs["resolve_addresses"] = resolve_addresses
+        if fetch_pinned is not None:
+            kwargs["fetch_pinned"] = fetch_pinned
         proof = CloudRunProof(**kwargs)
-        if not proof.finish(challenge=challenge, tenant=tenant, host=host,
-                            requester=requester, id_token=id_token):
+        addresses = proof.finish(challenge=challenge, tenant=tenant, host=host,
+                                 requester=requester, id_token=id_token)
+        if not addresses or not may_continue():
             return {"host": host, "verified": False, "l2_auto_approved": False,
                     "verification": {"detail": "Cloud Run 所有確認に失敗しました"}}
         if not version:
@@ -3558,6 +3583,7 @@ class AssessmentService:
             url_or_host=host, method=CLOUD_RUN_METHOD, actor=requester,
             roles=roles, grant_guard=grant_guard, google_endpoint=endpoint,
             cloud_run_tenant=tenant, cloud_run_version=version[1],
+            cloud_run_addresses=addresses,
         )
 
     def issue_ownership_challenge(
@@ -3722,6 +3748,7 @@ class AssessmentService:
         google_verified_at: float | None = None,
         cloud_run_tenant: str | None = None,
         cloud_run_version: str | None = None,
+        cloud_run_addresses: list[str] | None = None,
         grant_guard=None,
     ) -> dict:
         """Step 2 of the 5-step registration flow: verify ownership via DNS TXT,
@@ -3742,12 +3769,13 @@ class AssessmentService:
         ch = challenge_for_host(host, self._ownership_secret)
 
         if method == CLOUD_RUN_METHOD:
-            if not cloud_run_tenant or not cloud_run_version:
+            if not cloud_run_tenant or not cloud_run_version or not cloud_run_addresses:
                 raise ValueError("Cloud Run の検証済みチャレンジが必要です")
             res = {"verified": True, "method": CLOUD_RUN_METHOD,
                    "checked_target": f"https://{host}/", "verified_at": time.time(),
                    "detail": "Google署名と登録主体、ホスト上のチャレンジを確認しました",
-                   "tenant": cloud_run_tenant, "cloud_run_version": cloud_run_version}
+                   "tenant": cloud_run_tenant, "cloud_run_version": cloud_run_version,
+                   "verified_addresses": sorted(set(cloud_run_addresses))}
         elif method == GOOGLE_METHOD:
             now = time.time()
             if (google_verified_at is not None and
@@ -3789,6 +3817,8 @@ class AssessmentService:
         # organization membership through the signed ledger commit, so a mid-flight
         # removal or logout cannot grant ownership from an old role snapshot.
         with (grant_guard() if grant_guard else contextlib.nullcontext(roles)) as current_roles, self._lock:
+            if self.gateway.state is State.STOPPED or self._stop_flag().exists():
+                raise ValueError("緊急停止中は所有確認結果を記録しません")
             target_asset = next(
                 (x for x in self._extra_assets if x.get("name", "").lower() == host),
                 None,

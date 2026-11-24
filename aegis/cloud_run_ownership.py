@@ -12,7 +12,8 @@ import secrets
 import time
 from typing import Callable, Mapping
 
-from .ownership import default_well_known_fetcher, meta_tag_matches, parse_service_target
+from .ownership import (fetch_proof_file_pinned, meta_tag_matches, parse_service_target,
+                        public_address, resolve_public_addresses)
 from .cloud_run_store import ChallengeStore
 
 CHALLENGE_TTL_S = 300
@@ -25,7 +26,8 @@ class CloudRunProof:
     verify_id_token(token, audience) verifies the JWT signature against trusted
     Google keys before returning claims. The host fetcher must use HTTPS
     443, certificate verification, a pinned public address and no redirects;
-    the default ownership fetcher has those properties.
+    the default pinned fetcher has those properties. Every resolved address must
+    serve the same proof, and the verified addresses are returned to the caller.
     """
 
     def __init__(
@@ -33,13 +35,18 @@ class CloudRunProof:
         *,
         store: ChallengeStore,
         verify_id_token: Callable[[str, str], Mapping],
-        fetch_html: Callable[[str], str] | None = None,
+        resolve_addresses: Callable[[str], list[str]] | None = None,
+        fetch_pinned: Callable[[str, str], str] | None = None,
+        may_continue: Callable[[], bool] = lambda: True,
         now: Callable[[], float] = time.time,
         new_challenge: Callable[[], str] = lambda: secrets.token_urlsafe(32),
     ):
         self._store = store
         self._verify_id_token = verify_id_token
-        self._fetch_html = fetch_html or default_well_known_fetcher
+        self._resolve_addresses = resolve_addresses or resolve_public_addresses
+        self._fetch_pinned = fetch_pinned or (lambda host, address:
+            fetch_proof_file_pinned(host, address, path="/", max_bytes=65536))
+        self._may_continue = may_continue
         self._now = now
         self._new_challenge = new_challenge
 
@@ -75,34 +82,36 @@ class CloudRunProof:
         }
 
     def finish(self, *, challenge: str, tenant: str, host: str,
-               requester: str, id_token: str) -> bool:
+               requester: str, id_token: str) -> list[str]:
         # The caller first authenticates the requester and checks organization
         # membership. Wrong requester/host/tenant must not spend someone else's proof.
         if not isinstance(challenge, str) or not isinstance(tenant, str) or not isinstance(requester, str):
-            return False
+            return []
         try:
             host = self._host(host)
         except (ValueError, TypeError):
-            return False
+            return []
         try:
             binding = self._store.binding(tenant, host)
         except Exception:
-            return False
+            return []
         if not binding:
-            return False
+            return []
+        if not self._may_continue():
+            return []
         try:
             pending = self._store.consume(challenge, tenant, host, requester, binding[1], self._now())
         except Exception:
-            return False
+            return []
         if pending is None:
-            return False
+            return []
         if not isinstance(id_token, str) or not id_token:
-            return False
+            return []
         try:
             claims = self._verify_id_token(id_token, pending["audience"])
             now = self._now()
             if not isinstance(claims, Mapping):
-                return False
+                return []
             iat, exp = claims.get("iat"), claims.get("exp")
             if (claims.get("iss") not in GOOGLE_ISSUERS
                     or claims.get("aud") != pending["audience"]
@@ -111,10 +120,20 @@ class CloudRunProof:
                     or not isinstance(exp, (int, float)) or isinstance(exp, bool)
                     or not math.isfinite(iat) or not math.isfinite(exp)
                     or iat > now + 60 or exp <= now or iat >= exp):
-                return False
-            html = self._fetch_html(f"https://{host}/")
-            return (self._now() <= pending["expires_at"]
-                    and self._store.binding(tenant, host) == binding
-                    and meta_tag_matches(html, f"vulnix-cloud-run={challenge}"))
+                return []
+            if not self._may_continue():
+                return []
+            addresses = self._resolve_addresses(host)
+            if not addresses or any(public_address(a) is None for a in addresses):
+                return []
+            for address in addresses:
+                if not self._may_continue():
+                    return []
+                html = self._fetch_pinned(host, address)
+                if not meta_tag_matches(html, f"vulnix-cloud-run={challenge}"):
+                    return []
+            return (sorted(set(addresses)) if self._may_continue()
+                    and self._now() <= pending["expires_at"]
+                    and self._store.binding(tenant, host) == binding else [])
         except Exception:
-            return False
+            return []

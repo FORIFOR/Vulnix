@@ -22,13 +22,14 @@ class TestCloudRunProof(unittest.TestCase):
             self.calls.append((token, audience))
             return dict(self.claims)
 
-        def fetch(url):
-            self.calls.append(("fetch", url))
+        def fetch(host, address):
+            self.calls.append(("fetch", host, address))
             return self.html
 
         self.proof = CloudRunProof(
             store=self.store,
-            verify_id_token=verify, fetch_html=fetch, now=lambda: self.now,
+            verify_id_token=verify, resolve_addresses=lambda _host: ["8.8.8.8"],
+            fetch_pinned=fetch, now=lambda: self.now,
             new_challenge=lambda: "challenge-0123456789abcdef0123456789abcdef",
         )
 
@@ -53,12 +54,27 @@ class TestCloudRunProof(unittest.TestCase):
     def test_valid_proof_requires_oidc_and_host_challenge(self):
         issued = self.issue()
         self.assertTrue(self.finish(issued))
-        self.assertIn(("fetch", "https://app.example.com/"), self.calls)
+        self.assertIn(("fetch", "app.example.com", "8.8.8.8"), self.calls)
 
     def test_oidc_success_alone_never_proves_an_arbitrary_host(self):
         issued = self.issue()
         self.html = ""
         self.assertFalse(self.finish(issued))
+
+    def test_every_resolved_address_must_serve_the_exact_meta_tag(self):
+        issued = self.issue()
+        self.proof._resolve_addresses = lambda _host: ["8.8.8.8", "8.8.4.4"]
+        self.proof._fetch_pinned = lambda _host, ip: self.html if ip == "8.8.8.8" else "<head></head>"
+        self.assertFalse(self.finish(issued))
+        issued = self.issue()
+        self.proof._fetch_pinned = lambda _host, _ip: self.html
+        self.assertEqual(self.finish(issued), ["8.8.4.4", "8.8.8.8"])
+
+    def test_private_resolution_blocks_all_http_fetches(self):
+        issued = self.issue()
+        self.proof._resolve_addresses = lambda _host: ["8.8.8.8", "127.0.0.1"]
+        self.assertFalse(self.finish(issued))
+        self.assertFalse(any(c[0] == "fetch" for c in self.calls))
 
     def test_wrong_subject_is_rejected(self):
         issued = self.issue()
@@ -88,18 +104,18 @@ class TestCloudRunProof(unittest.TestCase):
 
     def test_expiry_or_binding_change_during_fetch_is_rejected(self):
         issued = self.issue()
-        def expire(_url):
+        def expire(_host, _address):
             self.now += 301
             return self.html
-        self.proof._fetch_html = expire
+        self.proof._fetch_pinned = expire
         self.assertFalse(self.finish(issued))
 
         self.now = 1_800_000_000
         issued = self.issue()
-        def revoke(_url):
+        def revoke(_host, _address):
             self.store.register("tenant-a", "app.example.com", "service-account-sub-b", self.now)
             return self.html
-        self.proof._fetch_html = revoke
+        self.proof._fetch_pinned = revoke
         self.assertFalse(self.finish(issued))
 
     def test_replay_is_rejected(self):
@@ -133,7 +149,7 @@ class TestCloudRunProof(unittest.TestCase):
 
         issued = self.issue()
         self.proof._verify_id_token = lambda _token, _audience: self.claims
-        self.proof._fetch_html = lambda _url: (_ for _ in ()).throw(OSError("unavailable"))
+        self.proof._fetch_pinned = lambda _host, _address: (_ for _ in ()).throw(OSError("unavailable"))
         self.assertFalse(self.finish(issued))
 
     def test_binding_lookup_failure_and_malformed_challenge_are_closed(self):

@@ -61,8 +61,8 @@ def main() -> None:
         return verify_google_id_token(token, audience, request=cert_request)
 
     mock_html = [""]
-    def fetch(url):
-        assert url == f"https://{HOST}/"
+    def fetch(host, address, **_kwargs):
+        assert host == HOST and address == "8.8.8.8"
         return mock_html[0]
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -89,7 +89,8 @@ def main() -> None:
                 time.sleep(0.4)
                 return original_binding(*args, **kwargs)
             with patch.object(assessment_module, "verify_google_id_token", side_effect=verifier), \
-                 patch.object(cloud_module, "default_well_known_fetcher", side_effect=fetch), \
+                 patch.object(cloud_module, "resolve_public_addresses", return_value=["8.8.8.8"]), \
+                 patch.object(cloud_module, "fetch_proof_file_pinned", side_effect=fetch), \
                  patch.object(svc, "cloud_run_binding", side_effect=delayed_binding), \
                  patch.object(svc, "start", return_value=svc.snapshot()), sync_playwright() as playwright:
                 browser = (playwright.chromium.launch(headless=True) if os.environ.get("CI") else
