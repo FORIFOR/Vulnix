@@ -672,7 +672,8 @@ def explain(check: dict, result: dict | None, outcome: dict) -> str:
     pre_labels = "・".join(p["label"] for p in check["preconditions"])
     if check.get("category") == "sqli":
         if outcome["verdict"] == "proven":
-            return f"{shown} の応答で、正常系と区別できる設定済みの SQL エラー証拠を確認しました。"
+            return (f"{shown} の応答で、正常系と区別できる設定済みの SQL エラー証拠を確認しました。"
+                    "データ抽出や認証回避などの悪用可能性は実証していません。")
         if outcome["verdict"] == "not_reproduced":
             return f"正常系と比較し、今回のエラーベース確認では SQL エラーを再現しませんでした。SQLi 全般の不存在を意味しません（{shown}）。"
         return f"今回のエラーベース確認は証拠不足で判定できません（{shown}）。SQLi 全般の不存在を意味しません。"

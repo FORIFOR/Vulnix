@@ -571,6 +571,11 @@ class TestOwnershipPrimitives(unittest.TestCase):
         self.assertIn("SQLi 全般の不存在を意味しません", l2_rules.explain(
             {"category": "sqli", "preconditions": []}, {"status": 200},
             {"verdict": "not_reproduced", "reasons": []}))
+        proven_note = l2_rules.explain(
+            {"category": "sqli", "preconditions": []}, {"status": 500},
+            {"verdict": "proven", "reasons": []})
+        self.assertIn("SQL エラー証拠", proven_note)
+        self.assertIn("悪用可能性は実証していません", proven_note)
 
 
 class TestSecretStore(unittest.TestCase):
