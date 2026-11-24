@@ -89,11 +89,12 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [cloudBinding, setCloudBinding] = useState<CloudBinding | null>(null);
-  const [cloudSubject, setCloudSubject] = useState("");
+  const [cloudSubjectEntry, setCloudSubjectEntry] = useState({ host: "", value: "" });
   const [cloudChallenge, setCloudChallenge] = useState<CloudChallenge | null>(null);
   const [cloudToken, setCloudToken] = useState("");
   const [cloudStatus, setCloudStatus] = useState("未設定");
   const cloudHost = (() => { try { return new URL(url).hostname; } catch { return ""; } })();
+  const cloudSubject = cloudSubjectEntry.host === cloudHost ? cloudSubjectEntry.value : "";
   const cloudAdmin = session?.roles.includes("admin") ?? false;
 
   useEffect(() => {
@@ -103,7 +104,8 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
       .then((binding) => {
         if (!active) return;
         setCloudBinding(binding);
-        setCloudSubject(binding.subject ?? "");
+        setCloudSubjectEntry((current) => current.host === cloudHost && current.value
+          ? current : { host: cloudHost, value: binding.subject || "" });
         setCloudStatus(binding.configured ? (binding.ownership_verified ? "検証成功" : "検証待ち") : "未設定");
       }).catch(() => { if (active) setCloudStatus("未設定"); });
     return () => { active = false; };
@@ -295,7 +297,7 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
                 <h3 className="font-semibold">Cloud Run OIDC 所有確認</h3>
                 <p role="status">状態: {cloudStatus}</p>
                 <label className="block">登録するサービスアカウントの sub
-                  <input value={cloudSubject} onChange={(e) => setCloudSubject(e.target.value)}
+                  <input value={cloudSubject} onChange={(e) => setCloudSubjectEntry({ host: cloudHost, value: e.target.value })}
                     className="mt-1 w-full rounded border border-zinc-300 px-2 py-1 dark:border-zinc-700 dark:bg-zinc-950" />
                 </label>
                 <div className="flex gap-2">

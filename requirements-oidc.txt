@@ -1,2 +1,2 @@
-google-auth[requests]==2.38.0
+google-auth[requests]==2.63.1
 cryptography>=43,<47

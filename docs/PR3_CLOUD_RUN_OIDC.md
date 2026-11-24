@@ -8,6 +8,8 @@ Cloud Run の OIDC ID トークンはサービスアカウントの主体を示�
 
 ## 手順
 
+サーバーを動かすPython環境には `python3 -m pip install -r requirements-oidc.txt` で公式 `google-auth` と署名検証に必要な依存関係を入れる。CIとローカルの模擬試験も同じ固定版を使う。
+
 1. 認証済み依頼者が、組織と登録済みホストに対して challenge を発行する。サーバーは依頼者、組織、ホスト、登録済み主体、OIDC audience、有効期限を一緒に保持する。有効期限は5分。
 2. Cloud Run 側は指定された audience で ID トークンを生成し、登録ホストのトップページの head に challenge の meta タグを置く。
 3. サーバーは認証済み依頼者と組織メンバーシップを確認してから、組織・ホスト・依頼者・登録バージョンが一致する challenge だけをSQLiteの原子的トランザクションで消費する。別の依頼者のチャレンジは消費しない。Google署名検証済み ID トークンの発行者・audience・主体・時刻を確認する。

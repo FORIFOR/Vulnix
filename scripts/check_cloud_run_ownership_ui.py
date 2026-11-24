@@ -84,8 +84,13 @@ def main() -> None:
                                 "-p", str(port)], cwd=ROOT / "web", env=env,
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
+            original_binding = svc.cloud_run_binding
+            def delayed_binding(*args, **kwargs):
+                time.sleep(0.4)
+                return original_binding(*args, **kwargs)
             with patch.object(assessment_module, "verify_google_id_token", side_effect=verifier), \
                  patch.object(cloud_module, "default_well_known_fetcher", side_effect=fetch), \
+                 patch.object(svc, "cloud_run_binding", side_effect=delayed_binding), \
                  patch.object(svc, "start", return_value=svc.snapshot()), sync_playwright() as playwright:
                 browser = (playwright.chromium.launch(headless=True) if os.environ.get("CI") else
                            playwright.chromium.launch(channel="chrome", headless=True))
@@ -101,6 +106,11 @@ def main() -> None:
                     page.get_by_role("button", name="所有確認へ").click()
                     page.get_by_text("Cloud Run OIDC 所有確認").wait_for()
                     page.get_by_label("登録するサービスアカウントの sub").fill("service-account-123")
+                    page.get_by_role("button", name="主体を登録").click()
+                    page.get_by_text("状態: 検証待ち", exact=True).wait_for()
+                    page.get_by_role("button", name="登録を解除").click()
+                    page.get_by_text("状態: 失効", exact=True).wait_for()
+                    assert svc.cloud_run_store.binding("default", HOST) is None
                     page.get_by_role("button", name="主体を登録").click()
                     page.get_by_role("button", name="チャレンジ発行").click()
                     page.get_by_text("有効期限:").wait_for()
