@@ -396,6 +396,11 @@ class TestOwnershipPrimitives(unittest.TestCase):
             f"<html><body><meta name='vulnix-verify' content='{tok}'></body></html>",
             f"<html><head><meta name='other' content='{tok}'></head></html>",
             f"<html><body>{tok}</body></html>",
+            f"<html><body><head><meta name='vulnix-verify' content='{tok}'></head></body></html>",
+            f"<html><head><template><meta name='vulnix-verify' content='{tok}'></template></head></html>",
+            f"<html><template><head><meta name='vulnix-verify' content='{tok}'></head></template></html>",
+            f"<html><head></head><body><head><meta name='vulnix-verify' content='{tok}'></head></body></html>",
+            f"<html><head><!-- <meta name='vulnix-verify' content='{tok}'> --></head></html>",
         ):
             self.assertFalse(verify_ownership_challenge(
                 "stg.example.com", "meta_tag", expected_token=tok, http_fetcher=lambda _u, h=bad_html: h)["verified"])

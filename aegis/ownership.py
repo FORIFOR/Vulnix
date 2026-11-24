@@ -91,26 +91,46 @@ def meta_tag_matches(body: str | None, token: str) -> bool:
 
     class _Verifier(HTMLParser):
         matched = False
-        in_head = False
+
+        def __init__(self):
+            super().__init__()
+            self.stack = []
+            self.body_seen = False
+            self.invalid = False
 
         def handle_starttag(self, tag, attrs):
+            if tag == "body":
+                self.body_seen = True
             if tag == "head":
-                self.in_head = True
+                if self.body_seen or self.stack not in ([], ["html"]):
+                    self.invalid = True
+                self.stack.append(tag)
                 return
-            if tag != "meta" or not self.in_head:
+            if tag == "meta":
+                if self.invalid or self.stack not in (["head"], ["html", "head"]):
+                    return
+                names = [v for k, v in attrs if k == "name"]
+                contents = [v for k, v in attrs if k == "content"]
+                if names == ["vulnix-verify"] and contents == [token]:
+                    self.matched = True
                 return
-            names = [v for k, v in attrs if k == "name"]
-            contents = [v for k, v in attrs if k == "content"]
-            if names == ["vulnix-verify"] and contents == [token]:
-                self.matched = True
+            if tag not in {"area", "base", "br", "col", "embed", "hr", "img", "input",
+                           "link", "param", "source", "track", "wbr"}:
+                self.stack.append(tag)
 
         def handle_endtag(self, tag):
-            if tag == "head":
-                self.in_head = False
+            if tag in self.stack:
+                if self.stack[-1] != tag:
+                    self.invalid = True
+                while self.stack:
+                    if self.stack.pop() == tag:
+                        break
+            elif tag in {"html", "head", "body", "template"}:
+                self.invalid = True
 
     parser = _Verifier()
     parser.feed(str(body))
-    return parser.matched
+    return parser.matched and not parser.invalid
 
 
 def challenge_for_host(host: str, salt: str = "vulnix-ownership-v1") -> dict:
