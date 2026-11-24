@@ -2,6 +2,8 @@
 
 **Find. Prove. Secure. — AI Security Testing Platform**
 
+Vulnixの目的は、個人開発者が自分のサービスについて、ARTEXやClaude Codeを使った公開報告の攻撃手法と、既知CVEに関係する防御を確認し、修正後に再検証できるようにすることです。ダッシュボードでは、手元のプロジェクトをブラウザ内で調べる方法と、所有するWebサイト・APIを診断する方法を選べます。[対応表と使い方](docs/QUICK_DEFENSE.md)
+
 **AI は提案する、実行はゲートウェイが裁く（AI proposes, Gateway disposes）** を第一原則とする、AI セキュリティ診断・実証プラットフォーム（旧称: Aegis AI）。
 
 AI/エージェント（ARTEX / Abliteration AI）の出力は常に「信頼できない提案（データ）」として扱い、実行権限はサーバ側シークレット（HMAC トークン）を握る Gateway だけが持ちます。未計測の候補（`candidate`）、設定の実測（`detected`）、人間承認下の再現証明（`proven`）、修正後の再検証（`not_reproduced`）を分離します。現在の公開βでは、実サイト診断は所有確認後の公開ページ1回の読み取り専用で、ARTEXと外部AIは無効です。Draft PRでは、匿名化した実測所見から安全なL1計画を作る任意のARTEX経路を追加しています。

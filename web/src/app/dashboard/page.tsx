@@ -38,6 +38,7 @@ function DashboardInner() {
   const [wizardAsset, setWizardAsset] = useState<Asset | null>(null);
   // public beta: plain view (no permit records, no demo targets that need one)
   const { multiTenant: plain } = useSession();
+  const lab = assets?.find((asset) => asset.id === "lab" && asset.name === "lab.test" && asset.assessment_id);
   const visible = assets?.filter((a) => !(plain && !a.assessment_id && !a.challenge));
 
   const [wizardNotice, setWizardNotice] = useState<string | null>(null);
@@ -94,16 +95,21 @@ function DashboardInner() {
         <div>
           <h1 className="text-2xl font-bold">セキュリティ診断</h1>
           <p className="text-xs text-zinc-500">
-            サイトのURLを入力して所有確認をすると、公開ページの設定を確認し、結果と対策を表示します。
+            手元のプロジェクト、または所有するWebサイト・APIを検証できます。
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Link
-            href="/assessments/scan_001"
-            className="rounded-lg border border-zinc-300 bg-white px-3.5 py-2 text-sm font-semibold text-zinc-900 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800"
-          >
-            練習用サイトで試す
+          <Link href="/quick-defense" className="rounded-lg border border-zinc-300 px-3.5 py-2 text-sm font-semibold dark:border-zinc-700">
+            ローカルプロジェクトの診断
           </Link>
+          {lab ? <button
+            type="button"
+            disabled={busyId === lab.id}
+            onClick={() => handleSelectAsset(lab)}
+            className="rounded-lg border border-zinc-300 px-3.5 py-2 text-sm font-semibold disabled:opacity-50 dark:border-zinc-700"
+          >
+            隔離ラボを開く
+          </button> : <Link href="/assets" className="text-sm underline">登録済みサイト・隔離ラボ</Link>}
           <button
             type="button"
             onClick={() => {
@@ -206,6 +212,7 @@ function DashboardInner() {
         key={wizardOpen ? `open-${wizardAsset?.id ?? "new"}` : "closed"}
         open={wizardOpen}
         initialAsset={wizardAsset}
+        knownAssets={assets}
         notice={wizardNotice}
         onClose={() => setWizardOpen(false)}
         onAssetsChanged={setAssets}

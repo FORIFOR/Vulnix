@@ -196,6 +196,7 @@ export default function AssetsPage() {
         open={wizardOpen}
         onClose={() => setWizardOpen(false)}
         initialAsset={wizardAsset}
+        knownAssets={assets}
         onAssetsChanged={setAssets}
       />
       <AssetRegistrationModal
