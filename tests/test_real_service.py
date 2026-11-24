@@ -506,6 +506,7 @@ class TestOwnershipPrimitives(unittest.TestCase):
         self.assertEqual(profile["id"], "sqli_error_based")
         self.assertEqual(profile["checks"][0]["category"], "sqli")
         self.assertEqual(profile["checks"][0]["spec_status"], "placeholder")
+        self.assertIn("候補", profile["checks"][0]["finding"]["title"])
         self.assertIn(200, profile["checks"][0]["denied"]["status"])
         self.assertIn(500, profile["checks"][0]["exposed"]["status"])
 
