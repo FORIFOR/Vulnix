@@ -91,14 +91,22 @@ def meta_tag_matches(body: str | None, token: str) -> bool:
 
     class _Verifier(HTMLParser):
         matched = False
+        in_head = False
 
         def handle_starttag(self, tag, attrs):
-            if tag != "meta":
+            if tag == "head":
+                self.in_head = True
+                return
+            if tag != "meta" or not self.in_head:
                 return
             names = [v for k, v in attrs if k == "name"]
             contents = [v for k, v in attrs if k == "content"]
             if names == ["vulnix-verify"] and contents == [token]:
                 self.matched = True
+
+        def handle_endtag(self, tag):
+            if tag == "head":
+                self.in_head = False
 
     parser = _Verifier()
     parser.feed(str(body))

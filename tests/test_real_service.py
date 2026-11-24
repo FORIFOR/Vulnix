@@ -390,6 +390,7 @@ class TestOwnershipPrimitives(unittest.TestCase):
             f"<meta name='vulnix-verify' content=' {tok}'>",
             f"<!-- <meta name='vulnix-verify' content='{tok}'> -->",
             f"<meta data-content='{tok}' name='vulnix-verify'>",
+            f"<html><body><meta name='vulnix-verify' content='{tok}'></body></html>",
             f"<html><head><meta name='other' content='{tok}'></head></html>",
             f"<html><body>{tok}</body></html>",
         ):
@@ -410,7 +411,7 @@ class TestOwnershipPrimitives(unittest.TestCase):
             token = first.issue_ownership_challenge(url=f"https://{host}/")["challenge"]["token"]
             self.assertNotEqual(token, challenge_for_host("other.example.com", first._ownership_secret)["token"])
             self.assertNotEqual(token, second.issue_ownership_challenge(url=f"https://{host}/")["challenge"]["token"])
-            body = f'<meta name="vulnix-verify" content="{token}">'
+            body = f'<head><meta name="vulnix-verify" content="{token}"></head>'
             failed = second.verify_asset_ownership(url_or_host=host, method="meta_tag", http_fetch=lambda _u: body)
             self.assertFalse(failed["verified"])
             with self.assertRaises(ValueError):
@@ -432,7 +433,7 @@ class TestOwnershipPrimitives(unittest.TestCase):
             svc = AssessmentService(Path(d), 18081)
             host = "code.example.com"
             token = svc.issue_ownership_challenge(url=f"https://{host}/")["challenge"]["token"]
-            body = f'<meta name="vulnix-verify" content="{token}">'
+            body = f'<head><meta name="vulnix-verify" content="{token}"></head>'
             for _ in range(2):
                 self.assertTrue(svc.verify_asset_ownership(
                     url_or_host=host, method="verification_code", http_fetch=lambda _u: body)["verified"])
@@ -445,7 +446,7 @@ class TestOwnershipPrimitives(unittest.TestCase):
             svc = AssessmentService(Path(d), 18081)
             host = "address.example.com"
             token = svc.issue_ownership_challenge(url=f"https://{host}/")["challenge"]["token"]
-            body = f'<meta name="vulnix-verify" content="{token}">'
+            body = f'<head><meta name="vulnix-verify" content="{token}"></head>'
             self.assertTrue(svc.verify_asset_ownership(
                 url_or_host=host, method="meta_tag", http_fetch=lambda _u: body)["verified"])
             svc.confirm_asset_scope(url_or_host=f"https://{host}/")
@@ -481,7 +482,7 @@ class TestOwnershipPrimitives(unittest.TestCase):
                 url_or_host="https://port.example.com:8443/",
                 method="meta_tag",
                 actor="operator",
-                http_fetch=lambda _u, t=tok_port: f'<meta name="vulnix-verify" content="{t}">',
+                http_fetch=lambda _u, t=tok_port: f'<head><meta name="vulnix-verify" content="{t}"></head>',
             )
             self.assertTrue(ver_port["verified"])
             with self.assertRaises(ValueError):
