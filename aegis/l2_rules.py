@@ -630,7 +630,7 @@ def evaluate(worker_rule: dict, result: dict | None) -> dict:
 
     exposed, denied = worker_rule["exposed"], worker_rule["denied"]
     if (status in exposed["status"] and _all_true(subject.get("exposed_checks"), exposed)
-            and subject.get("truncated") is False and subject.get("identical_to_control") is False
+            and subject.get("truncated") is False
             and result.get("established") is True and result.get("verdict") == "proven"):
         return {"verdict": "proven", "reasons": []}
 

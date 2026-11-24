@@ -323,6 +323,9 @@ class TestL2VerdictNeverFakesADefense(unittest.TestCase):
             with self.subTest(case=name):
                 self.assertEqual(self.verdict({**hit, "preconditions": pres}), "unverified")
         self.assertEqual(self.verdict({**hit, "subject": {**hit["subject"], "truncated": True}}), "unverified")
+        # Equal owner and subject content is the strongest exposure evidence.
+        self.assertEqual(self.verdict({**hit, "subject": {**hit["subject"], "identical_to_control": True}}),
+                         "proven")
         self.assertEqual(self.verdict(self._result()), "not_reproduced")
         empty_200 = self._result(status=200, verdict="proven", established=True,
                                  exposed_checks={"status": True, "body_contains": False})
