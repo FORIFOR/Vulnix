@@ -100,6 +100,8 @@ def meta_tag_matches(body: str | None, token: str) -> bool:
 
         def handle_starttag(self, tag, attrs):
             if tag == "body":
+                if "head" in self.stack:
+                    self.invalid = True
                 self.body_seen = True
             if tag == "head":
                 if self.body_seen or self.stack not in ([], ["html"]):
@@ -130,7 +132,7 @@ def meta_tag_matches(body: str | None, token: str) -> bool:
 
     parser = _Verifier()
     parser.feed(str(body))
-    return parser.matched and not parser.invalid
+    return parser.matched and not parser.invalid and "head" not in parser.stack
 
 
 def challenge_for_host(host: str, salt: str = "vulnix-ownership-v1") -> dict:
