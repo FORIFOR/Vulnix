@@ -70,7 +70,7 @@ export default function Settings() {
       {platformOps && <Card>
         <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
           <div>
-            <h2 className="text-sm font-semibold">安全制御の実機検証（P0 Live Verification）</h2>
+            <h2 id="control-verification" className="text-sm font-semibold">安全制御の実機検証（P0 Live Verification）</h2>
             <p className="text-xs text-zinc-500">
               実プロセス（egress_sentinel）・実ソケット・Gateway を駆動し、通信遮断・権限詐称剥離・承認強制・緊急停止SIGKILLを実機検証します。
             </p>

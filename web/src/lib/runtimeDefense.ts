@@ -17,16 +17,22 @@ export const runtimeChecks = [
 
 export type RuntimeCheck = (typeof runtimeChecks)[number];
 export const evidenceLabels = {
-  settings: "設定確認済み", runtime: "動作確認済み", action: "対策が必要", na: "根拠付き対象外",
+  settings: "設定確認済み", runtime: "利用者確認（テスト結果）", action: "対策が必要", na: "根拠付き対象外",
 } as const;
 export type EvidenceKind = keyof typeof evidenceLabels;
-export type Verdict = { kind: EvidenceKind; scope: string; detail: string };
+export type EvidenceIdentity = { commit: string; deployment: string; digest: string };
+export type Verdict = { kind: EvidenceKind; scope: string; detail: string; identity?: EvidenceIdentity };
+export type JUnitReport = { tests: boolean[]; digest: string; commit: string; deployment: string; scope: string };
+export const validCommit = (value: string) => /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(value);
+export const validDeployment = (value: string) => /^[a-z0-9][a-z0-9_.:@-]{0,127}$/i.test(value);
+
 export const scopes = ["ローカルの対象環境", "隔離した模擬環境", "許可済みSTG"];
 const maxReportBytes = 2 * 1024 * 1024;
 
-export async function readJUnitReport(file: File): Promise<boolean[]> {
+export async function readJUnitReport(file: File): Promise<JUnitReport> {
   if (file.size > maxReportBytes || !file.size) throw new Error("report size");
-  const text = await file.text();
+  const bytes = await file.arrayBuffer();
+  const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   // DOMParser parses XML as data. Reject declarations capable of supplying resources or entities.
   if (/<!\s*(?:doctype|entity)\b|<\?(?!xml\s)/i.test(text)) throw new Error("unsupported XML declaration");
   const doc = new DOMParser().parseFromString(text, "application/xml");
@@ -37,10 +43,30 @@ export async function readJUnitReport(file: File): Promise<boolean[]> {
   if (!cases.length || cases.length > 5000) throw new Error("test count");
   const declared = root.getAttribute("tests");
   if (declared !== null && (!/^\d+$/.test(declared) || Number(declared) !== cases.length)) throw new Error("test count mismatch");
-  return cases.map((test) => {
+  const tests = cases.map((test) => {
     if (test.namespaceURI !== null || test.parentElement?.localName !== "testsuite" || !test.getAttribute("name") ||
         (test.hasAttribute("status") && !["run", "passed", "success"].includes(test.getAttribute("status") ?? ""))) return false;
     return Array.from(test.children).every(({ localName, namespaceURI }) => namespaceURI === null &&
       ["system-out", "system-err", "properties"].includes(localName));
   });
+  const metadata = new Map<string, string>();
+  const keys = new Set(["vulnix.commit", "vulnix.deployment", "vulnix.environment"]);
+  for (const properties of Array.from(root.getElementsByTagName("properties")).filter((child) =>
+    child.parentElement?.namespaceURI === null && ["testsuite", "testsuites"].includes(child.parentElement.localName))) {
+    for (const property of Array.from(properties.children)) {
+      const name = property.getAttribute("name");
+      if (property.localName !== "property" || !name || !keys.has(name)) continue;
+      const value = property.getAttribute("value") ?? "";
+      if ((name === "vulnix.commit" && !validCommit(value)) ||
+          (name === "vulnix.deployment" && !validDeployment(value)) ||
+          (name === "vulnix.environment" && !scopes.includes(value))) throw new Error("invalid report metadata");
+      const normalized = name === "vulnix.commit" ? value.toLowerCase() : value;
+      if (metadata.has(name) && metadata.get(name) !== normalized) throw new Error("ambiguous report metadata");
+      metadata.set(name, normalized);
+    }
+  }
+  const digest = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)),
+    (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return { tests, digest, commit: metadata.get("vulnix.commit") ?? "", deployment: metadata.get("vulnix.deployment") ?? "",
+    scope: metadata.get("vulnix.environment") ?? "" };
 }

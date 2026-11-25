@@ -300,7 +300,7 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
           さらに表示（{visible.length - display}件）
         </button>}
         {mode === "local" && <>
-          <RuntimeDefense project={files[0]?.webkitRelativePath.split("/")[0] || "選択したフォルダ"} />
+          <RuntimeDefense plan={report?.runtimePlan ?? []} project={files[0]?.webkitRelativePath.split("/")[0] || "選択したフォルダ"} />
           <p className="text-sm">修正後は上のフォルダ選択から選び直して再検証してください。</p>
         </>}
       </section>}

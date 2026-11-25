@@ -1,6 +1,7 @@
 """Browser acceptance with synthetic files and a newly registered local user."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -166,22 +167,36 @@ def main():
                     measured.append(round(elapsed, 3))
                 scan("対策が必要", "")
                 defense = page.get_by_role("region", name="実行時の防御確認")
+                expect(defense.get_by_text(re.compile(r"検証候補を [1-9][0-9]* 件選びました"))).to_be_visible()
+                expect(defense.get_by_role("link", name="Vulnix自身の隔離・実行制御を確認する")).to_have_attribute(
+                    "href", "/settings#control-verification")
                 evidence = defense.get_by_label("既存テストの結果（JUnit XML）")
                 evidence.set_input_files({"name": "unsafe.xml", "mimeType": "application/xml",
                     "buffer": b'<!DOCTYPE testsuite><testsuite><testcase name="unsafe"/></testsuite>'})
                 expect(defense.get_by_role("alert")).to_contain_text("読み込めません")
-                evidence.set_input_files({"name": "test-results.xml", "mimeType": "application/xml",
-                    "buffer": b'<testsuite tests="2"><testcase name="reject missing session"><system-out>synthetic-private-output</system-out></testcase><testcase name="missing setup"><skipped/></testcase></testsuite>'})
+                sha = "1" * 40
+                junit = (f'<testsuite tests="2"><properties><property name="vulnix.commit" value="{sha}"/></properties>'
+                         '<testcase name="reject missing session"><system-out>synthetic-private-output</system-out></testcase>'
+                         '<testcase name="missing setup"><skipped/></testcase></testsuite>').encode()
+                evidence.set_input_files({"name": "test-results.xml", "mimeType": "application/xml", "buffer": junit})
                 auth_check = defense.get_by_text("認証 ／ 未確認", exact=True)
                 auth_check.click()
                 auth_row = auth_check.locator("..")
                 auth_row.get_by_label("確認の種類").select_option("runtime")
-                auth_row.get_by_label("該当するテスト").select_option("1")
+                case_picker = auth_row.get_by_label("該当するテスト")
+                expect(case_picker.locator("option[value='2']")).to_have_attribute("disabled", "")
+                case_picker.select_option("1")
                 auth_row.get_by_label("確認した環境").select_option("隔離した模擬環境")
+                auth_row.get_by_label("対象コミットSHA").fill("2" * 40)
+                auth_row.get_by_label("選択した対象・版と合格条件に対応する結果です").check()
                 expect(auth_row.get_by_role("button", name="記録する")).to_be_disabled()
+                expect(auth_row.get_by_role("alert")).to_contain_text("一致しません")
+                auth_row.get_by_label("対象コミットSHA").fill(sha)
                 auth_row.get_by_label("選択した対象・版と合格条件に対応する結果です").check()
                 auth_row.get_by_role("button", name="記録する").click()
-                expect(defense.get_by_text("認証 ／ 動作確認済み", exact=True)).to_be_visible()
+                expect(defense.get_by_text("認証 ／ 利用者確認（テスト結果）", exact=True)).to_be_visible()
+                expect(defense.get_by_text(hashlib.sha256(junit).hexdigest(), exact=True)).to_be_visible()
+                expect(defense.get_by_text("認証 ／ 動作確認済み", exact=True)).to_have_count(0)
                 expect(defense.get_by_text("データ分離 ／ 未確認", exact=True)).to_be_visible()
                 assert "synthetic-private-output" not in defense.inner_text()
                 mfa = defense.get_by_text("MFA ／ 未確認", exact=True)

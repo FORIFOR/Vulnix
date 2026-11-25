@@ -18,7 +18,7 @@ const packages = source("projectPackages", {
   "@renovatebot/pep440": import.meta.resolve("@renovatebot/pep440"),
 });
 const { scanProject } = await import(source("projectDefense", {
-  "./quickDefense": quick, "./projectPackages": packages, typescript: import.meta.resolve("typescript"),
+  "./quickDefense": quick, "./projectPackages": packages, "./runtimePlan": source("runtimePlan", {}), typescript: import.meta.resolve("typescript"),
   yaml: import.meta.resolve("yaml"),
 }));
 const fixture = (path, contents) => ({ path: `project/${path}`, file: new File([contents], path.split("/").at(-1)) });
@@ -119,4 +119,20 @@ test("a versionless platform qualifier needs an exact CPE in the same inventory"
     assert.equal(row?.status, "unknown");
     assert.match(row.evidence, evidence);
   }
+});
+
+test("defense planning uses technology and assertions without granting a verdict", async () => {
+  const report = await scanProject([
+    fixture("package.json", '{"dependencies":{"next":"16.0.0","@node-saml/node-saml":"1.0.0"}}'),
+    fixture("Dockerfile", "FROM node:22-bookworm-slim"),
+    fixture("tests/auth.test.ts", 'test("session policy", async () => { const response = await client.session(); expect(response.status).toBe(200); expect((await client.session()).status).toBe(401); });'),
+    fixture("tests/lookalike.test.ts", 'test("saml rejects forged signatures", () => { expect(true).toBe(true); });'),
+    fixture("tests/comments.test.ts", '// test("session", () => expect(response.status).toBe(401));'),
+  ], {});
+  assert.ok(report.runtimePlan.some(({ id }) => id === "saml"));
+  assert.ok(report.runtimePlan.some(({ id, locations }) => id === "container" && locations.includes("Dockerfile")));
+  const auth = report.runtimePlan.find(({ id }) => id === "authentication");
+  assert.deepEqual(auth.candidates.map(({ path, permits, denies }) => [path, permits, denies]), [["tests/auth.test.ts", true, true]]);
+  assert.deepEqual(report.runtimePlan.find(({ id }) => id === "saml").candidates, []);
+  assert.ok(report.runtimePlan.every((row) => !("verdict" in row)));
 });

@@ -1,5 +1,6 @@
 import ts from "typescript";
 import { parseAllDocuments } from "yaml";
+import { inspectRuntimeFile, type PlannedCheck } from "./runtimePlan";
 import { affects, collectPackages, compareVersions, propertyLine, type Package, type Location } from "./projectPackages";
 import { checkCloudFormation, checkControls, checkLockfile, record, type ResultLocation } from "./quickDefense";
 
@@ -476,6 +477,7 @@ export async function scanProject(files: ProjectFile[], feed: unknown, onProgres
   addRows(...checkControls(undefined));
   const paths = new Set(candidates.map((candidate) => candidate.path));
   paths.delete("gitleaks-redacted.json");
+  const runtimePlan = new Map<PlannedCheck["id"], PlannedCheck>();
   const inventories: Component[][] = [];
   let inventoryCount = 0;
   const languages = new Set<string>();
@@ -536,6 +538,12 @@ export async function scanProject(files: ProjectFile[], feed: unknown, onProgres
     let documents: unknown[];
     try { documents = configDocuments(name, content); } catch { notParsed(); continue; }
     const parsed = documents[0];
+    const manifestDependencies = name === "package.json" ? Object.keys(record(record(parsed).dependencies)) :
+      /^requirements[^/]*\.txt$/i.test(name) ? content.split("\n").flatMap((line) => {
+        const dependency = /^\s*([a-z0-9_.-]+)(?:\[|[ \t]*[<=>~!]|\s*$)/i.exec(line);
+        return dependency ? [dependency[1]] : [];
+      }) : [];
+    inspectRuntimeFile(runtimePlan, path, content, manifestDependencies);
     if (name === "gitleaks-redacted.json") {
       const imported = redactedGitleaks(parsed, paths);
       if (!Array.isArray(parsed)) notParsed();
@@ -653,6 +661,6 @@ export async function scanProject(files: ProjectFile[], feed: unknown, onProgres
     incomplete.push({ path, reason: "時間上限で未処理" });
   }
   return { rows, read, omitted, unsupported, unreadable, skippedRules, skipped: excluded,
-    pending: candidates.length - processed, incomplete, unretained, scanProgress, catalogIncomplete,
+    pending: candidates.length - processed, incomplete, unretained, scanProgress, catalogIncomplete, runtimePlan: [...runtimePlan.values()],
     languages: [...languages], frameworks: [...frameworks], lockKinds: lockKinds.size, packageCount };
 }
