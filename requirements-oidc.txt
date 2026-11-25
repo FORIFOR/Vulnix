@@ -1,2 +1,2 @@
 google-auth[requests]==2.63.1
-cryptography>=43,<47
+cryptography==50.0.2
