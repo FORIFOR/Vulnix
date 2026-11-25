@@ -155,7 +155,7 @@ export default function ReviewedDefense({ files }: { files: File[] }) {
               {observed.observed ?
                 <p>正規操作 {observed.observed.allow ? "許可" : "拒否"} ／ 権限外の操作 {observed.observed.deny ? "許可" : "拒否"}</p> :
                 <p>正規操作と拒否側の両方を観測できませんでした。</p>}
-              {observed.verdict !== "passed" && <p>{checkAdvice[name]?.[1]} 修正後にフォルダを選び直してください。</p>}
+              {observed.verdict !== "passed" && <p>{checkAdvice[name]?.[1]} 対象ファイルを修正した場合は、新版のレビューと登録後にフォルダを選び直してください。</p>}
             </details>)}
           <p className="break-all">実行ID {job.receipt.run_id} ／ 証跡 SHA-256 {job.receipt.receipt_sha256}</p>
         </>}

@@ -38,7 +38,7 @@ DEPENDENCY_FILES = 18456
 DEPENDENCY_BYTES = 450215438
 RUN_CONFIG = Path(__file__).with_name("local_defense_vitest.mts")
 OBSERVER = "defense-observer.test.ts"
-OBSERVER_SHA256 = "b773effb418fc3ee34855dcac2edea7282a0a6685127b428a4654061136d8e00"
+OBSERVER_SHA256 = "144310393745bc16fc6aed3cda22cdf074a0906a912d3cd284d3139cdad5a76a"
 OBSERVATION_CHECKS = {"authentication": {}, "authorization": {}, "tenant-selection": {},
                       "webhook-signature": {}, "ai-policy": {}}
 
