@@ -71,3 +71,52 @@ test("same CVE from NVD and OSV appears once and preserves the package match", a
   assert.equal(results[0].location.path, "requirements.txt");
   assert.match(results[0].evidence, /NVDにも/);
 });
+
+test("automatically scans later batches and reads a repeated path once", async () => {
+  const inputs = Array.from({ length: 360 }, (_, i) => fixture(`src/sample-${i}.ts`, "const ready = true;"));
+  const tail = fixture("src/final.ts", "el.innerHTML = req.query.title;");
+  const progress = [];
+  const report = await scanProject([...inputs, tail, tail], {}, (update) => progress.push(update));
+  assert.equal(report.read, 361);
+  assert.equal(report.pending, 0);
+  assert.equal(report.skipped, 1);
+  assert.equal(report.rows.filter((row) => row.location?.path === "src/final.ts").length, 1);
+  assert.deepEqual(progress.map(({ batches, processed }) => [batches, processed]).filter(([, count]) =>
+    [0, 180, 360, 361].includes(count)), [[0, 0], [2, 180], [3, 360], [3, 361]]);
+});
+
+test("rolls the read budget into another batch without lifting a single-file cap", async () => {
+  const inputs = Array.from({ length: 50 }, (_, i) => ({ path: `project/src/sized-${i}.ts`, file: {
+    name: `sized-${i}.ts`, size: 256 * 1024, text: async () => "const ready = true;",
+  } }));
+  const unreadable = { path: "project/src/large.ts", file: {
+    name: "large.ts", size: 256 * 1024 + 1, text: async () => assert.fail("file exceeded its read limit"),
+  } };
+  const report = await scanProject([...inputs, unreadable], {});
+  assert.equal(report.scanProgress.batches, 2);
+  assert.equal(report.read, 50);
+  assert.equal(report.omitted, 1);
+  assert.equal(report.pending, 0);
+});
+
+test("a versionless platform qualifier needs an exact CPE in the same inventory", async () => {
+  const device = "cpe:2.3:h:example:platform:-:*:*:*:*:*:*:*";
+  const software = "cpe:2.3:a:example:software:1.0:*:*:*:*:*:*:*";
+  const cve = "CVE-2099-10002";
+  const feed = { vulnerabilities: [{ cve: { id: cve, configurations: [{ operator: "AND", nodes: [
+    { operator: "OR", cpeMatch: [{ vulnerable: true, criteria: software }] },
+    { operator: "OR", cpeMatch: [{ vulnerable: false, criteria: device }] },
+  ] }] } }] };
+  const sbom = (filename, ...cpes) => fixture(filename, JSON.stringify({ bomFormat: "CycloneDX",
+    components: cpes.map((cpe) => ({ cpe })) }));
+  for (const [inputs, evidence] of [
+    [[sbom("app-sbom.json", software, device)], /組み合わせがあります/],
+    [[sbom("app-sbom.json", software), sbom("other-sbom.json", device)], /一部を確認できません/],
+    [[sbom("app-sbom.json", software, device.replace(":-:", ":1.0:"))], /一部を確認できません/],
+  ]) {
+    const report = await scanProject(inputs, feed);
+    const row = report.rows.find((entry) => entry.title === cve);
+    assert.equal(row?.status, "unknown");
+    assert.match(row.evidence, evidence);
+  }
+});

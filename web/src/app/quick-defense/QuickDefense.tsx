@@ -2,7 +2,9 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
-import type { CatalogSource, CatalogUpdate } from "@/lib/catalogUpdate";
+import type { CatalogUpdate } from "@/lib/catalogUpdate";
+import type { ScanProgress } from "@/lib/projectDefense";
+import { readCatalogCache, writeCatalogCache, type OfficialCatalog } from "@/lib/catalogCache";
 import { categories, checkControls, checkCves, demoEvidence, labels, record } from "@/lib/quickDefense";
 
 const button = "rounded-lg border border-zinc-300 px-3 py-2 text-sm font-medium dark:border-zinc-700";
@@ -15,7 +17,8 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
   const [files, setFiles] = useState<File[]>([]);
   const [nvd, setNvd] = useState<unknown>(bundledFeed);
   const [osv, setOsv] = useState<unknown[]>([]);
-  const [official, setOfficial] = useState<Partial<Record<CatalogSource, CatalogUpdate>>>({});
+  const [official, setOfficial] = useState<OfficialCatalog>({});
+  const [cacheReady, setCacheReady] = useState(false);
   const [refreshErrors, setRefreshErrors] = useState<string[]>([]);
   const [updating, setUpdating] = useState(false);
   const [display, setDisplay] = useState(100);
@@ -27,9 +30,17 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
   const [results, setResults] = useState<ReturnType<typeof checkControls> | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState<ScanProgress | null>(null);
+  const [ended, setEnded] = useState<"timeout" | "cancelled" | null>(null);
   const running = useRef<(() => void) | null>(null);
 
-  useEffect(() => () => running.current?.(), []);
+  useEffect(() => {
+    let active = true;
+    void readCatalogCache().then((cached) => {
+      if (active) setOfficial(cached);
+    }).catch(() => {}).finally(() => { if (active) setCacheReady(true); });
+    return () => { active = false; running.current?.(); };
+  }, []);
 
   async function updateOfficial() {
     setUpdating(true);
@@ -38,10 +49,13 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
       const response = await fetch("/api/catalog/refresh", { method: "POST", headers: { "X-Aegis-Request": "1" } });
       if (!response.ok) throw new Error();
       const sources: CatalogUpdate[] = await response.json();
-      setOfficial((previous) => ({ ...previous, ...Object.fromEntries(
+      const updated = { ...official, ...Object.fromEntries(
         sources.filter((entry) => !entry.failed && Array.isArray(entry.records)).map((entry) => [entry.source, entry]),
-      ) }));
-      setRefreshErrors(sources.filter((entry) => entry.failed).map((entry) => entry.source));
+      ) } satisfies OfficialCatalog;
+      setOfficial(updated);
+      const failures: string[] = sources.filter((entry) => entry.failed).map((entry) => entry.source);
+      try { await writeCatalogCache(updated); } catch { failures.push("ブラウザへの保存"); }
+      setRefreshErrors(failures);
       setResults(null);
       setReport(null);
     } catch {
@@ -83,6 +97,8 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
     setError("");
     setMode(kind);
     setDisplay(100);
+    setProgress(null);
+    setEnded(null);
     if (kind === "demo") {
       setResults([...checkControls(demoEvidence.controls), ...checkCves(demoEvidence.components, bundledFeed)]);
       return;
@@ -98,10 +114,14 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
       const timeout = window.setTimeout(() => {
         finish();
         setBusy(false);
-        setError("検証が8秒の上限に達しました。対象を小さいフォルダに分けて選んでください。");
-      }, 8000);
+        setEnded("timeout");
+      }, 35000);
       running.current = finish;
-      worker.onmessage = ({ data }: MessageEvent<{ result?: ProjectReport }>) => {
+      worker.onmessage = ({ data }: MessageEvent<{ result?: ProjectReport; progress?: ScanProgress }>) => {
+        if (data.progress) {
+          setProgress(data.progress);
+          return;
+        }
         finish();
         setBusy(false);
         if (!data.result) {
@@ -155,20 +175,35 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
             setFiles(!tooMany && list ? Array.from(list) : []);
             setReport(null);
             setResults(null);
+            setProgress(null);
+            setEnded(null);
             setError(tooMany ? "ファイルが12,000件を超えています。さらに小さいフォルダを選んでください。" : "");
             event.target.value = "";
           }} />
         </label>
         {files.length > 0 && <p className="text-sm">フォルダ内のファイルを {files.length} 件選択済み</p>}
         <div className="flex flex-wrap gap-2">
-          <button type="button" className={primary} disabled={busy || updating || !selected.size || !files.length} onClick={() => run("local")}>
+          <button type="button" className={primary} disabled={!cacheReady || busy || updating || !selected.size || !files.length} onClick={() => run("local")}>
             {busy ? "検証中…" : "ローカル検証を開始"}
           </button>
           <button type="button" className={button} disabled={busy || updating || !selected.size} onClick={() => run("demo")}>模擬データで試す</button>
         </div>
+        {busy && <button type="button" className={button} onClick={() => {
+          running.current?.();
+          setBusy(false);
+          setEnded("cancelled");
+        }}>中断する</button>}
+        {(busy || ended) && <p role="status" className="text-sm">
+          {ended === "cancelled" ? "検証を中断しました。" : ended === "timeout" ? "検証が制限時間を超えました。" : "検証中。"}
+          {progress ? ` 直近の進捗では対象 ${progress.eligible}件のうち ${progress.processed}件まで処理。未処理 ${progress.eligible - progress.processed}件。` : " 対象件数の確定前です。"}
+        </p>}
+        {ended && progress && progress.pendingPaths.length > 0 && <details className="text-sm">
+          <summary>直近の進捗で未処理だったファイル（先頭10件）</summary>
+          <ul>{progress.pendingPaths.map((path) => <li key={path}><bdi>{path}</bdi></li>)}</ul>
+        </details>}
         <details className="text-sm">
           <summary className="cursor-pointer">CVEカタログの更新</summary>
-          <button type="button" className={button} disabled={busy || updating} onClick={updateOfficial}>
+          <button type="button" className={button} disabled={!cacheReady || busy || updating} onClick={updateOfficial}>
             {updating ? "取得中…" : "NVD・OSVの公式データを取得"}
           </button>
           <p>公式の公開カタログだけを取得します。選択したプロジェクトの情報は送信しません。</p>
@@ -187,6 +222,8 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
         <div className="space-y-1 text-xs text-zinc-500" aria-label="ローカルで使用するCVEカタログ">
           <p>{feedLabels.nvd}</p>
           <p>{feedLabels.osv}</p>
+          <p>{Object.keys(official).length > 0 ? "取得済みの公式カタログも照合します。収録範囲は上の更新欄で確認できます。" :
+            "公式カタログは未取得です。必要に応じて上の更新欄から取得してください。"}</p>
         </div>
         {error && <p role="alert" className="text-sm text-red-700 dark:text-red-300">{error}</p>}
       </section>
@@ -195,10 +232,16 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
         <p role="status" className="text-sm">{Object.entries(labels).map(([key, label]) =>
           `${label} ${visible.filter((row) => row.status === key).length}件`).join(" ・ ")}</p>
         {report && <p className="text-sm">
+          {report.scanProgress.batches}バッチで処理。
           {report.read}ファイルの読取を試行。対象外 {report.skipped}件 ／ ファイル上限 {report.omitted}件 ／
-          未対応形式または固定版なし {report.unsupported}件 ／ 読取失敗 {report.unreadable}件 ／ 解析上限 {report.skippedRules}か所。
+          未対応形式または固定版なし {report.unsupported}件 ／ 読取失敗 {report.unreadable}件 ／ 解析上限 {report.skippedRules}か所 ／ 未処理 {report.pending}件 ／ 保存上限による未表示 {report.unretained}件。
           言語 {report.languages.join("・") || "不明"} ／ フレームワーク {report.frameworks.join("・") || "不明"} ／ ロック形式 {report.lockKinds}種 ／ 照合対象の固定依存関係 {report.packageCount}件。
         </p>}
+        {report && report.incomplete.length > 0 && <details className="text-sm">
+          <summary>検査が完了しなかったファイル（最大100件）</summary>
+          <ul>{report.incomplete.map(({ path, reason }) => <li key={path}><bdi>{path}</bdi> ／ {reason}</li>)}</ul>
+        </details>}
+        <p className="text-sm">ファイルをまたぐソース解析は対象外です。</p>
         <p className="text-sm">防御確認済みは、確認できたコードや設定の範囲です。実稼働環境は各項目の再検証方法を確認してください。</p>
         {visible.slice(0, display).map((row, index) => <details key={index} className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
           <summary className="cursor-pointer font-medium">{row.category} ／ {row.title} ／ {labels[row.status]}</summary>

@@ -3,7 +3,7 @@ import { parseAllDocuments } from "yaml";
 import { affects, collectPackages, propertyLine, type Package, type Location } from "./projectPackages";
 import { checkCloudFormation, checkControls, checkLockfile, record } from "./quickDefense";
 
-export const limits = { entries: 12000, files: 180, fileBytes: 256 * 1024, dependencyBytes: 4 * 1024 * 1024, bytes: 12 * 1024 * 1024 };
+export const limits = { entries: 12000, files: 180, timeMs: 30000, findings: 5000, fileBytes: 256 * 1024, dependencyBytes: 4 * 1024 * 1024, bytes: 12 * 1024 * 1024 };
 export type ProjectFile = { file: File; path: string };
 type Result = ReturnType<typeof checkControls>[number];
 type Component = { location?: Location; part: string; vendor: string; product: string; version: string };
@@ -293,7 +293,7 @@ function componentsFrom(file: string, body: string, parsed: unknown, path: strin
   if (sbom.bomFormat !== "CycloneDX" || !Array.isArray(sbom.components)) return [];
   return sbom.components.slice(0, 200).flatMap((value: unknown) => {
     const match = typeof record(value).cpe === "string" &&
-      String(record(value).cpe).match(/^cpe:2\.3:([aho]):([\w.-]+):([\w.-]+):(\d+(?:\.\d+){1,7})(?::\*){7}$/);
+      String(record(value).cpe).match(/^cpe:2\.3:([aho]):([\w.-]+):([\w.-]+):(-|\d+(?:\.\d+){1,7})(?::\*){7}$/);
     return match ? [{ part: match[1], vendor: match[2], product: match[3], version: match[4], location: { path, line: propertyLine(body, "components") } }] : [];
   });
 }
@@ -312,7 +312,7 @@ function numeric(left: string, right: unknown) {
 
 function matches(rule: Record<string, unknown>, inventory: Component[]): boolean | null {
   const parsed = typeof rule.criteria === "string" &&
-    rule.criteria.match(/^cpe:2\.3:([aho]):([\w.-]+):([\w.-]+):(\*|\d+(?:\.\d+){1,7})(?::\*){7}$/);
+    rule.criteria.match(/^cpe:2\.3:([aho]):([\w.-]+):([\w.-]+):([*-]|\d+(?:\.\d+){1,7})(?::\*){7}$/);
   if (!parsed || typeof rule.vulnerable !== "boolean") return null;
   const same = inventory.filter((c) => c.part === parsed[1] && c.vendor === parsed[2] && c.product === parsed[3]);
   const bounds = [
@@ -320,6 +320,10 @@ function matches(rule: Record<string, unknown>, inventory: Component[]): boolean
     ["versionEndIncluding", (n: number) => n <= 0], ["versionEndExcluding", (n: number) => n < 0],
   ] as const;
   for (const c of same) {
+    if (c.version === "-" || parsed[4] === "-") {
+      if (rule.vulnerable === false && c.version === parsed[4] && !bounds.some(([key]) => key in rule)) return true;
+      continue;
+    }
     if (parsed[4] !== "*" && numeric(c.version, parsed[4]) !== 0) continue;
     if (bounds.every(([key, valid]) => {
       if (!(key in rule)) return true;
@@ -418,13 +422,37 @@ function redactedGitleaks(input: unknown, paths: Set<string>): Result[] {
   });
 }
 
-export async function scanProject(files: ProjectFile[], feed: unknown) {
+export type ScanProgress = {
+  eligible: number; processed: number; excluded: number; omitted: number; unreadable: number; read: number;
+  batches: number; pendingPaths: string[];
+};
+
+export async function scanProject(files: ProjectFile[], feed: unknown, onProgress?: (value: ScanProgress) => void) {
+  const deadline = performance.now() + limits.timeMs;
   if (files.length > limits.entries) throw new Error("entry-limit");
+  const seenPaths = new Set<string>();
   const candidates = files.flatMap(({ file, path }) => {
+    if (seenPaths.has(path)) return [];
+    seenPaths.add(path);
     const kind = classifyPath(path);
     return kind ? [{ file, path: path.split("/").slice(1).join("/") || file.name, ...kind }] : [];
   }).sort((a, b) => a.priority - b.priority);
-  const rows = checkControls(undefined);
+  const rows: Result[] = [];
+  const findings = new Set<string>();
+  const retained = { action: 0, other: 0 };
+  let unretained = 0;
+  function addRows(...incoming: Result[]) {
+    for (const row of incoming) {
+      const key = JSON.stringify([row.category, row.title, row.status, row.location?.path, row.location?.line, row.evidence]);
+      if (findings.has(key)) continue;
+      const tier = row.status === "action" ? "action" : "other";
+      if (retained[tier] >= limits.findings / 2) { unretained++; continue; }
+      findings.add(key);
+      retained[tier]++;
+      rows.push(row);
+    }
+  }
+  addRows(...checkControls(undefined));
   const paths = new Set(candidates.map((candidate) => candidate.path));
   paths.delete("gitleaks-redacted.json");
   const inventories: Component[][] = [];
@@ -438,31 +466,60 @@ export async function scanProject(files: ProjectFile[], feed: unknown) {
   let skippedRules = 0;
   let unreadable = 0;
   let read = 0;
-  let bytes = 0;
+  let batchBytes = 0;
+  let batchFiles = 0;
+  let batches = 0;
   let omitted = 0;
+  let processed = 0;
+  const incomplete: { path: string; reason: string }[] = [];
+  const excluded = files.length - candidates.length;
+  const progress = () => ({ eligible: candidates.length, processed, excluded, omitted, unreadable, read, batches,
+    pendingPaths: candidates.slice(processed, processed + 10).map(({ path }) => path) });
+  onProgress?.(progress());
   for (const { file, path, name, priority } of candidates) {
-    const dependency = /^(?:package-lock.json|npm-shrinkwrap.json|requirements.*\.txt|go.mod)$/i.test(name);
-    if (read >= limits.files || file.size > (dependency ? limits.dependencyBytes : limits.fileBytes) || bytes + file.size > limits.bytes) {
+    if (performance.now() >= deadline) break;
+    const dependency = /^(?:package-lock\.json|npm-shrinkwrap\.json|requirements.*\.txt|go\.mod)$/i.test(name);
+    const tooLarge = file.size > (dependency ? limits.dependencyBytes : limits.fileBytes);
+    const bytesToRead = tooLarge ? 0 : file.size;
+    if (batchFiles === limits.files || batchBytes + bytesToRead > limits.bytes || batches === 0) {
+      batches++;
+      batchBytes = 0;
+      batchFiles = 0;
+    }
+    if (processed > 0 && (batchFiles === 0 || processed % 10 === 0)) onProgress?.(progress());
+    processed++;
+    batchFiles++;
+    batchBytes += bytesToRead;
+
+    if (tooLarge) {
       omitted++;
+      if (incomplete.length < 100) incomplete.push({ path, reason: "ファイル上限" });
       continue;
     }
     read++;
-    bytes += file.size;
     let content: string;
-    try { content = await file.text(); } catch { unreadable++; continue; }
+    try { content = await file.text(); } catch {
+      unreadable++;
+      if (incomplete.length < 100) incomplete.push({ path, reason: "読取失敗" });
+      continue;
+    }
+    const notParsed = () => {
+      unsupported++;
+      if (incomplete.length < 100) incomplete.push({ path, reason: "未対応形式または固定版なし" });
+    };
     const ext = name.split(".").at(-1)?.toLowerCase() ?? "";
     const language: Record<string, string> = { ts: "TypeScript", tsx: "TypeScript", js: "JavaScript", jsx: "JavaScript",
       mjs: "JavaScript", cjs: "JavaScript", py: "Python", rb: "Ruby", php: "PHP", go: "Go", rs: "Rust", java: "Java", cs: "C#" };
     if (priority > 0 && language[ext]) languages.add(language[ext]);
     if (/lock|shrinkwrap|\.sum$/i.test(name)) lockKinds.add(ext === "lock" ? "lock" : name.toLowerCase());
     let documents: unknown[];
-    try { documents = configDocuments(name, content); } catch { unsupported++; continue; }
+    try { documents = configDocuments(name, content); } catch { notParsed(); continue; }
     const parsed = documents[0];
     if (name === "gitleaks-redacted.json") {
       const imported = redactedGitleaks(parsed, paths);
-      if (!Array.isArray(parsed)) unsupported++;
+      if (!Array.isArray(parsed)) notParsed();
       if (Array.isArray(parsed) && parsed.length > 100) skippedRules++;
-      rows.push(...imported);
+      addRows(...imported);
       continue;
     }
     if (name === "package.json") {
@@ -477,11 +534,11 @@ export async function scanProject(files: ProjectFile[], feed: unknown) {
       }
     }
     if (name === "package-lock.json" || name === "npm-shrinkwrap.json") {
-      rows.push({ ...checkLockfile(parsed), location: { path, line: propertyLine(content, "packages") } });
+      addRows({ ...checkLockfile(parsed), location: { path, line: propertyLine(content, "packages") } });
     }
     if (dependency) {
       const dependencies = collectPackages(name, path, content, parsed);
-      if (!dependencies.length) unsupported++;
+      if (!dependencies.length) notParsed();
       for (const entry of dependencies) {
         if (packageCount >= 12000) { skippedRules++; break; }
         const key = `${entry.ecosystem}:${entry.name}`;
@@ -492,10 +549,10 @@ export async function scanProject(files: ProjectFile[], feed: unknown) {
       }
       if (Object.keys(record(record(parsed).packages)).length > 10000) skippedRules++;
     } else if (/\.(?:lock|sum|toml|tf|xml)$/.test(name) || (priority > 0 && !/^[cm]?[jt]sx?$/i.test(ext))) {
-      unsupported++;
+      notParsed();
     }
     for (const document of documents) {
-      rows.push(...deploymentChecks(name, content, document, path), ...configurationChecks(document, path));
+      addRows(...deploymentChecks(name, content, document, path), ...configurationChecks(document, path));
     }
     if (documents.some(Boolean)) {
       const cloud = [
@@ -504,7 +561,7 @@ export async function scanProject(files: ProjectFile[], feed: unknown) {
         ...documents.flatMap((document) => cloudStorage(document, path, content)),
       ];
       if (cloud.length > 20) skippedRules++;
-      rows.push(...cloud.slice(0, 20));
+      addRows(...cloud.slice(0, 20));
     }
     if (inventoryCount < 200) {
       const found = componentsFrom(name, content, parsed, path);
@@ -520,7 +577,7 @@ export async function scanProject(files: ProjectFile[], feed: unknown) {
     if (/^[cm]?[jt]sx?$/i.test(ext)) {
       const findings = jsFlow(name, content, path);
       if (findings.length === 10) skippedRules++;
-      rows.push(...findings);
+      addRows(...findings);
     }
   }
   const parsedFeed = record(feed);
@@ -538,11 +595,17 @@ export async function scanProject(files: ProjectFile[], feed: unknown) {
       matched.set(row.title, { ...row, evidence: `${row.evidence} NVDにも対応する候補があります。` });
     }
   }
-  rows.push(...matched.values());
+  for (const row of matched.values()) addRows(row);
   // Preserve evidence of an unmatched catalog even when the other catalog matched.
-  if (!Array.isArray(feed)) rows.push(...nvdRows.filter((row) => !row.title.startsWith("CVE-")));
-  rows.push(...osvRows.filter((row) => !row.title.startsWith("CVE-")));
+  if (!Array.isArray(feed)) addRows(...nvdRows.filter((row) => !row.title.startsWith("CVE-")));
+  addRows(...osvRows.filter((row) => !row.title.startsWith("CVE-")));
   rows.sort((a, b) => Number(b.status === "action") - Number(a.status === "action"));
-  return { rows, read, omitted, unsupported, unreadable, skippedRules, skipped: files.length - candidates.length,
+  const scanProgress = progress();
+  onProgress?.(scanProgress);
+  for (const { path } of candidates.slice(processed, processed + 100 - incomplete.length)) {
+    incomplete.push({ path, reason: "時間上限で未処理" });
+  }
+  return { rows, read, omitted, unsupported, unreadable, skippedRules, skipped: excluded,
+    pending: candidates.length - processed, incomplete, unretained, scanProgress,
     languages: [...languages], frameworks: [...frameworks], lockKinds: lockKinds.size, packageCount };
 }

@@ -86,6 +86,10 @@ def main():
                 expect(page.get_by_text("更新失敗：npm", exact=False)).to_be_visible()
                 expect(page.get_by_text("NVD ／ 0件 ／ テスト", exact=False)).to_be_visible()
                 assert refresh_requests == [("POST", None)]
+                page.reload()
+                update_details.click()
+                expect(page.get_by_text("NVD ／ 0件 ／ テスト", exact=False)).to_be_visible()
+                assert refresh_requests == [("POST", None)]
                 update_details.click()
                 folder = path / "sample-project"
                 folder.mkdir()
