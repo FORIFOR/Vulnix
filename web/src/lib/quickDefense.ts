@@ -1,6 +1,6 @@
 type Category = "ARTEX" | "CVE" | "Claude Code";
 type Status = "confirmed" | "action" | "unknown" | "na";
-type Result = { category: Category; title: string; status: Status; evidence: string; risk: string; fix: string; retest: string };
+type Result = { location?: { path: string; line?: number }; category: Category; title: string; status: Status; evidence: string; risk: string; fix: string; retest: string };
 type RecordValue = Record<string, unknown>;
 
 export const categories = ["ARTEX", "CVE", "Claude Code"] as const;

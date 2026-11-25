@@ -21,6 +21,7 @@ from aegis.operators import OperatorStore, hash_password  # noqa: E402
 from aegis.server import make_handler  # noqa: E402
 from aegis.tenancy import OrgStore, TenantRegistry  # noqa: E402
 from scripts.check_diagnosis_ui import Backend, free_port, wait_for_web  # noqa: E402
+from scripts.quick_defense_holdout import write_fixture  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -82,12 +83,15 @@ def main():
                             "resolved": "https://registry.example.invalid/fixture.tgz"},
                     }}))
                 lock_version("1.2.3")
+                # Valid lock data above the prior 256 KiB per-file limit.
+                lock.write_text(lock.read_text() + " " * (300 * 1024))
                 hidden = folder / ".env"
                 hidden.write_text("SYNTHETIC_PRIVATE_VALUE=never-display-this")
                 generated = folder / "node_modules" / "generated"
                 generated.mkdir(parents=True)
                 (generated / "auth.ts").write_text("function render(req, el) { el.innerHTML = req.query.name; }")
-                (folder / "routing.ts").write_text(
+                (folder / "database").mkdir()
+                (folder / "database" / "dataAccess.ts").write_text(
                     "function display(request, target) { const value = request.body.title; target.innerHTML = value; }")
                 (folder / "too-large.ts").write_text(" " * (256 * 1024 + 1))
                 template = folder / "cloudformation.json"
@@ -115,15 +119,16 @@ def main():
                         expect(section.get_by_text(f"{category} ／ {title} ／ {status}", exact=True)).to_be_visible()
                     expect(section.get_by_text("CVE ／ CVE-2021-41773 ／ 未確認", exact=True)).to_be_visible()
                     assert "never-display-this" not in page.locator("body").inner_text()
-                    expect(section.get_by_text("2件を対象外、1件を読み取り・解析上限等で除外", exact=False)).to_be_visible()
+                    expect(section.get_by_text("対象外 2件 ／ ファイル上限 1件", exact=False)).to_be_visible()
                     expect(section.get_by_text("Claude Code ／ 外部入力とHTML出力", exact=False)).to_have_count(1)
                     measured.append(round(elapsed, 3))
                 scan("対策が必要", "")
                 finding = section.get_by_text("Claude Code ／ 外部入力とHTML出力 ／ 対策が必要", exact=True)
                 finding.click()
                 expect(finding.locator("..").get_by_text("修正方法", exact=True)).to_be_visible()
+                expect(finding.locator("..").get_by_text("database/dataAccess.ts:1", exact=True)).to_be_visible()
                 cloud("enabled", "required")
-                (folder / "routing.ts").write_text(
+                (folder / "database" / "dataAccess.ts").write_text(
                     "function display(request, target) { const value = request.body.title; target.textContent = value; }")
                 storage = folder / "storage-template.json"
                 storage.write_text(json.dumps({"Resources": {"Storage": {"Type": "AWS::S3::Bucket",
@@ -134,7 +139,7 @@ def main():
                 scan("防御確認済み", "")
                 expect(section.get_by_text("Claude Code ／ ストレージの公開防止 ／ 防御確認済み", exact=True)).to_be_visible()
                 cloud({"Ref": "Endpoint"}, {"Ref": "TokenMode"})
-                (folder / "routing.ts").write_text(
+                (folder / "database" / "dataAccess.ts").write_text(
                     "function display(value, target) { target.innerHTML = normalize(value); }")
                 storage.write_text(json.dumps({"Resources": {"Storage": {"Type": "AWS::S3::Bucket"}}}))
                 scan("未確認", "未確認")
@@ -176,12 +181,52 @@ def main():
                 lock_version("1.2.4")
                 picker.set_input_files(folder)
                 start.click()
-                expect(section.get_by_text("CVE ／ npm依存関係と公開CVEの照合 ／ 未確認", exact=True)).to_be_visible()
+                expect(section.get_by_text("CVE ／ 依存関係と公開CVEの照合 ／ 未確認", exact=True)).to_be_visible()
+                holdout = path / "defense-holdout"
+                catalog = write_fixture(holdout)
+                (holdout / "gitleaks-redacted.json").write_text(json.dumps([
+                    {"RuleID": "github-pat", "File": "literal.ts", "StartLine": 3, "Secret": "REDACTED"},
+                    {"RuleID": "github-pat", "File": "/outside/project.ts", "StartLine": 1},
+                ]))
+                import_catalog(catalog)
+                expect(page.get_by_text("選択したOSVデータ", exact=False)).to_be_visible()
+                holdout_start = time.monotonic()
+                picker.set_input_files(holdout)
+                start.click()
+                expect(section).to_be_visible()
+                holdout_seconds = round(time.monotonic() - holdout_start, 3)
+                expected_holdout = [
+                    ("ARTEX", "管理ポートの公開範囲", "対策が必要", "cloudformation.json:3"),
+                    ("ARTEX", "APIの試行回数制限", "防御確認済み", "cloudformation.json:16"),
+                    ("ARTEX", "SAML署名要件の明示設定", "防御確認済み", "auth-options.ts:2"),
+                    ("ARTEX", "SAML署名要件の明示設定", "未確認", "auth-options.ts:3"),
+                    ("ARTEX", "XML外部実体・DTD設定", "対策が必要", "auth-options.ts:5"),
+                    ("ARTEX", "Kubernetesの外向き通信", "対策が必要", "network-policy.json:12"),
+                    ("ARTEX", "Kubernetesの権限範囲", "未確認", "role-manifest.json:7"),
+                    ("ARTEX", "コンテナの既定ユーザー", "対策が必要", "Dockerfile:2"),
+                    ("Claude Code", "外部入力とHTML出力", "対策が必要", "database/render.ts:3"),
+                    ("Claude Code", "外部入力とHTML出力", "防御確認済み", "database/render.ts:7"),
+                    ("Claude Code", "Gitleaksの資格情報候補", "未確認", "literal.ts:3"),
+                    ("Claude Code", "ソース内の秘密鍵形式", "未確認", "literal.ts:2"),
+                    ("CVE", "CVE-2099-40101", "対策が必要", "package-lock.json:12"),
+                    ("CVE", "CVE-2099-40102", "対策が必要", "requirements.txt:1"),
+                    ("CVE", "CVE-2099-40103", "対策が必要", "go.mod:5"),
+                ]
+                for category, label, verdict, location in expected_holdout:
+                    summary = section.get_by_text(f"{category} ／ {label} ／ {verdict}", exact=True)
+                    summary.click()
+                    expect(summary.locator("..").get_by_text(location, exact=True)).to_be_visible()
+                expect(section.get_by_text("CVE-2099-40104", exact=False)).to_have_count(0)
+                expect(section.get_by_text("Claude Code ／ Gitleaksの資格情報候補", exact=False)).to_have_count(1)
+                assert "SYNTHETIC_ONLY" not in section.inner_text()
+                assert "REDACTED" not in section.inner_text()
+                assert "/outside" not in section.inner_text()
                 assert not external and not posted, (external, posted)
                 print(json.dumps({"actions_to_start_from_dashboard": 3, "actions_per_recheck": 2,
                                   "scan_seconds": measured, "fixture_preparation_seconds": round(preparation, 3),
                                   "external_requests": len(external), "upload_requests": len(posted),
-                                  "expected_artifact_classifications": 15}, ensure_ascii=False))
+                                  "expected_artifact_classifications": 15, "holdout_classifications": 16,
+                                  "holdout_seconds": holdout_seconds}, ensure_ascii=False))
                 browser.close()
         finally:
             web.terminate()

@@ -13,7 +13,7 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
   const [selected, setSelected] = useState(new Set<string>(categories));
   const [files, setFiles] = useState<File[]>([]);
   const [feed, setFeed] = useState<unknown>(bundledFeed);
-  const [feedLabel, setFeedLabel] = useState("同梱のサンプル");
+  const [feedLabel, setFeedLabel] = useState("同梱NVDサンプル（収録2件、取得日時不明）");
   const [mode, setMode] = useState<"local" | "demo">("local");
   const [report, setReport] = useState<ProjectReport | null>(null);
   const [results, setResults] = useState<ReturnType<typeof checkControls> | null>(null);
@@ -34,7 +34,12 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
       if (!nvd && (!osv.length || !osv.every((entry) => typeof record(entry).id === "string" &&
           Array.isArray(record(entry).affected)))) throw new Error();
       setFeed(nvd ? parsed : osv);
-      setFeedLabel(nvd ? "選択したNVDデータ" : "選択したOSVデータ");
+      const count = nvd ? (parsed.vulnerabilities as unknown[]).length : osv.length;
+      const origin = nvd ? "選択したNVDデータ（CPE）" : "選択したOSVデータ（npm・PyPI・Go）";
+      const timestamp = typeof parsed.timestamp === "string" &&
+        /^\d{4}-\d{2}-\d{2}T[\d:.+-]+Z?$/.test(parsed.timestamp) && parsed.timestamp.length < 40
+        ? ` ／ 資料の出力日時 ${parsed.timestamp}` : " ／ 取得日時不明";
+      setFeedLabel(`${origin} ${count}件 ／ 読込 ${new Date().toLocaleString()}${timestamp}`);
       setResults(null);
       setReport(null);
     } catch {
@@ -143,13 +148,17 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
         <p role="status" className="text-sm">{Object.entries(labels).map(([key, label]) =>
           `${label} ${visible.filter((row) => row.status === key).length}件`).join(" ・ ")}</p>
         {report && <p className="text-sm">
-          {report.read}ファイルを読み取り、{report.skipped}件を対象外、{report.omitted}件を読み取り・解析上限等で除外。
-          言語 {report.languages.join("・") || "不明"} ／ フレームワーク {report.frameworks.join("・") || "不明"} ／ ロック形式 {report.lockKinds}種 ／ 照合可能なnpm依存関係 {report.npmPackages}件。
+          {report.read}ファイルの読取を試行。対象外 {report.skipped}件 ／ ファイル上限 {report.omitted}件 ／
+          未対応形式または固定版なし {report.unsupported}件 ／ 読取失敗 {report.unreadable}件 ／ 解析上限 {report.skippedRules}か所。
+          言語 {report.languages.join("・") || "不明"} ／ フレームワーク {report.frameworks.join("・") || "不明"} ／ ロック形式 {report.lockKinds}種 ／ 照合対象の固定依存関係 {report.packageCount}件。
         </p>}
         <p className="text-sm">防御確認済みは、確認できたコードや設定の範囲です。実稼働環境は各項目の再検証方法を確認してください。</p>
         {visible.map((row, index) => <details key={index} className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
           <summary className="cursor-pointer font-medium">{row.category} ／ {row.title} ／ {labels[row.status]}</summary>
           <dl className="mt-2 space-y-1 break-words text-sm">
+            {row.location && <><dt className="font-semibold">修正箇所</dt><dd className="font-mono">
+              <bdi>{row.location.path}</bdi>{row.location.line ? `:${row.location.line}` : "（行番号不明）"}
+            </dd></>}
             <dt className="font-semibold">根拠</dt><dd>{row.evidence}</dd>
             <dt className="font-semibold">危険性</dt><dd>{row.risk}</dd>
             <dt className="font-semibold">修正方法</dt><dd>{row.fix}</dd>
