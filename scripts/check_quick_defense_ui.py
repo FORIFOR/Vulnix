@@ -70,75 +70,118 @@ def main():
                 page.get_by_role("link", name="ローカルプロジェクトの診断").click()
                 expect(page.get_by_role("checkbox")).to_have_count(3)
                 assert all(item.is_checked() for item in page.get_by_role("checkbox").all())
-                local_requests = []
-                def track(req):
-                    if req.resource_type in {"fetch", "xhr"}:
-                        local_requests.append(req.url)
-                evidence = {
-                    "controls": {"saml": {"enabled": True, "evidence": "synthetic SSO test"},
-                                 "accounts": {"enabled": False, "evidence": "synthetic policy"}},
-                    "components": [{"vendor": "apache", "product": "http_server", "version": "2.4.49",
-                                    "reviews": {"CVE-2021-41773": {"applies": True, "patched": False}}}],
-                }
-                page.get_by_label("設定・依存関係の証拠JSON").set_input_files(
-                    {"name": "project-review.json", "mimeType": "application/json",
-                     "buffer": json.dumps(evidence).encode()})
-                page.get_by_label("JavaScript / JSXソース（任意）").set_input_files(
-                    {"name": "sample.js", "mimeType": "text/javascript",
-                     "buffer": b"element.innerHTML = suppliedText;"})
-                expect(page.get_by_role("button", name="選択したソースを外す")).to_be_visible()
-                lockfile = {"lockfileVersion": 3, "packages": {
-                    "node_modules/demo": {"version": "1.2.3", "resolved": "http://registry.invalid/demo.tgz"},
-                }}
-                page.get_by_label("package-lock.json（任意）").set_input_files(
-                    {"name": "package-lock.json", "mimeType": "application/json",
-                     "buffer": json.dumps(lockfile).encode()})
-                expect(page.get_by_role("button", name="選択したロックファイルを外す")).to_be_visible()
-                page.on("request", track)
-                page.get_by_role("button", name="ローカル検証を開始").click()
-                expect(page.get_by_role("status").filter(has_text="対策が必要 3件")).to_be_visible()
-                before = page.locator("section[aria-label='検証結果'] details").count()
-                assert before == 12
-                for category, count in (("ARTEX", 5), ("CVE", 2), ("Claude Code", 5)):
-                    expect(page.locator("section[aria-label='検証結果'] summary")
-                           .filter(has_text=re.compile(rf"^{category} ／"))).to_have_count(count)
-                for summary in (
-                    "ARTEX ／ SAML署名の強制 ／ 防御確認済み",
-                    "ARTEX ／ npm依存関係の取得元 ／ 対策が必要",
-                    "CVE ／ http_server 2.4.49 · CVE-2021-41773 ／ 対策が必要",
-                    "CVE ／ http_server 2.4.49 · CVE-2021-42013 ／ 未確認",
-                    "Claude Code ／ JavaScript / JSX のHTML書き込み候補 ／ 未確認",
-                ):
-                    expect(page.get_by_text(summary, exact=True)).to_be_visible()
-                for label in ("防御確認済み 1件", "未確認 8件"):
-                    expect(page.get_by_role("status").filter(has_text=label)).to_be_visible()
-                elapsed = round(time.monotonic() - started, 2)
-                page.get_by_text("Claude Code ／ 認証強化と試行制限 ／ 対策が必要", exact=True).click()
-                expect(page.get_by_text("synthetic policy", exact=True)).to_be_visible()
-                expect(page.get_by_text("管理者にMFAを必須にし、認証試行を制限する")).to_be_visible()
-                evidence["controls"]["accounts"] = {"enabled": True, "evidence": "synthetic corrected policy"}
-                page.get_by_label("証拠JSONを編集").fill(json.dumps(evidence))
-                page.get_by_role("button", name="ローカル検証を開始").click()
-                expect(page.get_by_role("status").filter(has_text="対策が必要 2件")).to_be_visible()
-                expect(page.get_by_text("Claude Code ／ 認証強化と試行制限 ／ 防御確認済み", exact=True)).to_be_visible()
-                feed = json.loads((ROOT / "aegis/feeds/nvd-recent.json").read_text())
-                feed["vulnerabilities"] = feed["vulnerabilities"][:1]
-                page.get_by_text("入力形式とCVEカタログの更新", exact=True).click()
-                page.get_by_label("NVD JSONを手動で読み込む").set_input_files(
-                    {"name": "nvd-recent.json", "mimeType": "application/json", "buffer": json.dumps(feed).encode()})
-                expect(page.get_by_text("ローカルで使用するCVEカタログ　nvd-recent.json", exact=True)).to_be_visible()
-                page.get_by_role("button", name="ローカル検証を開始").click()
-                expect(page.locator("section[aria-label='検証結果'] details")).to_have_count(11)
-                page.get_by_role("button", name="模擬データで試す").click()
-                expect(page.get_by_role("heading", name="模擬データの結果")).to_be_visible()
-                assert not external and not local_requests, (external, local_requests)
-                page.goto(base + "/dashboard")
-                page.get_by_role("button", name="隔離ラボを開く").click()
-                page.wait_for_url("**/assessments/scan_001**")
-                assert not external, external
-                print(json.dumps({"actions_to_first_result": 5, "seconds_to_first_result": elapsed,
-                                  "results": before, "recheck_passed": True, "mock_mode_passed": True,
-                                  "scan_requests": 0, "feed_import_passed": True, "lab_workspace_opened": True}))
+                folder = path / "sample-project"
+                folder.mkdir()
+                preparation_start = time.monotonic()
+                (folder / "package.json").write_text('{"dependencies":{"express":"5.1.0"}}')
+                (folder / "Dockerfile").write_text("FROM httpd:2.4.49\n")
+                lock = folder / "package-lock.json"
+                def lock_version(version):
+                    lock.write_text(json.dumps({"lockfileVersion": 3, "packages": {
+                        "node_modules/fixture-dependency": {"version": version, "integrity": "sha512-synthetic",
+                            "resolved": "https://registry.example.invalid/fixture.tgz"},
+                    }}))
+                lock_version("1.2.3")
+                hidden = folder / ".env"
+                hidden.write_text("SYNTHETIC_PRIVATE_VALUE=never-display-this")
+                generated = folder / "node_modules" / "generated"
+                generated.mkdir(parents=True)
+                (generated / "auth.ts").write_text("function render(req, el) { el.innerHTML = req.query.name; }")
+                (folder / "routing.ts").write_text(
+                    "function display(request, target) { const value = request.body.title; target.innerHTML = value; }")
+                (folder / "too-large.ts").write_text(" " * (256 * 1024 + 1))
+                template = folder / "cloudformation.json"
+                def cloud(endpoint, token):
+                    template.write_text(json.dumps({"Resources": {"Launch": {"Type": "AWS::EC2::LaunchTemplate",
+                        "Properties": {"LaunchTemplateData": {"MetadataOptions": {
+                            "HttpEndpoint": endpoint, "HttpTokens": token}}}}}}))
+                cloud("enabled", "optional")
+                preparation = time.monotonic() - preparation_start
+                posted = []
+                page.on("request", lambda req: posted.append(req.method) if req.method != "GET" else None)
+                picker = page.get_by_label("プロジェクトフォルダを選択")
+                start = page.get_by_role("button", name="ローカル検証を開始")
+                section = page.get_by_role("region", name="検証結果")
+                measured = []
+                def scan(expected, unknown):
+                    scan_start = time.monotonic()
+                    picker.set_input_files(folder)
+                    start.click()
+                    expect(section).to_be_visible()
+                    elapsed = time.monotonic() - scan_start
+                    for category, title in (("ARTEX", "EC2起動テンプレートのメタデータ保護"),
+                                            ("Claude Code", "外部入力とHTML出力")):
+                        status = unknown if category == "Claude Code" and unknown else expected
+                        expect(section.get_by_text(f"{category} ／ {title} ／ {status}", exact=True)).to_be_visible()
+                    expect(section.get_by_text("CVE ／ CVE-2021-41773 ／ 未確認", exact=True)).to_be_visible()
+                    assert "never-display-this" not in page.locator("body").inner_text()
+                    expect(section.get_by_text("2件を対象外、1件を読み取り・解析上限等で除外", exact=False)).to_be_visible()
+                    expect(section.get_by_text("Claude Code ／ 外部入力とHTML出力", exact=False)).to_have_count(1)
+                    measured.append(round(elapsed, 3))
+                scan("対策が必要", "")
+                finding = section.get_by_text("Claude Code ／ 外部入力とHTML出力 ／ 対策が必要", exact=True)
+                finding.click()
+                expect(finding.locator("..").get_by_text("修正方法", exact=True)).to_be_visible()
+                cloud("enabled", "required")
+                (folder / "routing.ts").write_text(
+                    "function display(request, target) { const value = request.body.title; target.textContent = value; }")
+                storage = folder / "storage-template.json"
+                storage.write_text(json.dumps({"Resources": {"Storage": {"Type": "AWS::S3::Bucket",
+                    "Properties": {"PublicAccessBlockConfiguration": {
+                        "BlockPublicAcls": True, "IgnorePublicAcls": True,
+                        "BlockPublicPolicy": True, "RestrictPublicBuckets": True,
+                    }}}}}))
+                scan("防御確認済み", "")
+                expect(section.get_by_text("Claude Code ／ ストレージの公開防止 ／ 防御確認済み", exact=True)).to_be_visible()
+                cloud({"Ref": "Endpoint"}, {"Ref": "TokenMode"})
+                (folder / "routing.ts").write_text(
+                    "function display(value, target) { target.innerHTML = normalize(value); }")
+                storage.write_text(json.dumps({"Resources": {"Storage": {"Type": "AWS::S3::Bucket"}}}))
+                scan("未確認", "未確認")
+                expect(section.get_by_text("Claude Code ／ ストレージの公開防止 ／ 未確認", exact=True)).to_be_visible()
+                page.get_by_text("CVEカタログの更新", exact=True).click()
+                feed = page.get_by_label("NVD・OSVのJSONを手動で読み込む")
+                def import_catalog(data):
+                    feed.set_input_files({"name": "catalog.json", "mimeType": "application/json",
+                                          "buffer": json.dumps(data).encode()})
+                compound = {"format": "NVD_CVE", "version": "2.0", "vulnerabilities": [{"cve": {
+                    "id": "CVE-2099-31415", "configurations": [{"operator": "AND", "nodes": [
+                        {"operator": "OR", "cpeMatch": [{"vulnerable": True,
+                            "criteria": "cpe:2.3:a:apache:http_server:2.4.49:*:*:*:*:*:*:*"}]},
+                        {"operator": "OR", "cpeMatch": [{"vulnerable": False,
+                            "criteria": "cpe:2.3:o:fixture:runtime:1.2:*:*:*:*:*:*:*"}]},
+                    ]}]}}]}
+                import_catalog(compound)
+                expect(page.get_by_text("選択したNVDデータ", exact=False)).to_be_visible()
+                start.click()
+                missing = section.get_by_text("CVE ／ CVE-2099-31415 ／ 未確認", exact=True)
+                missing.click()
+                expect(section.get_by_text("必要な構成条件の一部", exact=False)).to_be_visible()
+                sbom = folder / "fixture-sbom.json"
+                sbom.write_text(json.dumps({"bomFormat": "CycloneDX", "components": [
+                    {"cpe": "cpe:2.3:a:apache:http_server:2.4.49:*:*:*:*:*:*:*"},
+                    {"cpe": "cpe:2.3:o:fixture:runtime:1.2:*:*:*:*:*:*:*"},
+                ]}))
+                picker.set_input_files(folder)
+                start.click()
+                section.get_by_text("CVE ／ CVE-2099-31415 ／ 未確認", exact=True).click()
+                expect(section.get_by_text("製品・版・構成条件の組み合わせ", exact=False)).to_be_visible()
+                advisory = {"id": "CVE-2099-27182", "affected": [
+                    {"package": {"ecosystem": "npm", "name": "fixture-dependency"}, "versions": ["1.2.3"]},
+                ]}
+                import_catalog(advisory)
+                expect(page.get_by_text("選択したOSVデータ", exact=False)).to_be_visible()
+                start.click()
+                expect(section.get_by_text("CVE ／ CVE-2099-27182 ／ 対策が必要", exact=True)).to_be_visible()
+                lock_version("1.2.4")
+                picker.set_input_files(folder)
+                start.click()
+                expect(section.get_by_text("CVE ／ npm依存関係と公開CVEの照合 ／ 未確認", exact=True)).to_be_visible()
+                assert not external and not posted, (external, posted)
+                print(json.dumps({"actions_to_start_from_dashboard": 3, "actions_per_recheck": 2,
+                                  "scan_seconds": measured, "fixture_preparation_seconds": round(preparation, 3),
+                                  "external_requests": len(external), "upload_requests": len(posted),
+                                  "expected_artifact_classifications": 15}, ensure_ascii=False))
                 browser.close()
         finally:
             web.terminate()

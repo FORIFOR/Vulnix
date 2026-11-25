@@ -1,69 +1,100 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
-import { categories, checkCloudFormation, checkControls, checkCves, checkLockfile, checkSource, demoEvidence, labels, record } from "@/lib/quickDefense";
+import { useEffect, useRef, useState } from "react";
+import { categories, checkControls, checkCves, demoEvidence, labels, record } from "@/lib/quickDefense";
 
 const button = "rounded-lg border border-zinc-300 px-3 py-2 text-sm font-medium dark:border-zinc-700";
 const primary = "rounded-lg bg-zinc-900 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50 dark:bg-white dark:text-zinc-900";
-const template = JSON.stringify(demoEvidence, null, 2);
+type ProjectReport = Awaited<ReturnType<typeof import("@/lib/projectDefense").scanProject>>;
 const maxInput = 2 * 1024 * 1024;
 
 export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) {
   const [selected, setSelected] = useState(new Set<string>(categories));
-  const [input, setInput] = useState("");
-  const [source, setSource] = useState("");
-  const [lockfile, setLockfile] = useState<{ data: unknown } | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
   const [feed, setFeed] = useState<unknown>(bundledFeed);
   const [feedLabel, setFeedLabel] = useState("同梱のサンプル");
   const [mode, setMode] = useState<"local" | "demo">("local");
+  const [report, setReport] = useState<ProjectReport | null>(null);
   const [results, setResults] = useState<ReturnType<typeof checkControls> | null>(null);
   const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const running = useRef<(() => void) | null>(null);
 
-  async function readFile(file: File, kind: "source" | "feed" | "evidence" | "lockfile") {
+  useEffect(() => () => running.current?.(), []);
+
+  async function importFeed(file: File) {
     setError("");
     try {
-      if (file.size > maxInput) throw new Error("ファイルは2 MBまでです。");
-      const raw = await file.text();
-      if (kind === "source") setSource(raw);
-      if (kind === "lockfile") setLockfile({ data: JSON.parse(raw) });
-      if (kind === "evidence") setInput(raw);
-      if (kind === "feed") {
-        const parsed = record(JSON.parse(raw));
-        if (parsed.format !== "NVD_CVE" || parsed.version !== "2.0" ||
-          !Array.isArray(parsed.vulnerabilities) || !parsed.vulnerabilities.length) {
-          throw new Error("CVEを含むNVD CVE API 2.0形式のJSONを選んでください。");
-        }
-        setFeed(parsed);
-        setFeedLabel(file.name);
-      }
+      if (file.size > maxInput) throw new Error();
+      const data: unknown = JSON.parse(await file.text());
+      const parsed = record(data);
+      const nvd = parsed.format === "NVD_CVE" && parsed.version === "2.0" && Array.isArray(parsed.vulnerabilities);
+      const osv = Array.isArray(data) ? data : [data];
+      if (!nvd && (!osv.length || !osv.every((entry) => typeof record(entry).id === "string" &&
+          Array.isArray(record(entry).affected)))) throw new Error();
+      setFeed(nvd ? parsed : osv);
+      setFeedLabel(nvd ? "選択したNVDデータ" : "選択したOSVデータ");
       setResults(null);
-    } catch (err) {
-      setError(err instanceof SyntaxError ? "JSONの形式を確認してください。" : (err as Error).message);
+      setReport(null);
+    } catch {
+      setError("2 MB以下のNVD 2.0またはOSV JSONを選んでください。");
     }
   }
 
   function run(kind: "local" | "demo") {
+    setReport(null);
     setResults(null);
     setError("");
+    setMode(kind);
+    if (kind === "demo") {
+      setResults([...checkControls(demoEvidence.controls), ...checkCves(demoEvidence.components, bundledFeed)]);
+      return;
+    }
+    setBusy(true);
     try {
-      const data = kind === "demo" ? demoEvidence : record(input.trim() ? JSON.parse(input) : {});
-      const rows = checkControls(data.controls);
-      if (kind === "local") rows.push(...checkCloudFormation(data));
-      rows.push(...checkCves(data.components, kind === "demo" ? bundledFeed : feed));
-      if (kind === "local" && source) rows.push(checkSource(source));
-      if (kind === "local" && lockfile) rows.push(checkLockfile(lockfile.data));
-      setMode(kind);
-      setResults(rows.filter((row) => selected.has(row.category)));
+      const worker = new Worker(new URL("../../lib/projectDefense.worker.ts", import.meta.url));
+      const finish = () => {
+        window.clearTimeout(timeout);
+        worker.terminate();
+        running.current = null;
+      };
+      const timeout = window.setTimeout(() => {
+        finish();
+        setBusy(false);
+        setError("検証が8秒の上限に達しました。対象を小さいフォルダに分けて選んでください。");
+      }, 8000);
+      running.current = finish;
+      worker.onmessage = ({ data }: MessageEvent<{ result?: ProjectReport }>) => {
+        finish();
+        setBusy(false);
+        if (!data.result) {
+          setError("検証を完了できませんでした。フォルダを選び直してください。");
+          return;
+        }
+        setReport(data.result);
+        setResults(data.result.rows);
+      };
+      worker.onerror = () => {
+        finish();
+        setBusy(false);
+        setError("検証処理を読み込めませんでした。ページを開き直してください。");
+      };
+      // The browser may not preserve webkitRelativePath through structured cloning.
+      worker.postMessage({ files: files.map((file) => ({ file, path: file.webkitRelativePath || file.name })), feed });
     } catch {
-      setError("設定・依存関係のJSON形式を確認してください。");
+      running.current?.();
+      setBusy(false);
+      setError("このブラウザでは検証を開始できませんでした。");
     }
   }
+
+  const visible = results?.filter((row) => selected.has(row.category));
 
   return (
     <main className="mx-auto max-w-3xl space-y-5 p-4 md:p-8">
       <h1 className="text-2xl font-bold">ローカルプロジェクトの診断</h1>
-      <p className="text-sm text-zinc-600 dark:text-zinc-300">選んだファイルと入力はブラウザ内で読み取ります。設定の確認結果や導入済みバージョンを入力してください。</p>
+      <p className="text-sm text-zinc-600 dark:text-zinc-300">プロジェクトのフォルダを選ぶと、設定・依存関係・関連ソースをブラウザ内で調べます。</p>
       <fieldset className="flex flex-wrap gap-4">
         <legend className="mb-2 font-medium">検証項目</legend>
         {categories.map((category) => <label key={category} className="flex items-center gap-2">
@@ -76,48 +107,30 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
         </label>)}
       </fieldset>
       <section className="space-y-3 rounded-xl border border-zinc-200 p-4 dark:border-zinc-800">
-        <h2 className="font-semibold">プロジェクトの情報</h2>
-        <label className="block text-sm">設定・依存関係の証拠JSON
-          <input type="file" accept=".json" className="mt-1 block w-full" onChange={(event) => {
-            const file = event.target.files?.[0];
-            if (file) void readFile(file, "evidence");
-            event.target.value = "";
-          }} />
-        </label>
-        <label className="block text-sm">証拠JSONを編集
-          <textarea value={input} maxLength={maxInput} rows={5} onChange={(event) => {
-            setInput(event.target.value);
+        <label className="block text-sm font-semibold">プロジェクトフォルダを選択
+          <input type="file" {...{ webkitdirectory: "" }} multiple disabled={busy} className="mt-2 block w-full text-sm" onChange={(event) => {
+            const list = event.target.files;
+            const tooMany = (list?.length ?? 0) > 12000;
+            setFiles(!tooMany && list ? Array.from(list) : []);
+            setReport(null);
             setResults(null);
-          }} className="mt-1 w-full rounded border border-zinc-300 p-2 font-mono dark:border-zinc-700" />
-        </label>
-        <label className="block text-sm">JavaScript / JSXソース（任意）
-          <input type="file" accept=".js,.jsx,.ts,.tsx,.mjs" className="mt-1 block w-full" onChange={(event) => {
-            const file = event.target.files?.[0];
-            if (file) void readFile(file, "source");
+            setError(tooMany ? "ファイルが12,000件を超えています。さらに小さいフォルダを選んでください。" : "");
             event.target.value = "";
           }} />
         </label>
-        {source && <button type="button" className={button} onClick={() => { setSource(""); setResults(null); }}>選択したソースを外す</button>}
-        <label className="block text-sm">package-lock.json（任意）
-          <input type="file" accept=".json" className="mt-1 block w-full" onChange={(event) => {
-            const file = event.target.files?.[0];
-            if (file) void readFile(file, "lockfile");
-            event.target.value = "";
-          }} />
-        </label>
-        {lockfile && <button type="button" className={button} onClick={() => { setLockfile(null); setResults(null); }}>選択したロックファイルを外す</button>}
+        {files.length > 0 && <p className="text-sm">フォルダ内のファイルを {files.length} 件選択済み</p>}
         <div className="flex flex-wrap gap-2">
-          <button type="button" className={primary} disabled={!selected.size || !(input.trim() || source || lockfile)} onClick={() => run("local")}>ローカル検証を開始</button>
-          <button type="button" className={button} disabled={!selected.size} onClick={() => run("demo")}>模擬データで試す</button>
+          <button type="button" className={primary} disabled={busy || !selected.size || !files.length} onClick={() => run("local")}>
+            {busy ? "検証中…" : "ローカル検証を開始"}
+          </button>
+          <button type="button" className={button} disabled={busy || !selected.size} onClick={() => run("demo")}>模擬データで試す</button>
         </div>
         <details className="text-sm">
-          <summary className="cursor-pointer">入力形式とCVEカタログの更新</summary>
-          <p className="mt-2">ソースや設定の確認箇所、テスト名、導入版を記入します。秘密値は省いてください。CVEごとの影響条件と修正状況は reviews に記録します。CloudFormation JSONを選ぶと、EC2起動テンプレートのメタデータ設定を確認できます。</p>
-          <pre className="my-2 max-h-48 overflow-auto rounded bg-zinc-100 p-2 text-xs dark:bg-zinc-900">{template}</pre>
-          <label className="block">NVD JSONを手動で読み込む
-            <input type="file" accept=".json" className="mt-1 block w-full" onChange={(event) => {
+          <summary className="cursor-pointer">CVEカタログの更新</summary>
+          <label className="block">NVD・OSVのJSONを手動で読み込む
+            <input type="file" accept=".json" disabled={busy} className="mt-1 block w-full" onChange={(event) => {
               const file = event.target.files?.[0];
-              if (file) void readFile(file, "feed");
+              if (file) void importFeed(file);
               event.target.value = "";
             }} />
           </label>
@@ -125,12 +138,16 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
         <p className="text-xs text-zinc-500">ローカルで使用するCVEカタログ　{feedLabel}</p>
         {error && <p role="alert" className="text-sm text-red-700 dark:text-red-300">{error}</p>}
       </section>
-      {results && <section className="space-y-3" aria-label="検証結果">
+      {visible && <section className="space-y-3" aria-label="検証結果">
         <h2 className="text-lg font-semibold">{mode === "demo" ? "模擬データの結果" : "ローカル入力の結果"}</h2>
         <p role="status" className="text-sm">{Object.entries(labels).map(([key, label]) =>
-          `${label} ${results.filter((row) => row.status === key).length}件`).join(" ・ ")}</p>
-        <p className="text-sm">防御確認済みは入力された根拠の範囲に限ります。</p>
-        {results.map((row, index) => <details key={index} className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
+          `${label} ${visible.filter((row) => row.status === key).length}件`).join(" ・ ")}</p>
+        {report && <p className="text-sm">
+          {report.read}ファイルを読み取り、{report.skipped}件を対象外、{report.omitted}件を読み取り・解析上限等で除外。
+          言語 {report.languages.join("・") || "不明"} ／ フレームワーク {report.frameworks.join("・") || "不明"} ／ ロック形式 {report.lockKinds}種 ／ 照合可能なnpm依存関係 {report.npmPackages}件。
+        </p>}
+        <p className="text-sm">防御確認済みは、確認できたコードや設定の範囲です。実稼働環境は各項目の再検証方法を確認してください。</p>
+        {visible.map((row, index) => <details key={index} className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
           <summary className="cursor-pointer font-medium">{row.category} ／ {row.title} ／ {labels[row.status]}</summary>
           <dl className="mt-2 space-y-1 break-words text-sm">
             <dt className="font-semibold">根拠</dt><dd>{row.evidence}</dd>
@@ -139,9 +156,9 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
             <dt className="font-semibold">再検証方法</dt><dd>{row.retest}</dd>
           </dl>
         </details>)}
-        {mode === "local" && <button type="button" className={primary} onClick={() => run("local")}>同じ入力で再検証</button>}
+        {mode === "local" && <p className="text-sm">修正後は上のフォルダ選択から選び直して再検証してください。</p>}
       </section>}
-      <Link href="/assets" className="text-sm underline">所有確認済みWebサイト・APIと隔離ラボへ</Link>
+      <Link href="/assets" prefetch={false} className="text-sm underline">所有確認済みWebサイト・APIと隔離ラボへ</Link>
     </main>
   );
 }
