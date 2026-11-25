@@ -10,6 +10,13 @@ root=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
 sha=$(git -C "$root" rev-parse HEAD)
 lock=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
 parent=$(cd "$2" && pwd)
+case "$parent/" in
+    "$root/"*) echo 'Keep private release artifacts outside the Git worktree' >&2; exit 2 ;;
+esac
+if git -C "$root" ls-tree -r --name-only "$sha" web | grep -Eq '(^|/)\.env[^/]*$|(^|/)data[^/]*/|\.key$|initial-credentials'; then
+    echo 'Protected paths found in the release source tree' >&2
+    exit 2
+fi
 node_bin=$(command -v node)
 test "$(node -p 'process.platform + "/" + process.arch + "/" + process.version')" = darwin/arm64/v22.23.5
 umask 077
