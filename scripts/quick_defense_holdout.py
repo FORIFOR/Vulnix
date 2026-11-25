@@ -13,6 +13,7 @@ def write_fixture(root: Path) -> list[dict]:
                                       .digest()).decode().lower()[:36]
     token_prefix = "gh" + "p_"
     files = {
+        ".claude/settings.json": json.dumps({"permissions": {"allow": ["Bash"]}}, indent=2),
         "cloudformation.json": json.dumps({"Resources": {
             "AdminFirewall": {"Type": "AWS::EC2::SecurityGroup", "Properties": {"SecurityGroupIngress": [
                 {"CidrIp": "0.0.0.0/0", "IpProtocol": "tcp", "FromPort": 22, "ToPort": 22},

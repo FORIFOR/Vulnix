@@ -13,6 +13,7 @@ const artifact = /^(?:gitleaks-redacted\.json|package(?:-lock)?\.json|npm-shrink
 export function classifyPath(path: string) {
   const parts = path.split("/");
   const name = parts.pop() ?? "";
+  if (name === "settings.json" && parts.length === 2 && parts[1] === ".claude") return { name, priority: 0 };
   if (parts.slice(1).some((part) => excluded.test(part)) ||
       excluded.test(name) || /(?:secret|credential|private.?key)|(?:\.min\.|\.generated\.)/i.test(name)) return null;
   if (artifact.test(name)) return { name, priority: 0 };
@@ -143,6 +144,17 @@ function deploymentChecks(name: string, body: string, input: unknown, path: stri
   const results: Result[] = [];
   const add = (title: string, status: Result["status"], evidence: string, fix: string, line?: number) =>
     results.push({ ...item("ARTEX", title, status, evidence, fix), location: { path, line } });
+  if (path === ".claude/settings.json") {
+    const permissions = record(spec.permissions);
+    const broad = Array.isArray(permissions.allow) && permissions.allow.includes("Bash");
+    const otherRules = [permissions.ask, permissions.deny].some((rule) =>
+      rule !== undefined && (!Array.isArray(rule) || rule.length > 0));
+    results.push({ ...item("Claude Code", "エージェントのツール権限", broad && !otherRules ? "action" : "unknown",
+      broad && !otherRules ? "共有プロジェクト設定に、コマンドを限定しないシェル許可が記述されています。実際の許可は信頼状態と上位設定にも依存します。" :
+        "共有プロジェクト設定だけではツールの実効権限を確定できません。",
+      "共有設定の許可を必要な操作だけに限定し、利用者・管理設定と拒否ルールを合わせて確認する。"),
+      location: { path, line: propertyLine(body, "allow") } });
+  }
   if (spec.apiVersion === "networking.k8s.io/v1" && spec.kind === "NetworkPolicy" &&
       Array.isArray(settings.policyTypes) && settings.policyTypes.includes("Egress")) {
     const egress = settings.egress;

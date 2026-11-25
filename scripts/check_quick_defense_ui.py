@@ -196,6 +196,7 @@ def main():
                 expect(section).to_be_visible()
                 holdout_seconds = round(time.monotonic() - holdout_start, 3)
                 expected_holdout = [
+                    ("Claude Code", "エージェントのツール権限", "対策が必要", ".claude/settings.json:3"),
                     ("ARTEX", "管理ポートの公開範囲", "対策が必要", "cloudformation.json:3"),
                     ("ARTEX", "APIの試行回数制限", "防御確認済み", "cloudformation.json:16"),
                     ("ARTEX", "SAML署名要件の明示設定", "防御確認済み", "auth-options.ts:2"),
@@ -225,7 +226,7 @@ def main():
                 print(json.dumps({"actions_to_start_from_dashboard": 3, "actions_per_recheck": 2,
                                   "scan_seconds": measured, "fixture_preparation_seconds": round(preparation, 3),
                                   "external_requests": len(external), "upload_requests": len(posted),
-                                  "expected_artifact_classifications": 15, "holdout_classifications": 16,
+                                  "expected_artifact_classifications": 15, "holdout_classifications": 17,
                                   "holdout_seconds": holdout_seconds}, ensure_ascii=False))
                 browser.close()
         finally:
