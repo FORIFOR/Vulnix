@@ -1,7 +1,7 @@
 import ts from "typescript";
 import { parseAllDocuments } from "yaml";
-import { affects, collectPackages, propertyLine, type Package, type Location } from "./projectPackages";
-import { checkCloudFormation, checkControls, checkLockfile, record } from "./quickDefense";
+import { affects, collectPackages, compareVersions, propertyLine, type Package, type Location } from "./projectPackages";
+import { checkCloudFormation, checkControls, checkLockfile, record, type ResultLocation } from "./quickDefense";
 
 export const limits = { entries: 12000, files: 180, timeMs: 30000, findings: 5000, fileBytes: 256 * 1024, dependencyBytes: 4 * 1024 * 1024, bytes: 12 * 1024 * 1024 };
 export type ProjectFile = { file: File; path: string };
@@ -381,32 +381,53 @@ export function projectCves(feed: unknown, inventories: Component[][]): Result[]
     "稼働中の製品と版を確認し、必要に応じてCPE付きのCycloneDXと最新のNVDカタログを選ぶ。")];
 }
 
-function osvCves(feed: unknown, packages: Map<string, Package[]>) {
+function osvCves(feed: unknown, packages: Map<string, Package[]>, deadline: number, markIncomplete: () => void) {
   const results: Result[] = [];
+  let retained = 0;
   for (const osv of array(feed)) {
+    if (performance.now() >= deadline || retained >= 12000) { markIncomplete(); break; }
     if (osv.withdrawn) continue;
-    const id = (Array.isArray(osv.aliases) ? [...osv.aliases, osv.id] : [osv.id])
-      .find((value) => typeof value === "string" && /^CVE-\d{4}-\d{4,}$/.test(value));
-    if (!id) continue;
+    const ids = [...new Set([...(Array.isArray(osv.aliases) ? osv.aliases : []), osv.id].filter(
+      (value): value is string => typeof value === "string" && /^CVE-\d{4}-\d{4,}$/.test(value)))];
+    if (!ids.length) continue;
+    const locations = new Map<string, ResultLocation>();
     for (const affected of array(osv.affected)) {
       const pkg = record(affected.package);
       if (!["npm", "PyPI", "Go"].includes(String(pkg.ecosystem)) || typeof pkg.name !== "string") continue;
       const name = pkg.ecosystem === "PyPI" ? pkg.name.toLowerCase().replace(/[-_.]+/g, "-") : pkg.name;
-      const match = packages.get(`${pkg.ecosystem}:${name}`)?.find((entry) => affects(entry.version, entry.ecosystem, affected));
-      if (match) {
-        results.push({ ...item("CVE", id, "action",
-          `${match.ecosystem}の依存関係資料にある版が、選択した勧告の影響条件に一致しました。実行環境の版と到達性は未確認です。`,
-          "対象の依存関係を勧告の修正版へ更新し、新しい依存関係資料で確認する。"),
-          location: { path: match.path, line: match.line } });
-        break;
+      for (const match of packages.get(`${pkg.ecosystem}:${name}`) ?? []) {
+        if (!affects(match.version, match.ecosystem, affected)) continue;
+        const fixed = [...new Set(array(affected.ranges).filter((range) => affects(match.version, match.ecosystem, { ranges: [range] }))
+          .flatMap((range) => array(range.events).flatMap((event) => typeof event.fixed === "string" &&
+            (compareVersions(match.ecosystem, match.version, event.fixed) ?? 0) < 0 &&
+            !affects(event.fixed, match.ecosystem, affected) ? [event.fixed] : [])))];
+        const location = { path: match.path, line: match.line, dependency: match.name, version: match.version, fixed };
+        const key = locationIdentity(location);
+        if (locations.has(key)) continue;
+        if (retained + locations.size >= 12000) { markIncomplete(); break; }
+        locations.set(key, location);
       }
     }
-
+    if (!locations.size) continue;
+    const rows = [...locations.values()];
+    retained += rows.length;
+    for (const id of ids) results.push({ ...item("CVE", id, "action",
+      "依存関係資料の版が勧告の影響条件に一致しました。実行環境の版と到達性は未確認です。",
+      "影響する依存関係を勧告の修正版へ更新し、新しい依存関係資料で照合する。"),
+      location: rows[0], locations: rows });
   }
   return results.length ? results : [item("CVE", "依存関係と公開CVEの照合", "unknown",
     "対応する影響条件との一致はありません。対応外の版・未収録の勧告・実稼働の版は未確認です。",
     "対象パッケージの配布元勧告と実際に導入した版を確認する。")];
 }
+
+function locationIdentity(location: ResultLocation) {
+  return JSON.stringify([location.path, location.line, location.dependency, location.version]);
+}
+
+export type CatalogLookup = (packageKeys: string[], cpeKeys: string[], deadline: number) => Promise<{
+  osv: unknown[]; vulnerabilities: unknown[]; incomplete: boolean;
+}>;
 
 function redactedGitleaks(input: unknown, paths: Set<string>): Result[] {
   return array(input).slice(0, 100).flatMap((entry) => {
@@ -427,7 +448,7 @@ export type ScanProgress = {
   batches: number; pendingPaths: string[];
 };
 
-export async function scanProject(files: ProjectFile[], feed: unknown, onProgress?: (value: ScanProgress) => void) {
+export async function scanProject(files: ProjectFile[], feed: unknown, onProgress?: (value: ScanProgress) => void, lookupCatalog?: CatalogLookup) {
   const deadline = performance.now() + limits.timeMs;
   if (files.length > limits.entries) throw new Error("entry-limit");
   const seenPaths = new Set<string>();
@@ -580,22 +601,48 @@ export async function scanProject(files: ProjectFile[], feed: unknown, onProgres
       addRows(...findings);
     }
   }
+  let catalogIncomplete = false;
+  let indexed: Awaited<ReturnType<CatalogLookup>> | undefined;
+  if (lookupCatalog) {
+    const cpes = [...new Set(inventories.flatMap((inventory) => inventory.map(({ part, vendor, product }) => `cpe:${part}:${vendor}:${product}`)))];
+    try {
+      indexed = await lookupCatalog([...packages.keys()], cpes, deadline);
+      catalogIncomplete = indexed.incomplete;
+    } catch { catalogIncomplete = true; }
+  }
   const parsedFeed = record(feed);
   const osvFeed = Array.isArray(feed) ? feed : parsedFeed.osv;
-  const nvdEntries = new Map(array(parsedFeed.vulnerabilities).map((entry) => [record(entry.cve).id, entry]));
+  const nvdEntries = new Map([...array(parsedFeed.vulnerabilities), ...array(indexed?.vulnerabilities)].map((entry) => [record(entry.cve).id, entry]));
   const nvdRows = projectCves({ vulnerabilities: [...nvdEntries.values()] }, inventories);
-  const osvEntries = new Map(array(osvFeed).map((entry) => [entry.id, entry]));
-  const osvRows = osvEntries.size ? osvCves([...osvEntries.values()], packages) : [];
+  const osvEntries = new Map([...array(osvFeed), ...array(indexed?.osv)].map((entry) => [entry.id, entry]));
+  const osvRows = osvEntries.size ? osvCves([...osvEntries.values()], packages, deadline, () => { catalogIncomplete = true; }) : [];
   const matched = new Map<string, Result>();
   for (const row of [...nvdRows, ...osvRows]) {
     if (!row.title.startsWith("CVE-")) continue;
     const other = matched.get(row.title);
-    if (!other) matched.set(row.title, row);
-    else if (row.status === "action" && other.status !== "action") {
-      matched.set(row.title, { ...row, evidence: `${row.evidence} NVDにも対応する候補があります。` });
+    if (!other) { matched.set(row.title, row); continue; }
+    const merged = new Map<string, ResultLocation>();
+    for (const location of [...(other.locations ?? (other.location ? [other.location] : [])),
+      ...(row.locations ?? (row.location ? [row.location] : []))]) {
+      const key = locationIdentity(location);
+      const previous = merged.get(key);
+      merged.set(key, previous ? { ...location, fixed: [...new Set([...(previous.fixed ?? []), ...(location.fixed ?? [])])] } : location);
     }
+    const chosen = row.status === "action" && other.status !== "action"
+      ? { ...row, evidence: `${row.evidence} NVDにも対応する候補があります。` } : other;
+    matched.set(row.title, { ...chosen, locations: [...merged.values()] });
   }
-  for (const row of matched.values()) addRows(row);
+  let retainedCveLocations = 0;
+  for (const row of matched.values()) {
+    const available = Math.max(0, 12000 - retainedCveLocations);
+    if (row.locations && row.locations.length > available) {
+      catalogIncomplete = true;
+      if (!available) { unretained++; continue; }
+      row.locations = row.locations.slice(0, available);
+    }
+    retainedCveLocations += row.locations?.length ?? 1;
+    addRows(row);
+  }
   // Preserve evidence of an unmatched catalog even when the other catalog matched.
   if (!Array.isArray(feed)) addRows(...nvdRows.filter((row) => !row.title.startsWith("CVE-")));
   addRows(...osvRows.filter((row) => !row.title.startsWith("CVE-")));
@@ -606,6 +653,6 @@ export async function scanProject(files: ProjectFile[], feed: unknown, onProgres
     incomplete.push({ path, reason: "時間上限で未処理" });
   }
   return { rows, read, omitted, unsupported, unreadable, skippedRules, skipped: excluded,
-    pending: candidates.length - processed, incomplete, unretained, scanProgress,
+    pending: candidates.length - processed, incomplete, unretained, scanProgress, catalogIncomplete,
     languages: [...languages], frameworks: [...frameworks], lockKinds: lockKinds.size, packageCount };
 }

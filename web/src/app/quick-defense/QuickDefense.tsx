@@ -2,9 +2,9 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
-import type { CatalogUpdate } from "@/lib/catalogUpdate";
+import { catalogSources, osvSources, type CatalogSource } from "@/lib/catalogUpdate";
 import type { ScanProgress } from "@/lib/projectDefense";
-import { readCatalogCache, writeCatalogCache, type OfficialCatalog } from "@/lib/catalogCache";
+import { readCatalogCache } from "@/lib/catalogCache";
 import { categories, checkControls, checkCves, demoEvidence, labels, record } from "@/lib/quickDefense";
 
 const button = "rounded-lg border border-zinc-300 px-3 py-2 text-sm font-medium dark:border-zinc-700";
@@ -17,7 +17,9 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
   const [files, setFiles] = useState<File[]>([]);
   const [nvd, setNvd] = useState<unknown>(bundledFeed);
   const [osv, setOsv] = useState<unknown[]>([]);
-  const [official, setOfficial] = useState<OfficialCatalog>({});
+  const [official, setOfficial] = useState<Awaited<ReturnType<typeof readCatalogCache>>>({ sources: [], legacy: {} });
+  const [updateProgress, setUpdateProgress] = useState<{ source: CatalogSource; count: number } | null>(null);
+  const catalogWorker = useRef<Worker | null>(null);
   const [cacheReady, setCacheReady] = useState(false);
   const [refreshErrors, setRefreshErrors] = useState<string[]>([]);
   const [updating, setUpdating] = useState(false);
@@ -39,30 +41,38 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
     void readCatalogCache().then((cached) => {
       if (active) setOfficial(cached);
     }).catch(() => {}).finally(() => { if (active) setCacheReady(true); });
-    return () => { active = false; running.current?.(); };
+    return () => { active = false; running.current?.(); catalogWorker.current?.terminate(); };
   }, []);
 
-  async function updateOfficial() {
+  const cachedSources = new Set(official.sources.map(({ source }) => source));
+  const missingCatalogs = catalogSources().filter((source) => !cachedSources.has(source));
+
+  function updateOfficial(sources: CatalogSource[]) {
     setUpdating(true);
+    setUpdateProgress(null);
     setRefreshErrors([]);
-    try {
-      const response = await fetch("/api/catalog/refresh", { method: "POST", headers: { "X-Aegis-Request": "1" } });
-      if (!response.ok) throw new Error();
-      const sources: CatalogUpdate[] = await response.json();
-      const updated = { ...official, ...Object.fromEntries(
-        sources.filter((entry) => !entry.failed && Array.isArray(entry.records)).map((entry) => [entry.source, entry]),
-      ) } satisfies OfficialCatalog;
-      setOfficial(updated);
-      const failures: string[] = sources.filter((entry) => entry.failed).map((entry) => entry.source);
-      try { await writeCatalogCache(updated); } catch { failures.push("ブラウザへの保存"); }
-      setRefreshErrors(failures);
+    const finish = async (failed: string[]) => {
+      catalogWorker.current?.terminate();
+      catalogWorker.current = null;
+      try { setOfficial(await readCatalogCache()); }
+      catch { failed.push("ブラウザの保存領域"); }
+      setRefreshErrors(failed);
+      setUpdating(false);
+      setUpdateProgress(null);
       setResults(null);
       setReport(null);
-    } catch {
-      setRefreshErrors(["更新処理"]);
-    } finally {
-      setUpdating(false);
-    }
+    };
+    try {
+      const worker = new Worker(new URL("../../lib/catalogUpdate.worker.ts", import.meta.url));
+      catalogWorker.current = worker;
+      worker.onmessage = ({ data }: MessageEvent<{ failed?: CatalogSource[]; progress?: { source: CatalogSource; count: number } }>) => {
+        if (catalogWorker.current !== worker) return;
+        if (data.progress) setUpdateProgress(data.progress);
+        else void finish(data.failed ?? ["更新処理"]);
+      };
+      worker.onerror = () => { if (catalogWorker.current === worker) void finish(["更新処理"]); };
+      worker.postMessage(sources);
+    } catch { void finish(["更新処理"]); }
   }
 
   async function importFeed(file: File) {
@@ -137,10 +147,15 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
         setError("検証処理を読み込めませんでした。ページを開き直してください。");
       };
       // The browser may not preserve webkitRelativePath through structured cloning.
-      const localNvd = record(nvd).vulnerabilities;
+      const nvdRows = record(nvd).vulnerabilities;
+      const localNvd = Array.isArray(nvdRows) ? nvdRows.filter((row) => {
+        if (nvd !== bundledFeed) return true;
+        const match = /^CVE-(\d{4})-/.exec(String(record(record(row).cve).id));
+        return !match || !cachedSources.has(`NVD-${Math.max(2002, Number(match[1]))}`);
+      }) : [];
       const feed = {
-        vulnerabilities: [...(Array.isArray(localNvd) ? localNvd : []), ...(official.NVD?.records ?? [])],
-        osv: [...osv, ...(["npm", "PyPI", "Go"] as const).flatMap((source) => official[source]?.records ?? [])],
+        vulnerabilities: [...localNvd, ...(official.sources.some(({ source }) => source.startsWith("NVD-")) ? [] : official.legacy.NVD?.records ?? [])],
+        osv: [...osv, ...osvSources.flatMap((source) => cachedSources.has(source) ? [] : official.legacy[source]?.records ?? [])],
       };
       worker.postMessage({ files: files.map((file) => ({ file, path: file.webkitRelativePath || file.name })), feed });
     } catch {
@@ -150,6 +165,7 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
     }
   }
 
+  const statusLabel = (status: keyof typeof labels) => mode === "local" && status === "confirmed" ? "設定・コードを確認" : labels[status];
   const visible = results?.filter((row) => selected.has(row.category));
 
   return (
@@ -203,14 +219,32 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
         </details>}
         <details className="text-sm">
           <summary className="cursor-pointer">CVEカタログの更新</summary>
-          <button type="button" className={button} disabled={!cacheReady || busy || updating} onClick={updateOfficial}>
-            {updating ? "取得中…" : "NVD・OSVの公式データを取得"}
-          </button>
-          <p>公式の公開カタログだけを取得します。選択したプロジェクトの情報は送信しません。</p>
-          {refreshErrors.length > 0 && <p role="alert">更新失敗：{refreshErrors.join("・")}。取得済みのデータは保持しました。</p>}
-          {Object.values(official).map((entry) => <p key={entry.source}>
-            {entry.source} ／ {entry.records?.length ?? 0}件 ／ {entry.scope} ／ 取得開始 {new Date(entry.fetchedAt).toLocaleString()}
-          </p>)}
+          <div className="flex flex-wrap gap-2">
+            <button type="button" className={button} disabled={!cacheReady || busy || updating} onClick={() =>
+              updateOfficial(missingCatalogs.length ? missingCatalogs : catalogSources())}>
+              {updating ? "取得中…" : "NVD・OSVの公式データを取得"}
+            </button>
+            {official.sources.length > 0 && missingCatalogs.length > 0 &&
+              <button type="button" className={button} disabled={busy || updating} onClick={() => updateOfficial(catalogSources())}>
+                保存済みの分も再取得
+              </button>}
+            {updating && <button type="button" className={button} onClick={() => {
+              catalogWorker.current?.terminate();
+              catalogWorker.current = null;
+              void readCatalogCache().then(setOfficial).catch(() => {}).finally(() => setUpdating(false));
+              setUpdateProgress(null);
+            }}>取得を中断</button>}
+          </div>
+          <p>OSVのnpm・PyPI・Go全件と、NVDの2002年版から今年までを順に取得します。初回は大容量です。プロジェクトの情報は送信しません。</p>
+          {updateProgress && <p role="status">{updateProgress.source} を取得中。処理済み {updateProgress.count.toLocaleString()}件。</p>}
+          {refreshErrors.length > 0 && <p role="alert">更新失敗 {refreshErrors.join("・")}。正常に保存済みのデータを使用します。</p>}
+          {official.sources.length > 0 && <details>
+            <summary>提供元・年別の収録件数と取得日時</summary>
+            {official.sources.map((entry) => <p key={entry.source}>
+              {entry.source} ／ {entry.count.toLocaleString()}件 ／ 索引 {entry.indexed.toLocaleString()}件 ／ 取得 {new Date(entry.fetchedAt).toLocaleString()}
+              {entry.publishedAt && ` ／ 提供元更新 ${new Date(entry.publishedAt).toLocaleString()}`}
+            </p>)}
+          </details>}
           <label className="block">NVD・OSVのJSONを手動で読み込む
             <input type="file" accept=".json" disabled={busy || updating} className="mt-1 block w-full" onChange={(event) => {
               const file = event.target.files?.[0];
@@ -222,15 +256,16 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
         <div className="space-y-1 text-xs text-zinc-500" aria-label="ローカルで使用するCVEカタログ">
           <p>{feedLabels.nvd}</p>
           <p>{feedLabels.osv}</p>
-          <p>{Object.keys(official).length > 0 ? "取得済みの公式カタログも照合します。収録範囲は上の更新欄で確認できます。" :
-            "公式カタログは未取得です。必要に応じて上の更新欄から取得してください。"}</p>
+          <p>公式アーカイブ {official.sources.length}/{catalogSources().length}件を保存済み。
+            {missingCatalogs.length > 0 && ` 未収録 ${missingCatalogs.join("・")}。上の更新欄から取得できます。`}</p>
+          <p>索引にない勧告や未対応の製品・版は未確認です。</p>
         </div>
         {error && <p role="alert" className="text-sm text-red-700 dark:text-red-300">{error}</p>}
       </section>
       {visible && <section className="space-y-3" aria-label="検証結果">
         <h2 className="text-lg font-semibold">{mode === "demo" ? "模擬データの結果" : "ローカル入力の結果"}</h2>
-        <p role="status" className="text-sm">{Object.entries(labels).map(([key, label]) =>
-          `${label} ${visible.filter((row) => row.status === key).length}件`).join(" ・ ")}</p>
+        <p role="status" className="text-sm">{Object.keys(labels).map((key) =>
+          `${statusLabel(key as keyof typeof labels)} ${visible.filter((row) => row.status === key).length}件`).join(" ・ ")}</p>
         {report && <p className="text-sm">
           {report.scanProgress.batches}バッチで処理。
           {report.read}ファイルの読取を試行。対象外 {report.skipped}件 ／ ファイル上限 {report.omitted}件 ／
@@ -242,13 +277,17 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
           <ul>{report.incomplete.map(({ path, reason }) => <li key={path}><bdi>{path}</bdi> ／ {reason}</li>)}</ul>
         </details>}
         <p className="text-sm">ファイルをまたぐソース解析は対象外です。</p>
-        <p className="text-sm">防御確認済みは、確認できたコードや設定の範囲です。実稼働環境は各項目の再検証方法を確認してください。</p>
+        {report?.catalogIncomplete && <p role="alert">公式カタログを最後まで照合できませんでした。照合上限・時間上限または保存領域を確認してください。</p>}
+        <p className="text-sm">{mode === "local" ? "設定を確認した項目の実行時の防御は未確認です。各項目の再検証方法を確認してください。" : "この結果は模擬入力に基づきます。"}</p>
         {visible.slice(0, display).map((row, index) => <details key={index} className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
-          <summary className="cursor-pointer font-medium">{row.category} ／ {row.title} ／ {labels[row.status]}</summary>
+          <summary className="cursor-pointer font-medium">{row.category} ／ {row.title} ／ {statusLabel(row.status)}</summary>
           <dl className="mt-2 space-y-1 break-words text-sm">
-            {row.location && <><dt className="font-semibold">修正箇所</dt><dd className="font-mono">
-              <bdi>{row.location.path}</bdi>{row.location.line ? `:${row.location.line}` : "（行番号不明）"}
-            </dd></>}
+            {(row.locations?.length || row.location) && <><dt className="font-semibold">修正箇所</dt>
+              {(row.locations ?? (row.location ? [row.location] : [])).map((location, i) => <dd key={i} className="font-mono">
+                <span><bdi>{location.path}</bdi>{location.line ? `:${location.line}` : "（行番号不明）"}</span>
+                {location.dependency && <span> ／ <bdi>{location.dependency} {location.version}</bdi></span>}
+                {!!location.fixed?.length && <span> ／ 勧告の修正版 {location.fixed.join("・")}</span>}
+              </dd>)}</>}
             <dt className="font-semibold">根拠</dt><dd>{row.evidence}</dd>
             <dt className="font-semibold">危険性</dt><dd>{row.risk}</dd>
             <dt className="font-semibold">修正方法</dt><dd>{row.fix}</dd>

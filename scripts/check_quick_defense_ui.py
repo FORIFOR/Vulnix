@@ -59,6 +59,11 @@ def main():
                 page.route("**/*", lambda route: route.continue_() if route.request.url.startswith(base + "/")
                            else (external.append(route.request.url), route.abort()))
                 page.goto(base + "/login")
+                update_route = base + "/api/catalog/refresh"
+                update_headers = {"Origin": base, "X-Aegis-Request": "1", "X-Vulnix-Catalog": "npm"}
+                assert page.request.post(update_route, headers=update_headers).status == 401
+                assert page.request.post(update_route, headers=update_headers, data="unexpected input").status == 400
+                assert page.request.post(update_route, headers={**update_headers, "Origin": "https://example.invalid"}).status == 403
                 page.get_by_role("tab", name="新規アカウント登録").click()
                 pw = secrets.token_urlsafe(20)
                 page.locator("#reg-name").fill("quick-check-user")
@@ -72,24 +77,40 @@ def main():
                 expect(page.get_by_role("checkbox")).to_have_count(3)
                 assert all(item.is_checked() for item in page.get_by_role("checkbox").all())
                 refresh_requests = []
+                archive = {"id": "CVE-2018-27182", "affected": [
+                    {"package": {"ecosystem": "npm", "name": name}, "ranges": [
+                        {"type": "SEMVER", "events": [{"introduced": "1.0.0"}, {"fixed": "1.2.4"}]},
+                    ]} for name in ("fixture-dependency", "fixture-transitive")
+                ]}
+
+                update_mode = ["initial"]
+
                 def catalog_refresh(route):
                     request = route.request
-                    refresh_requests.append((request.method, request.post_data))
-                    route.fulfill(json=[
-                        {"source": "NVD", "fetchedAt": "2026-01-02T00:00:00.000Z", "scope": "テスト", "records": []},
-                        {"source": "npm", "fetchedAt": "2026-01-02T00:00:00.000Z", "scope": "テスト", "failed": True},
-                    ])
+                    source = request.headers.get("x-vulnix-catalog")
+                    refresh_requests.append((request.method, request.post_data, source))
+                    if source == "npm":
+                        advisory = {"id": archive["id"], "withdrawn": "2026-01-03T00:00:00Z"} if update_mode[0] == "withdrawn" else archive
+                        lines = [advisory, {"complete": 1, "publishedAt": "2026-01-02T00:00:00Z"}]
+                        if update_mode[0] == "truncated":
+                            lines = [archive]
+                        route.fulfill(content_type="application/x-ndjson", body="".join(json.dumps(line) + "\n" for line in lines))
+                    else:
+                        route.fulfill(status=503)
+
                 page.route("**/api/catalog/refresh", catalog_refresh)
                 update_details = page.get_by_text("CVEカタログの更新", exact=True)
                 update_details.click()
                 page.get_by_role("button", name="NVD・OSVの公式データを取得").click()
-                expect(page.get_by_text("更新失敗：npm", exact=False)).to_be_visible()
-                expect(page.get_by_text("NVD ／ 0件 ／ テスト", exact=False)).to_be_visible()
-                assert refresh_requests == [("POST", None)]
+                expect(page.get_by_text("更新失敗 PyPI・Go", exact=False)).to_be_visible(timeout=15000)
+                assert all(method == "POST" and body is None for method, body, _ in refresh_requests)
+                assert {source for _, _, source in refresh_requests} >= {"npm", "PyPI", "Go", "NVD-2002"}
+                attempts = len(refresh_requests)
                 page.reload()
                 update_details.click()
-                expect(page.get_by_text("NVD ／ 0件 ／ テスト", exact=False)).to_be_visible()
-                assert refresh_requests == [("POST", None)]
+                page.get_by_text("提供元・年別の収録件数と取得日時", exact=True).click()
+                expect(page.get_by_text("npm ／ 1件 ／ 索引 1件", exact=False)).to_be_visible()
+                assert len(refresh_requests) == attempts
                 update_details.click()
                 folder = path / "sample-project"
                 folder.mkdir()
@@ -99,8 +120,9 @@ def main():
                 lock = folder / "package-lock.json"
                 def lock_version(version):
                     lock.write_text(json.dumps({"lockfileVersion": 3, "packages": {
-                        "node_modules/fixture-dependency": {"version": version, "integrity": "sha512-synthetic",
-                            "resolved": "https://registry.example.invalid/fixture.tgz"},
+                        f"node_modules/{name}": {"version": version, "integrity": "sha512-synthetic",
+                            "resolved": "https://registry.example.invalid/fixture.tgz"}
+                        for name in ("fixture-dependency", "fixture-transitive")
                     }}))
                 lock_version("1.2.3")
                 # Valid lock data above the prior 256 KiB per-file limit.
@@ -122,7 +144,7 @@ def main():
                 cloud("enabled", "optional")
                 preparation = time.monotonic() - preparation_start
                 posted = []
-                page.on("request", lambda req: posted.append(req.method) if req.method != "GET" else None)
+                page.on("request", lambda req: posted.append(req.method) if req.method != "GET" and not req.url.endswith("/api/catalog/refresh") else None)
                 picker = page.get_by_label("プロジェクトフォルダを選択")
                 start = page.get_by_role("button", name="ローカル検証を開始")
                 section = page.get_by_role("region", name="検証結果")
@@ -143,6 +165,22 @@ def main():
                     expect(section.get_by_text("Claude Code ／ 外部入力とHTML出力", exact=False)).to_have_count(1)
                     measured.append(round(elapsed, 3))
                 scan("対策が必要", "")
+                cached_match = section.get_by_text("CVE ／ CVE-2018-27182 ／ 対策が必要", exact=True)
+                cached_match.click()
+                expect(cached_match.locator("..").get_by_text("勧告の修正版 1.2.4", exact=False)).to_have_count(2)
+                update_details.click()
+                update_mode[0] = "truncated"
+                page.get_by_role("button", name="保存済みの分も再取得").click()
+                expect(page.get_by_text("更新失敗 npm・PyPI", exact=False)).to_be_visible(timeout=15000)
+                start.click()
+                expect(cached_match).to_be_visible()
+                update_mode[0] = "withdrawn"
+                page.get_by_role("button", name="保存済みの分も再取得").click()
+                expect(page.get_by_text("更新失敗 PyPI・Go", exact=False)).to_be_visible(timeout=15000)
+                start.click()
+                expect(section).to_be_visible()
+                expect(cached_match).to_have_count(0)
+                update_details.click()
                 finding = section.get_by_text("Claude Code ／ 外部入力とHTML出力 ／ 対策が必要", exact=True)
                 finding.click()
                 expect(finding.locator("..").get_by_text("修正方法", exact=True)).to_be_visible()
@@ -156,8 +194,8 @@ def main():
                         "BlockPublicAcls": True, "IgnorePublicAcls": True,
                         "BlockPublicPolicy": True, "RestrictPublicBuckets": True,
                     }}}}}))
-                scan("防御確認済み", "")
-                expect(section.get_by_text("Claude Code ／ ストレージの公開防止 ／ 防御確認済み", exact=True)).to_be_visible()
+                scan("設定・コードを確認", "")
+                expect(section.get_by_text("Claude Code ／ ストレージの公開防止 ／ 設定・コードを確認", exact=True)).to_be_visible()
                 cloud({"Ref": "Endpoint"}, {"Ref": "TokenMode"})
                 (folder / "database" / "dataAccess.ts").write_text(
                     "function display(value, target) { target.innerHTML = normalize(value); }")
@@ -202,6 +240,7 @@ def main():
                 picker.set_input_files(folder)
                 start.click()
                 expect(section.get_by_text("CVE ／ 依存関係と公開CVEの照合 ／ 未確認", exact=True)).to_be_visible()
+                expect(section.get_by_text("CVE ／ CVE-2018-27182", exact=False)).to_have_count(0)
                 holdout = path / "defense-holdout"
                 catalog = write_fixture(holdout)
                 (holdout / "gitleaks-redacted.json").write_text(json.dumps([
@@ -218,15 +257,15 @@ def main():
                 expected_holdout = [
                     ("Claude Code", "エージェントのツール権限", "対策が必要", ".claude/settings.json:3"),
                     ("ARTEX", "管理ポートの公開範囲", "対策が必要", "cloudformation.json:3"),
-                    ("ARTEX", "APIの試行回数制限", "防御確認済み", "cloudformation.json:16"),
-                    ("ARTEX", "SAML署名要件の明示設定", "防御確認済み", "auth-options.ts:2"),
+                    ("ARTEX", "APIの試行回数制限", "設定・コードを確認", "cloudformation.json:16"),
+                    ("ARTEX", "SAML署名要件の明示設定", "設定・コードを確認", "auth-options.ts:2"),
                     ("ARTEX", "SAML署名要件の明示設定", "未確認", "auth-options.ts:3"),
                     ("ARTEX", "XML外部実体・DTD設定", "対策が必要", "auth-options.ts:5"),
                     ("ARTEX", "Kubernetesの外向き通信", "対策が必要", "network-policy.json:12"),
                     ("ARTEX", "Kubernetesの権限範囲", "未確認", "role-manifest.json:7"),
                     ("ARTEX", "コンテナの既定ユーザー", "対策が必要", "Dockerfile:2"),
                     ("Claude Code", "外部入力とHTML出力", "対策が必要", "database/render.ts:3"),
-                    ("Claude Code", "外部入力とHTML出力", "防御確認済み", "database/render.ts:7"),
+                    ("Claude Code", "外部入力とHTML出力", "設定・コードを確認", "database/render.ts:7"),
                     ("Claude Code", "Gitleaksの資格情報候補", "未確認", "literal.ts:3"),
                     ("Claude Code", "ソース内の秘密鍵形式", "未確認", "literal.ts:2"),
                     ("CVE", "CVE-2099-40101", "対策が必要", "package-lock.json:12"),
