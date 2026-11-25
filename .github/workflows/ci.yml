@@ -439,7 +439,7 @@ jobs:
 
       - name: Reviewed defense from a browser with distinct approval and the real kernel Worker
         run: |
-          VULNIX_NO_ENV_LOCAL=1 VULNIX_TEST_LOCAL_DEFENSE_KERNEL=1 +            python3 -m unittest -v tests.test_local_defense.TestLocalDefenseOnLinux
+          VULNIX_NO_ENV_LOCAL=1 VULNIX_TEST_LOCAL_DEFENSE_KERNEL=1 python3 -m unittest -v tests.test_local_defense.TestLocalDefenseOnLinux
           VULNIX_NO_ENV_LOCAL=1 python3 -m scripts.check_reviewed_defense_ui
 
       - name: Owned-site 390px browser path with real ARTEX and local model
