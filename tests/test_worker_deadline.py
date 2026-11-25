@@ -145,8 +145,12 @@ class TestDeadlineEdges(GatewayBase):
     def test_a_run_that_finishes_just_before_the_deadline_is_a_normal_result(self):
         srv = _FiniteDrip(n=1, gap=0.01)
         try:
-            code = "import json, time; time.sleep(1.7); print(json.dumps({'status': 200, 'headers': {}}))"
-            self.make(srv.port, {"late_ok": _script_tool("late_ok", code, 2.0)})
+            code = "print('{\"status\": 200, \"headers\": {}}')"
+            self.make(srv.port, {"late_ok": _script_tool("late_ok", code, 10.0)})
+            # The child still runs normally. Place its exit just before the
+            # deadline with the runtime clock, independent of scheduler latency.
+            ticks = iter((100.0, 100.0, 109.999, 109.999))
+            self.workers._clock = lambda: next(ticks)
             d = self.execute("late_ok")
         finally:
             srv.close()

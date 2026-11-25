@@ -27,10 +27,12 @@ def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def read_reviewed(root: Path, name: str) -> bytes:
+def read_reviewed(root: Path, name: str, expected: str | None = None) -> bytes:
     """Open the fixed path from a pinned root descriptor without following links."""
     directory = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     parts = name.split("/")
+    if any(part in ("", ".", "..") for part in parts):
+        raise ValueError("reviewed source path is not relative")
     fd = os.open(root, directory)
     try:
         for part in parts[:-1]:
@@ -43,7 +45,7 @@ def read_reviewed(root: Path, name: str) -> bytes:
             if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_SOURCE_BYTES:
                 raise ValueError("reviewed source is not a bounded regular file")
             data = handle.read(MAX_SOURCE_BYTES + 1)
-        if len(data) > MAX_SOURCE_BYTES or sha256(data) != REVIEWED_FILES[name]:
+        if len(data) > MAX_SOURCE_BYTES or sha256(data) != (expected or REVIEWED_FILES[name]):
             raise ValueError("reviewed source digest differs")
         return data
     except OSError as error:

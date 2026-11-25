@@ -179,8 +179,14 @@ class _Journal:
 
 def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_auth: bool | None = None,
                  allow_self_registration: bool | None = None, tenancy: TenantRegistry | None = None,
-                 public_signup: bool | None = None):
+                 public_signup: bool | None = None, local_defense_python_root: Path | None = None,
+                 local_defense_node_bundle: Path | None = None):
     default_svc = svc
+    local_defense = None
+    if local_defense_python_root or local_defense_node_bundle:
+        from .local_defense_control import LocalDefenseControl
+        local_defense = LocalDefenseControl(svc, python_root=local_defense_python_root,
+                                            node_bundle=local_defense_node_bundle)
     # where account-level events go: a platform log when there are organizations
     paudit = tenancy.platform_audit if tenancy is not None else svc.audit
     # audit gaps of account-level removals are kept by the default service and written
@@ -713,6 +719,16 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
 
         def _get_org(self, p, u, svc, sess):
             """Reads of one organization's data, from that organization's service only."""
+            if p == "/api/assets/local-defense":
+                org = getattr(self, "_bound_org", DEFAULT_ORG)
+                if local_defense is None or org != DEFAULT_ORG or svc is not default_svc:
+                    return self._json(404, {"error": "ローカル防御検証は構成されていません"})
+                if not sess:
+                    return self._json(401, {"error": "ログインが必要です"})
+                return self._json(200, {**local_defense.view(), "actor": sess.operator,
+                                        "may_request": bool(set(sess.roles) & {"operator", "approver", "admin"}),
+                                        "may_approve": "approver" in sess.roles
+                                        and _approver_class(sess.operator) == "registered"})
             if p == "/api/assets":
                 return self._json(200, svc.assets())
             if p == "/api/assets/cloud-run/binding":
@@ -1476,6 +1492,24 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             base = f"/api/assessments/{svc.a.id}"
             actor = sess.operator
             try:
+                if p == "/api/assets/local-defense":
+                    org = getattr(self, "_bound_org", DEFAULT_ORG)
+                    if local_defense is None or org != DEFAULT_ORG or svc is not default_svc:
+                        return self._json(404, {"error": "ローカル防御検証は構成されていません"})
+                    authority = live_request_authority(sess, org)
+                    action = body.get("action")
+                    if action == "request" and set(body) == {"action", "profile", "plan_sha256", "folder_sha256"}:
+                        local_defense.request(body["profile"], body["plan_sha256"], body["folder_sha256"],
+                                              actor, authority)
+                    elif action == "start" and set(body) == {"action", "id", "folder_sha256"}:
+                        local_defense.start(body["id"], body["folder_sha256"], actor, authority)
+                    elif action == "cancel" and set(body) == {"action", "id"}:
+                        with authority.lease():
+                            local_defense.cancel(body["id"], actor, "approver" in sess.roles)
+                    else:
+                        return self._json(400, {"error": "対応していないローカル防御検証操作です"})
+                    return self._authorized_org_read(
+                        sess, org, lambda _: self._json(200, local_defense.view()), reader=False)
                 if p == "/api/assets":
                     asset = svc.register_asset(
                         name=str(body.get("name", "")),
@@ -1863,8 +1897,17 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         return self._json(400, {"error": "decision must be approve|reject"})
                     if "approver" not in sess.roles:
                         return self._json(403, {"error": "承認には承認責任者の権限が必要です"})
-                    svc.decide_approval(m.group(1), decision, actor,
-                                        approver_class=_approver_class(actor))
+                    aid = m.group(1)
+                    approval = svc.a.approvals.get(aid)
+                    if approval and approval.get("local_requester"):
+                        org = getattr(self, "_bound_org", DEFAULT_ORG)
+                        if local_defense is None or org != DEFAULT_ORG or svc is not default_svc:
+                            return self._json(404, {"error": "ローカル防御検証は構成されていません"})
+                        local_defense.decide(aid, decision, actor, _approver_class(actor),
+                                             live_request_authority(sess, org, approver=True))
+                    else:
+                        svc.decide_approval(aid, decision, actor,
+                                            approver_class=_approver_class(actor))
                 else:
                     return self._json(404, {"error": "not found"})
             except AuthError as e:
@@ -1934,7 +1977,9 @@ def _build_server(svc, a, data, first, seed, env_opt_out):
     read_auth = False if a.no_read_auth else (True if a.require_read_auth else None)
     srv = ThreadingHTTPServer(
         ("127.0.0.1", a.port),
-        make_handler(svc, ops, require_read_auth=read_auth, tenancy=tenancy),
+        make_handler(svc, ops, require_read_auth=read_auth, tenancy=tenancy,
+                     local_defense_python_root=getattr(a, "local_defense_python_root", None),
+                     local_defense_node_bundle=getattr(a, "local_defense_node_bundle", None)),
     )
     srv.daemon_threads = True
     print(f"Vulnix control plane: http://127.0.0.1:{a.port}  (audit: {data / 'audit.jsonl'})")
@@ -2012,6 +2057,10 @@ def main() -> None:
     ap.add_argument("--lab-port", type=int, default=18081)
     ap.add_argument("--verify-seconds", type=float, default=2.0)
     ap.add_argument("--data-dir", default=None)
+    ap.add_argument("--local-defense-python-root", type=Path,
+                    help="opt the default organization into a reviewed local Python snapshot")
+    ap.add_argument("--local-defense-node-bundle", type=Path,
+                    help="opt the default organization into a reviewed local Node.js bundle")
     ap.add_argument("--require-read-auth", action="store_true",
                     help="(default) Require operator authentication on GET endpoints")
     ap.add_argument("--no-read-auth", action="store_true",

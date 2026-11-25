@@ -1,9 +1,10 @@
-"""Observe operator MFA with a pinned, network-free regression fixture."""
+"""Run reviewed defence checks with the network-isolated Worker."""
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import platform
 import secrets
 import shutil
@@ -11,11 +12,13 @@ import signal
 import socket
 import sys
 import tempfile
+from contextlib import nullcontext
 from pathlib import Path
 from xml.etree.ElementTree import Element, SubElement, tostring
 
 from .artex_bridge import planner_hidden_paths
 from .confinement import ConfinementError, KernelConfinement
+from .local_defense_node import NODE_PROFILE, node_plan, observation_summary, stage_node_snapshot
 from .runtime import RuntimeLimitError, WorkerPool, WorkerResult
 from .workers.local_defense import REVIEWED_FILES, read_reviewed, sha256
 
@@ -89,49 +92,86 @@ def reviewed_plan() -> dict:
             "timeout_seconds": 15}
 
 
-def run(root: Path, plan: dict) -> dict:
-    if plan != reviewed_plan():
+def run(root: Path, plan: dict, *, pool=None, hold_session=None,
+        permit=None, prelaunch=None) -> dict:
+    is_node = plan.get("id") == NODE_PROFILE["id"]
+    if plan != (node_plan() if is_node else reviewed_plan()):
         raise ValueError("execution plan differs from the reviewed plan")
-    pool = WorkerPool(max_concurrent=1, cpu_seconds=10)
+    if pool is None:
+        pool = WorkerPool(max_concurrent=1, cpu_seconds=20 if is_node else 10)
     confinement = KernelConfinement()
     report = {"run_id": secrets.token_hex(16), "plan": plan,
-              "plan_sha256": sha256(_canonical(plan)), "verdict": "unverified"}
+              "plan_sha256": sha256(_canonical(plan)), "verdict": "unverified",
+              "execution_status": "failed"}
     try:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=False, prefix="vulnix-defense-") as tmp:
             # Keep the outer random directory traversable by the isolated UID.
             parent = Path(tmp)
             parent.chmod(0o711)
             snapshot = parent / "snapshot"
-            build_snapshot(root, snapshot)
             try:
+                if permit:
+                    permit()
+                if is_node:
+                    if sys.platform != "linux" or platform.machine() != "aarch64":
+                        raise ValueError("the reviewed Node runtime requires Linux arm64")
+                    argv = stage_node_snapshot(root, snapshot, permit=permit, config_sha256=plan["runner_config_sha256"])
+                else:
+                    build_snapshot(root, snapshot)
+                    program = str(Path(__file__).resolve().parent / "workers" / "local_defense.py")
+                    argv = [sys.executable, "-I", "-B", program, str(snapshot)]
                 with socket.socket() as reserved:
                     # The required loopback relay is pinned to this reserved endpoint.
                     # It is intentionally never put in listen mode.
                     reserved.bind(("127.0.0.1", 0))
                     port = reserved.getsockname()[1]
                     hidden = planner_hidden_paths((), ())
-                    session = confinement.session("127.0.0.1", port,
-                                                  limits={"memory.max": 256 << 20, "pids.max": 32},
+                    session = confinement.session("127.0.0.1", port, limits={
+                                                      "memory.max": plan.get("memory_bytes", 256 << 20),
+                                                      "pids.max": plan.get("max_processes", 32),
+                                                  },
                                                   namespaces={"hide": hidden, "keep": [snapshot]})
-                    with session:
-                        program = str(Path(__file__).resolve().parent / "workers" / "local_defense.py")
-                        outcome = pool.run([sys.executable, "-I", "-B", program, str(snapshot)], plan["timeout_seconds"],
-                                           session=session, extra_env={"VULNIX_NO_ENV_LOCAL": "1"})
+                    guard = hold_session(session) if hold_session else nullcontext()
+                    with guard, session:
+                        def check_launch():
+                            if permit:
+                                permit()
+                            if not is_node:
+                                staged = confinement._staged
+                                if (staged is None or sha256((staged / "local_defense.py").read_bytes())
+                                        != plan["runner_sha256"]):
+                                    raise RuntimeLimitError("reviewed Worker different from plan")
+                        outcome = pool.run(argv, plan["timeout_seconds"], session=session, extra_env={
+                            "VULNIX_NO_ENV_LOCAL": "1", "HOME": "/nonexistent", "TMPDIR": "/tmp", "NO_COLOR": "1",
+                        }, permit=check_launch, prelaunch=prelaunch)
                         live = session.still_enforced()
-                    verified = live and not session.leftover and not session.netns_left
-                    report.update(verdict=classify_result(outcome, verified), elapsed_ms=round(outcome.elapsed_s * 1000),
+                    verified = live and not (session.leftover or session.netns_left or session.files_left)
+                    if is_node:
+                        observation = observation_summary(outcome, verified)
+                    else:
+                        observation = mfa_observations(outcome, verified)
+                        report["verdict"] = classify_result(outcome, verified)
+                    report.update(execution_status="completed" if observation is not None else "unverified",
+                                  elapsed_ms=round(outcome.elapsed_s * 1000),
                                   confinement_verified=verified, kernel_release=platform.release() if verified else None,
-                                  observation=mfa_observations(outcome, verified),
-                                  observation_sha256=sha256(outcome.stdout.encode()) if verified else None)
+                                  observation=observation,
+                                  observation_sha256=sha256(outcome.stdout.encode()) if observation is not None else None)
             finally:
-                for directory in (snapshot, snapshot / "aegis", snapshot / "tests"):
-                    directory.chmod(0o755)
+                for directory, _, _ in os.walk(snapshot):
+                    Path(directory).chmod(0o755)
     except (ConfinementError, RuntimeLimitError, ValueError, OSError):
-        report["reason"] = "reviewed source or isolated execution could not be established"
+        report.update(execution_status="failed", verdict="unverified", observation=None,
+                      observation_sha256=None, confinement_verified=False,
+                      reason="reviewed source or isolated execution could not be established")
     finally:
         staged = confinement._staged
         if staged is not None:
-            shutil.rmtree(staged, ignore_errors=True)
+            try:
+                shutil.rmtree(staged)
+            except OSError:
+                report.update(execution_status="failed", verdict="unverified", observation=None,
+                              observation_sha256=None, confinement_verified=False,
+                              reason="could not remove the staged Worker")
     return {**report, "report_sha256": sha256(_canonical(report))}
 
 
@@ -161,15 +201,19 @@ def _interrupt(_signal, _frame) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source", type=Path, help="folder containing the reviewed source files")
+    parser.add_argument("--node", action="store_true", help="use the reviewed Node.js bundle layout")
     parser.add_argument("--approve", help="SHA-256 of the displayed plan")
     parser.add_argument("--junit", action="store_true", help="emit a JUnit receipt for manual import")
     args = parser.parse_args()
-    plan = reviewed_plan()
+    plan = node_plan() if args.node else reviewed_plan()
     digest = sha256(_canonical(plan))
     if not args.approve:
         try:
-            for name in REVIEWED_FILES:
-                read_reviewed(args.source, name)
+            if args.node:
+                read_reviewed(args.source, "reviewed/snapshot-manifest.json", plan["source_manifest_sha256"])
+            else:
+                for name in REVIEWED_FILES:
+                    read_reviewed(args.source, name)
         except (OSError, ValueError):
             parser.error("selected folder does not match the reviewed source closure")
         print(json.dumps({"plan": plan, "plan_sha256": digest}, indent=2))
@@ -184,7 +228,7 @@ def main() -> None:
     finally:
         signal.signal(signal.SIGTERM, previous)
     print(junit_report(report) if args.junit else json.dumps(report, indent=2))
-    if report["verdict"] != "passed":
+    if (report["execution_status"] != "completed" if args.node else report["verdict"] != "passed"):
         raise SystemExit(1)
 
 

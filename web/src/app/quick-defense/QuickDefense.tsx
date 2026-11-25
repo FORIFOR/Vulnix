@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import RuntimeDefense from "./RuntimeDefense";
+import ReviewedDefense from "./ReviewedDefense";
 import { useEffect, useRef, useState } from "react";
 import { catalogSources, osvSources, type CatalogSource } from "@/lib/catalogUpdate";
 import type { ScanProgress } from "@/lib/projectDefense";
@@ -263,6 +264,7 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
         </div>
         {error && <p role="alert" className="text-sm text-red-700 dark:text-red-300">{error}</p>}
       </section>
+      <ReviewedDefense files={files} />
       {visible && <section className="space-y-3" aria-label="検証結果">
         <h2 className="text-lg font-semibold">{mode === "demo" ? "模擬データの結果" : "ローカル入力の結果"}</h2>
         <p role="status" className="text-sm">{Object.keys(labels).map((key) =>
