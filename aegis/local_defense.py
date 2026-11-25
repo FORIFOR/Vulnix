@@ -6,6 +6,7 @@ import argparse
 import json
 import platform
 import shutil
+import signal
 import socket
 import sys
 import tempfile
@@ -129,6 +130,10 @@ def junit_report(report: dict) -> str:
     return tostring(suite, encoding="unicode")
 
 
+def _interrupt(_signal, _frame) -> None:
+    raise KeyboardInterrupt
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source", type=Path, help="folder containing the reviewed source files")
@@ -147,7 +152,13 @@ def main() -> None:
         return
     if args.approve != digest:
         parser.error("approval does not match this plan")
-    report = run(args.source, plan)
+    previous = signal.signal(signal.SIGTERM, _interrupt)
+    try:
+        report = run(args.source, plan)
+    except KeyboardInterrupt:
+        parser.exit(130, "local defense cancelled\n")
+    finally:
+        signal.signal(signal.SIGTERM, previous)
     print(junit_report(report) if args.junit else json.dumps(report, indent=2))
     if report["verdict"] != "passed":
         raise SystemExit(1)
