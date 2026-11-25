@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { parseAllDocuments } from "yaml";
 import { affects, collectPackages, propertyLine, type Package, type Location } from "./projectPackages";
 import { checkCloudFormation, checkControls, checkLockfile, record } from "./quickDefense";
 
@@ -13,11 +14,13 @@ const artifact = /^(?:gitleaks-redacted\.json|package(?:-lock)?\.json|npm-shrink
 export function classifyPath(path: string) {
   const parts = path.split("/");
   const name = parts.pop() ?? "";
+  if (parts.length === 3 && parts[1] === ".github" && parts[2] === "workflows" && /\.ya?ml$/i.test(name))
+    return { name, priority: 0 };
   if (name === "settings.json" && parts.length === 2 && parts[1] === ".claude") return { name, priority: 0 };
   if (parts.slice(1).some((part) => excluded.test(part)) ||
       excluded.test(name) || /(?:secret|credential|private.?key)|(?:\.min\.|\.generated\.)/i.test(name)) return null;
-  if (artifact.test(name)) return { name, priority: 0 };
-  if (source.test(name)) return { name, priority: /auth|access|db|sql|xml|render|route|handler/i.test(name) ? 1 : 2 };
+  if (artifact.test(name) || /\.(?:ya?ml|tf\.json|tf)$/i.test(name)) return { name, priority: 0 };
+  if (source.test(name)) return { name, priority: /auth|access|db|sql|xml|render|route|handler|webhook|session|middleware/i.test(name) ? 1 : 2 };
   return null;
 }
 
@@ -202,15 +205,24 @@ function deploymentChecks(name: string, body: string, input: unknown, path: stri
   if (/^Dockerfile(?:\.|$)/i.test(name)) {
     const lines = body.split(/\r?\n/);
     let user: { value: string; line: number } | undefined;
+    let finalBase: { image: string; line: number } | undefined;
     for (const [i, line] of lines.entries()) {
-      if (/^\s*FROM\s+/i.test(line)) user = undefined;
+      const base = line.match(/^\s*FROM\s+(?:--platform=\S+\s+)?([^\s]+)/i);
+      if (base) {
+        user = undefined;
+        finalBase = { image: base[1], line: i + 1 };
+      }
       const match = line.match(/^\s*USER\s+(\S+)\s*$/i);
       if (match) user = { value: match[1].split(":")[0], line: i + 1 };
     }
     const root = user && /^(root|0+)$/i.test(user.value);
-    add("コンテナの既定ユーザー", root ? "action" : "unknown", root ?
-      "最終ステージでrootユーザーを明示しています。" : "実行時のユーザーと書き込み権限が未確認です。",
-      "必要な権限だけを持つ実行ユーザーを設定し、実行時の上書きと書き込み可能な領域を確認する。", user?.line);
+    const nodeWithoutUser = !user && finalBase && /^(?:(?:docker\.io\/)?library\/)?node:[A-Za-z0-9_.-]+$/.test(finalBase.image);
+    add("コンテナの既定ユーザー", root || nodeWithoutUser ? "action" : "unknown",
+      root ? "最終ステージでrootユーザーを明示しています。" :
+      nodeWithoutUser ? "最終ステージのNode公式イメージに対し非rootユーザーの指定がありません。配備側の上書きは未確認です。" :
+        "実行時のユーザーと書き込み権限が未確認です。",
+      "必要な権限だけを持つ実行ユーザーを設定し、実行時の上書きと書き込み可能な領域を確認する。",
+      user?.line ?? finalBase?.line);
   }
   if (source.test(name)) {
     const marker = body.split(/\r?\n/).findIndex((line) =>
@@ -220,6 +232,53 @@ function deploymentChecks(name: string, body: string, input: unknown, path: stri
         "秘密鍵形式の開始マーカーがあります。テスト用・文書用の例か、実用の鍵かを確認してください。",
         "実用の鍵ならリポジトリから除き、失効・再発行して秘密管理サービスで保管する。"),
         location: { path, line: marker + 1 } });
+    }
+  }
+  return results;
+}
+
+function configDocuments(name: string, content: string): unknown[] {
+  if (/\.ya?ml$/i.test(name)) {
+    const docs = parseAllDocuments(content, { schema: "core", uniqueKeys: true, merge: false });
+    if (docs.length > 40 || docs.some((doc) => doc.errors.length || doc.warnings.length))
+      throw new Error("unsupported YAML");
+    // No aliases, custom tags, merge keys, includes or code evaluation.
+    return docs.map((doc) => doc.toJS({ maxAliasCount: 0 }));
+  }
+  return [name.endsWith(".json") ? JSON.parse(content) : undefined];
+}
+
+function configurationChecks(input: unknown, path: string): Result[] {
+  const config = record(input);
+  const results: Result[] = [];
+  if (path.startsWith(".github/workflows/")) {
+    const jobs = Object.values(record(config.jobs)).map(record);
+    const writeAll = config.permissions === "write-all" || jobs.some((job) => job.permissions === "write-all");
+    if (writeAll) results.push({ ...item("ARTEX", "CIトークンの広い権限", "action",
+      "ワークフローまたはジョブに書き込み全権限が明示されています。",
+      "ジョブで必要な権限だけを付与し、プルリクエストや外部入力を受ける処理の権限を確認する。"), location: { path } });
+    const uses = jobs.flatMap((job) => [job.uses, ...(Array.isArray(job.steps) ? job.steps.map((step) => record(step).uses) : [])]);
+    const unpinned = uses.filter((value) => typeof value === "string" && !value.startsWith("./") &&
+      /^[\w.-]+\/[\w./-]+@/.test(value) && !/@[a-f0-9]{40}$/i.test(value)).length;
+    if (unpinned) results.push({ ...item("ARTEX", "CIアクションの更新範囲", "action",
+      `コミットに固定されていないGitHub Actions参照が ${unpinned} 件あります。`,
+      "信頼するアクションをレビューし、確認したコミットに固定する。"), location: { path } });
+  }
+  if (path.endsWith(".tf.json")) {
+    const securityGroups = Object.values(record(record(config.resource).aws_security_group));
+    for (const group of securityGroups) {
+      const ingress = record(group).ingress;
+      const rules = Array.isArray(ingress) ? ingress : [ingress];
+      const publicAdmin = rules.map(record).some((rule) => {
+        const all = [rule.cidr_blocks, rule.ipv6_cidr_blocks].some((list) =>
+          Array.isArray(list) && (list.includes("0.0.0.0/0") || list.includes("::/0")));
+        return all && (rule.protocol === "-1" || (rule.protocol === "tcp" &&
+          typeof rule.from_port === "number" && typeof rule.to_port === "number" &&
+          [22, 3389].some((port) => Number(rule.from_port) <= port && port <= Number(rule.to_port))));
+      });
+      if (publicAdmin) results.push({ ...item("ARTEX", "Terraformの管理ポート公開", "action",
+        "Terraform JSONに管理ポートを全インターネットから許可する設定があります。適用済みかは未確認です。",
+        "管理用の送信元を制限し、適用済みのルールも確認する。"), location: { path } });
     }
   }
   return results;
@@ -311,10 +370,7 @@ export function projectCves(feed: unknown, inventories: Component[][]): Result[]
       "プロジェクト資料にカタログ上の製品・版・構成条件の組み合わせがあります。実稼働構成と配布元の修正は未確認です。" :
       "製品・版は候補に一致します。必要な構成条件の一部を確認できません。",
       "配布元の勧告で導入済みビルド、修正の有無、影響条件を照合し、必要な更新を適用する。"), location });
-    if (results.length >= 100) {
-      results.push(item("CVE", "残りのCVE候補", "unknown", "候補表示の上限に達しました。", "対象を分割して検証する。"));
-      break;
-    }
+
   }
   return results.length ? results : [item("CVE", "公開CVEとの照合", "unknown",
     "同梱または選択したカタログで照合できる製品・構成の候補がありません。依存関係名だけでは製品を特定できません。",
@@ -341,8 +397,7 @@ function osvCves(feed: unknown, packages: Map<string, Package[]>) {
         break;
       }
     }
-    if (results.length >= 100) return [...results, item("CVE", "残りのCVE候補", "unknown",
-      "候補表示の上限に達しました。", "対象を分割して検証する。")];
+
   }
   return results.length ? results : [item("CVE", "依存関係と公開CVEの照合", "unknown",
     "対応する影響条件との一致はありません。対応外の版・未収録の勧告・実稼働の版は未確認です。",
@@ -400,16 +455,14 @@ export async function scanProject(files: ProjectFile[], feed: unknown) {
       mjs: "JavaScript", cjs: "JavaScript", py: "Python", rb: "Ruby", php: "PHP", go: "Go", rs: "Rust", java: "Java", cs: "C#" };
     if (priority > 0 && language[ext]) languages.add(language[ext]);
     if (/lock|shrinkwrap|\.sum$/i.test(name)) lockKinds.add(ext === "lock" ? "lock" : name.toLowerCase());
-    let parsed: unknown;
-    if (ext === "json") {
-      try { parsed = JSON.parse(content); } catch { unsupported++; continue; }
-    }
+    let documents: unknown[];
+    try { documents = configDocuments(name, content); } catch { unsupported++; continue; }
+    const parsed = documents[0];
     if (name === "gitleaks-redacted.json") {
       const imported = redactedGitleaks(parsed, paths);
       if (!Array.isArray(parsed)) unsupported++;
       if (Array.isArray(parsed) && parsed.length > 100) skippedRules++;
-      rows.push(...imported.slice(0, Math.max(0, 100 - rows.length)));
-      if (imported.length && rows.length >= 100) skippedRules++;
+      rows.push(...imported);
       continue;
     }
     if (name === "package.json") {
@@ -438,39 +491,58 @@ export async function scanProject(files: ProjectFile[], feed: unknown) {
         packageCount++;
       }
       if (Object.keys(record(record(parsed).packages)).length > 10000) skippedRules++;
-    } else if (/\.(?:lock|sum|toml|ya?ml|xml)$/.test(name) || (priority > 0 && !/^[cm]?[jt]sx?$/i.test(ext))) {
+    } else if (/\.(?:lock|sum|toml|tf|xml)$/.test(name) || (priority > 0 && !/^[cm]?[jt]sx?$/i.test(ext))) {
       unsupported++;
     }
-    if (rows.length < 100) rows.push(...deploymentChecks(name, content, parsed, path));
-    else skippedRules++;
-    if (parsed && rows.length < 100) {
+    for (const document of documents) {
+      rows.push(...deploymentChecks(name, content, document, path), ...configurationChecks(document, path));
+    }
+    if (documents.some(Boolean)) {
       const cloud = [
-        ...checkCloudFormation(parsed).map((row) => ({ ...row, title: "EC2起動テンプレートのメタデータ保護",
+        ...documents.flatMap(checkCloudFormation).map((row) => ({ ...row, title: "EC2起動テンプレートのメタデータ保護",
           location: { path, line: propertyLine(content, row.title.split(" ／ ")[1] ?? "") } })),
-        ...cloudStorage(parsed, path, content),
+        ...documents.flatMap((document) => cloudStorage(document, path, content)),
       ];
       if (cloud.length > 20) skippedRules++;
       rows.push(...cloud.slice(0, 20));
     }
     if (inventoryCount < 200) {
-      const components = componentsFrom(name, content, parsed, path).slice(0, 200 - inventoryCount);
+      const found = componentsFrom(name, content, parsed, path);
+      const components = found.slice(0, 200 - inventoryCount);
+      if (found.length > components.length) skippedRules++;
       if (components.length) {
         // Separate images and inventories may represent unrelated environments.
         if (/^Dockerfile(?:\.|$)/i.test(name)) inventories.push(...components.map((component) => [component]));
         else inventories.push(components);
         inventoryCount += components.length;
       }
-    }
+    } else if (componentsFrom(name, content, parsed, path).length) skippedRules++;
     if (/^[cm]?[jt]sx?$/i.test(ext)) {
-      if (rows.length >= 100) skippedRules++;
-      else {
-        const findings = jsFlow(name, content, path);
-        if (findings.length === 10) skippedRules++;
-        rows.push(...findings);
-      }
+      const findings = jsFlow(name, content, path);
+      if (findings.length === 10) skippedRules++;
+      rows.push(...findings);
     }
   }
-  rows.push(...(Array.isArray(feed) ? osvCves(feed, packages) : projectCves(feed, inventories)));
+  const parsedFeed = record(feed);
+  const osvFeed = Array.isArray(feed) ? feed : parsedFeed.osv;
+  const nvdEntries = new Map(array(parsedFeed.vulnerabilities).map((entry) => [record(entry.cve).id, entry]));
+  const nvdRows = projectCves({ vulnerabilities: [...nvdEntries.values()] }, inventories);
+  const osvEntries = new Map(array(osvFeed).map((entry) => [entry.id, entry]));
+  const osvRows = osvEntries.size ? osvCves([...osvEntries.values()], packages) : [];
+  const matched = new Map<string, Result>();
+  for (const row of [...nvdRows, ...osvRows]) {
+    if (!row.title.startsWith("CVE-")) continue;
+    const other = matched.get(row.title);
+    if (!other) matched.set(row.title, row);
+    else if (row.status === "action" && other.status !== "action") {
+      matched.set(row.title, { ...row, evidence: `${row.evidence} NVDにも対応する候補があります。` });
+    }
+  }
+  rows.push(...matched.values());
+  // Preserve evidence of an unmatched catalog even when the other catalog matched.
+  if (!Array.isArray(feed)) rows.push(...nvdRows.filter((row) => !row.title.startsWith("CVE-")));
+  rows.push(...osvRows.filter((row) => !row.title.startsWith("CVE-")));
+  rows.sort((a, b) => Number(b.status === "action") - Number(a.status === "action"));
   return { rows, read, omitted, unsupported, unreadable, skippedRules, skipped: files.length - candidates.length,
     languages: [...languages], frameworks: [...frameworks], lockKinds: lockKinds.size, packageCount };
 }

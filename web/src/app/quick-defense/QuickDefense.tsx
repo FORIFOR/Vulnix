@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
+import type { CatalogSource, CatalogUpdate } from "@/lib/catalogUpdate";
 import { categories, checkControls, checkCves, demoEvidence, labels, record } from "@/lib/quickDefense";
 
 const button = "rounded-lg border border-zinc-300 px-3 py-2 text-sm font-medium dark:border-zinc-700";
@@ -12,8 +13,15 @@ const maxInput = 2 * 1024 * 1024;
 export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) {
   const [selected, setSelected] = useState(new Set<string>(categories));
   const [files, setFiles] = useState<File[]>([]);
-  const [feed, setFeed] = useState<unknown>(bundledFeed);
-  const [feedLabel, setFeedLabel] = useState("同梱NVDサンプル（収録2件、取得日時不明）");
+  const [nvd, setNvd] = useState<unknown>(bundledFeed);
+  const [osv, setOsv] = useState<unknown[]>([]);
+  const [official, setOfficial] = useState<Partial<Record<CatalogSource, CatalogUpdate>>>({});
+  const [refreshErrors, setRefreshErrors] = useState<string[]>([]);
+  const [updating, setUpdating] = useState(false);
+  const [display, setDisplay] = useState(100);
+  const [feedLabels, setFeedLabels] = useState({
+    nvd: "同梱NVDサンプル（収録2件、取得日時不明）", osv: "手動OSVデータなし",
+  });
   const [mode, setMode] = useState<"local" | "demo">("local");
   const [report, setReport] = useState<ProjectReport | null>(null);
   const [results, setResults] = useState<ReturnType<typeof checkControls> | null>(null);
@@ -22,6 +30,26 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
   const running = useRef<(() => void) | null>(null);
 
   useEffect(() => () => running.current?.(), []);
+
+  async function updateOfficial() {
+    setUpdating(true);
+    setRefreshErrors([]);
+    try {
+      const response = await fetch("/api/catalog/refresh", { method: "POST", headers: { "X-Aegis-Request": "1" } });
+      if (!response.ok) throw new Error();
+      const sources: CatalogUpdate[] = await response.json();
+      setOfficial((previous) => ({ ...previous, ...Object.fromEntries(
+        sources.filter((entry) => !entry.failed && Array.isArray(entry.records)).map((entry) => [entry.source, entry]),
+      ) }));
+      setRefreshErrors(sources.filter((entry) => entry.failed).map((entry) => entry.source));
+      setResults(null);
+      setReport(null);
+    } catch {
+      setRefreshErrors(["更新処理"]);
+    } finally {
+      setUpdating(false);
+    }
+  }
 
   async function importFeed(file: File) {
     setError("");
@@ -33,13 +61,15 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
       const osv = Array.isArray(data) ? data : [data];
       if (!nvd && (!osv.length || !osv.every((entry) => typeof record(entry).id === "string" &&
           Array.isArray(record(entry).affected)))) throw new Error();
-      setFeed(nvd ? parsed : osv);
+      if (nvd) setNvd(parsed); else setOsv(osv);
       const count = nvd ? (parsed.vulnerabilities as unknown[]).length : osv.length;
       const origin = nvd ? "選択したNVDデータ（CPE）" : "選択したOSVデータ（npm・PyPI・Go）";
       const timestamp = typeof parsed.timestamp === "string" &&
         /^\d{4}-\d{2}-\d{2}T[\d:.+-]+Z?$/.test(parsed.timestamp) && parsed.timestamp.length < 40
         ? ` ／ 資料の出力日時 ${parsed.timestamp}` : " ／ 取得日時不明";
-      setFeedLabel(`${origin} ${count}件 ／ 読込 ${new Date().toLocaleString()}${timestamp}`);
+      setFeedLabels((previous) => ({ ...previous,
+        [nvd ? "nvd" : "osv"]: `${origin} ${count}件 ／ 読込 ${new Date().toLocaleString()}${timestamp}`,
+      }));
       setResults(null);
       setReport(null);
     } catch {
@@ -52,6 +82,7 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
     setResults(null);
     setError("");
     setMode(kind);
+    setDisplay(100);
     if (kind === "demo") {
       setResults([...checkControls(demoEvidence.controls), ...checkCves(demoEvidence.components, bundledFeed)]);
       return;
@@ -86,6 +117,11 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
         setError("検証処理を読み込めませんでした。ページを開き直してください。");
       };
       // The browser may not preserve webkitRelativePath through structured cloning.
+      const localNvd = record(nvd).vulnerabilities;
+      const feed = {
+        vulnerabilities: [...(Array.isArray(localNvd) ? localNvd : []), ...(official.NVD?.records ?? [])],
+        osv: [...osv, ...(["npm", "PyPI", "Go"] as const).flatMap((source) => official[source]?.records ?? [])],
+      };
       worker.postMessage({ files: files.map((file) => ({ file, path: file.webkitRelativePath || file.name })), feed });
     } catch {
       running.current?.();
@@ -125,22 +161,33 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
         </label>
         {files.length > 0 && <p className="text-sm">フォルダ内のファイルを {files.length} 件選択済み</p>}
         <div className="flex flex-wrap gap-2">
-          <button type="button" className={primary} disabled={busy || !selected.size || !files.length} onClick={() => run("local")}>
+          <button type="button" className={primary} disabled={busy || updating || !selected.size || !files.length} onClick={() => run("local")}>
             {busy ? "検証中…" : "ローカル検証を開始"}
           </button>
-          <button type="button" className={button} disabled={busy || !selected.size} onClick={() => run("demo")}>模擬データで試す</button>
+          <button type="button" className={button} disabled={busy || updating || !selected.size} onClick={() => run("demo")}>模擬データで試す</button>
         </div>
         <details className="text-sm">
           <summary className="cursor-pointer">CVEカタログの更新</summary>
+          <button type="button" className={button} disabled={busy || updating} onClick={updateOfficial}>
+            {updating ? "取得中…" : "NVD・OSVの公式データを取得"}
+          </button>
+          <p>公式の公開カタログだけを取得します。選択したプロジェクトの情報は送信しません。</p>
+          {refreshErrors.length > 0 && <p role="alert">更新失敗：{refreshErrors.join("・")}。取得済みのデータは保持しました。</p>}
+          {Object.values(official).map((entry) => <p key={entry.source}>
+            {entry.source} ／ {entry.records?.length ?? 0}件 ／ {entry.scope} ／ 取得開始 {new Date(entry.fetchedAt).toLocaleString()}
+          </p>)}
           <label className="block">NVD・OSVのJSONを手動で読み込む
-            <input type="file" accept=".json" disabled={busy} className="mt-1 block w-full" onChange={(event) => {
+            <input type="file" accept=".json" disabled={busy || updating} className="mt-1 block w-full" onChange={(event) => {
               const file = event.target.files?.[0];
               if (file) void importFeed(file);
               event.target.value = "";
             }} />
           </label>
         </details>
-        <p className="text-xs text-zinc-500">ローカルで使用するCVEカタログ　{feedLabel}</p>
+        <div className="space-y-1 text-xs text-zinc-500" aria-label="ローカルで使用するCVEカタログ">
+          <p>{feedLabels.nvd}</p>
+          <p>{feedLabels.osv}</p>
+        </div>
         {error && <p role="alert" className="text-sm text-red-700 dark:text-red-300">{error}</p>}
       </section>
       {visible && <section className="space-y-3" aria-label="検証結果">
@@ -153,7 +200,7 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
           言語 {report.languages.join("・") || "不明"} ／ フレームワーク {report.frameworks.join("・") || "不明"} ／ ロック形式 {report.lockKinds}種 ／ 照合対象の固定依存関係 {report.packageCount}件。
         </p>}
         <p className="text-sm">防御確認済みは、確認できたコードや設定の範囲です。実稼働環境は各項目の再検証方法を確認してください。</p>
-        {visible.map((row, index) => <details key={index} className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
+        {visible.slice(0, display).map((row, index) => <details key={index} className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
           <summary className="cursor-pointer font-medium">{row.category} ／ {row.title} ／ {labels[row.status]}</summary>
           <dl className="mt-2 space-y-1 break-words text-sm">
             {row.location && <><dt className="font-semibold">修正箇所</dt><dd className="font-mono">
@@ -165,6 +212,9 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
             <dt className="font-semibold">再検証方法</dt><dd>{row.retest}</dd>
           </dl>
         </details>)}
+        {visible.length > display && <button type="button" className={button} onClick={() => setDisplay(display + 100)}>
+          さらに表示（{visible.length - display}件）
+        </button>}
         {mode === "local" && <p className="text-sm">修正後は上のフォルダ選択から選び直して再検証してください。</p>}
       </section>}
       <Link href="/assets" prefetch={false} className="text-sm underline">所有確認済みWebサイト・APIと隔離ラボへ</Link>

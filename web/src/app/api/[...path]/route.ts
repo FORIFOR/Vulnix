@@ -4,6 +4,7 @@
 // authenticate the operator. The CSRF guard and the session cookie are
 // independent; neither replaces the other.
 import type { NextRequest } from "next/server";
+import { fetchCatalogs, type CatalogUpdate } from "@/lib/catalogUpdate";
 import { clientIp, IpLimiter } from "@/lib/ipLimit";
 
 export const dynamic = "force-dynamic";
@@ -99,6 +100,23 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ path: strin
   });
 }
 
+let nextCatalogAttempt = 0;
+let lastCatalogUpdate: Promise<CatalogUpdate[]> | undefined;
+
+async function refreshCatalog(req: NextRequest) {
+  // Public references only. Keep the existing proxy's host, origin and CSRF gates.
+  const session = await fetch(`${UPSTREAM}/api/auth/me`, {
+    headers: withCookie(req, {}), cache: "no-store", signal: AbortSignal.timeout(5000),
+  });
+  const identity = session.ok ? await session.json() : null;
+  if (!identity?.session) return Response.json({ error: "ログインしてください。" }, { status: 401 });
+  if (!lastCatalogUpdate || Date.now() >= nextCatalogAttempt) {
+    nextCatalogAttempt = Date.now() + 60_000;
+    lastCatalogUpdate = fetchCatalogs();
+  }
+  return Response.json(await lastCatalogUpdate, { headers: { "Cache-Control": "no-store" } });
+}
+
 export async function POST(req: NextRequest, ctx: { params: Promise<{ path: string[] }> }) {
   const origin = req.headers.get("origin");
   const host = req.headers.get("host");
@@ -116,6 +134,11 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ path: stri
   const { path } = await ctx.params;
   const refused = limited(req, "POST", path);
   if (refused) return refused;
+  if (path.length === 2 && path[0] === "catalog" && path[1] === "refresh") {
+    if (req.body || req.nextUrl.search) return Response.json({ error: "引数は指定できません。" }, { status: 400 });
+    try { return await refreshCatalog(req); }
+    catch { return Response.json({ error: "カタログ更新を開始できませんでした。" }, { status: 502 }); }
+  }
   try {
     const res = await fetch(upstreamUrl(req, path), {
       method: "POST",

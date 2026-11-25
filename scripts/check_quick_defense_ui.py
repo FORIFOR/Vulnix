@@ -71,6 +71,22 @@ def main():
                 page.get_by_role("link", name="ローカルプロジェクトの診断").click()
                 expect(page.get_by_role("checkbox")).to_have_count(3)
                 assert all(item.is_checked() for item in page.get_by_role("checkbox").all())
+                refresh_requests = []
+                def catalog_refresh(route):
+                    request = route.request
+                    refresh_requests.append((request.method, request.post_data))
+                    route.fulfill(json=[
+                        {"source": "NVD", "fetchedAt": "2026-01-02T00:00:00.000Z", "scope": "テスト", "records": []},
+                        {"source": "npm", "fetchedAt": "2026-01-02T00:00:00.000Z", "scope": "テスト", "failed": True},
+                    ])
+                page.route("**/api/catalog/refresh", catalog_refresh)
+                update_details = page.get_by_text("CVEカタログの更新", exact=True)
+                update_details.click()
+                page.get_by_role("button", name="NVD・OSVの公式データを取得").click()
+                expect(page.get_by_text("更新失敗：npm", exact=False)).to_be_visible()
+                expect(page.get_by_text("NVD ／ 0件 ／ テスト", exact=False)).to_be_visible()
+                assert refresh_requests == [("POST", None)]
+                update_details.click()
                 folder = path / "sample-project"
                 folder.mkdir()
                 preparation_start = time.monotonic()
