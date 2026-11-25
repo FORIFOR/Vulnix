@@ -3,6 +3,7 @@
 import json
 import hashlib
 import os
+import re
 import secrets
 import shutil
 import subprocess
@@ -58,7 +59,7 @@ def check_browser(base, folder, passwords, *, node_folder=None, org=None, profil
                 requester.get_by_label("検証プロファイル").select_option("reviewed-node-d34b9f3")
             elif profile_id:
                 requester.get_by_label("検証プロファイル").select_option(profile_id)
-            requester.get_by_role("button", name=("再検証を依頼する" if results else "実行を依頼する")).click()
+            requester.get_by_role("button", name=re.compile(r"^(実行|再検証)を依頼する$")).click()
             expect(requester.get_by_text("承認待ち ／ 依頼者", exact=False)).to_be_visible()
             expect(requester.get_by_role("button", name="この計画を承認する")).to_have_count(0)
             view = requester.request.get(base + "/api/assets/local-defense").json()
