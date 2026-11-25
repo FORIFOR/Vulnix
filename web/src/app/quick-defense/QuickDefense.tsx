@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import RuntimeDefense from "./RuntimeDefense";
 import { useEffect, useRef, useState } from "react";
 import { catalogSources, osvSources, type CatalogSource } from "@/lib/catalogUpdate";
 import type { ScanProgress } from "@/lib/projectDefense";
@@ -279,6 +280,7 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
         <p className="text-sm">ファイルをまたぐソース解析は対象外です。</p>
         {report?.catalogIncomplete && <p role="alert">公式カタログを最後まで照合できませんでした。照合上限・時間上限または保存領域を確認してください。</p>}
         <p className="text-sm">{mode === "local" ? "設定を確認した項目の実行時の防御は未確認です。各項目の再検証方法を確認してください。" : "この結果は模擬入力に基づきます。"}</p>
+        {mode === "local" && <a href="#runtime-defense" className="text-sm underline">実行時の防御確認へ</a>}
         {visible.slice(0, display).map((row, index) => <details key={index} className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
           <summary className="cursor-pointer font-medium">{row.category} ／ {row.title} ／ {statusLabel(row.status)}</summary>
           <dl className="mt-2 space-y-1 break-words text-sm">
@@ -297,7 +299,10 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
         {visible.length > display && <button type="button" className={button} onClick={() => setDisplay(display + 100)}>
           さらに表示（{visible.length - display}件）
         </button>}
-        {mode === "local" && <p className="text-sm">修正後は上のフォルダ選択から選び直して再検証してください。</p>}
+        {mode === "local" && <>
+          <RuntimeDefense project={files[0]?.webkitRelativePath.split("/")[0] || "選択したフォルダ"} />
+          <p className="text-sm">修正後は上のフォルダ選択から選び直して再検証してください。</p>
+        </>}
       </section>}
       <Link href="/assets" prefetch={false} className="text-sm underline">所有確認済みWebサイト・APIと隔離ラボへ</Link>
     </main>
