@@ -1,10 +1,11 @@
-"""Run the pinned, network-free operator MFA regression against reviewed files."""
+"""Observe operator MFA with a pinned, network-free regression fixture."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import platform
+import secrets
 import shutil
 import signal
 import socket
@@ -29,6 +30,12 @@ PROFILE = {
     "files": REVIEWED_FILES,
 }
 
+MFA_CONDITIONS = {
+    "valid_factor": "session",
+    "missing_factor": "mfa_required",
+    "invalid_factor": "mfa_required",
+}
+
 
 def _canonical(data) -> bytes:
     return json.dumps(data, sort_keys=True, separators=(",", ":")).encode()
@@ -47,19 +54,32 @@ def build_snapshot(root: Path, snapshot: Path) -> None:
         directory.chmod(0o555)
 
 
-def classify_result(result: WorkerResult, isolated: bool) -> str:
+def mfa_observations(result: WorkerResult, isolated: bool) -> dict | None:
     if (not isolated or result.returncode != 0 or result.killed or result.timed_out
             or result.pipes_held or result.output_truncated or result.stderr):
-        return "unverified"
+        return None
     try:
         observation = json.loads(result.stdout)
     except ValueError:
+        return None
+    if not isinstance(observation, dict) or observation.get("observation") != "operator_mfa":
+        return None
+    conditions = observation.get("conditions")
+    if (set(observation) != {"observation", "conditions", "regression"} or not isinstance(conditions, dict)
+            or conditions.keys() != MFA_CONDITIONS.keys()
+            or any(value not in ("session", "mfa_required") for value in conditions.values())
+            or observation["regression"] not in ("passed", "failed", "unverified")):
+        return None
+    return observation
+
+
+def classify_result(result: WorkerResult, isolated: bool) -> str:
+    observation = mfa_observations(result, isolated)
+    if observation is None:
         return "unverified"
-    if observation == {"observation": "completed", "outcome": "passed"}:
-        return "passed"
-    if observation == {"observation": "completed", "outcome": "failed"}:
+    if observation["conditions"] != MFA_CONDITIONS:
         return "failed"
-    return "unverified"
+    return "passed" if observation["regression"] == "passed" else "unverified"
 
 
 def reviewed_plan() -> dict:
@@ -70,9 +90,12 @@ def reviewed_plan() -> dict:
 
 
 def run(root: Path, plan: dict) -> dict:
+    if plan != reviewed_plan():
+        raise ValueError("execution plan differs from the reviewed plan")
     pool = WorkerPool(max_concurrent=1, cpu_seconds=10)
     confinement = KernelConfinement()
-    report = {"plan": plan, "plan_sha256": sha256(_canonical(plan)), "verdict": "unverified"}
+    report = {"run_id": secrets.token_hex(16), "plan": plan,
+              "plan_sha256": sha256(_canonical(plan)), "verdict": "unverified"}
     try:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=False, prefix="vulnix-defense-") as tmp:
             # Keep the outer random directory traversable by the isolated UID.
@@ -98,6 +121,7 @@ def run(root: Path, plan: dict) -> dict:
                     verified = live and not session.leftover and not session.netns_left
                     report.update(verdict=classify_result(outcome, verified), elapsed_ms=round(outcome.elapsed_s * 1000),
                                   confinement_verified=verified, kernel_release=platform.release() if verified else None,
+                                  observation=mfa_observations(outcome, verified),
                                   observation_sha256=sha256(outcome.stdout.encode()) if verified else None)
             finally:
                 for directory in (snapshot, snapshot / "aegis", snapshot / "tests"):

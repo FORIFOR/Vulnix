@@ -1,14 +1,19 @@
+import json
 import shutil
 import tempfile
 import unittest
 from pathlib import Path
 from xml.etree.ElementTree import fromstring
 
-from aegis.local_defense import PROFILE, build_snapshot, classify_result, junit_report
+from aegis.local_defense import PROFILE, build_snapshot, classify_result, junit_report, reviewed_plan, run
 from aegis.runtime import WorkerResult
 
 
 class TestLocalDefense(unittest.TestCase):
+    def test_run_rejects_changed_plan_before_reading_source(self):
+        with self.assertRaisesRegex(ValueError, "execution plan differs"):
+            run(Path("/nonexistent"), {**reviewed_plan(), "timeout_seconds": 60})
+
     def test_snapshot_rejects_changes_and_symlinks(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "source"
@@ -27,12 +32,26 @@ class TestLocalDefense(unittest.TestCase):
                 build_snapshot(root, snapshot)
 
     def test_requires_complete_observations_in_a_live_sandbox(self):
-        passed = WorkerResult(0, '{"observation":"completed","outcome":"passed"}', "", False, 1)
-        failed = WorkerResult(0, '{"observation":"completed","outcome":"failed"}', "", False, 1)
-        absent = WorkerResult(0, '{"observation":"completed","outcome":"unverified"}', "", False, 1)
+        expected = {"valid_factor": "session", "missing_factor": "mfa_required",
+                    "invalid_factor": "mfa_required"}
+
+        def observation(conditions, regression="passed"):
+            return WorkerResult(0, json.dumps({"observation": "operator_mfa", "conditions": conditions,
+                                               "regression": regression}),
+                                "", False, 1)
+
+        passed = observation(expected)
         self.assertEqual(classify_result(passed, True), "passed")
-        self.assertEqual(classify_result(failed, True), "failed")
-        self.assertEqual(classify_result(absent, True), "unverified")
+        for condition, unexpected in (("valid_factor", "mfa_required"), ("missing_factor", "session"),
+                                      ("invalid_factor", "session")):
+            with self.subTest(condition=condition):
+                self.assertEqual(classify_result(observation({**expected, condition: unexpected}), True), "failed")
+        self.assertEqual(classify_result(observation({"valid_factor": "session"}), True), "unverified")
+        self.assertEqual(classify_result(observation({**expected, "invalid_factor": True}), True), "unverified")
+        self.assertEqual(classify_result(observation(expected, "unverified"), True), "unverified")
+        self.assertEqual(classify_result(observation(expected, "failed"), True), "unverified")
+        self.assertEqual(classify_result(WorkerResult(0, '{"outcome":"passed"}', "", False, 1), True),
+                         "unverified")
         self.assertEqual(classify_result(passed, False), "unverified")
         passed.output_truncated = True
         self.assertEqual(classify_result(passed, True), "unverified")

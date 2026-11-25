@@ -9,6 +9,7 @@ import json
 import os
 import stat
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -57,6 +58,38 @@ def restrict(event, _args):
         raise PermissionError("offline defense fixture")
 
 
+def observe_login(store, challenge, code):
+    try:
+        session = store.login("op", "pw", code)
+    except challenge:
+        return "mfa_required"
+    resolved = store.resolve(session.token)
+    return "session" if resolved and resolved.operator == "op" else "unknown"
+
+
+def observe_mfa(fixture):
+    from aegis.operators import MFAChallenge, OperatorStore, totp_code
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "operators.json"
+        fixture.TestStore()._seed(path)
+        clock = fixture.Clock(1_700_000_000.0)
+        store = OperatorStore(path, clock=clock)
+        secret, _ = store.begin_totp_enroll("op")
+        store.confirm_totp("op", totp_code(secret, clock.t))
+        if not store.totp_enabled("op"):
+            return {}
+        clock.t += 30
+        valid = totp_code(secret, clock.t)
+        nearby = {totp_code(secret, clock.t + offset) for offset in (-30, 0, 30)}
+        invalid = next(code for code in ("100000", "100001", "100002", "100003") if code not in nearby)
+        return {
+            "missing_factor": observe_login(store, MFAChallenge, None),
+            "invalid_factor": observe_login(store, MFAChallenge, invalid),
+            "valid_factor": observe_login(store, MFAChallenge, valid),
+        }
+
+
 def main():
     snapshot = Path(sys.argv[1])
     for directory in (snapshot, snapshot / "aegis", snapshot / "tests"):
@@ -75,12 +108,13 @@ def main():
         return
     module = importlib.util.module_from_spec(test)
     test.loader.exec_module(module)
+    conditions = observe_mfa(module)
     case = module.TestStore("test_totp_enroll_then_login_requires_code")
     result = unittest.TextTestRunner(stream=io.StringIO()).run(case)
-    outcome = "unverified"
+    regression = "unverified"
     if result.testsRun == 1 and not (result.skipped or result.errors or result.expectedFailures or result.unexpectedSuccesses):
-        outcome = "failed" if result.failures else "passed"
-    print(json.dumps({"observation": "completed", "outcome": outcome}))
+        regression = "failed" if result.failures else "passed"
+    print(json.dumps({"observation": "operator_mfa", "conditions": conditions, "regression": regression}))
 
 
 if __name__ == "__main__":
