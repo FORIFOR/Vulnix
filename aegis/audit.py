@@ -33,7 +33,7 @@ ANCHORED_EVENTS = frozenset({
     "auth.password_changed", "operator.password_reset", "auth.account_recovered_offline",
     "auth.credential_change_aborted",
 })
-ANCHORED_PREFIXES = ("diagnosis.",)
+ANCHORED_PREFIXES = ("diagnosis.", "local_defense.")
 
 
 def is_anchored_event(event: str) -> bool:

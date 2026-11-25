@@ -36,10 +36,14 @@ cd web && npm run dev     # → http://localhost:3000
 
 ## 3. テスト
 ```sh
-VULNIX_NO_ENV_LOCAL=1 python3 -m unittest discover -s tests -p "test_*.py"   # バックエンド（約10分）
+python3.12 -m venv .venv
+.venv/bin/python -m pip install -r requirements-oidc.txt ruff==0.6.9
+ulimit -n 4096
+VULNIX_NO_ENV_LOCAL=1 .venv/bin/python -m unittest discover -s tests -p "test_*.py"
 (cd web && npm test && npm run lint && npm run build)                        # Web UI
-pip install ruff==0.6.9 && ruff check aegis tests                        # Python の静的チェック（CI と同じ）
+.venv/bin/ruff check aegis tests                                            # Python の静的チェック
 ```
+- バックエンドはCIと同じPython 3.12を使用します。OIDCの署名検証テストは `requirements-oidc.txt` の暗号ライブラリを使います。
 - `VULNIX_NO_ENV_LOCAL=1` を付けると、手元の `.env.local`（実 API のキーなど）を読み込みません。**テストでは必ず付けてください。**
 - Linux でしか動かないテスト（nftables・cgroup v2 による隔離）は、macOS では自動的にスキップされます。CI では必ず実行されます。
 

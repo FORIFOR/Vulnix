@@ -18,10 +18,13 @@ from unittest.mock import patch
 
 from aegis.assessment import AssessmentService
 from aegis.lab import start_lab
+from aegis.local_defense import _canonical
+from aegis.workers.local_defense import sha256
 from aegis.operators import OperatorStore, hash_password, totp_code
 from aegis.server import make_handler
 from aegis.tenancy import (DEFAULT_ORG, MAX_ORGS_PER_ACCOUNT, OrgStore, TenancyError, TenantRegistry,
                            default_members_from, service_roles)
+from tests.test_local_defense import synthetic_bundle
 
 LAB_PORT = 18097
 
@@ -127,7 +130,8 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
                 return AssessmentService(path, LAB_PORT, verify_seconds=30)
         self.reg = TenantRegistry(store, self.svc, factory, d)
         self.srv = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(self.svc, self.ops, tenancy=self.reg,
-                                                                      public_signup=True))
+                                                                      public_signup=True,
+                                                                      local_defense_python_root=Path(__file__).resolve().parents[1]))
         self.srv.daemon_threads = True
         threading.Thread(target=self.srv.serve_forever, daemon=True).start()
         self.root = f"http://127.0.0.1:{self.srv.server_port}/api"
@@ -139,6 +143,72 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
         self.reg.close_all()
         self.svc.close()
         self.tmp.cleanup()
+
+    def test_reviewed_defense_bound_to_review_and_live_distinct_approver(self):
+        owner = self.login("padmin", "padmin-pw-1")
+        runner, outsider = self.signup("reviewrunner"), self.signup("reviewoutsider")
+        _, invite = self.reg.store.create_invite(DEFAULT_ORG, "padmin", ["runner"])
+        self.reg.store.accept_invite(invite, "reviewrunner")
+        endpoint = "/assets/local-defense"
+        self.assertEqual(self.req(outsider, endpoint, org=DEFAULT_ORG)[0], 403)
+        self.assertEqual(self.req(outsider, endpoint, {"action": "start", "id": "req_a"}, DEFAULT_ORG)[0], 403)
+        self.assertEqual(self.req(outsider, endpoint, org=outsider["orgs"][0]["id"])[0], 404)
+        status, view = self.req(runner, endpoint, org=DEFAULT_ORG)
+        self.assertEqual(status, 200, view)
+        profile = view["profiles"][0]
+        request = {"action": "request", "profile": profile["plan"]["id"],
+                   "plan_sha256": profile["plan_sha256"], "folder_sha256": sha256(_canonical(profile["files"]))}
+        self.assertEqual(self.req(runner, endpoint, {**request, "folder_sha256": "0" * 64}, DEFAULT_ORG)[0], 409)
+        self.assertEqual(self.req(runner, endpoint, {**request, "path": "/tmp"}, DEFAULT_ORG)[0], 400)
+        status, result = self.req(runner, endpoint, request, DEFAULT_ORG)
+        self.assertEqual(status, 200, result)
+        aid = result["job"]["id"]
+        decide = f"/assessments/{view['assessment']}/approvals/{aid}"
+        self.assertEqual(self.req(runner, decide, {"decision": "approve"}, DEFAULT_ORG)[0], 403)
+        start = {"action": "start", "id": aid, "folder_sha256": request["folder_sha256"]}
+        self.assertEqual(self.req(runner, endpoint, start, DEFAULT_ORG)[0], 409)
+        approved = self.req(owner, decide, {"decision": "approve"}, DEFAULT_ORG)
+        self.assertEqual(approved[0], 200, approved)
+        self.assertEqual(self.req(runner, endpoint, {**start, "folder_sha256": "1" * 64}, DEFAULT_ORG)[0], 409)
+        self.ops.logout(owner["cookie"].split("=", 1)[1])
+        self.assertEqual(self.req(runner, endpoint, start, DEFAULT_ORG)[0], 409)
+        self.svc.emergency_stop("padmin")
+        self.assertEqual(self.req(runner, endpoint, request, DEFAULT_ORG)[0], 409)
+
+    def test_portable_profiles_and_approvals_are_scoped_to_the_registered_organization(self):
+        owner = self.login("padmin", "padmin-pw-1")
+        outsider = self.signup("portfoliooutsider")
+        org = self.reg.store.create_org("Review registry tenant", "padmin")
+        parent = Path(self.tmp.name) / "review-fixtures"
+        parent.mkdir(mode=0o700)
+        digest = synthetic_bundle(parent / "reviewed", "python")
+        registry = parent / "registry.json"
+        registry.write_text(json.dumps([{"org": org, "bundle": "reviewed", "sha256": digest, "node": None}]))
+        registry.chmod(0o600)
+        handler = make_handler(self.svc, self.ops, tenancy=self.reg, local_defense_registry=registry)
+        alternate = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=alternate.serve_forever, daemon=True).start()
+        self.root = f"http://127.0.0.1:{alternate.server_port}/api"
+        try:
+            endpoint = "/assets/local-defense"
+            self.assertEqual(self.req(outsider, endpoint, org=org)[0], 403)
+            self.assertEqual(self.req(owner, endpoint, org=DEFAULT_ORG)[0], 404)
+            status, view = self.req(owner, endpoint, org=org)
+            self.assertEqual(status, 200, view)
+            profile = view["profiles"][0]
+            self.assertEqual(profile["plan"]["id"], "profile-synthetic-python")
+            request = {"action": "request", "profile": profile["plan"]["id"], "plan_sha256": profile["plan_sha256"],
+                       "folder_sha256": sha256(_canonical(profile["files"]))}
+            status, job = self.req(owner, endpoint, request, org)
+            self.assertEqual(status, 200, job)
+            aid = job["job"]["id"]
+            approval = f"/assessments/{view['assessment']}/approvals/{aid}"
+            self.assertEqual(self.req(outsider, approval, {"decision": "approve"}, org)[0], 403)
+            self.assertEqual(self.req(owner, approval, {"decision": "approve"}, DEFAULT_ORG)[0], 409)
+            self.assertEqual(self.req(owner, approval, {"decision": "approve"}, org)[0], 403)
+        finally:
+            alternate.shutdown()
+            alternate.server_close()
 
     def test_cloud_run_routes_are_scoped_to_member_and_admin(self):
         a, b = self.signup("cloudalice"), self.signup("cloudbob")

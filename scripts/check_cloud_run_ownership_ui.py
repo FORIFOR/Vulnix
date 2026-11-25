@@ -105,7 +105,7 @@ def main() -> None:
                     page.get_by_role("button", name="＋ サイトを診断する").click()
                     page.get_by_label("診断するサイトのURL").fill(f"https://{HOST}/")
                     page.get_by_role("button", name="所有確認へ").click()
-                    page.get_by_text("Cloud Run OIDC 所有確認").wait_for()
+                    page.get_by_text("詳細設定（Cloud Run OIDC 所有確認）", exact=True).click()
                     page.get_by_label("登録するサービスアカウントの sub").fill("service-account-123")
                     page.get_by_role("button", name="主体を登録").click()
                     page.get_by_text("状態: 検証待ち", exact=True).wait_for()
@@ -136,7 +136,15 @@ def main() -> None:
                     page.get_by_role("button", name="診断を開始", exact=True).click()
                     page.wait_for_url("**/assessments/*")
                     assert svc._external_entry(HOST) is not None
-                    print(json.dumps({"ui": "passed", "signed_token": True,
+                    page.goto(base + "/dashboard")
+                    page.get_by_role("button", name="＋ サイトを診断する").click()
+                    page.get_by_label("診断するサイトのURL").fill(f"https://{HOST}/")
+                    with page.expect_response(lambda res: res.url.endswith("/api/assets/select")) as reused:
+                        page.get_by_role("button", name="診断ワークスペースへ").click()
+                    assert reused.value.ok
+                    page.wait_for_url("**/assessments/*")
+                    assert svc._external_entry(HOST) is not None
+                    print(json.dumps({"permit_reused": True, "ui": "passed", "signed_token": True,
                                       "scope_confirmed": True, "real_host_traffic": False}))
                 finally:
                     browser.close()

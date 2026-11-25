@@ -4455,29 +4455,32 @@ class AssessmentService:
                              "この操作は実在するサイトでは使えません")
 
     def decide_approval(self, approval_id: str, decision: str, actor: str,
-                        approver_class: str | None = None) -> None:
+                        approver_class: str | None = None, *, local: bool = False) -> None:
         with self._lock:
             self._refuse_read_only_real_locked()
             ap = self.a.approvals.get(approval_id)
             if ap is None or ap["status"] != "pending":
                 raise ValueError("approval not pending")
+            requester = ap.get("local_requester") if local else self.a.started_by
+            if bool(ap.get("local_requester")) != local:
+                raise ValueError("approval does not match the execution route")
             if self.a.state == "stopped":
                 raise ValueError("assessment stopped")
-            if decision == "approve" and self._separation_required():
+            if decision == "approve" and (local or self._separation_required()):
                 # a rejection is always allowed (the safe direction); an approval needs a
                 # second person: not whoever started this run, not an unknown starter, not
                 # a self-registered identity. One person alone leaves it pending.
                 refused = self._approver_refused(approver_class)
                 reason = ("self-registered approver" if refused else
-                          "requester unknown" if not self.a.started_by else
-                          "separation of duties" if actor == self.a.started_by else "")
+                          "requester unknown" if not requester else
+                          "separation of duties" if actor == requester else "")
                 if reason:
                     self.audit.record("approval.denied", request=approval_id, actor=actor,
-                                      requested_by=self.a.started_by, reason=reason)
+                                      requested_by=requester, reason=reason)
                     raise ApproverRequired(
                         self.approver_refusal_text(approver_class) if refused else
                         "この実行の依頼者が記録されていないため、承認できません。実行をやり直してください"
-                        if not self.a.started_by else
+                        if not requester else
                         "診断を開始した本人は、その L2 を承認できません。別の承認責任者が承認してください")
             audit_error = self._decide(approval_id, decision, actor)
         if audit_error:

@@ -460,8 +460,9 @@ class ConfinementSession:
         self._relay = self._o._popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                      stderr=subprocess.DEVNULL, close_fds=True, text=True)
         import select
-        ready, _, _ = select.select([self._relay.stdout], [], [], 10)
-        line = self._relay.stdout.readline().strip() if ready else ""
+        with self._relay.stdout as output:
+            ready, _, _ = select.select([output], [], [], 10)
+            line = output.readline().strip() if ready else ""
         if line != "READY":
             raise ConfinementError("名前空間への中継を起動できません")
 
