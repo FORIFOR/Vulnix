@@ -203,6 +203,13 @@ def main():
                 saml_row.get_by_label("選択した対象・版で自分が確認した根拠です").check()
                 saml_row.get_by_role("button", name="記録する").click()
                 expect(defense.get_by_text("SAML ／ 根拠付き対象外", exact=True)).to_be_visible()
+                defense.get_by_text("SAML ／ 根拠付き対象外", exact=True).locator("..").get_by_role("button", name="未確認に戻す").click()
+                evidence.set_input_files({"name": "fresh.xml", "mimeType": "application/xml",
+                    "buffer": b'<testsuite tests="1"><testcase name="current revision"/></testsuite>'})
+                expect(defense.get_by_text("成功 1 ／ 全 1 テスト", exact=True)).to_be_visible()
+                expect(defense.get_by_text("認証 ／ 未確認", exact=True)).to_be_visible()
+                expect(defense.get_by_text("SAML ／ 未確認", exact=True)).to_be_visible()
+                expect(defense.get_by_text("MFA ／ 設定確認済み", exact=True)).to_be_visible()
                 page.get_by_role("button", name="ローカル検証を開始").click()
                 expect(defense.get_by_text("認証 ／ 未確認", exact=True)).to_be_visible()
                 cached_match = section.get_by_text("CVE ／ CVE-2018-27182 ／ 対策が必要", exact=True)

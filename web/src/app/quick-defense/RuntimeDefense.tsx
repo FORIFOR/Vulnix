@@ -106,6 +106,11 @@ export default function RuntimeDefense({ project }: { project: string }) {
     {reading && <p role="status">テスト結果を読み込み中</p>}
     {tests.length > 0 && <p role="status">成功 {tests.filter(Boolean).length} ／ 全 {tests.length} テスト</p>}
     {runtimeChecks.map((check) => <CheckRow key={`${revision}-${check[0]}`} check={check} tests={tests} verdict={verdicts[check[0]]}
-      setVerdict={(verdict) => setVerdicts((current) => ({ ...current, [check[0]]: verdict }))} />)}
+      setVerdict={(verdict) => setVerdicts((current) => {
+        const next = { ...current };
+        if (verdict) next[check[0]] = verdict;
+        else delete next[check[0]];
+        return next;
+      })} />)}
   </section>;
 }
