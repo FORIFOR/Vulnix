@@ -1,4 +1,5 @@
 import json
+import hashlib
 import os
 import shutil
 import socket
@@ -8,14 +9,73 @@ import unittest
 from pathlib import Path
 from xml.etree.ElementTree import fromstring
 
-from aegis.local_defense import PROFILE, build_snapshot, classify_result, junit_report, reviewed_plan, run
+from aegis.local_defense import PROFILE, build_snapshot, classify_result, evaluate_pairs, junit_report, reviewed_plan, run
 from aegis.local_defense_node import NODE_PROFILE, observation_summary, stage_node_snapshot
+from aegis.local_defense_profile import PortableProfile, case_verdicts, validate_manifest
 from aegis.artex_bridge import planner_hidden_paths
 from aegis.confinement import KernelConfinement
 from aegis.runtime import WorkerPool, WorkerResult
+from aegis.workers.local_defense import sha256
+
+
+def synthetic_bundle(bundle, language, *, health="healthy"):
+    source = bundle / "source"
+    source.mkdir(parents=True)
+    bundle.chmod(0o700)
+    if language == "node":
+        name = "check.cjs"
+        code = """exports.observe = (_check, input) => {
+  if (!input.ready) return null;
+  return input.member && !input.closed;
+};
+"""
+    else:
+        name = "check.py"
+        code = """def observe(_check, inputs):
+    if not inputs["ready"]:
+        return None
+    return inputs["member"] and not inputs["closed"]
+"""
+    content = code.encode()
+    (source / name).write_bytes(content)
+    suffix = "" if health == "healthy" else "-" + health
+    manifest = {"version": 1, "id": "synthetic-" + language + suffix, "language": language,
+                "title": "Synthetic authorization", "revision": "fixture-1", "files": {name: sha256(content)},
+                "checks": {"authorization": {
+                    "allow": {"member": True, "closed": health == "closed", "ready": health != "missing"},
+                    "deny": {"member": False, "closed": False, "ready": True},
+                }}}
+    encoded = json.dumps(manifest).encode()
+    (bundle / "profile.json").write_bytes(encoded)
+    return sha256(encoded)
 
 
 class TestLocalDefense(unittest.TestCase):
+    def test_portable_profile_requires_real_pair_and_rejects_paths(self):
+        manifest = {"version": 1, "id": "sample", "language": "python",
+                    "title": "Authorization", "revision": "review-1", "files": {"check.py": "a" * 64},
+                    "checks": {"authorization": {"allow": {"role": "member"}, "deny": {"role": "guest"}}}}
+        self.assertEqual(validate_manifest(manifest), manifest)
+        with self.assertRaises(ValueError):
+            validate_manifest({**manifest, "files": {"check.py": "a" * 64, "../hidden.py": "b" * 64}})
+        with self.assertRaises(ValueError):
+            validate_manifest({**manifest, "checks": {"authorization": {"allow": {}}}})
+        self.assertEqual(case_verdicts(manifest, {"authorization": {"allow": True, "deny": False}}),
+                         {"authorization": "passed"})
+        self.assertEqual(case_verdicts(manifest, {"authorization": {"allow": False, "deny": False}}),
+                         {"authorization": "failed"})
+        self.assertEqual(case_verdicts(manifest, {"authorization": {"allow": True, "deny": None}}),
+                         {"authorization": "unverified"})
+
+    def test_pair_evidence_rejects_duplicate_values_and_unisolated_results(self):
+        manifest = {"checks": {"authorization": {}}}
+        raw = '{"authorization":{"allow":false,"allow":true,"deny":false}}'
+        worker = WorkerResult(0, raw, "", False, 1)
+        self.assertEqual(evaluate_pairs(worker, True, manifest)[1], "unverified")
+        worker.stdout = '{"authorization":{"allow":true,"deny":false}}'
+        self.assertEqual(evaluate_pairs(worker, False, manifest)[1], "unverified")
+        self.assertEqual(evaluate_pairs(worker, True, manifest)[1], "passed")
+
     def test_node_bundle_requires_the_reviewed_manifest_before_staging(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -95,6 +155,22 @@ class TestLocalDefense(unittest.TestCase):
 @unittest.skipUnless(sys.platform.startswith("linux") and os.environ.get("VULNIX_TEST_LOCAL_DEFENSE_KERNEL") == "1",
                      "requires explicit Linux kernel test execution")
 class TestLocalDefenseOnLinux(unittest.TestCase):
+    def test_portable_python_and_node_worker_observations(self):
+        node = Path(os.environ.get("VULNIX_TEST_DEFENSE_NODE", shutil.which("node") or "/nonexistent")).resolve()
+        self.assertTrue(node.is_file(), "CI needs a verified Node installation for this test")
+        with node.open("rb") as file:
+            node_digest = hashlib.file_digest(file, "sha256").hexdigest()
+        for lang in ("python", "node"):
+            for state, expected in (("healthy", "passed"), ("closed", "failed"), ("missing", "unverified")):
+                with self.subTest(language=lang, state=state), tempfile.TemporaryDirectory() as tmp:
+                    bundle = Path(tmp) / "reviewed"
+                    digest = synthetic_bundle(bundle, lang, health=state)
+                    spec = PortableProfile.load(bundle, digest, node, node_digest)
+                    result = run(bundle, spec.plan(), portable=spec)
+                    self.assertTrue(result.get("confinement_verified"), result)
+                    self.assertEqual(result["verdict"], expected, result)
+                    self.assertEqual(result["observation"]["checks"]["authorization"]["verdict"], expected)
+
     def test_real_isolated_observations_for_healthy_blocked_and_missing(self):
         fixture = """
 import json, sys

@@ -18,7 +18,9 @@ from xml.etree.ElementTree import Element, SubElement, tostring
 
 from .artex_bridge import planner_hidden_paths
 from .confinement import ConfinementError, KernelConfinement
-from .local_defense_node import NODE_PROFILE, node_plan, observation_summary, stage_node_snapshot
+from .local_defense_node import (NODE_PROFILE, OBSERVATION_CHECKS, OBSERVER, node_plan,
+                                 observation_summary, stage_node_snapshot, vitest_command)
+from .local_defense_profile import case_verdicts
 from .runtime import RuntimeLimitError, WorkerPool, WorkerResult
 from .workers.local_defense import REVIEWED_FILES, read_reviewed, sha256
 
@@ -92,10 +94,11 @@ def reviewed_plan() -> dict:
             "timeout_seconds": 15}
 
 
-def run(root: Path, plan: dict, *, pool=None, hold_session=None,
+def run(root: Path, plan: dict, *, portable=None, pool=None, hold_session=None,
         permit=None, prelaunch=None) -> dict:
     is_node = plan.get("id") == NODE_PROFILE["id"]
-    if plan != (node_plan() if is_node else reviewed_plan()):
+    expected = portable.plan() if portable else node_plan(root) if is_node else reviewed_plan()
+    if plan != expected:
         raise ValueError("execution plan differs from the reviewed plan")
     if pool is None:
         pool = WorkerPool(max_concurrent=1, cpu_seconds=20 if is_node else 10)
@@ -112,10 +115,13 @@ def run(root: Path, plan: dict, *, pool=None, hold_session=None,
             try:
                 if permit:
                     permit()
-                if is_node:
+                if portable:
+                    argv = portable.stage(snapshot, plan, permit)
+                elif is_node:
                     if sys.platform != "linux" or platform.machine() != "aarch64":
                         raise ValueError("the reviewed Node runtime requires Linux arm64")
-                    argv = stage_node_snapshot(root, snapshot, permit=permit, config_sha256=plan["runner_config_sha256"])
+                    argv = stage_node_snapshot(root, snapshot, permit=permit, config_sha256=plan["runner_config_sha256"],
+                                               observer="observer_sha256" in plan)
                 else:
                     build_snapshot(root, snapshot)
                     program = str(Path(__file__).resolve().parent / "workers" / "local_defense.py")
@@ -132,30 +138,46 @@ def run(root: Path, plan: dict, *, pool=None, hold_session=None,
                                                   },
                                                   namespaces={"hide": hidden, "keep": [snapshot]})
                     guard = hold_session(session) if hold_session else nullcontext()
+                    node_observation = None
                     with guard, session:
                         def check_launch():
                             if permit:
                                 permit()
-                            if not is_node:
+                            if not is_node and not portable:
                                 staged = confinement._staged
                                 if (staged is None or sha256((staged / "local_defense.py").read_bytes())
                                         != plan["runner_sha256"]):
                                     raise RuntimeLimitError("reviewed Worker different from plan")
-                        outcome = pool.run(argv, plan["timeout_seconds"], session=session, extra_env={
+                        env = {
                             "VULNIX_NO_ENV_LOCAL": "1", "HOME": "/nonexistent", "TMPDIR": "/tmp", "NO_COLOR": "1",
-                        }, permit=check_launch, prelaunch=prelaunch)
+                        }
+                        outcome = pool.run(argv, plan["timeout_seconds"], session=session, extra_env=env,
+                                           permit=check_launch, prelaunch=prelaunch)
+                        remaining = plan["timeout_seconds"] - outcome.elapsed_s
+                        if is_node and "observer_sha256" in plan and remaining > 0 and not outcome.killed:
+                            node_observation = pool.run([*vitest_command(snapshot), "--reporter=dot", "src/lib/" + OBSERVER],
+                                                        remaining, session=session, extra_env=env,
+                                                        permit=check_launch, prelaunch=prelaunch)
                         live = session.still_enforced()
                     verified = live and not (session.leftover or session.netns_left or session.files_left)
-                    if is_node:
+                    if portable:
+                        observation, verdict = evaluate_pairs(outcome, verified, portable.manifest())
+                        report["verdict"] = verdict
+                    elif is_node:
                         observation = observation_summary(outcome, verified)
+                        if "observer_sha256" in plan:
+                            checks, verdict = evaluate_pairs(node_observation, verified, {"checks": OBSERVATION_CHECKS},
+                                                             prefix="VULNIX_OBSERVATIONS ")
+                            observation = {**(observation or {}), **checks}
+                            report["verdict"] = verdict
                     else:
                         observation = mfa_observations(outcome, verified)
                         report["verdict"] = classify_result(outcome, verified)
                     report.update(execution_status="completed" if observation is not None else "unverified",
-                                  elapsed_ms=round(outcome.elapsed_s * 1000),
+                                  elapsed_ms=round((outcome.elapsed_s + (node_observation.elapsed_s if node_observation else 0)) * 1000),
                                   confinement_verified=verified, kernel_release=platform.release() if verified else None,
                                   observation=observation,
-                                  observation_sha256=sha256(outcome.stdout.encode()) if observation is not None else None)
+                                  observation_sha256=sha256(_canonical(observation)) if observation is not None and verified else None)
             finally:
                 for directory, _, _ in os.walk(snapshot):
                     Path(directory).chmod(0o755)
@@ -173,6 +195,39 @@ def run(root: Path, plan: dict, *, pool=None, hold_session=None,
                               observation_sha256=None, confinement_verified=False,
                               reason="could not remove the staged Worker")
     return {**report, "report_sha256": sha256(_canonical(report))}
+
+
+def _unique_keys(entries):
+    result = dict(entries)
+    if len(result) != len(entries):
+        raise ValueError("duplicate observation keys")
+    return result
+
+
+def evaluate_pairs(outcome, isolated, manifest, *, prefix=None):
+    values = None
+    if (isolated and outcome and outcome.returncode == 0 and not outcome.killed and not outcome.timed_out
+            and not outcome.pipes_held and not outcome.output_truncated and not outcome.stderr):
+        try:
+            raw = outcome.stdout
+            if prefix:
+                rows = [line.strip()[len(prefix):] for line in raw.splitlines() if line.strip().startswith(prefix)]
+                raw = rows[0] if len(rows) == 1 else ""
+            data = json.loads(raw, object_pairs_hook=_unique_keys)
+            if isinstance(data, dict) and data.keys() == manifest["checks"].keys():
+                values = data
+        except ValueError:
+            pass
+    verdicts = case_verdicts(manifest, values)
+    observations = {}
+    for category, verdict in verdicts.items():
+        pair = values.get(category) if values is not None else None
+        observations[category] = {"verdict": verdict}
+        if verdict != "unverified":
+            observations[category]["observed"] = pair
+    overall = "failed" if "failed" in verdicts.values() else "unverified" if (
+        "unverified" in verdicts.values()) else "passed"
+    return {"checks": observations}, overall
 
 
 def junit_report(report: dict) -> str:
@@ -205,7 +260,7 @@ def main() -> None:
     parser.add_argument("--approve", help="SHA-256 of the displayed plan")
     parser.add_argument("--junit", action="store_true", help="emit a JUnit receipt for manual import")
     args = parser.parse_args()
-    plan = node_plan() if args.node else reviewed_plan()
+    plan = node_plan(args.source) if args.node else reviewed_plan()
     digest = sha256(_canonical(plan))
     if not args.approve:
         try:
@@ -228,7 +283,8 @@ def main() -> None:
     finally:
         signal.signal(signal.SIGTERM, previous)
     print(junit_report(report) if args.junit else json.dumps(report, indent=2))
-    if (report["execution_status"] != "completed" if args.node else report["verdict"] != "passed"):
+    if (report["execution_status"] != "completed" if args.node and not plan["automatic_verdict"]
+            else report["verdict"] != "passed"):
         raise SystemExit(1)
 
 

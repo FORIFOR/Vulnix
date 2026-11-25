@@ -180,13 +180,33 @@ class _Journal:
 def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_auth: bool | None = None,
                  allow_self_registration: bool | None = None, tenancy: TenantRegistry | None = None,
                  public_signup: bool | None = None, local_defense_python_root: Path | None = None,
-                 local_defense_node_bundle: Path | None = None):
+                 local_defense_node_bundle: Path | None = None, local_defense_registry: Path | None = None):
     default_svc = svc
-    local_defense = None
-    if local_defense_python_root or local_defense_node_bundle:
+    local_controls = {}
+    portable = {}
+    local_controls_lock = threading.Lock()
+    if local_defense_registry:
+        from .local_defense_profile import load_registry
+        portable = load_registry(local_defense_registry)
+        if tenancy is None and any(org != DEFAULT_ORG for org in portable):
+            raise ValueError("organization-specific defence profiles require tenancy")
+    if local_defense_python_root or local_defense_node_bundle or DEFAULT_ORG in portable:
         from .local_defense_control import LocalDefenseControl
-        local_defense = LocalDefenseControl(svc, python_root=local_defense_python_root,
-                                            node_bundle=local_defense_node_bundle)
+        local_controls[DEFAULT_ORG] = LocalDefenseControl(svc, python_root=local_defense_python_root,
+                                                          node_bundle=local_defense_node_bundle,
+                                                          portable=portable.get(DEFAULT_ORG))
+
+    def local_control(org, service):
+        with local_controls_lock:
+            control = local_controls.get(org)
+            if control is not None:
+                return control if control.service is service else None
+            if org not in portable:
+                return None
+            from .local_defense_control import LocalDefenseControl
+            control = LocalDefenseControl(service, python_root=None, node_bundle=None, portable=portable[org])
+            local_controls[org] = control
+            return control
     # where account-level events go: a platform log when there are organizations
     paudit = tenancy.platform_audit if tenancy is not None else svc.audit
     # audit gaps of account-level removals are kept by the default service and written
@@ -721,10 +741,11 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             """Reads of one organization's data, from that organization's service only."""
             if p == "/api/assets/local-defense":
                 org = getattr(self, "_bound_org", DEFAULT_ORG)
-                if local_defense is None or org != DEFAULT_ORG or svc is not default_svc:
-                    return self._json(404, {"error": "ローカル防御検証は構成されていません"})
                 if not sess:
                     return self._json(401, {"error": "ログインが必要です"})
+                local_defense = local_control(org, svc)
+                if local_defense is None:
+                    return self._json(404, {"error": "ローカル防御検証は構成されていません"})
                 return self._json(200, {**local_defense.view(), "actor": sess.operator,
                                         "may_request": bool(set(sess.roles) & {"operator", "approver", "admin"}),
                                         "may_approve": "approver" in sess.roles
@@ -1494,7 +1515,8 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             try:
                 if p == "/api/assets/local-defense":
                     org = getattr(self, "_bound_org", DEFAULT_ORG)
-                    if local_defense is None or org != DEFAULT_ORG or svc is not default_svc:
+                    local_defense = local_control(org, svc)
+                    if local_defense is None:
                         return self._json(404, {"error": "ローカル防御検証は構成されていません"})
                     authority = live_request_authority(sess, org)
                     action = body.get("action")
@@ -1901,7 +1923,8 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     approval = svc.a.approvals.get(aid)
                     if approval and approval.get("local_requester"):
                         org = getattr(self, "_bound_org", DEFAULT_ORG)
-                        if local_defense is None or org != DEFAULT_ORG or svc is not default_svc:
+                        local_defense = local_control(org, svc)
+                        if local_defense is None:
                             return self._json(404, {"error": "ローカル防御検証は構成されていません"})
                         local_defense.decide(aid, decision, actor, _approver_class(actor),
                                              live_request_authority(sess, org, approver=True))
@@ -1979,7 +2002,8 @@ def _build_server(svc, a, data, first, seed, env_opt_out):
         ("127.0.0.1", a.port),
         make_handler(svc, ops, require_read_auth=read_auth, tenancy=tenancy,
                      local_defense_python_root=getattr(a, "local_defense_python_root", None),
-                     local_defense_node_bundle=getattr(a, "local_defense_node_bundle", None)),
+                     local_defense_node_bundle=getattr(a, "local_defense_node_bundle", None),
+                     local_defense_registry=getattr(a, "local_defense_registry", None)),
     )
     srv.daemon_threads = True
     print(f"Vulnix control plane: http://127.0.0.1:{a.port}  (audit: {data / 'audit.jsonl'})")
@@ -2061,6 +2085,8 @@ def main() -> None:
                     help="opt the default organization into a reviewed local Python snapshot")
     ap.add_argument("--local-defense-node-bundle", type=Path,
                     help="opt the default organization into a reviewed local Node.js bundle")
+    ap.add_argument("--local-defense-registry", type=Path,
+                    help="deployment-controlled registry for organization-scoped reviewed bundles")
     ap.add_argument("--require-read-auth", action="store_true",
                     help="(default) Require operator authentication on GET endpoints")
     ap.add_argument("--no-read-auth", action="store_true",

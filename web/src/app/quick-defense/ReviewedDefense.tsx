@@ -13,7 +13,8 @@ type Profile = {
 };
 type Receipt = {
   run_id: string; receipt_sha256: string;
-  result: { verdict: string; observation: { passed?: number; excluded?: number } | null };
+  result: { verdict: string; observation: { passed?: number; excluded?: number;
+    checks?: Record<string, { verdict: string; observed?: { allow: boolean; deny: boolean } }> } | null };
 };
 type View = {
   actor: string; assessment: string; available: boolean; may_approve: boolean; may_request: boolean;
@@ -44,6 +45,18 @@ const statuses: Record<string, string> = {
   waiting: "承認待ち", running: "隔離実行中", cancelling: "中断・回収中",
   cancelled: "中断", completed: "実行完了", unverified: "証拠不足", failed: "実行に失敗", expired: "失効",
 };
+const checkAdvice: Record<string, [string, string]> = {
+  authentication: ["認証", "セッションの存在・有効期限をサーバー側で確認し、無効な場合は操作を拒否してください。"],
+  authorization: ["認可", "対象操作の必要権限をサーバー側で確認し、権限が足りない場合は処理を開始しないでください。"],
+  "tenant-selection": ["テナント選択", "組織変更前に現在の所属を再照合し、所属外ならセッションを更新しないでください。"],
+  "webhook-signature": ["Webhook署名", "処理前に生のリクエスト本文と署名・時刻を検証してください。"],
+  "ai-policy": ["AI操作ポリシー", "許可リストと承認条件をツール呼び出し前に強制してください。"],
+  mfa: ["多要素認証", "第二要素の検証に成功した場合にだけセッションを発行してください。"],
+};
+
+function verdictLabel(verdict: string) {
+  return verdict === "passed" ? "動作確認済み" : verdict === "failed" ? "対策が必要" : "未確認";
+}
 
 export default function ReviewedDefense({ files }: { files: File[] }) {
   const [open, setOpen] = useState(false);
@@ -104,7 +117,9 @@ export default function ReviewedDefense({ files }: { files: File[] }) {
         <dt>環境・制限</dt><dd>{profile.plan.environment} ／ {profile.plan.timeout_seconds}秒・外部通信なし</dd>
         <dt>計画 SHA-256</dt><dd>{profile.plan_sha256}</dd>
       </dl>
-      {profile.plan.conditions?.map((condition) => <p key={condition}>{condition}</p>)}
+      {profile.plan.conditions?.map((condition) => <p key={condition}>{checkAdvice[condition]?.[0] ?? condition}</p>)}
+      {profile.plan.conditions?.some((condition) => checkAdvice[condition]) &&
+        <p>正規操作は許可され、権限外の操作は拒否されることを確認します。</p>}
       <p>レビュー済みの対象 {Object.keys(profile.files).length} ファイルを照合します。管理側に登録済みの固定スナップショットに対して、独立した承認者の承認後に実行します。</p>
       {!view.available && <p role="status">緊急停止中か、隔離実行を利用できない状態です。</p>}
       {!active && view.may_request && <button type="button" className={button}
@@ -132,9 +147,16 @@ export default function ReviewedDefense({ files }: { files: File[] }) {
           <button type="button" className={button} disabled={pending}
             onClick={() => void action(() => postJSON(endpoint, { action: "cancel", id: job.id }))}>隔離検証を中断する</button>}
         {job.receipt && <>
-          <p>ローカル隔離での結果 ／ {job.receipt.result.verdict === "passed" ? "動作確認済み" :
-            job.receipt.result.verdict === "failed" ? "対策が必要" : "未確認"}</p>
+          <p>ローカル隔離での結果 ／ {verdictLabel(job.receipt.result.verdict)}</p>
           {job.receipt.result.observation?.passed !== undefined && <p>選択テスト {job.receipt.result.observation.passed} 件成功 ／ 選択外 {job.receipt.result.observation.excluded} 件</p>}
+          {Object.entries(job.receipt.result.observation?.checks ?? {}).map(([name, observed]) =>
+            <details key={name}>
+              <summary>{checkAdvice[name]?.[0] ?? name} ／ {verdictLabel(observed.verdict)}</summary>
+              {observed.observed ?
+                <p>正規操作 {observed.observed.allow ? "許可" : "拒否"} ／ 権限外の操作 {observed.observed.deny ? "許可" : "拒否"}</p> :
+                <p>正規操作と拒否側の両方を観測できませんでした。</p>}
+              {observed.verdict !== "passed" && <p>{checkAdvice[name]?.[1]} 修正後にフォルダを選び直してください。</p>}
+            </details>)}
           <p className="break-all">実行ID {job.receipt.run_id} ／ 証跡 SHA-256 {job.receipt.receipt_sha256}</p>
         </>}
       </div>}

@@ -17,13 +17,17 @@ from .workers.local_defense import sha256
 
 ACTION_PREFIX = "local_defense:"
 APPROVAL_TTL = 600
+ACTIVE_RUNS = threading.BoundedSemaphore(2)
 
 
 class LocalDefenseControl:
-    def __init__(self, service, *, python_root: Path | None, node_bundle: Path | None):
+    def __init__(self, service, *, python_root: Path | None, node_bundle: Path | None, portable=None):
         self.service = service
         self.profiles = {}
         self.job = None
+        self.portable = portable or {}
+        for profile in self.portable.values():
+            self._register(profile.bundle, profile.plan(), profile.manifest()["files"])
         if python_root:
             self._register(python_root, reviewed_plan(), PROFILE["files"])
         if node_bundle:
@@ -31,7 +35,7 @@ class LocalDefenseControl:
             # This auxiliary case and transformer are supplied by the reviewed bundle.
             folder_files = {k: v for k, v in files.items()
                             if k not in {"src/lib/auth-controls-acceptance.test.ts", "vitest.config.mts"}}
-            self._register(node_bundle, node_plan(), folder_files)
+            self._register(node_bundle, node_plan(node_bundle), folder_files)
 
     def _register(self, root, plan, files):
         self.profiles[plan["id"]] = (root, plan, files)
@@ -127,18 +131,21 @@ class LocalDefenseControl:
         svc = self.service
         approval = record["approval_ref"]
         svc.approval_store.check(approval, "eng_demo", "lab", record["action"])
-        svc._audit_first("local_defense.started", request=aid, actor=actor, approval=approval,
-                         approver=record["decided_by"], action=record["action"])
-        job["run_id"] = secrets.token_hex(16)
-        job["status"] = "running"
-        pool = svc.workers
-        thread = threading.Thread(target=self._execute, args=(job, pool, authority, approval),
-                                  name="local-defense", daemon=True)
+        if not ACTIVE_RUNS.acquire(blocking=False):
+            raise ValueError("隔離実行が上限に達しました。承認の期限内に再試行してください")
         try:
+            svc._audit_first("local_defense.started", request=aid, actor=actor, approval=approval,
+                             approver=record["decided_by"], action=record["action"])
+            job["run_id"] = secrets.token_hex(16)
+            job["status"] = "running"
+            thread = threading.Thread(target=self._execute, args=(job, svc.workers, authority, approval),
+                                      name="local-defense", daemon=True)
             thread.start()
-        except RuntimeError:
-            job["status"] = "failed"
-            svc.approval_store.revoke(approval)
+        except BaseException:
+            ACTIVE_RUNS.release()
+            if job["status"] == "running":
+                job["status"] = "failed"
+                svc.approval_store.revoke(approval)
             raise
 
     def cancel(self, aid, actor, approver):
@@ -214,7 +221,8 @@ class LocalDefenseControl:
             monitor.start()
             with lease():
                 pass
-            report = run(root, plan, pool=pool, hold_session=hold, permit=permit, prelaunch=lease)
+            report = run(root, plan, portable=self.portable.get(job["profile"]),
+                         pool=pool, hold_session=hold, permit=permit, prelaunch=lease)
         except (PolicyError, RuntimeLimitError, PermissionError, RuntimeError, ValueError, OSError):
             pass
         finally:
@@ -246,6 +254,7 @@ class LocalDefenseControl:
                                                     or job["generation"] != svc._run_generation
                                                     or svc.a.state in ("paused", "stopped")) else "failed"
             finally:
+                ACTIVE_RUNS.release()
                 with svc._lock:
                     svc.approval_store.revoke(approval)
                     job["authority"] = None

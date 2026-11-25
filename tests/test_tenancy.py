@@ -24,6 +24,7 @@ from aegis.operators import OperatorStore, hash_password, totp_code
 from aegis.server import make_handler
 from aegis.tenancy import (DEFAULT_ORG, MAX_ORGS_PER_ACCOUNT, OrgStore, TenancyError, TenantRegistry,
                            default_members_from, service_roles)
+from tests.test_local_defense import synthetic_bundle
 
 LAB_PORT = 18097
 
@@ -173,6 +174,41 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
         self.assertEqual(self.req(runner, endpoint, start, DEFAULT_ORG)[0], 409)
         self.svc.emergency_stop("padmin")
         self.assertEqual(self.req(runner, endpoint, request, DEFAULT_ORG)[0], 409)
+
+    def test_portable_profiles_and_approvals_are_scoped_to_the_registered_organization(self):
+        owner = self.login("padmin", "padmin-pw-1")
+        outsider = self.signup("portfoliooutsider")
+        org = self.reg.store.create_org("Review registry tenant", "padmin")
+        parent = Path(self.tmp.name) / "review-fixtures"
+        parent.mkdir(mode=0o700)
+        digest = synthetic_bundle(parent / "reviewed", "python")
+        registry = parent / "registry.json"
+        registry.write_text(json.dumps([{"org": org, "bundle": "reviewed", "sha256": digest, "node": None}]))
+        registry.chmod(0o600)
+        handler = make_handler(self.svc, self.ops, tenancy=self.reg, local_defense_registry=registry)
+        alternate = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=alternate.serve_forever, daemon=True).start()
+        self.root = f"http://127.0.0.1:{alternate.server_port}/api"
+        try:
+            endpoint = "/assets/local-defense"
+            self.assertEqual(self.req(outsider, endpoint, org=org)[0], 403)
+            self.assertEqual(self.req(owner, endpoint, org=DEFAULT_ORG)[0], 404)
+            status, view = self.req(owner, endpoint, org=org)
+            self.assertEqual(status, 200, view)
+            profile = view["profiles"][0]
+            self.assertEqual(profile["plan"]["id"], "profile-synthetic-python")
+            request = {"action": "request", "profile": profile["plan"]["id"], "plan_sha256": profile["plan_sha256"],
+                       "folder_sha256": sha256(_canonical(profile["files"]))}
+            status, job = self.req(owner, endpoint, request, org)
+            self.assertEqual(status, 200, job)
+            aid = job["job"]["id"]
+            approval = f"/assessments/{view['assessment']}/approvals/{aid}"
+            self.assertEqual(self.req(outsider, approval, {"decision": "approve"}, org)[0], 403)
+            self.assertEqual(self.req(owner, approval, {"decision": "approve"}, DEFAULT_ORG)[0], 409)
+            self.assertEqual(self.req(owner, approval, {"decision": "approve"}, org)[0], 403)
+        finally:
+            alternate.shutdown()
+            alternate.server_close()
 
     def test_cloud_run_routes_are_scoped_to_member_and_admin(self):
         a, b = self.signup("cloudalice"), self.signup("cloudbob")

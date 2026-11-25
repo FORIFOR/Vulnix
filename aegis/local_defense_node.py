@@ -37,6 +37,10 @@ NODE_PROFILE = {
 DEPENDENCY_FILES = 18456
 DEPENDENCY_BYTES = 450215438
 RUN_CONFIG = Path(__file__).with_name("local_defense_vitest.mts")
+OBSERVER = "defense-observer.test.ts"
+OBSERVER_SHA256 = "b773effb418fc3ee34855dcac2edea7282a0a6685127b428a4654061136d8e00"
+OBSERVATION_CHECKS = {"authentication": {}, "authorization": {}, "tenant-selection": {},
+                      "webhook-signature": {}, "ai-policy": {}}
 
 
 def _copy_bounded(dfd: int, name: str, dest: Path, limit: int) -> tuple[str, int]:
@@ -90,7 +94,8 @@ def _copy_dependencies(source: Path, dest: Path, permit=None) -> None:
         raise ValueError("dependency tree digest differs from reviewed bundle")
 
 
-def stage_node_snapshot(bundle: Path, snapshot: Path, *, permit=None, config_sha256=None) -> list[str]:
+def stage_node_snapshot(bundle: Path, snapshot: Path, *, permit=None, config_sha256=None,
+                        observer=False) -> list[str]:
     manifest = reviewed_manifest(bundle)
     selection = json.loads(read_reviewed(bundle, "selection.json", NODE_PROFILE["selection_sha256"]))
     snapshot.mkdir()
@@ -101,6 +106,8 @@ def stage_node_snapshot(bundle: Path, snapshot: Path, *, permit=None, config_sha
         dest.write_bytes(data)
     for name, key in (("package.json", "package_sha256"), ("package-lock.json", "lockfile_sha256")):
         (snapshot / name).write_bytes(read_reviewed(bundle, "dependencies/" + name, NODE_PROFILE[key]))
+    if observer:
+        (snapshot / "src/lib" / OBSERVER).write_bytes(read_reviewed(bundle, OBSERVER, OBSERVER_SHA256))
     runtime = bundle / NODE_EXE
     fd = os.open(runtime.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
@@ -119,18 +126,27 @@ def stage_node_snapshot(bundle: Path, snapshot: Path, *, permit=None, config_sha
             path = Path(directory) / name
             path.chmod(0o555 if path == snapshot / "node" else 0o444)
         Path(directory).chmod(0o555)
+    return [*vitest_command(snapshot), "--reporter=json", *selection["tests"], "-t", selection["name_pattern"]]
+
+
+def vitest_command(snapshot: Path) -> list[str]:
     return [
         sys.executable, "-I", "-c",
         "import os,sys; os.chdir(sys.argv[1]); os.execv(sys.argv[2],sys.argv[2:])",
         str(snapshot), str(snapshot / "node"), str(snapshot / "node_modules/vitest/vitest.mjs"), "run",
         "--config", "vitest.config.mts", "--configLoader", "native", "--pool=threads",
-        "--maxWorkers=1", "--no-cache", "--reporter=json", *selection["tests"], "-t", selection["name_pattern"],
+        "--maxWorkers=1", "--no-cache",
     ]
 
 
-def node_plan() -> dict:
-    return {**NODE_PROFILE, "runner_sha256": sha256(Path(__file__).read_bytes()),
+def node_plan(bundle: Path | None = None) -> dict:
+    plan = {**NODE_PROFILE, "runner_sha256": sha256(Path(__file__).read_bytes()),
             "runner_config_sha256": sha256(RUN_CONFIG.read_bytes())}
+    if bundle is not None and os.path.lexists(bundle / OBSERVER):
+        read_reviewed(bundle, OBSERVER, OBSERVER_SHA256)
+        plan.update(observer_sha256=OBSERVER_SHA256, conditions=sorted(OBSERVATION_CHECKS),
+                    automatic_verdict=True)
+    return plan
 
 
 def reviewed_manifest(bundle: Path) -> dict:
