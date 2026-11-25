@@ -168,6 +168,9 @@ def main():
                 scan("対策が必要", "")
                 defense = page.get_by_role("region", name="実行時の防御確認")
                 expect(defense.get_by_text(re.compile(r"検証候補を [1-9][0-9]* 件選びました"))).to_be_visible()
+                defense.get_by_text("レビュー済みローカルテストを実行する", exact=True).click()
+                expect(defense.get_by_text("python3 -m aegis.local_defense .", exact=True)).to_be_visible()
+
                 expect(defense.get_by_role("link", name="Vulnix自身の隔離・実行制御を確認する")).to_have_attribute(
                     "href", "/settings#control-verification")
                 evidence = defense.get_by_label("既存テストの結果（JUnit XML）")

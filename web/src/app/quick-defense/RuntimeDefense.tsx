@@ -133,6 +133,14 @@ export default function RuntimeDefense({ project, plan }: { project: string; pla
     <p>対象　<bdi>{project}</bdi></p>
     <p>対象の既存テストで出力したJUnit XMLを読み込み、合格条件に対応するケースを選びます。テストの出力やファイルは送信されません。設定は許可された管理画面で読み取り専用で確認できます。</p>
     <p>資料から検証候補を {plan.length} 件選びました。候補は内容の確認に使い、テスト名や成功結果で動作を確定しません。</p>
+    <details className="rounded border border-zinc-200 p-2 dark:border-zinc-800">
+      <summary className="cursor-pointer">レビュー済みローカルテストを実行する</summary>
+      <p>対応するのはVulnixのMFAテストです。LimaのLinuxゲストで先に実行計画を表示し、対象ファイル、合格条件、制限を確認します。</p>
+      <pre className="overflow-x-auto"><code>python3 -m aegis.local_defense .</code></pre>
+      <p>表示された計画SHA-256を承認して実行し、結果をこの画面に読み込みます。</p>
+      <pre className="overflow-x-auto"><code>{"python3 -m aegis.local_defense . --approve <計画SHA-256> --junit > /tmp/vulnix-defense.xml"}</code></pre>
+      <p>読み込んだファイルの出所は、利用者が確認します。</p>
+    </details>
     <Link href="/settings#control-verification" className="underline" prefetch={false}>Vulnix自身の隔離・実行制御を確認する</Link>
     <p>記録は選択した環境と条件に限られます。再検証時には新しい結果を対応付けてください。項目に該当する技術の利用状況が不明なら未確認のままにします。</p>
     <label className="block">既存テストの結果（JUnit XML）
