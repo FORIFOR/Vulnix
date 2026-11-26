@@ -45,6 +45,11 @@ def main():
             for asset in (service.a.asset, *service._extra_assets):
                 if asset["name"] in ("lab.test", "api.lab.test"):
                     asset["project_label"] = "Synthetic intelligence project"
+            for i in range(1, 6):
+                service._extra_assets.append({
+                    "id": f"synthetic-{i}", "name": f"synthetic-{i}.lab.test",
+                    "kind": "API", "environment": "検証環境", "status": "未診断",
+                })
         finding = {**rows[0], "id": "f_intelligence", "severity": "critical", "verdict": "candidate",
                    "title": "合成データ — TLSの確認候補", "demo_fixture": False, "evidence": [], "category": "暗号・TLS設定"}
         service._upsert_finding(finding)
@@ -107,7 +112,11 @@ def main():
         comparison = page.get_by_role("region", name="修正前後の比較")
         expect(comparison.get_by_text("43/100", exact=True)).to_be_visible()
         expect(comparison.get_by_text("18/100", exact=True)).to_be_visible()
-        expect(page.get_by_role("img", name="登録された資産とプロジェクトの関係").get_by_text("登録プロジェクト 1", exact=True)).to_be_visible()
+        topology = page.get_by_role("region", name="資産の関係")
+        expect(topology.get_by_text("登録プロジェクト 1", exact=True)).to_be_visible()
+        topology.get_by_role("button", name="次へ").click()
+        expect(topology.get_by_text("synthetic-5.lab.test", exact=True)).to_be_visible()
+        topology.get_by_role("button", name="前へ").click()
         for width, height in ((390, 844), (768, 1024), (1440, 900)):
             page.set_viewport_size({"width": width, "height": height})
             donut = page.get_by_role("img", name="重大度別ドーナツグラフ")

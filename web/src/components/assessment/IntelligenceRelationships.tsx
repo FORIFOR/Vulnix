@@ -15,6 +15,7 @@ const phaseState: Record<PhaseStatus, string> = {
 const colors = ["#ad2435", "#626975", "#87909f", "#adb4bd", "#c2c7ce"];
 type Node = { id: string; name: string; x: number; y: number; value?: string };
 type Edge = { source: string; target: string };
+const PAGE_SIZE = 6;
 const axis = { axisLine: { lineStyle: { color: "#71717a" } }, axisTick: { show: false } };
 
 function graph(nodes: Node[], links: Edge[]): EChartsCoreOption {
@@ -28,12 +29,12 @@ function graph(nodes: Node[], links: Edge[]): EChartsCoreOption {
   };
 }
 
-function topology(archive: Archive | undefined, external: boolean) {
+function topology(archive: Archive | undefined, external: boolean, page: number) {
   const nodes: Node[] = [];
   const links: Edge[] = [];
   const assets = (archive?.assets ?? []).filter((a) => a.external === external);
   const projects = new Map<string, Node>();
-  for (const [i, asset] of assets.slice(0, 6).entries()) {
+  for (const [i, asset] of assets.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE).entries()) {
     const node = { id: `asset-${i}`, name: asset.name, x: 240, y: i * 50, value: asset.id };
     nodes.push(node);
     if (asset.project_key) {
@@ -46,18 +47,18 @@ function topology(archive: Archive | undefined, external: boolean) {
       links.push({ source: project.id, target: node.id });
     }
   }
-  return { nodes, links, count: assets.length };
+  return { nodes, links };
 }
 
 function audited(evidence: Finding["evidence"][number], hashes: Set<string>) {
   return Boolean(evidence.audit_hash && evidence.saved_at != null && hashes.has(evidence.audit_hash));
 }
 
-function graphEvidence(rows: Finding[], hashes: Set<string>) {
+function graphEvidence(rows: Finding[], hashes: Set<string>, page: number) {
   const nodes: Node[] = [];
   const links: Edge[] = [];
-  const observed = rows.filter((f) => !f.demo_fixture && f.evidence_status !== "fixture" && f.evidence.some((ev) => audited(ev, hashes)));
-  observed.slice(0, 6).forEach((f, i) => {
+  const visible = rows.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+  visible.forEach((f, i) => {
     const row = f.evidence.filter((ev) => audited(ev, hashes)).at(-1);
     const observedState = row?.tool === "reproduction_probe" ? "検証記録" : "観測記録";
     nodes.push({ id: `f-${i}`, name: `所見 ${i + 1}`, x: 0, y: i * 50, value: f.id },
@@ -65,7 +66,23 @@ function graphEvidence(rows: Finding[], hashes: Set<string>) {
       { id: `a-${i}`, name: "監査記録", x: 220, y: i * 50, value: f.id });
     links.push({ source: `f-${i}`, target: `e-${i}` }, { source: `e-${i}`, target: `a-${i}` });
   });
-  return { nodes, links, observed };
+  return { nodes, links, visible };
+}
+
+function pageLimit(total: number) {
+  return Math.max(0, Math.ceil(total / PAGE_SIZE) - 1);
+}
+
+function Paginator({ page, total, onChange }: { page: number; total: number; onChange: (page: number) => void }) {
+  const last = pageLimit(total);
+  if (last === 0) return null;
+  return <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+    <button type="button" className="rounded border border-zinc-300 px-2 py-1 disabled:opacity-50 dark:border-zinc-700"
+      disabled={page === 0} onClick={() => onChange(page - 1)}>前へ</button>
+    <span>{page + 1} / {last + 1} ページ</span>
+    <button type="button" className="rounded border border-zinc-300 px-2 py-1 disabled:opacity-50 dark:border-zinc-700"
+      disabled={page >= last} onClick={() => onChange(page + 1)}>次へ</button>
+  </div>;
 }
 
 export function IntelligenceRelationships({ snap, data, chainValid, audit, archive, compared, select }: {
@@ -74,9 +91,16 @@ export function IntelligenceRelationships({ snap, data, chainValid, audit, archi
   select: (filter: FindingFilters | undefined) => void;
 }) {
   const [selectedAsset, setSelectedAsset] = useState<string>();
+  const [assetPage, setAssetPage] = useState(0);
+  const [proofPage, setProofPage] = useState(0);
+  const [riskPage, setRiskPage] = useState(0);
   const hashes = new Set(chainValid === true ? audit.map((e) => e.hash) : []);
-  const related = topology(archive, Boolean(snap.is_external_service));
-  const evidence = graphEvidence(data.rows, hashes);
+  const assetCount = (archive?.assets ?? []).filter((asset) => asset.external === Boolean(snap.is_external_service)).length;
+  const topologyPage = Math.min(assetPage, pageLimit(assetCount));
+  const related = topology(archive, Boolean(snap.is_external_service), topologyPage);
+  const auditedRows = data.rows.filter((f) => !f.demo_fixture && f.evidence_status !== "fixture" && f.evidence.some((ev) => audited(ev, hashes)));
+  const evidencePage = Math.min(proofPage, pageLimit(auditedRows.length));
+  const evidence = graphEvidence(auditedRows, hashes, evidencePage);
   const landscape = SEVERITIES.flatMap((severity, y) => (["detected", "proven"] as const).flatMap((state, x) => {
     const count = data.rows.filter((f) => f.severity === severity && f.evidence_status === state && f.evidence.some((ev) => audited(ev, hashes))).length;
     return count ? [{ name: `${severity.toUpperCase()}・${EVIDENCE_LABEL[state]} ${count}件`, value: [x, y, count],
@@ -84,7 +108,8 @@ export function IntelligenceRelationships({ snap, data, chainValid, audit, archi
   }));
   const rows = Array.from(new Map((archive?.runs ?? []).filter((r) =>
     r.asset_id && r.severity && r.external === Boolean(snap.is_external_service)).reverse().map((r) => [r.asset_id!, r])).values()).reverse();
-  const heatRows = rows.slice(0, 6);
+  const heatPage = Math.min(riskPage, pageLimit(rows.length));
+  const heatRows = rows.slice(heatPage * PAGE_SIZE, (heatPage + 1) * PAGE_SIZE);
   const heatCells = heatRows.flatMap((row, y) => SEVERITIES.map((severity, x) => ({
     name: `${row.asset}・${severity.toUpperCase()}`, value: [x, y, row.severity![severity]],
     itemStyle: { color: row.severity![severity] ? colors[x] : "#e4e4e7" },
@@ -97,7 +122,8 @@ export function IntelligenceRelationships({ snap, data, chainValid, audit, archi
     <IntelligencePanel title="資産の関係">
       {related.nodes.length ? <>
         <Chart label="登録された資産とプロジェクトの関係" option={graph(related.nodes, related.links)} />
-        <p className="text-xs text-zinc-500">登録済みのプロジェクト所属を表示します。{related.count > 6 ? `表示 6 / ${related.count} 資産。` : ""}</p>
+        <p className="text-xs text-zinc-500">登録済みのプロジェクト所属を表示します。</p>
+        <Paginator page={topologyPage} total={assetCount} onChange={setAssetPage} />
       </> : <Empty>この環境の登録資産を取得できませんでした。</Empty>}
     </IntelligencePanel>
     <IntelligencePanel title="証拠と監査の関係">
@@ -105,9 +131,9 @@ export function IntelligenceRelationships({ snap, data, chainValid, audit, archi
         <Chart label="所見・観測・監査の関係" option={graph(evidence.nodes, evidence.links)}
           onSelect={(index) => { const id = evidence.nodes[index]?.value; if (id) select({ finding: id }); }} />
         <div className="flex flex-wrap gap-2 text-xs">
-          {evidence.observed.slice(0, 6).map((f, i) => <Link key={f.id} href={findingQuery({ finding: f.id })} scroll={false} className="underline">所見 {i + 1}を表示</Link>)}
+          {evidence.visible.map((f, i) => <Link key={f.id} href={findingQuery({ finding: f.id })} scroll={false} className="underline">所見 {i + 1}を表示</Link>)}
         </div>
-        {evidence.observed.length > 6 && <p className="mt-2 text-xs text-zinc-500">表示 6 / {evidence.observed.length} 所見。</p>}
+        <Paginator page={evidencePage} total={auditedRows.length} onChange={setProofPage} />
       </> : <Empty>検証済みの監査記録と結び付く証拠はありません。</Empty>}
     </IntelligencePanel>
     <IntelligencePanel title="診断範囲">
@@ -152,7 +178,8 @@ export function IntelligenceRelationships({ snap, data, chainValid, audit, archi
         <div className="flex flex-wrap gap-2 text-xs">{heatRows.map((r) => <button key={r.asset_id} type="button"
           onClick={() => setSelectedAsset(r.asset_id)} aria-pressed={selectedAsset === r.asset_id} className="rounded border border-zinc-300 px-2 py-1 dark:border-zinc-700">{r.asset}</button>)}</div>
         {picked && <p className="mt-2 text-sm" role="status">{picked.asset} の保存済み所見 {picked.findings}件 · {fmtTime(picked.at)}</p>}
-        <p className="mt-2 text-xs text-zinc-500">監査を確認できた最新の保存結果のみ。{rows.length > 6 ? `表示 6 / ${rows.length} 資産。` : ""}</p>
+        <p className="mt-2 text-xs text-zinc-500">監査を確認できた最新の保存結果のみ。</p>
+        <Paginator page={heatPage} total={rows.length} onChange={setRiskPage} />
       </> : <Empty>監査を確認できた資産別の保存結果はありません。</Empty>}
     </IntelligencePanel>
     <IntelligencePanel title="悪用の根拠と影響度">
