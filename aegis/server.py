@@ -28,7 +28,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from . import google_ownership
+from . import cloud_inventory, google_ownership
 from .assessment import (ApproverRequired, AssessmentService, SeparationConfigError, StopNotConfirmed,
                          separate_l2_approver_from_env)
 from .audit import AuditWriteFailed
@@ -223,6 +223,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                  public_signup: bool | None = None, local_defense_python_root: Path | None = None,
                  local_defense_node_bundle: Path | None = None, local_defense_registry: Path | None = None):
     default_svc = svc
+    inventory = cloud_inventory.Inventory()
     local_controls = {}
     portable = {}
     local_controls_lock = threading.Lock()
@@ -1555,6 +1556,50 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             base = f"/api/assessments/{svc.a.id}"
             actor = sess.operator
             try:
+                if p == "/api/assets/cloud-inventory":
+                    org = getattr(self, "_bound_org", DEFAULT_ORG)
+                    owner = (org, actor, hashlib.sha256(sess.token.encode()).digest())
+                    cfg = cloud_inventory.config()
+
+                    def deliver(action):
+                        return self._authorized_org_read(sess, org, action, reader=False)
+
+                    def reply(action):
+                        try:
+                            return self._json(200, action())
+                        except cloud_inventory.CloudInventoryError as e:
+                            return self._json(e.status, {"error": str(e)})
+
+                    action = body.get("action")
+                    if action == "status" and set(body) == {"action"}:
+                        return deliver(lambda _: self._json(200, {"configured": cfg is not None}))
+                    if cfg is None:
+                        return deliver(lambda _: self._json(404, {"error": "Google Cloud の閲覧連携は未設定です。"}))
+                    if action in ("start", "projects", "clear") and set(body) == {"action"}:
+                        if action == "start":
+                            return deliver(lambda _: reply(lambda: inventory.start(owner, cfg)))
+                        if action == "clear":
+                            return deliver(lambda _: reply(lambda: inventory.clear(owner) or {"configured": True}))
+                        return deliver(lambda _: reply(lambda: inventory.get(owner)))
+                    if action != "finish" or set(body) != {"action", "code", "state"}:
+                        return self._json(400, {"error": "不明な連携操作です。"})
+                    code, state = body["code"], body["state"]
+                    if (not isinstance(code, str) or not re.fullmatch(r"[!-~]{1,2048}", code)
+                            or not isinstance(state, str) or not re.fullmatch(r"[A-Za-z0-9_-]{43}", state)):
+                        return self._json(400, {"error": "Google の応答が無効です。"})
+                    try:
+                        with live_grant_roles(sess, org, reader=False):
+                            flow, verifier = inventory.claim(owner, state)
+                        result = cloud_inventory.fetch_projects(cfg, code, verifier)
+                    except cloud_inventory.CloudInventoryError as e:
+                        status, message = e.status, str(e)
+                        return deliver(lambda _: self._json(status, {"error": message}))
+
+                    def publish():
+                        inventory.publish(owner, flow, result)
+                        return {"connected": True}
+
+                    return deliver(lambda _: reply(publish))
                 if p == "/api/assets/local-defense":
                     org = getattr(self, "_bound_org", DEFAULT_ORG)
                     local_defense = local_control(org, svc)

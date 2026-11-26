@@ -1,6 +1,9 @@
 "use client";
 
 import { useRouter } from "next/navigation";
+import Link from "next/link";
+import { CloudInventory } from "@/components/CloudInventory";
+import { useSession } from "@/lib/useSession";
 import { useEffect, useState } from "react";
 import { AssetRegistrationModal } from "@/components/AssetRegistrationModal";
 import { OwnershipWizard } from "@/components/OwnershipWizard";
@@ -21,6 +24,8 @@ const STATUS_CLS: Record<string, string> = {
 
 export default function AssetsPage() {
   const router = useRouter();
+  const { session, org } = useSession();
+  const orgKey = `${session?.operator ?? ""}:${org?.id ?? ""}`;
   const [assets, setAssets] = useState<Asset[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -28,6 +33,7 @@ export default function AssetsPage() {
   const [editingAsset, setEditingAsset] = useState<Asset | null>(null);
   const [wizardOpen, setWizardOpen] = useState(false);
   const [wizardAsset, setWizardAsset] = useState<Asset | null>(null);
+  const [cloudTarget, setCloudTarget] = useState<{ url: string; orgKey: string } | null>(null);
 
   useEffect(() => {
     getJSON<Asset[]>("/api/assets").then(setAssets, (e) => setErr(e.message));
@@ -76,6 +82,7 @@ export default function AssetsPage() {
           <button
             type="button"
             onClick={() => {
+              setCloudTarget(null);
               setWizardAsset(null);
               setWizardOpen(true);
             }}
@@ -96,6 +103,12 @@ export default function AssetsPage() {
         </div>
       </div>
 
+      <p className="mb-4 text-sm"><Link className="underline" href="/quick-defense">フォルダ・SBOMを診断する</Link></p>
+      {session && <CloudInventory key={orgKey} onChoose={(url) => {
+        setCloudTarget({ url, orgKey });
+        setWizardAsset(null);
+        setWizardOpen(true);
+      }} />}
       {err && <p role="alert" className="mb-4 rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-800 dark:bg-red-950/40 dark:text-red-200">{err}</p>}
       {!assets && !err && <p className="text-sm text-zinc-500">読み込み中…</p>}
 
@@ -147,6 +160,7 @@ export default function AssetsPage() {
                         type="button"
                         disabled={busyId === a.id}
                         onClick={() => {
+                          setCloudTarget(null);
                           setWizardAsset(a);
                           setWizardOpen(true);
                         }}
@@ -193,10 +207,11 @@ export default function AssetsPage() {
       </Card>
 
       <OwnershipWizard
-        key={`wizard-${wizardAsset?.id ?? "new"}-${wizardOpen}`}
-        open={wizardOpen}
+        key={`wizard-${wizardAsset?.id ?? cloudTarget?.url ?? "new"}-${wizardOpen}-${orgKey}`}
+        open={wizardOpen && (!cloudTarget || cloudTarget.orgKey === orgKey)}
         onClose={() => setWizardOpen(false)}
         initialAsset={wizardAsset}
+        initialUrl={cloudTarget?.orgKey === orgKey ? cloudTarget.url : undefined}
         knownAssets={assets}
         onAssetsChanged={setAssets}
       />

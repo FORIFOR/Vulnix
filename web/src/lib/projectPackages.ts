@@ -65,7 +65,52 @@ export function propertyLine(body: string, key: string): number | undefined {
   return undefined;
 }
 
+export function sbomComponents(value: unknown): { rows: Array<Record<string, unknown>>; key: string; total: number } {
+  const sbom = record(value);
+  if (sbom.bomFormat === "CycloneDX" && Array.isArray(sbom.components)) {
+    return { rows: sbom.components.slice(0, 12000).map(record), key: "components", total: sbom.components.length };
+  }
+  if (sbom.spdxVersion === "SPDX-2.3" && Array.isArray(sbom.packages)) {
+    const rows = sbom.packages.slice(0, 12000).map((value) => {
+      const pkg = record(value);
+      const refs = Array.isArray(pkg.externalRefs) ? pkg.externalRefs.slice(0, 32).map(record) : [];
+      const identifiers = (type: string) => new Set(refs.filter((ref) => ref.referenceType === type)
+        .map((ref) => ref.referenceLocator));
+      const purls = identifiers("purl");
+      const cpes = identifiers("cpe23Type");
+      return { purl: purls.size === 1 ? [...purls][0] : undefined,
+        cpe: cpes.size === 1 ? [...cpes][0] : undefined, version: pkg.versionInfo };
+    });
+    return { rows, key: "packages", total: sbom.packages.length };
+  }
+  return { rows: [], key: "components", total: 0 };
+}
+
 export function collectPackages(name: string, path: string, body: string, parsed: unknown): Package[] {
+  if (name === "inventory.sbom.json") {
+    const { rows, key } = sbomComponents(parsed);
+    const line = propertyLine(body, key);
+    return rows.flatMap<Package>((entry) => {
+      const purl = typeof entry.purl === "string" && entry.purl.length <= 600
+        ? /^pkg:(npm|pypi|golang)\/([^@?#]+)@([^@/?#]+)$/.exec(entry.purl) : null;
+      if (!purl) return [];
+      try {
+        let name = decodeURIComponent(purl[2]);
+        const version = decodeURIComponent(purl[3]);
+        const ecosystem = purl[1] === "npm" ? "npm" : purl[1] === "pypi" ? "PyPI" : "Go";
+        if (entry.version !== undefined && entry.version !== version) return [];
+        if (ecosystem === "PyPI") {
+          if (!/^[A-Za-z0-9_.-]+$/.test(name)) return [];
+          name = name.toLowerCase().replace(/[-_.]+/g, "-");
+        } else if (ecosystem === "npm" ? !/^(?:@[a-z0-9._-]+\/)?[a-z0-9._-]+$/.test(name)
+          : !/^[\w.~-]+\/[\w./~-]+$/.test(name)) return [];
+        return compareVersions(ecosystem, version, version) === 0 ? [{ ecosystem, name, version, path, line }] : [];
+      } catch {
+        return [];
+      }
+    });
+  }
+
   if (name === "package-lock.json" || name === "npm-shrinkwrap.json") {
     const lock = record(parsed);
     if (lock.lockfileVersion !== 2 && lock.lockfileVersion !== 3) return [];

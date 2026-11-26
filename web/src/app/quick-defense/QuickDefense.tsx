@@ -18,6 +18,8 @@ const maxInput = 2 * 1024 * 1024;
 export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) {
   const [selected, setSelected] = useState(new Set<string>(categories));
   const [files, setFiles] = useState<File[]>([]);
+  const [sbom, setSbom] = useState<File | null>(null);
+  const sbomInput = useRef<HTMLInputElement>(null);
   const [nvd, setNvd] = useState<unknown>(bundledFeed);
   const [osv, setOsv] = useState<unknown[]>([]);
   const [official, setOfficial] = useState<Awaited<ReturnType<typeof readCatalogCache>>>({ sources: [], legacy: {} });
@@ -163,7 +165,9 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
         vulnerabilities: [...localNvd, ...(official.sources.some(({ source }) => source.startsWith("NVD-")) ? [] : official.legacy.NVD?.records ?? [])],
         osv: [...osv, ...osvSources.flatMap((source) => cachedSources.has(source) ? [] : official.legacy[source]?.records ?? [])],
       };
-      worker.postMessage({ files: files.map((file) => ({ file, path: file.webkitRelativePath || file.name })), feed });
+      const sources = files.map((file) => ({ file, path: file.webkitRelativePath || file.name }));
+      if (sbom) sources.push({ file: sbom, path: "inventory.sbom.json" });
+      worker.postMessage({ files: sources, feed });
     } catch {
       running.current?.();
       setBusy(false);
@@ -206,8 +210,24 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
           }} />
         </label>
         {files.length > 0 && <p className="text-sm">フォルダ内のファイルを {files.length} 件選択済み</p>}
+        <label id="sbom-input" className="block text-sm font-semibold">SBOM を選択（任意）
+          <input ref={sbomInput} type="file" accept=".json,application/json" disabled={busy}
+            className="mt-2 block w-full text-sm" onChange={(event) => {
+              const file = event.target.files?.[0];
+              event.target.value = "";
+              setReport(null);
+              setResults(null);
+              setEnded(null);
+              setSbom(file && file.size <= 4 * 1024 * 1024 ? file : null);
+              setError(file && file.size > 4 * 1024 * 1024 ? "4 MB以下のCycloneDX／SPDX 2.3 JSONを選んでください。" : "");
+            }} />
+        </label>
+        <p className="text-xs">CycloneDX／SPDX 2.3 JSONをブラウザ内で照合します。対応する識別子のない依存関係、SBOMと実配備の一致、実行時の防御は未確認です。</p>
+        {sbom && <p className="text-sm">SBOM を選択済み <button type="button" disabled={busy} className="ml-2 underline"
+          onClick={() => { setSbom(null); setReport(null); setResults(null); }}>選択を解除</button></p>}
+
         <div className="flex flex-wrap gap-2">
-          <button type="button" className={primary} disabled={!cacheReady || busy || updating || !selected.size || !files.length} onClick={() => run("local")}>
+          <button type="button" className={primary} disabled={!cacheReady || busy || updating || !selected.size || (!files.length && !sbom)} onClick={() => run("local")}>
             {busy ? "検証中…" : "ローカル検証を開始"}
           </button>
           <button type="button" className={button} disabled={busy || updating || !selected.size} onClick={() => run("demo")}>模擬データで試す</button>
@@ -288,7 +308,7 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h2 className="text-lg font-semibold">{mode === "demo" ? "模擬データの結果" : "ローカル入力の結果"}</h2>
           {mode === "local" && <button type="button" className={button} disabled={busy || updating}
-            onClick={() => folderInput.current?.click()}>修正後のフォルダを選ぶ</button>}
+            onClick={() => (files.length ? folderInput : sbomInput).current?.click()}>{files.length ? "修正後のフォルダを選ぶ" : "更新したSBOMを選ぶ"}</button>}
         </div>
         <p role="status" className="text-sm">{Object.keys(labels).map((key) =>
           `${statusLabel(key as keyof typeof labels)} ${visible.filter((row) => row.status === key).length}件`).join(" ・ ")}</p>

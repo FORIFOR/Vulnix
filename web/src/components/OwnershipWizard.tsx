@@ -12,6 +12,7 @@ interface Props {
   onAssetsChanged: (assets: Asset[]) => void;
   /** Resume the flow for an asset that already has a challenge. */
   initialAsset?: Asset | null;
+  initialUrl?: string;
   knownAssets?: Asset[] | null;
   /** shown on the ownership step (e.g. Google could not confirm this site) */
   notice?: string | null;
@@ -90,13 +91,13 @@ function CopyRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, knownAssets, notice }: Props) {
+export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, initialUrl, knownAssets, notice }: Props) {
   const router = useRouter();
   const { googleOwnership, optionalStatusCheck, externalSiteTrafficEnabled, session } = useSession();
   const [cloudOpen, setCloudOpen] = useState(false);
   const resumeAt = initialAsset?.challenge ? (initialAsset.ownership_verified ? 2 : 1) : 0;
   const [step, setStep] = useState(resumeAt);
-  const [url, setUrl] = useState(initialAsset?.target_url ?? (initialAsset?.name ? `https://${initialAsset.name}` : ""));
+  const [url, setUrl] = useState(initialAsset?.target_url ?? (initialAsset?.name ? `https://${initialAsset.name}` : initialUrl ?? ""));
   const [challenge, setChallenge] = useState<OwnershipChallenge | null>(initialAsset?.challenge ?? null);
   const [targetUrl, setTargetUrl] = useState<string>((initialAsset as { target_url?: string } | undefined)?.target_url ?? "");
   const prohibited = FALLBACK_PROHIBITED;

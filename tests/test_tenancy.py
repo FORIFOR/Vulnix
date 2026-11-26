@@ -144,6 +144,43 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
         self.svc.close()
         self.tmp.cleanup()
 
+    def test_cloud_inventory_binds_single_use_oauth_to_active_session_and_org(self):
+        from urllib.parse import parse_qs, urlsplit
+        from aegis import cloud_inventory
+
+        alice = self.signup("cloudreader")
+        bob = self.signup("cloudoutsider")
+        alt = self.reg.store.create_org("Other Cloud Workspace", "cloudreader")
+        org = alice["orgs"][0]["id"]
+        path = "/assets/cloud-inventory"
+        settings = {
+            "VULNIX_CLOUD_CLIENT_ID": "synthetic",
+            "VULNIX_CLOUD_CLIENT_SECRET": "fixture-only",
+            "VULNIX_CLOUD_REDIRECT_URI": "https://vulnix.lab.test/verify/cloud",
+        }
+        projects = {"projects": [{"id": "lab-project", "number": "123", "label": "Lab"}], "incomplete": False}
+        with patch.dict("os.environ", settings), patch.object(cloud_inventory, "fetch_projects", return_value=projects) as fetch:
+            self.assertEqual(self.req(bob, path, {"action": "start"}, org)[0], 403)
+            status, response = self.req(alice, path, {"action": "start"}, org)
+            self.assertEqual(status, 200)
+            query = parse_qs(urlsplit(response["url"]).query)
+            self.assertEqual(query["scope"], [cloud_inventory.SCOPE])
+            self.assertEqual(query["code_challenge_method"], ["S256"])
+            finish = {"action": "finish", "code": "synthetic", "state": query["state"][0]}
+            self.assertEqual(self.req(bob, path, finish, org)[0], 403)
+            self.assertEqual(self.req(alice, path, finish, alt)[0], 400)
+            other_session = self.login("cloudreader", "cloudreader-Passw0rd!")
+            self.assertEqual(self.req(other_session, path, finish, org)[0], 400)
+            fetch.assert_not_called()
+            self.assertEqual(self.req(alice, path, finish, org)[0], 200)
+            self.assertEqual(self.req(alice, path, finish, org)[0], 400)
+            fetch.assert_called_once()
+            self.assertEqual(self.req(alice, path, {"action": "projects"}, org)[1]["projects"], projects["projects"])
+            self.assertNotIn("projects", self.req(other_session, path, {"action": "projects"}, org)[1])
+            self.assertNotIn("projects", self.req(alice, path, {"action": "projects"}, alt)[1])
+            self.assertEqual(self.req(alice, path, {"action": "clear"}, org)[0], 200)
+            self.assertNotIn("projects", self.req(alice, path, {"action": "projects"}, org)[1])
+
     def test_reviewed_defense_bound_to_review_and_live_distinct_approver(self):
         owner = self.login("padmin", "padmin-pw-1")
         runner, outsider = self.signup("reviewrunner"), self.signup("reviewoutsider")

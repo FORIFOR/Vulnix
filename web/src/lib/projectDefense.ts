@@ -1,7 +1,7 @@
 import ts from "typescript";
 import { parseAllDocuments } from "yaml";
 import { inspectRuntimeFile, type PlannedCheck } from "./runtimePlan";
-import { affects, collectPackages, compareVersions, propertyLine, type Package, type Location } from "./projectPackages";
+import { affects, collectPackages, compareVersions, propertyLine, sbomComponents, type Package, type Location } from "./projectPackages";
 import { advisorySeverity, checkCloudFormation, checkControls, checkLockfile, record, type ResultLocation } from "./quickDefense";
 
 export const limits = { entries: 12000, files: 180, timeMs: 30000, findings: 5000, fileBytes: 256 * 1024, dependencyBytes: 4 * 1024 * 1024, bytes: 12 * 1024 * 1024 };
@@ -290,12 +290,11 @@ function componentsFrom(file: string, body: string, parsed: unknown, path: strin
     return [...body.matchAll(/^\s*FROM\s+(?:docker\.io\/library\/|library\/)?httpd:(\d+\.\d+\.\d+)\s*(?:$|#)/gim)]
       .map((match) => ({ part: "a", vendor: "apache", product: "http_server", version: match[1], location: { path, line: body.slice(0, match.index).split("\n").length } }));
   }
-  const sbom = record(parsed);
-  if (sbom.bomFormat !== "CycloneDX" || !Array.isArray(sbom.components)) return [];
-  return sbom.components.slice(0, 200).flatMap((value: unknown) => {
-    const match = typeof record(value).cpe === "string" &&
-      String(record(value).cpe).match(/^cpe:2\.3:([aho]):([\w.-]+):([\w.-]+):(-|\d+(?:\.\d+){1,7})(?::\*){7}$/);
-    return match ? [{ part: match[1], vendor: match[2], product: match[3], version: match[4], location: { path, line: propertyLine(body, "components") } }] : [];
+  const { rows, key } = sbomComponents(parsed);
+  const line = propertyLine(body, key);
+  return rows.flatMap((value) => {
+    const match = typeof value.cpe === "string" && value.cpe.match(/^cpe:2\.3:([aho]):([\w.-]+):([\w.-]+):(-|\d+(?:\.\d+){1,7})(?::\*){7}$/);
+    return match ? [{ part: match[1], vendor: match[2], product: match[3], version: match[4], location: { path, line } }] : [];
   });
 }
 
@@ -501,7 +500,7 @@ export async function scanProject(files: ProjectFile[], feed: unknown, onProgres
   onProgress?.(progress());
   for (const { file, path, name, priority } of candidates) {
     if (performance.now() >= deadline) break;
-    const dependency = /^(?:package-lock\.json|npm-shrinkwrap\.json|requirements.*\.txt|go\.mod)$/i.test(name);
+    const dependency = /^(?:package-lock\.json|npm-shrinkwrap\.json|requirements.*\.txt|go\.mod|inventory\.sbom\.json)$/i.test(name);
     const tooLarge = file.size > (dependency ? limits.dependencyBytes : limits.fileBytes);
     const bytesToRead = tooLarge ? 0 : file.size;
     if (batchFiles === limits.files || batchBytes + bytesToRead > limits.bytes || batches === 0) {
@@ -567,7 +566,8 @@ export async function scanProject(files: ProjectFile[], feed: unknown, onProgres
     }
     if (dependency) {
       const dependencies = collectPackages(name, path, content, parsed);
-      if (!dependencies.length) notParsed();
+      if (!dependencies.length && (!/\.sbom\.json$/i.test(name) || !componentsFrom(name, content, parsed, path).length)) notParsed();
+      if (name === "inventory.sbom.json" && sbomComponents(parsed).total > dependencies.length) skippedRules++;
       for (const entry of dependencies) {
         if (packageCount >= 12000) { skippedRules++; break; }
         const key = `${entry.ecosystem}:${entry.name}`;
