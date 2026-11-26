@@ -81,12 +81,13 @@ def main() -> None:
             # A different registered target per flow preserves the previous proof and audit.
             target = TARGET.replace("ownership.", f"ownership-{width}.")
             calls.reset_mock()
-            width_options = {"viewport": {"width": width, "height": 900},
+            height = 844 if width == 390 else 900
+            width_options = {"viewport": {"width": width, "height": height},
                              "permissions": ["clipboard-read", "clipboard-write"]}
             if args.evidence:
                 width_options["record_video_dir"] = str(args.evidence)
             runner = browser.new_context(**width_options)
-            reviewer = browser.new_context(viewport={"width": width, "height": 900})
+            reviewer = browser.new_context(viewport={"width": width, "height": height})
 
             def sign_in(context, name):
                 page = context.new_page()
@@ -124,6 +125,10 @@ def main() -> None:
                 asset["challenge"]["dns_txt_name"] + "\t" + asset["challenge"]["dns_txt_value"])
             expect(chooser.get_by_role("button", name="確認する", exact=True)).to_be_disabled()
             assert user_page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+            # The target remains visible while using the setup controls further down.
+            expect(chooser.get_by_text(target, exact=True)).to_be_in_viewport()
+            chooser.locator(".overflow-y-auto").evaluate("el => { el.scrollTop = 0; }")
+            expect(chooser.get_by_role("button", name="管理者に所有確認の許可を依頼する")).to_be_in_viewport()
             capture(user_page, "before-request")
             chooser.get_by_role("button", name="管理者に所有確認の許可を依頼する").click()
             expect(chooser.get_by_text("所有確認用の通信 申請中", exact=True)).to_be_visible()

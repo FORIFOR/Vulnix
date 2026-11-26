@@ -212,6 +212,9 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
   };
 
   const requested = endpoint(url.trim());
+  const targetName = registeredAsset && (step > 0 || endpoint(registeredAsset.target_url ?? "") === requested)
+    ? registeredAsset.display_name || registeredAsset.name
+    : requested ? new URL(requested).hostname : "診断対象";
   const permittedAsset = requested && !trafficBlocked && failedReuse !== requested && knownAssets?.find((asset) => asset.challenge && asset.ownership_verified &&
     asset.scope_confirmed && asset.assessment_id && asset.target_url && endpoint(asset.target_url) === requested);
 
@@ -332,18 +335,20 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
       aria-labelledby="ownership-wizard-title"
     >
       <div className="max-h-[90dvh] w-full max-w-xl overflow-y-auto rounded-2xl border border-zinc-200 bg-white p-4 shadow-xl sm:p-6 dark:border-zinc-800 dark:bg-zinc-900">
-        <div className="mb-4 flex items-start justify-between gap-2">
-          <div>
-            <h2 id="ownership-wizard-title" className="text-lg font-bold">サイトを診断する</h2>
-            <p className="mt-0.5 text-sm text-zinc-600 dark:text-zinc-300">所有確認と診断の許可を、順に確認します。</p>
+        <div className="sticky -top-4 z-10 -mx-4 mb-3 space-y-2 bg-white px-4 pb-2 pt-3 sm:-top-6 sm:-mx-6 sm:px-6 dark:bg-zinc-900">
+          <div className="flex items-start justify-between gap-2">
+            <div>
+              <h2 id="ownership-wizard-title" className="text-lg font-bold">サイトを診断する</h2>
+              <p className="mt-0.5 text-sm text-zinc-600 dark:text-zinc-300">所有確認と診断の許可を、順に確認します。</p>
+            </div>
+            <button type="button" onClick={onClose} className="shrink-0 whitespace-nowrap rounded-lg px-2.5 py-1 text-xs text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800">
+              閉じる ✕
+            </button>
           </div>
-          <button type="button" onClick={onClose} className="shrink-0 whitespace-nowrap rounded-lg px-2.5 py-1 text-xs text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800">
-            閉じる ✕
-          </button>
-        </div>
-        <div className="mb-4 rounded-xl bg-zinc-50 px-3 py-2 text-sm dark:bg-zinc-800">
-          <p className="font-semibold wrap-anywhere">{registeredAsset?.display_name || registeredAsset?.name || (requested ? new URL(requested).hostname : "診断対象")}</p>
-          <p className="wrap-anywhere text-zinc-600 dark:text-zinc-300">{step === 0 ? (url || "URLを入力してください") : proofUrl}</p>
+          <div className="rounded-xl bg-zinc-50 px-3 py-2 text-sm dark:bg-zinc-800">
+            <p className="font-semibold wrap-anywhere">{targetName}</p>
+            <p className="wrap-anywhere text-zinc-600 dark:text-zinc-300">{step === 0 ? (url || "URLを入力してください") : proofUrl}</p>
+          </div>
         </div>
 
         <ol className="mb-4 flex flex-wrap gap-1.5 text-[11px]">
@@ -420,42 +425,6 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
                   </label>;
                 })}
               </div>
-              {method === "well_known" && fileAvailable && canRegister && ownershipTrafficMode !== "off" && (
-                <div className="space-y-2 rounded-lg bg-zinc-50 p-3 dark:bg-zinc-800">
-                  <p>ファイルを下のURLで公開してください。</p>
-                  <dl><CopyRow label="URL" value={challenge.well_known_url} /></dl>
-                  <a className="inline-block font-semibold underline" download="vulnix-verify.txt"
-                    href={`data:text/plain;charset=utf-8,${encodeURIComponent(challenge.well_known_content)}`}>確認用ファイルをダウンロード</a>
-                </div>
-              )}
-              {method === "dns_txt" && canRegister && ownershipTrafficMode !== "off" && (
-                <div className="space-y-2 rounded-lg bg-zinc-50 p-3 dark:bg-zinc-800">
-                  <p>ドメインの設定でTXTレコードを追加してください。</p>
-                  <dl className="space-y-1.5">
-                    <CopyRow label="名前" value={challenge.dns_txt_name} />
-                    <CopyRow label="値" value={challenge.dns_txt_value} />
-                  </dl>
-                  <button type="button" className="font-semibold underline" onClick={() => {
-                    void run(async () => {
-                      await navigator.clipboard.writeText(`${challenge.dns_txt_name}\t${challenge.dns_txt_value}`);
-                      setCopiedDns(true);
-                    });
-                  }}>{copiedDns ? "名前と値をコピーしました" : "名前と値をまとめてコピー"}</button>
-                </div>
-              )}
-              <details className="space-y-2">
-                <summary className="cursor-pointer text-sm">その他の確認方法</summary>
-                <label className="block"><input type="radio" name="own-method" checked={method === "meta_tag"}
-                  disabled={!fileAvailable} onChange={() => setMethod("meta_tag")} /> HTMLに確認タグを追加</label>
-                {method === "meta_tag" && canRegister && ownershipTrafficMode !== "off" && <dl>
-                  <CopyRow label="タグ" value={challenge.meta_tag_html || `<meta name="vulnix-verify" content="${challenge.token}">`} />
-                </dl>}
-                <label className="block"><input type="radio" name="own-method" checked={method === "verification_code"}
-                  disabled={!fileAvailable} onChange={() => setMethod("verification_code")} /> 管理画面に確認コードを設定</label>
-                {method === "verification_code" && canRegister && ownershipTrafficMode !== "off" && <dl>
-                  <CopyRow label="コード" value={challenge.code || challenge.token} />
-                </dl>}
-              </details>
             </fieldset>
             {verifyDetail && <p role="status" className="rounded-lg bg-amber-50 p-3 dark:bg-amber-950/40">{verifyDetail}</p>}
             {approvalRequired && <div className="space-y-2 rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
@@ -486,6 +455,42 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
                 {busy ? "確認中…" : method === "google_search_console" ? "Google で確認する" : "確認する"}
               </button>
             </div>}
+            {method === "well_known" && fileAvailable && canRegister && ownershipTrafficMode !== "off" && (
+              <div className="space-y-2 rounded-lg bg-zinc-50 p-3 dark:bg-zinc-800">
+                <p>ファイルを下のURLで公開してください。</p>
+                <dl><CopyRow label="URL" value={challenge.well_known_url} /></dl>
+                <a className="inline-block font-semibold underline" download="vulnix-verify.txt"
+                  href={`data:text/plain;charset=utf-8,${encodeURIComponent(challenge.well_known_content)}`}>確認用ファイルをダウンロード</a>
+              </div>
+            )}
+            {method === "dns_txt" && canRegister && ownershipTrafficMode !== "off" && (
+              <div className="space-y-2 rounded-lg bg-zinc-50 p-3 dark:bg-zinc-800">
+                <p>ドメインの設定でTXTレコードを追加してください。</p>
+                <dl className="space-y-1.5">
+                  <CopyRow label="名前" value={challenge.dns_txt_name} />
+                  <CopyRow label="値" value={challenge.dns_txt_value} />
+                </dl>
+                <button type="button" className="font-semibold underline" onClick={() => {
+                  void run(async () => {
+                    await navigator.clipboard.writeText(`${challenge.dns_txt_name}\t${challenge.dns_txt_value}`);
+                    setCopiedDns(true);
+                  });
+                }}>{copiedDns ? "名前と値をコピーしました" : "名前と値をまとめてコピー"}</button>
+              </div>
+            )}
+            <details className="space-y-2">
+              <summary className="cursor-pointer text-sm">その他の確認方法</summary>
+              <label className="block"><input type="radio" name="own-method" checked={method === "meta_tag"}
+                disabled={!fileAvailable} onChange={() => setMethod("meta_tag")} /> HTMLに確認タグを追加</label>
+              {method === "meta_tag" && canRegister && ownershipTrafficMode !== "off" && <dl>
+                <CopyRow label="タグ" value={challenge.meta_tag_html || `<meta name="vulnix-verify" content="${challenge.token}">`} />
+              </dl>}
+              <label className="block"><input type="radio" name="own-method" checked={method === "verification_code"}
+                disabled={!fileAvailable} onChange={() => setMethod("verification_code")} /> 管理画面に確認コードを設定</label>
+              {method === "verification_code" && canRegister && ownershipTrafficMode !== "off" && <dl>
+                <CopyRow label="コード" value={challenge.code || challenge.token} />
+              </dl>}
+            </details>
             {cloudAdmin && ownershipTrafficMode !== "off" && fileAvailable && (
               <details onToggle={(event) => setCloudOpen(event.currentTarget.open)} className="space-y-2 rounded-xl border border-zinc-300 p-3 text-xs dark:border-zinc-700">
                 <summary className="cursor-pointer font-semibold">詳細設定（Cloud Run OIDC 所有確認）</summary>
