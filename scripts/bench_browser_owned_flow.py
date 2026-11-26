@@ -455,7 +455,15 @@ def main() -> None:
                                 page.locator("h3").filter(has_text="Apache mod_status の公開露出").wait_for()
                                 org_switch_isolated = True
                             assert not page_errors, page_errors
-                            assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+                            layout = page.evaluate("""() => ({
+                                viewport: innerWidth,
+                                width: document.documentElement.scrollWidth,
+                                overflowing: Array.from(document.body.querySelectorAll('*'))
+                                  .filter((node) => node.getBoundingClientRect().right > innerWidth + 1)
+                                  .slice(0, 12)
+                                  .map((node) => [node.tagName, node.getAttribute('class')]),
+                            })""")
+                            assert layout["width"] <= layout["viewport"], layout
                             idle_at = len(api_calls)
                             silent_change_recovered_s = None
                             revocation_hidden_s = None
