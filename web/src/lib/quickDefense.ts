@@ -1,7 +1,12 @@
 type Category = "ARTEX" | "CVE" | "Claude Code";
 type Status = "confirmed" | "action" | "unknown" | "na";
-export type ResultLocation = { path: string; line?: number; dependency?: string; version?: string; fixed?: string[] };
-type Result = { location?: ResultLocation; locations?: ResultLocation[]; category: Category; title: string; status: Status; evidence: string; risk: string; fix: string; retest: string };
+export type ResultLocation = { path: string; line?: number; dependency?: string; ecosystem?: string; version?: string; fixed?: string[] };
+export type Severity = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+export function advisorySeverity(value: unknown): Severity | undefined {
+  if (value === "MODERATE") return "MEDIUM";
+  if (value === "LOW" || value === "MEDIUM" || value === "HIGH" || value === "CRITICAL") return value;
+}
+type Result = { severity?: Severity; location?: ResultLocation; locations?: ResultLocation[]; category: Category; title: string; status: Status; evidence: string; risk: string; fix: string; retest: string };
 type RecordValue = Record<string, unknown>;
 
 export const categories = ["ARTEX", "CVE", "Claude Code"] as const;

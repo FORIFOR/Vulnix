@@ -22,14 +22,20 @@ class TestPublicCatalog(unittest.TestCase):
             file = Path(folder) / 'osv.zip'
             with ZipFile(file, 'w') as archive:
                 archive.writestr('GHSA-aa.json', json.dumps({'id': 'GHSA-aa', 'modified': '2022-01-01T00:00:00Z',
+                    'database_specific': {'severity': 'HIGH', 'unused': 'metadata'},
                     'affected': [{'package': {'name': 'example', 'ecosystem': 'npm'}, 'versions': ['1.0.0']}]}))
                 archive.writestr('GHSA-bb.json', json.dumps({'id': 'GHSA-bb', 'withdrawn': '2023-01-01T00:00:00Z'}))
             rows = list(osv_rows(file))
             self.assertEqual([row['id'] for row in rows], ['GHSA-aa', 'GHSA-bb'])
+            self.assertEqual(rows[0]['database_specific'], {'severity': 'HIGH'})
             self.assertIn('withdrawn', rows[1])
 
     def test_annual_format_validates_count_and_tail_across_chunks(self):
-        entries = [{'cve': {'id': 'CVE-2002-0123', 'vulnStatus': 'Analyzed', 'descriptions': ['a' * 100000]}},
+        entries = [{'cve': {'id': 'CVE-2002-0123', 'vulnStatus': 'Analyzed', 'descriptions': ['a' * 100000],
+                            'metrics': {'cvssMetricV31': [
+                                {'type': 'Secondary', 'cvssData': {'baseSeverity': 'MEDIUM'}},
+                                {'type': 'Primary', 'cvssData': {'baseSeverity': 'HIGH'}},
+                            ]}}},
                    {'cve': {'id': 'CVE-2002-0124', 'vulnStatus': 'Rejected'}}]
         raw = json.dumps({'format': 'NVD_CVE', 'version': '2.0', 'totalResults': 2, 'vulnerabilities': entries}).encode()
         def read(body):
@@ -37,6 +43,7 @@ class TestPublicCatalog(unittest.TestCase):
         rows = read(raw)
         self.assertEqual(rows[1]['cve']['vulnStatus'], 'Rejected')
         self.assertNotIn('descriptions', rows[0]['cve'])
+        self.assertEqual(rows[0]['cve']['severity'], 'HIGH')
         for bad in (raw[:-1], raw.replace(b'"totalResults": 2', b'"totalResults": 3')):
             with self.assertRaises(ValueError):
                 read(bad)

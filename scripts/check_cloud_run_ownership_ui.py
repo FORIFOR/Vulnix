@@ -106,11 +106,11 @@ def main() -> None:
                     page.get_by_label("診断するサイトのURL").fill(f"https://{HOST}/")
                     page.get_by_role("button", name="所有確認へ").click()
                     page.get_by_text("詳細設定（Cloud Run OIDC 所有確認）", exact=True).click()
-                    page.get_by_label("登録するサービスアカウントの sub").fill("service-account-123")
+                    page.get_by_label("サービスアカウントの識別子（sub）").fill("service-account-123")
                     page.get_by_role("button", name="主体を登録").click()
-                    page.get_by_text("状態: 検証待ち", exact=True).wait_for()
+                    page.get_by_text("状態 検証待ち", exact=True).wait_for()
                     page.get_by_role("button", name="登録を解除").click()
-                    page.get_by_text("状態: 失効", exact=True).wait_for()
+                    page.get_by_text("状態 失効", exact=True).wait_for()
                     assert svc.cloud_run_store.binding("default", HOST) is None
                     page.get_by_role("button", name="主体を登録").click()
                     page.get_by_role("button", name="チャレンジ発行").click()
@@ -133,9 +133,11 @@ def main() -> None:
                     page.get_by_text("所有確認が完了しました", exact=False).wait_for()
                     assert svc._external_entry(HOST) is None
                     page.get_by_label("このサイトの管理者として").check()
-                    page.get_by_role("button", name="診断を開始", exact=True).click()
+                    page.get_by_role("button", name="診断範囲を保存", exact=True).click()
                     page.wait_for_url("**/assessments/*")
                     assert svc._external_entry(HOST) is not None
+                    assert svc.snapshot()["state"] == "idle"
+                    page.get_by_text("診断内容と許可範囲", exact=True).wait_for()
                     page.goto(base + "/dashboard")
                     page.get_by_role("button", name="＋ サイトを診断する").click()
                     page.get_by_label("診断するサイトのURL").fill(f"https://{HOST}/")

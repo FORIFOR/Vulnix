@@ -31,7 +31,7 @@ const LEVEL_LABEL = { easy: "かんたん", detail: "詳しく", expert: "専門
 
 export default function Settings() {
   const { snap, error, refetch } = useAssessment("scan_001");
-  const { session, logout } = useSession();
+  const { session, logout, googleOwnership, cloudInventoryConfigured, ownershipTrafficMode, externalSiteTrafficEnabled } = useSession();
   // control self-tests and feed sync are platform functions: the account's own roles decide
   const platformOps = platformRoles(session).some((r) => r === "admin" || r === "approver");
   const theme = useSyncExternalStore(subscribeTheme, getThemeSnapshot, getThemeServerSnapshot);
@@ -66,6 +66,23 @@ export default function Settings() {
   return (
     <main className="mx-auto max-w-3xl space-y-4 p-4 md:p-8">
       <h1 className="text-2xl font-bold">設定</h1>
+
+      <Card>
+        <h2 id="ownership-google" className="mb-2 font-semibold">Google連携と所有確認</h2>
+        <dl className="space-y-1 text-sm">
+          <div><dt className="inline font-medium">Vulnix</dt><dd className="ml-2 inline">{session ? "ログイン済み" : "未ログイン"}</dd></div>
+          <div><dt className="inline font-medium">Google Cloudの閲覧連携</dt><dd className="ml-2 inline">{cloudInventoryConfigured ? "連携可能" : "運営者の設定待ち"}</dd></div>
+          <div><dt className="inline font-medium">Google Search Consoleの所有確認</dt><dd className="ml-2 inline">{googleOwnership ? "連携可能" : "OAuthクライアント未設定"}</dd></div>
+          <div><dt className="inline font-medium">所有確認用の通信</dt><dd className="ml-2 inline">{ownershipTrafficMode === "approved" ? "対象と方法ごとに承認" : ownershipTrafficMode === "existing" ? "既存運用モード" : "停止中"}</dd></div>
+          <div><dt className="inline font-medium">診断用の通信</dt><dd className="ml-2 inline">{externalSiteTrafficEnabled ? "対象ごとの診断許可が必要" : "停止中"}</dd></div>
+          <div><dt className="inline font-medium">隔離実行環境</dt><dd className="ml-2 inline">{snap?.l2_isolation?.ok ? "隔離を確認済み" : "未確認または利用不可"}</dd></div>
+        </dl>
+        {!googleOwnership && <p className="mt-3 text-sm">組織の運営者にGoogle Search Consoleの接続設定を依頼するか、DNS・確認用ファイルを選んでください。</p>}
+        {platformOps && <details className="mt-3 text-sm">
+          <summary className="cursor-pointer font-medium">運営者向け設定</summary>
+          <p className="mt-1">Google Auth PlatformでウェブアプリのOAuthクライアントを登録し、運営環境の秘密設定に保存してください。所有確認の戻り先は <code>/verify/google</code> です。</p>
+        </details>}
+      </Card>
 
       {platformOps && <Card>
         <div className="mb-2 flex flex-wrap items-center justify-between gap-2">

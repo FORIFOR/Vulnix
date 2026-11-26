@@ -201,6 +201,7 @@ export interface Snapshot {
   demo: boolean;
   target_url?: string;
   is_external_service?: boolean;
+  optional_status_scope?: boolean;
   /** public beta: a real site gets only the read-only diagnosis (no L2, no re-checks) */
   real_site_read_only?: boolean;
   l2_separation_required?: boolean;
@@ -237,7 +238,7 @@ export interface Snapshot {
     note: string;
     backends: string[];
   };
-  asset: { id: string; name: string; kind: string; environment: string };
+  asset: Pick<Asset, "id" | "name" | "kind" | "environment" | "gcp_project" | "project_label">;
   authorization: {
     status: "authorized" | "missing";
     ref: string;
@@ -292,6 +293,8 @@ export interface Asset {
   id: string;
   name: string;
   display_name?: string;
+  gcp_project?: string;
+  project_label?: string;
   target_url?: string;
   scheme?: string;
   port?: number;

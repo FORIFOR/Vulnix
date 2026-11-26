@@ -1,8 +1,8 @@
 import ts from "typescript";
 import { parseAllDocuments } from "yaml";
 import { inspectRuntimeFile, type PlannedCheck } from "./runtimePlan";
-import { affects, collectPackages, compareVersions, propertyLine, type Package, type Location } from "./projectPackages";
-import { checkCloudFormation, checkControls, checkLockfile, record, type ResultLocation } from "./quickDefense";
+import { affects, collectPackages, compareVersions, propertyLine, sbomComponents, type Package, type Location } from "./projectPackages";
+import { advisorySeverity, checkCloudFormation, checkControls, checkLockfile, record, type ResultLocation } from "./quickDefense";
 
 export const limits = { entries: 12000, files: 180, timeMs: 30000, findings: 5000, fileBytes: 256 * 1024, dependencyBytes: 4 * 1024 * 1024, bytes: 12 * 1024 * 1024 };
 export type ProjectFile = { file: File; path: string };
@@ -290,12 +290,11 @@ function componentsFrom(file: string, body: string, parsed: unknown, path: strin
     return [...body.matchAll(/^\s*FROM\s+(?:docker\.io\/library\/|library\/)?httpd:(\d+\.\d+\.\d+)\s*(?:$|#)/gim)]
       .map((match) => ({ part: "a", vendor: "apache", product: "http_server", version: match[1], location: { path, line: body.slice(0, match.index).split("\n").length } }));
   }
-  const sbom = record(parsed);
-  if (sbom.bomFormat !== "CycloneDX" || !Array.isArray(sbom.components)) return [];
-  return sbom.components.slice(0, 200).flatMap((value: unknown) => {
-    const match = typeof record(value).cpe === "string" &&
-      String(record(value).cpe).match(/^cpe:2\.3:([aho]):([\w.-]+):([\w.-]+):(-|\d+(?:\.\d+){1,7})(?::\*){7}$/);
-    return match ? [{ part: match[1], vendor: match[2], product: match[3], version: match[4], location: { path, line: propertyLine(body, "components") } }] : [];
+  const { rows, key } = sbomComponents(parsed);
+  const line = propertyLine(body, key);
+  return rows.flatMap((value) => {
+    const match = typeof value.cpe === "string" && value.cpe.match(/^cpe:2\.3:([aho]):([\w.-]+):([\w.-]+):(-|\d+(?:\.\d+){1,7})(?::\*){7}$/);
+    return match ? [{ part: match[1], vendor: match[2], product: match[3], version: match[4], location: { path, line } }] : [];
   });
 }
 
@@ -374,7 +373,7 @@ export function projectCves(feed: unknown, inventories: Component[][]): Result[]
     if (candidate) results.push({ ...item("CVE", cve.id, "unknown", applicable ?
       "プロジェクト資料にカタログ上の製品・版・構成条件の組み合わせがあります。実稼働構成と配布元の修正は未確認です。" :
       "製品・版は候補に一致します。必要な構成条件の一部を確認できません。",
-      "配布元の勧告で導入済みビルド、修正の有無、影響条件を照合し、必要な更新を適用する。"), location });
+      "配布元の勧告で導入済みビルド、修正の有無、影響条件を照合し、必要な更新を適用する。"), location, severity: advisorySeverity(cve.severity) });
 
   }
   return results.length ? results : [item("CVE", "公開CVEとの照合", "unknown",
@@ -402,7 +401,7 @@ function osvCves(feed: unknown, packages: Map<string, Package[]>, deadline: numb
           .flatMap((range) => array(range.events).flatMap((event) => typeof event.fixed === "string" &&
             (compareVersions(match.ecosystem, match.version, event.fixed) ?? 0) < 0 &&
             !affects(event.fixed, match.ecosystem, affected) ? [event.fixed] : [])))];
-        const location = { path: match.path, line: match.line, dependency: match.name, version: match.version, fixed };
+        const location = { path: match.path, line: match.line, dependency: match.name, ecosystem: match.ecosystem, version: match.version, fixed };
         const key = locationIdentity(location);
         if (locations.has(key)) continue;
         if (retained + locations.size >= 12000) { markIncomplete(); break; }
@@ -415,7 +414,7 @@ function osvCves(feed: unknown, packages: Map<string, Package[]>, deadline: numb
     for (const id of ids) results.push({ ...item("CVE", id, "action",
       "依存関係資料の版が勧告の影響条件に一致しました。実行環境の版と到達性は未確認です。",
       "影響する依存関係を勧告の修正版へ更新し、新しい依存関係資料で照合する。"),
-      location: rows[0], locations: rows });
+      location: rows[0], locations: rows, severity: advisorySeverity(record(osv.database_specific).severity) });
   }
   return results.length ? results : [item("CVE", "依存関係と公開CVEの照合", "unknown",
     "対応する影響条件との一致はありません。対応外の版・未収録の勧告・実稼働の版は未確認です。",
@@ -423,7 +422,7 @@ function osvCves(feed: unknown, packages: Map<string, Package[]>, deadline: numb
 }
 
 function locationIdentity(location: ResultLocation) {
-  return JSON.stringify([location.path, location.line, location.dependency, location.version]);
+  return JSON.stringify([location.path, location.line, location.dependency, location.ecosystem, location.version]);
 }
 
 export type CatalogLookup = (packageKeys: string[], cpeKeys: string[], deadline: number) => Promise<{
@@ -501,7 +500,7 @@ export async function scanProject(files: ProjectFile[], feed: unknown, onProgres
   onProgress?.(progress());
   for (const { file, path, name, priority } of candidates) {
     if (performance.now() >= deadline) break;
-    const dependency = /^(?:package-lock\.json|npm-shrinkwrap\.json|requirements.*\.txt|go\.mod)$/i.test(name);
+    const dependency = /^(?:package-lock\.json|npm-shrinkwrap\.json|requirements.*\.txt|go\.mod|inventory\.sbom\.json)$/i.test(name);
     const tooLarge = file.size > (dependency ? limits.dependencyBytes : limits.fileBytes);
     const bytesToRead = tooLarge ? 0 : file.size;
     if (batchFiles === limits.files || batchBytes + bytesToRead > limits.bytes || batches === 0) {
@@ -567,7 +566,8 @@ export async function scanProject(files: ProjectFile[], feed: unknown, onProgres
     }
     if (dependency) {
       const dependencies = collectPackages(name, path, content, parsed);
-      if (!dependencies.length) notParsed();
+      if (!dependencies.length && (!/\.sbom\.json$/i.test(name) || !componentsFrom(name, content, parsed, path).length)) notParsed();
+      if (name === "inventory.sbom.json" && sbomComponents(parsed).total > dependencies.length) skippedRules++;
       for (const entry of dependencies) {
         if (packageCount >= 12000) { skippedRules++; break; }
         const key = `${entry.ecosystem}:${entry.name}`;
@@ -638,7 +638,8 @@ export async function scanProject(files: ProjectFile[], feed: unknown, onProgres
     }
     const chosen = row.status === "action" && other.status !== "action"
       ? { ...row, evidence: `${row.evidence} NVDにも対応する候補があります。` } : other;
-    matched.set(row.title, { ...chosen, locations: [...merged.values()] });
+    matched.set(row.title, { ...chosen, severity: chosen.severity ?? other.severity ?? row.severity,
+      locations: [...merged.values()] });
   }
   let retainedCveLocations = 0;
   for (const row of matched.values()) {

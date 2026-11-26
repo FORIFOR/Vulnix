@@ -21,7 +21,7 @@ from aegis.lab import start_lab
 from aegis.local_defense import _canonical
 from aegis.workers.local_defense import sha256
 from aegis.operators import OperatorStore, hash_password, totp_code
-from aegis.server import make_handler
+from aegis.server import ControlPlaneHTTPServer, make_handler
 from aegis.tenancy import (DEFAULT_ORG, MAX_ORGS_PER_ACCOUNT, OrgStore, TenancyError, TenantRegistry,
                            default_members_from, service_roles)
 from tests.test_local_defense import synthetic_bundle
@@ -129,7 +129,7 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
             with patch.dict(os.environ, {}, clear=True):
                 return AssessmentService(path, LAB_PORT, verify_seconds=30)
         self.reg = TenantRegistry(store, self.svc, factory, d)
-        self.srv = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(self.svc, self.ops, tenancy=self.reg,
+        self.srv = ControlPlaneHTTPServer(("127.0.0.1", 0), make_handler(self.svc, self.ops, tenancy=self.reg,
                                                                       public_signup=True,
                                                                       local_defense_python_root=Path(__file__).resolve().parents[1]))
         self.srv.daemon_threads = True
@@ -143,6 +143,106 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
         self.reg.close_all()
         self.svc.close()
         self.tmp.cleanup()
+
+    def test_project_label_is_org_scoped_and_grants_no_diagnosis_authority(self):
+        alice, bob = self.signup("projectalice"), self.signup("projectbob")
+        org = alice["orgs"][0]["id"]
+        code, response = self.req(alice, "/assets/challenge", {"url": "https://project.lab.example/"}, org)
+        self.assertEqual(code, 200)
+        aid = response["asset"]["id"]
+        path = "/assets/project"
+        payload = {"id": aid, "project_label": "Synthetic STG"}
+        self.assertEqual(self.req(bob, path, payload, org)[0], 403)
+        self.assertNotEqual(self.req(bob, path, payload)[0], 200)
+        self.assertNotEqual(self.req(alice, path, {**payload, "ownership_verified": True}, org)[0], 200)
+        code, response = self.req(alice, path, payload, org)
+        self.assertEqual(code, 200)
+        grouped = next(a for a in response["assets"] if a["id"] == aid)
+        self.assertEqual(grouped["project_label"], "Synthetic STG")
+        self.assertFalse(grouped["ownership_verified"])
+        self.assertFalse(grouped["scope_confirmed"])
+        self.assertFalse(grouped["assessment_id"])
+        self.assertNotEqual(self.req(alice, "/assets/select", {"id": aid}, org)[0], 200)
+
+    def test_ownership_traffic_approval_is_bound_to_org_target_method_and_requester(self):
+        runner, outsider = self.signup("proofrunner"), self.signup("proofoutsider")
+        admin = self.login("padmin", "padmin-pw-1")
+        _, invite = self.reg.store.create_invite(DEFAULT_ORG, "padmin", ["runner"])
+        self.reg.store.accept_invite(invite, "proofrunner")
+        url = "https://ownership.lab.example"
+        request = {"url": url, "method": "dns_txt"}
+        endpoint = "/assets/ownership-traffic"
+        with patch.dict(os.environ, {"VULNIX_OWNERSHIP_TRAFFIC": "approved"}), \
+                patch("aegis.server.REAL_SITE_L1_ONLY", False), \
+                patch("aegis.server.REAL_SERVICE_DIAGNOSIS", False), \
+                patch("aegis.assessment.verify_ownership_challenge", return_value={
+                    "verified": True, "method": "dns_txt", "verified_at": time.time(), "detail": "fixture",
+                }) as check:
+            self.assertEqual(self.req(runner, "/assets/challenge", {"url": url}, DEFAULT_ORG)[0], 200)
+            self.assertEqual(self.req(runner, "/assets/verify-ownership", request, DEFAULT_ORG)[0], 403)
+            code, pending = self.req(runner, endpoint, {**request, "action": "request"}, DEFAULT_ORG)
+            self.assertEqual((code, pending.get("status")), (200, "pending"))
+            approve = {**request, "action": "approve", "id": pending["id"]}
+            self.assertEqual(self.req(outsider, endpoint, approve, DEFAULT_ORG)[0], 403)
+            self.assertEqual(self.req(runner, endpoint, approve, DEFAULT_ORG)[0], 403)
+            reject = {**approve, "action": "reject"}
+            self.assertEqual(self.req(admin, endpoint, reject, DEFAULT_ORG)[1]["status"], "rejected")
+            self.assertEqual(self.req(runner, "/assets/verify-ownership", request, DEFAULT_ORG)[0], 403)
+            code, pending = self.req(runner, endpoint, {**request, "action": "request"}, DEFAULT_ORG)
+            self.assertEqual((code, pending.get("status")), (200, "pending"))
+            approve["id"] = pending["id"]
+            self.assertEqual(self.req(admin, endpoint, approve, DEFAULT_ORG)[1]["status"], "approved")
+            self.assertEqual(self.req(admin, "/assets/verify-ownership", request, DEFAULT_ORG)[0], 403)
+            self.assertEqual(self.req(runner, "/assets/verify-ownership", {**request, "method": "well_known"}, DEFAULT_ORG)[0], 403)
+            self.assertEqual(self.req(runner, "/assets/verify-ownership", {**request, "url": url + ":8443"}, DEFAULT_ORG)[0], 409)
+            check.assert_not_called()
+            self.assertTrue(self.req(runner, "/assets/verify-ownership", request, DEFAULT_ORG)[1]["verified"])
+            check.assert_called_once()
+            self.assertIsNone(self.svc._external_entry("ownership.lab.example"))
+            future = time.time() + 901
+            with patch("aegis.server.time.time", return_value=future):
+                self.assertEqual(self.req(admin, endpoint, {**request, "action": "status"}, DEFAULT_ORG)[1]["status"], "expired")
+            self.svc.emergency_stop("padmin")
+            self.assertEqual(self.req(admin, endpoint, {**request, "action": "status"}, DEFAULT_ORG)[1]["status"], "expired")
+            self.assertEqual(self.req(runner, "/assets/verify-ownership", request, DEFAULT_ORG)[0], 403)
+            check.assert_called_once()
+
+    def test_cloud_inventory_binds_single_use_oauth_to_active_session_and_org(self):
+        from urllib.parse import parse_qs, urlsplit
+        from aegis import cloud_inventory
+
+        alice = self.signup("cloudreader")
+        bob = self.signup("cloudoutsider")
+        alt = self.reg.store.create_org("Other Cloud Workspace", "cloudreader")
+        org = alice["orgs"][0]["id"]
+        path = "/assets/cloud-inventory"
+        settings = {
+            "VULNIX_CLOUD_CLIENT_ID": "synthetic",
+            "VULNIX_CLOUD_CLIENT_SECRET": "fixture-only",
+            "VULNIX_CLOUD_REDIRECT_URI": "https://vulnix.lab.test/verify/cloud",
+        }
+        projects = {"projects": [{"id": "lab-project", "number": "123", "label": "Lab"}], "incomplete": False}
+        with patch.dict("os.environ", settings), patch.object(cloud_inventory, "fetch_projects", return_value=projects) as fetch:
+            self.assertEqual(self.req(bob, path, {"action": "start"}, org)[0], 403)
+            status, response = self.req(alice, path, {"action": "start"}, org)
+            self.assertEqual(status, 200)
+            query = parse_qs(urlsplit(response["url"]).query)
+            self.assertEqual(query["scope"], [cloud_inventory.SCOPE])
+            self.assertEqual(query["code_challenge_method"], ["S256"])
+            finish = {"action": "finish", "code": "synthetic", "state": query["state"][0]}
+            self.assertEqual(self.req(bob, path, finish, org)[0], 403)
+            self.assertEqual(self.req(alice, path, finish, alt)[0], 400)
+            other_session = self.login("cloudreader", "cloudreader-Passw0rd!")
+            self.assertEqual(self.req(other_session, path, finish, org)[0], 400)
+            fetch.assert_not_called()
+            self.assertEqual(self.req(alice, path, finish, org)[0], 200)
+            self.assertEqual(self.req(alice, path, finish, org)[0], 400)
+            fetch.assert_called_once()
+            self.assertEqual(self.req(alice, path, {"action": "projects"}, org)[1]["projects"], projects["projects"])
+            self.assertNotIn("projects", self.req(other_session, path, {"action": "projects"}, org)[1])
+            self.assertNotIn("projects", self.req(alice, path, {"action": "projects"}, alt)[1])
+            self.assertEqual(self.req(alice, path, {"action": "clear"}, org)[0], 200)
+            self.assertNotIn("projects", self.req(alice, path, {"action": "projects"}, org)[1])
 
     def test_reviewed_defense_bound_to_review_and_live_distinct_approver(self):
         owner = self.login("padmin", "padmin-pw-1")

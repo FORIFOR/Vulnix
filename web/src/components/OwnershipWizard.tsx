@@ -1,10 +1,12 @@
 "use client";
 
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { useEffect, useState } from "react";
-import { getJSON, postJSON } from "@/lib/api";
+import { ApiHttpError, getJSON, postJSON } from "@/lib/api";
 import type { Asset, OwnershipChallenge, Snapshot } from "@/lib/types";
-import { useSession } from "@/lib/useSession";
+import { assetProject, projectHref } from "./ProjectOverview";
+import { canApprove, useSession } from "@/lib/useSession";
 
 interface Props {
   open: boolean;
@@ -12,12 +14,34 @@ interface Props {
   onAssetsChanged: (assets: Asset[]) => void;
   /** Resume the flow for an asset that already has a challenge. */
   initialAsset?: Asset | null;
+  initialUrl?: string;
+  projectLabel?: string;
   knownAssets?: Asset[] | null;
   /** shown on the ownership step (e.g. Google could not confirm this site) */
   notice?: string | null;
 }
 
-type Method = "dns_txt" | "well_known" | "meta_tag" | "verification_code";
+type Method = "google_search_console" | "dns_txt" | "well_known" | "meta_tag" | "verification_code";
+
+interface OwnershipTraffic {
+  status: "not_requested" | "pending" | "approved" | "rejected" | "expired";
+  id?: string;
+  expires_at?: number;
+  can_decide: boolean;
+  can_verify: boolean;
+  stopped: boolean;
+}
+
+const TRAFFIC_STATUS = {
+  not_requested: "未申請", pending: "申請中", approved: "承認済み",
+  rejected: "拒否", expired: "期限切れ",
+};
+
+const METHOD_CARDS = [
+  { id: "google_search_console", name: "Google", hint: "Search Console の所有者アカウント" },
+  { id: "dns_txt", name: "DNS", hint: "ドメインの設定に確認情報を追加" },
+  { id: "well_known", name: "確認用ファイル", hint: "サイトにテキストファイルを置く" },
+] as const;
 
 interface ChallengeResponse {
   asset: Asset;
@@ -49,7 +73,7 @@ const FALLBACK_PROHIBITED = [
   "リンク先など、登録したサイト以外へのアクセス",
 ];
 
-const STEPS = ["URLを入力", "所有確認", "診断を開始"] as const;
+const STEPS = ["URLを入力", "所有確認", "診断範囲"] as const;
 
 function endpoint(value: string): string | null {
   try {
@@ -90,17 +114,21 @@ function CopyRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, knownAssets, notice }: Props) {
+export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, initialUrl, projectLabel, knownAssets, notice }: Props) {
   const router = useRouter();
-  const { googleOwnership, optionalStatusCheck, session } = useSession();
+  const { googleOwnership, ownershipTrafficMode, optionalStatusCheck, externalSiteTrafficEnabled, session } = useSession();
   const [cloudOpen, setCloudOpen] = useState(false);
   const resumeAt = initialAsset?.challenge ? (initialAsset.ownership_verified ? 2 : 1) : 0;
   const [step, setStep] = useState(resumeAt);
-  const [url, setUrl] = useState(initialAsset?.target_url ?? (initialAsset?.name ? `https://${initialAsset.name}` : ""));
+  const [url, setUrl] = useState(initialAsset?.target_url ?? (initialAsset?.name ? `https://${initialAsset.name}` : initialUrl ?? ""));
   const [challenge, setChallenge] = useState<OwnershipChallenge | null>(initialAsset?.challenge ?? null);
   const [targetUrl, setTargetUrl] = useState<string>((initialAsset as { target_url?: string } | undefined)?.target_url ?? "");
   const prohibited = FALLBACK_PROHIBITED;
-  const [method, setMethod] = useState<Method>(supportsFileProof(url) ? "well_known" : "dns_txt");
+  const recommendedMethod: Method = googleOwnership ? "google_search_console" : supportsFileProof(url) ? "well_known" : "dns_txt";
+  const [method, setMethod] = useState<Method>(recommendedMethod);
+  const [proofTraffic, setProofTraffic] = useState<{ key: string; value: OwnershipTraffic } | null>(null);
+  const [copiedDns, setCopiedDns] = useState(false);
+  const [registeredAsset, setRegisteredAsset] = useState<Asset | null | undefined>(initialAsset);
   const [verifyDetail, setVerifyDetail] = useState<string | null>(null);
   const [confirmed, setConfirmed] = useState(false);
   const [statusCheckConsent, setStatusCheckConsent] = useState(false);
@@ -114,7 +142,34 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
   const [cloudStatus, setCloudStatus] = useState("未設定");
   const cloudHost = (() => { try { return new URL(url).hostname; } catch { return ""; } })();
   const cloudSubject = cloudSubjectEntry.host === cloudHost ? cloudSubjectEntry.value : "";
+  const trafficBlocked = externalSiteTrafficEnabled === false;
   const cloudAdmin = session?.roles.includes("admin") ?? false;
+  const canRegister = Boolean(session?.roles.some((role) => ["operator", "approver", "admin"].includes(role)));
+  const canConfirmScope = canApprove(session);
+  const fileAvailable = supportsFileProof(url);
+  const approvalRequired = ownershipTrafficMode === "approved";
+  const proofMethod = cloudOpen ? "cloud_run_oidc" : method;
+  const proofUrl = targetUrl || url.trim();
+  const proofKey = `${proofUrl}:${proofMethod}`;
+  const permission = proofTraffic?.key === proofKey ? proofTraffic.value : null;
+  const expires = permission?.expires_at;
+  const proofAllowed = ownershipTrafficMode === "existing" || (approvalRequired && permission?.can_verify === true);
+
+  useEffect(() => {
+    if (!open || step !== 1 || !approvalRequired || !proofUrl || !canRegister) return;
+    let active = true;
+    const read = async () => {
+      try {
+        const value = await postJSON<OwnershipTraffic>("/api/assets/ownership-traffic", { action: "status", url: proofUrl, method: proofMethod });
+        if (active) setProofTraffic({ key: proofKey, value });
+      } catch {
+        if (active) setProofTraffic(null);
+      }
+    };
+    void read();
+    const timer = window.setInterval(read, 5000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [open, step, approvalRequired, proofUrl, proofMethod, proofKey, canRegister]);
 
   useEffect(() => {
     if (!open || !cloudAdmin || !cloudHost || !cloudOpen || step !== 1) return;
@@ -145,19 +200,33 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
     try {
       await fn();
     } catch (e) {
-      setErr((e as Error).message);
+      const message = (e as Error).message;
+      setErr(e instanceof ApiHttpError && e.status === 401
+        ? "ログインが切れました。ログインし直してから操作してください。"
+        : e instanceof ApiHttpError && e.status === 403
+          ? `${message} 現在の組織と、この対象を操作できる権限を確認してください。`
+          : message);
     } finally {
       setBusy(false);
     }
   };
 
   const requested = endpoint(url.trim());
-  const permittedAsset = requested && failedReuse !== requested && knownAssets?.find((asset) => asset.challenge && asset.ownership_verified &&
+  const targetName = registeredAsset && (step > 0 || endpoint(registeredAsset.target_url ?? "") === requested)
+    ? registeredAsset.display_name || registeredAsset.name
+    : requested ? new URL(requested).hostname : "診断対象";
+  const permittedAsset = requested && !trafficBlocked && failedReuse !== requested && knownAssets?.find((asset) => asset.challenge && asset.ownership_verified &&
     asset.scope_confirmed && asset.assessment_id && asset.target_url && endpoint(asset.target_url) === requested);
 
   const issue = () =>
     run(async () => {
       if (permittedAsset) {
+        if (projectLabel && assetProject(permittedAsset) !== projectLabel) {
+          const grouped = await postJSON<{ assets: Asset[] }>("/api/assets/project", {
+            id: permittedAsset.id, project_label: projectLabel,
+          });
+          onAssetsChanged(grouped.assets);
+        }
         try {
           await postJSON("/api/assets/select", { id: permittedAsset.id });
         } catch (error) {
@@ -168,27 +237,22 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
         router.push(`/assessments/${permittedAsset.assessment_id}`);
         return;
       }
-      setMethod(requested && !supportsFileProof(requested) ? "dns_txt" : "well_known");
-      const res = await postJSON<ChallengeResponse>("/api/assets/challenge", { url: url.trim() });
+      const verified = requested && knownAssets?.find((asset) => asset.challenge && asset.ownership_verified
+        && asset.target_url && endpoint(asset.target_url) === requested);
+      if (verified) {
+        setRegisteredAsset(verified);
+        setTargetUrl(verified.target_url ?? url.trim());
+        setStep(2);
+        return;
+      }
+      setMethod(recommendedMethod);
+      const res = await postJSON<ChallengeResponse>("/api/assets/challenge", { url: url.trim(), ...(projectLabel ? { project_label: projectLabel } : {}) });
+      const registered = res.assets.find((asset) => asset.id === res.asset.id) ?? res.asset;
+      setRegisteredAsset(registered);
       setChallenge(res.challenge);
       setTargetUrl((res.asset as { target_url?: string }).target_url ?? url.trim());
       onAssetsChanged(res.assets);
-      // An existing proof (including a stored Google Domain proof for a subdomain)
-      // needs no repeated OAuth. Otherwise one click registers and starts Google.
-      if (res.asset.ownership_verified) {
-        setStep(2);
-      } else {
-        setStep(1);
-        if (googleOwnership) {
-          try {
-            const next = await postJSON<{ url: string }>("/api/assets/google/start", { url: url.trim() });
-            try { sessionStorage.setItem("vulnix_google_pending_host", res.asset.name); } catch { /* ignore */ }
-            window.location.assign(next.url);
-          } catch {
-            setVerifyDetail("Google での確認を開始できませんでした。DNS または確認用ファイルでお試しください。");
-          }
-        }
-      }
+      setStep(registered.ownership_verified ? 2 : 1);
     });
 
   const viaGoogle = () =>
@@ -206,6 +270,13 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
       setVerifyDetail(res.verification.detail);
       if (res.verified) setStep(2);
     });
+
+  const changeTraffic = (action: "request" | "approve" | "reject") => run(async () => {
+    const value = await postJSON<OwnershipTraffic>("/api/assets/ownership-traffic", {
+      url: proofUrl, method: proofMethod, action, ...(action !== "request" ? { id: permission?.id } : {}),
+    });
+    setProofTraffic({ key: proofKey, value });
+  });
 
   const registerCloud = () => run(async () => {
     const binding = await postJSON<CloudBinding & { assets: Asset[] }>("/api/assets/cloud-run/register",
@@ -252,8 +323,6 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
         activate_workspace: true,
       });
       onAssetsChanged(res.assets);
-      // the diagnosis starts right away: the user asked for it with this button
-      await postJSON(`/api/assessments/${res.snapshot.id}/start`, {});
       onClose();
       router.push(`/assessments/${res.snapshot.id}`);
     });
@@ -265,17 +334,21 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
       aria-modal="true"
       aria-labelledby="ownership-wizard-title"
     >
-      <div className="max-h-[90dvh] w-full max-w-xl overflow-y-auto rounded-2xl border border-zinc-200 bg-white p-6 shadow-xl dark:border-zinc-800 dark:bg-zinc-900">
-        <div className="mb-4 flex items-start justify-between gap-2">
-          <div>
-            <h2 id="ownership-wizard-title" className="text-lg font-bold">サイトを診断する</h2>
-            <p className="mt-0.5 text-xs text-zinc-500">
-              あなたが管理しているサイトだけを診断できます。所有確認には、利用可能なGoogle連携、DNS、確認用ファイルを使います。診断は所有確認と範囲の確定後に始まります。
-            </p>
+      <div className="max-h-[90dvh] w-full max-w-xl overflow-y-auto rounded-2xl border border-zinc-200 bg-white p-4 shadow-xl sm:p-6 dark:border-zinc-800 dark:bg-zinc-900">
+        <div className="sticky -top-4 z-10 -mx-4 mb-3 space-y-2 bg-white px-4 pb-2 pt-3 sm:-top-6 sm:-mx-6 sm:px-6 dark:bg-zinc-900">
+          <div className="flex items-start justify-between gap-2">
+            <div>
+              <h2 id="ownership-wizard-title" className="text-lg font-bold">サイトを診断する</h2>
+              <p className="mt-0.5 text-sm text-zinc-600 dark:text-zinc-300">所有確認と診断の許可を、順に確認します。</p>
+            </div>
+            <button type="button" onClick={onClose} className="shrink-0 whitespace-nowrap rounded-lg px-2.5 py-1 text-xs text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800">
+              閉じる ✕
+            </button>
           </div>
-          <button type="button" onClick={onClose} className="shrink-0 whitespace-nowrap rounded-lg px-2.5 py-1 text-xs text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800">
-            閉じる ✕
-          </button>
+          <div className="rounded-xl bg-zinc-50 px-3 py-2 text-sm dark:bg-zinc-800">
+            <p className="font-semibold wrap-anywhere">{targetName}</p>
+            <p className="wrap-anywhere text-zinc-600 dark:text-zinc-300">{step === 0 ? (url || "URLを入力してください") : proofUrl}</p>
+          </div>
         </div>
 
         <ol className="mb-4 flex flex-wrap gap-1.5 text-[11px]">
@@ -297,6 +370,8 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
           ))}
         </ol>
 
+        {!canRegister && <p role="status" className="text-sm">閲覧権限のみです。対象を登録できる担当者に所有確認を依頼してください。</p>}
+        {projectLabel && <p className="mb-2 break-words text-xs text-zinc-600 dark:text-zinc-300">プロジェクト {projectLabel}</p>}
         {step === 0 && (
           <form
             className="space-y-3 text-sm"
@@ -317,8 +392,8 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
               />
             </div>
             <div className="flex justify-end">
-              <button type="submit" disabled={busy || !url.trim()} className="rounded-lg bg-zinc-900 px-4 py-2 text-xs font-semibold text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-white dark:text-zinc-900">
-                {busy ? "準備中…" : permittedAsset ? "診断ワークスペースへ" : googleOwnership ? "Google で所有確認" : "所有確認へ"}
+              <button type="submit" disabled={busy || !canRegister || !url.trim()} className="rounded-lg bg-zinc-900 px-4 py-2 text-xs font-semibold text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-white dark:text-zinc-900">
+                {busy ? "準備中…" : permittedAsset ? "診断ワークスペースへ" : "所有確認へ"}
               </button>
             </div>
           </form>
@@ -331,79 +406,97 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
                 {notice}
               </p>
             )}
-            {googleOwnership && (
-              <div className="rounded-xl border border-zinc-900 p-3 dark:border-white">
-                <p className="mb-2 text-xs text-zinc-600 dark:text-zinc-300">
-                  Google Search Console でこのサイトの所有者になっている Google アカウントで確認できます（読み取りのみ）。
-                </p>
-                <button type="button" disabled={busy} onClick={viaGoogle}
-                  className="w-full rounded-lg bg-zinc-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-white dark:text-zinc-900">
-                  {busy ? "Google に移動しています…" : "Google で確認する"}
-                </button>
+            <fieldset className="space-y-2">
+              <legend className="mb-2 font-semibold">所有確認の方法を選ぶ</legend>
+              <div className="grid gap-2 sm:grid-cols-3">
+                {METHOD_CARDS.map((option) => {
+                  const unavailable = option.id === "google_search_console" ? !googleOwnership
+                    : option.id === "well_known" && !fileAvailable;
+                  return <label key={option.id} className={`rounded-xl border p-3 ${method === option.id ? "border-zinc-900 bg-zinc-50 dark:border-white dark:bg-zinc-800" : "border-zinc-200 dark:border-zinc-700"}`}>
+                    <span className="flex items-center gap-2 font-semibold">
+                      <input type="radio" name="own-method" aria-label={option.name} checked={method === option.id} disabled={unavailable}
+                        onChange={() => { setMethod(option.id); setVerifyDetail(null); }} />
+                      {option.name}
+                    </span>
+                    <span className="mt-1 block text-zinc-600 dark:text-zinc-300">{option.hint}</span>
+                    {option.id === recommendedMethod && <span className="mt-1 block font-medium text-emerald-700 dark:text-emerald-300">おすすめ</span>}
+                    {option.id === "google_search_console" && unavailable && <Link className="mt-1 block underline" href="/settings#ownership-google">未設定・設定状況を確認</Link>}
+                    {option.id === "well_known" && unavailable && <span className="mt-1 block">HTTPSの標準ポートが必要です。</span>}
+                  </label>;
+                })}
+              </div>
+            </fieldset>
+            {verifyDetail && <p role="status" className="rounded-lg bg-amber-50 p-3 dark:bg-amber-950/40">{verifyDetail}</p>}
+            {approvalRequired && <div className="space-y-2 rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
+              <p className="font-semibold" role="status">
+                {cloudOpen ? "Cloud Run の確認通信" : "所有確認用の通信"} {permission ? TRAFFIC_STATUS[permission.status] : "状態を確認中"}
+              </p>
+              {expires && permission?.status === "approved" && <p>有効期限 {new Date(expires * 1000).toLocaleString("ja-JP")}</p>}
+              {permission?.stopped && <p>緊急停止中です。運用担当者に確認してください。</p>}
+              {permission && !permission.stopped && ["not_requested", "expired", "rejected"].includes(permission.status)
+                && (proofMethod !== "google_search_console" || googleOwnership)
+                && (proofMethod === "dns_txt" || proofMethod === "google_search_console" || fileAvailable)
+                && <button type="button" disabled={busy} onClick={() => changeTraffic("request")} className="rounded-lg border px-3 py-2 font-medium">
+                  管理者に所有確認の許可を依頼する
+                </button>}
+              {permission?.can_decide && <div className="flex flex-wrap gap-2">
+                <button type="button" disabled={busy} onClick={() => changeTraffic("approve")} className="rounded-lg border px-3 py-2">この方法を15分間承認する</button>
+                <button type="button" disabled={busy} onClick={() => changeTraffic("reject")} className="rounded-lg border px-3 py-2">拒否する</button>
+              </div>}
+            </div>}
+            {ownershipTrafficMode === "off" && <p role="status" className="rounded-lg bg-amber-50 p-3 dark:bg-amber-950/40">
+              所有確認の通信は停止中です。<Link className="underline" href="/settings#ownership-google">設定状況を確認</Link>
+            </p>}
+            {!cloudOpen && <div className="flex flex-wrap justify-end gap-2">
+              <button type="button" disabled={busy || !proofAllowed || !canRegister || (method === "google_search_console" && !googleOwnership)
+                || (method !== "dns_txt" && method !== "google_search_console" && !fileAvailable)}
+                onClick={method === "google_search_console" ? viaGoogle : verify}
+                className="rounded-lg bg-zinc-900 px-4 py-2 font-semibold text-white disabled:opacity-50 dark:bg-white dark:text-zinc-900">
+                {busy ? "確認中…" : method === "google_search_console" ? "Google で確認する" : "確認する"}
+              </button>
+            </div>}
+            {method === "well_known" && fileAvailable && canRegister && ownershipTrafficMode !== "off" && (
+              <div className="space-y-2 rounded-lg bg-zinc-50 p-3 dark:bg-zinc-800">
+                <p>ファイルを下のURLで公開してください。</p>
+                <dl><CopyRow label="URL" value={challenge.well_known_url} /></dl>
+                <a className="inline-block font-semibold underline" download="vulnix-verify.txt"
+                  href={`data:text/plain;charset=utf-8,${encodeURIComponent(challenge.well_known_content)}`}>確認用ファイルをダウンロード</a>
               </div>
             )}
-            <fieldset className="space-y-2">
-              <legend className="sr-only">確認方法</legend>
-              <label className={`block cursor-pointer rounded-xl border p-3 ${method === "well_known" ? "border-zinc-900 dark:border-white" : "border-zinc-200 dark:border-zinc-800"}`}>
-                <span className="flex items-center gap-2 text-xs font-semibold">
-                  <input type="radio" name="own-method" checked={method === "well_known"} onChange={() => setMethod("well_known")} />
-                  サイトに確認用ファイルを置く
-                </span>
-                <dl className="mt-2 space-y-1.5">
-                  <CopyRow label="URL" value={challenge.well_known_url} />
-                  <CopyRow label="内容" value={challenge.well_known_content} />
-                </dl>
-              </label>
-              <details open={method === "dns_txt" || method === "meta_tag" || method === "verification_code"} className="space-y-2">
-                <summary className="cursor-pointer text-sm font-medium">詳細設定（DNS・metaタグ・検証コード）</summary>
-              <label className={`block cursor-pointer rounded-xl border p-3 ${method === "dns_txt" ? "border-zinc-900 dark:border-white" : "border-zinc-200 dark:border-zinc-800"}`}>
-                <span className="flex items-center gap-2 text-xs font-semibold">
-                  <input type="radio" name="own-method" checked={method === "dns_txt"} onChange={() => setMethod("dns_txt")} />
-                  DNS に TXT レコードを追加
-                </span>
-                <dl className="mt-2 space-y-1.5">
+            {method === "dns_txt" && canRegister && ownershipTrafficMode !== "off" && (
+              <div className="space-y-2 rounded-lg bg-zinc-50 p-3 dark:bg-zinc-800">
+                <p>ドメインの設定でTXTレコードを追加してください。</p>
+                <dl className="space-y-1.5">
                   <CopyRow label="名前" value={challenge.dns_txt_name} />
                   <CopyRow label="値" value={challenge.dns_txt_value} />
                 </dl>
-              </label>
-
-              <label className={`block cursor-pointer rounded-xl border p-3 ${method === "meta_tag" ? "border-zinc-900 dark:border-white" : "border-zinc-200 dark:border-zinc-800"}`}>
-                <span className="flex items-center gap-2 text-xs font-semibold">
-                  <input type="radio" name="own-method" checked={method === "meta_tag"} onChange={() => setMethod("meta_tag")} />
-                  トップページの &lt;head&gt; に meta タグを追加
-                </span>
-                <dl className="mt-2 space-y-1.5">
-                  <CopyRow label="URL" value={challenge.meta_tag_url || challenge.well_known_url.replace(/\/\.well-known\/vulnix-verify\.txt$/, "/")} />
-                  <CopyRow label="タグ" value={challenge.meta_tag_html || `<meta name="vulnix-verify" content="${challenge.token}">`} />
-                </dl>
-              </label>
-              <label className={`block cursor-pointer rounded-xl border p-3 ${method === "verification_code" ? "border-zinc-900 dark:border-white" : "border-zinc-200 dark:border-zinc-800"}`}>
-                <span className="flex items-center gap-2 text-xs font-semibold">
-                  <input type="radio" name="own-method" checked={method === "verification_code"} onChange={() => setMethod("verification_code")} />
-                  管理画面に検証コードを設定（公開ページへ反映）
-                </span>
-                <dl className="mt-2 space-y-1.5">
-                  <CopyRow label="コード" value={challenge.code || challenge.token} />
-                </dl>
-                <p className="mt-2 text-xs text-zinc-500">このコードは同じ対象の再確認に使えます。確認結果は範囲確定まで24時間有効で、診断中も接続先を定期的に再確認します。</p>
-              </label>
-              </details>
-            </fieldset>
-            {verifyDetail && (
-              <p role="status" className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
-                {verifyDetail}
-              </p>
+                <button type="button" className="font-semibold underline" onClick={() => {
+                  void run(async () => {
+                    await navigator.clipboard.writeText(`${challenge.dns_txt_name}\t${challenge.dns_txt_value}`);
+                    setCopiedDns(true);
+                  });
+                }}>{copiedDns ? "名前と値をコピーしました" : "名前と値をまとめてコピー"}</button>
+              </div>
             )}
-            <div className="flex justify-end">
-              <button type="button" disabled={busy} onClick={verify} className="rounded-lg bg-zinc-900 px-4 py-2 text-xs font-semibold text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-white dark:text-zinc-900">
-                {busy ? "確認中…" : "確認する"}
-              </button>
-            </div>
-            {cloudAdmin && (
+            <details className="space-y-2">
+              <summary className="cursor-pointer text-sm">その他の確認方法</summary>
+              <label className="block"><input type="radio" name="own-method" checked={method === "meta_tag"}
+                disabled={!fileAvailable} onChange={() => setMethod("meta_tag")} /> HTMLに確認タグを追加</label>
+              {method === "meta_tag" && canRegister && ownershipTrafficMode !== "off" && <dl>
+                <CopyRow label="タグ" value={challenge.meta_tag_html || `<meta name="vulnix-verify" content="${challenge.token}">`} />
+              </dl>}
+              <label className="block"><input type="radio" name="own-method" checked={method === "verification_code"}
+                disabled={!fileAvailable} onChange={() => setMethod("verification_code")} /> 管理画面に確認コードを設定</label>
+              {method === "verification_code" && canRegister && ownershipTrafficMode !== "off" && <dl>
+                <CopyRow label="コード" value={challenge.code || challenge.token} />
+              </dl>}
+            </details>
+            {cloudAdmin && ownershipTrafficMode !== "off" && fileAvailable && (
               <details onToggle={(event) => setCloudOpen(event.currentTarget.open)} className="space-y-2 rounded-xl border border-zinc-300 p-3 text-xs dark:border-zinc-700">
                 <summary className="cursor-pointer font-semibold">詳細設定（Cloud Run OIDC 所有確認）</summary>
-                <p role="status">状態: {cloudStatus}</p>
-                <label className="block">登録するサービスアカウントの sub
+                {cloudOpen && <div className="space-y-2">
+                <p role="status">状態 {cloudStatus}</p>
+                <label className="block">サービスアカウントの識別子（sub）
                   <input value={cloudSubject} onChange={(e) => setCloudSubjectEntry({ host: cloudHost, value: e.target.value })}
                     className="mt-1 w-full rounded border border-zinc-300 px-2 py-1 dark:border-zinc-700 dark:bg-zinc-950" />
                 </label>
@@ -422,13 +515,16 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
                       <textarea value={cloudToken} onChange={(e) => setCloudToken(e.target.value)}
                         className="mt-1 w-full rounded border border-zinc-300 px-2 py-1 dark:border-zinc-700 dark:bg-zinc-950" />
                     </label>
-                    <button type="button" disabled={busy || !cloudToken.trim()} onClick={finishCloud}
+                    <button type="button" disabled={busy || !proofAllowed || !cloudToken.trim()} onClick={finishCloud}
                       className="rounded border px-2 py-1 disabled:opacity-50">Cloud Run で確認</button>
                   </div>
                 )}
+              </div>}
               </details>
             )}
-            <div>
+            <div className="flex flex-wrap items-center gap-3">
+              <button type="button" onClick={onClose} className="underline">所有確認を後で行う</button>
+              <Link className="underline" href={projectHref("/quick-defense", projectLabel ?? "")}>ソースコード・SBOM診断へ進む</Link>
               <button type="button" onClick={() => setStep(0)} className="rounded-lg border border-zinc-300 px-3 py-2 text-xs hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800">
                 ← URLを修正
               </button>
@@ -458,6 +554,8 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
                 ))}
               </ul>
             </div>
+            {!canConfirmScope && <p role="status" className="text-sm">所有確認は完了しています。診断範囲の確定は、この組織の承認責任者に依頼してください。</p>}
+            {trafficBlocked && <p role="status" className="text-sm">実サイトへの通信が停止中です。運用担当者にこの対象の許可範囲と受入環境を確認してください。</p>}
             <label className="flex cursor-pointer items-start gap-2.5 text-xs">
               <input type="checkbox" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)} className="mt-0.5 rounded border-zinc-300" />
               <span>このサイトの管理者として、上記の内容で診断することに同意します。</span>
@@ -467,8 +565,8 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
               <span>AIが提案した場合、上記の固定パスへの追加の読み取りを最大1回許可します（任意）。</span>
             </label>}
             <div className="flex justify-end">
-              <button type="button" disabled={busy || !confirmed} onClick={confirmScope} className="rounded-lg bg-zinc-900 px-4 py-2 text-xs font-semibold text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-white dark:text-zinc-900">
-                {busy ? "開始しています…" : "診断を開始"}
+              <button type="button" disabled={busy || trafficBlocked || !canConfirmScope || !confirmed} onClick={confirmScope} className="rounded-lg bg-zinc-900 px-4 py-2 text-xs font-semibold text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-white dark:text-zinc-900">
+                {busy ? "保存しています…" : "診断範囲を保存"}
               </button>
             </div>
           </div>

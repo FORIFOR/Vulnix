@@ -28,7 +28,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from . import google_ownership
+from . import cloud_inventory, google_ownership
 from .assessment import (ApproverRequired, AssessmentService, SeparationConfigError, StopNotConfirmed,
                          separate_l2_approver_from_env)
 from .audit import AuditWriteFailed
@@ -37,7 +37,8 @@ from .diagnosis_ops import OP_PERMISSION, member_permissions, permitted
 from .lab import set_lab_mode, start_lab
 from .operators import (CREDENTIAL_ABORT_EVENT, AuthError, ChangeNotSaved, CredentialStateUnverifiable,
                         LockedOut, MFAChallenge, OperatorStore, credential_history_reader)
-from .ownership import parse_service_target
+from .ownership import OWNERSHIP_METHODS, parse_service_target
+from .gateway import State
 from .policy import PolicyError
 from .real_software_cve import run_real_software_cve_comparison
 from .tenancy import (DEFAULT_ORG, OrgStore, TenancyError, TenantRegistry, default_members_from,
@@ -92,6 +93,18 @@ def optional_status_check_configured() -> bool:
         return False
 OWNERSHIP_CHECKS_PER_ORG_PER_HOUR = 20   # DNS / .well-known lookups a single organization may trigger
 OWNERSHIP_CHECKS_PLATFORM_PER_HOUR = 300
+_OWNERSHIP_LOOKUPS = frozenset({"/api/assets/verify-ownership", "/api/assets/cloud-run/finish"})
+_OWNERSHIP_APPROVAL_TTL = 15 * 60
+_OWNERSHIP_REQUEST_TTL = 24 * 3600
+
+
+def _ownership_traffic_mode() -> str:
+    configured = os.environ.get("VULNIX_OWNERSHIP_TRAFFIC", "")
+    if configured == "approved":
+        return configured
+    if configured:
+        return "off"
+    return "existing" if (REAL_SERVICE_DIAGNOSIS or REAL_SITE_L1_ONLY) else "off"
 REAL_SITE_RUNS_PER_ORG_PER_HOUR = 10     # read-only runs on proven real sites
 REAL_SITE_RUNS_PLATFORM_PER_HOUR = 200
 # In L1-only mode these stay open on a real site: the read-only run and its controls
@@ -177,11 +190,53 @@ class _Journal:
                 self.audit.record("grant.not_committed", grant=self.event, reason=reason)
 
 
+class ControlPlaneHTTPServer(ThreadingHTTPServer):
+    """Bound the production loopback listener before spawning handler threads."""
+
+    request_queue_size = 64
+    connection_limit = SSE_PLATFORM + 56
+    timeout_per_connection = 12
+    _busy_body = '{"error":"接続が混み合っています。少し待ってから再試行してください"}'.encode()
+    _busy_response = (
+        b"HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nRetry-After: 2\r\n"
+        b"Cache-Control: no-store\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: "
+        + str(len(_busy_body)).encode() + b"\r\n\r\n" + _busy_body
+    )
+
+    def __init__(self, address, handler):
+        self._slots = threading.BoundedSemaphore(self.connection_limit)
+        super().__init__(address, handler)
+
+    def process_request(self, request, client_address):
+        if not self._slots.acquire(blocking=False):
+            try:
+                request.setblocking(False)
+                request.sendall(self._busy_response)
+            except OSError:
+                pass
+            finally:
+                self.shutdown_request(request)
+            return
+        try:
+            request.settimeout(self.timeout_per_connection)
+            super().process_request(request, client_address)
+        except BaseException:
+            self._slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._slots.release()
+
+
 def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_auth: bool | None = None,
                  allow_self_registration: bool | None = None, tenancy: TenantRegistry | None = None,
                  public_signup: bool | None = None, local_defense_python_root: Path | None = None,
                  local_defense_node_bundle: Path | None = None, local_defense_registry: Path | None = None):
     default_svc = svc
+    inventory = cloud_inventory.Inventory()
     local_controls = {}
     portable = {}
     local_controls_lock = threading.Lock()
@@ -221,6 +276,8 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                              daemon=True, name="audit-gap-flush").start()
     paudit.listeners.append(flush_platform_gaps)
     limits_lock = threading.Lock()
+    ownership_lock = threading.Lock()
+    ownership_requests: dict[tuple, dict] = {}
     signup_times: list[float] = []
     signup_attempts: list[float] = []
     chat_times: dict[str, list[float]] = {}
@@ -389,6 +446,93 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     "expires": sess.expires,
                     "mfa_enabled": ops.totp_enabled(sess.operator)} if sess else None
 
+        def _ownership_target(self, service, value, method):
+            parsed = parse_service_target(value)
+            host = parsed["host"]
+            if method not in (*OWNERSHIP_METHODS, google_ownership.METHOD, "cloud_run_oidc"):
+                raise ValueError("所有確認方法を選択してください")
+            with service._lock:
+                asset = service._asset_record(host)
+                if (not asset or not service._in_ownership_flow(host) or not asset.get("challenge")
+                        or (asset.get("scheme"), asset.get("port")) != (parsed["scheme"], parsed["port"])):
+                    raise ValueError("先に対象URLを登録してください")
+                if (method not in ("dns_txt", google_ownership.METHOD)
+                        and (parsed["scheme"], parsed["port"]) != ("https", 443)):
+                    raise ValueError("この確認方法には HTTPS の標準ポートが必要です")
+                key = (getattr(self, "_bound_org", DEFAULT_ORG), asset["id"], asset["target_url"], method,
+                       asset.get("ownership_registration_version"))
+                stopped = service.gateway.state is State.STOPPED or service.a.state == "stopped" or service._stop_flag().exists()
+                return key, service.gateway._launch_epoch, stopped
+
+        @staticmethod
+        def _ownership_status(record, epoch, now):
+            if record is None:
+                return "not_requested"
+            if record["epoch"] != epoch or now >= record["expires_at"]:
+                return "expired"
+            return record["status"]
+
+        def _ownership_request(self, service, sess, body):
+            if _ownership_traffic_mode() != "approved":
+                return self._json(409, {"error": "所有確認の通信申請は運営者設定が必要です"})
+            action = body.get("action")
+            fields = {"action", "url", "method", "id"} if action in ("approve", "reject") else {"action", "url", "method"}
+            if set(body) != fields or action not in ("status", "request", "approve", "reject"):
+                return self._json(400, {"error": "所有確認の操作が不正です"})
+            org = getattr(self, "_bound_org", DEFAULT_ORG)
+            with live_grant_roles(sess, org) as roles, service._lock, ownership_lock:
+                key, epoch, stopped = self._ownership_target(service, str(body["url"]), body["method"])
+                now = time.time()
+                record = ownership_requests.get(key)
+                status = self._ownership_status(record, epoch, now)
+                if action in ("approve", "reject"):
+                    if "admin" not in roles or not record or record["requester"] == sess.operator:
+                        raise ApproverRequired("依頼者とは別の組織管理者が操作してください")
+                    if record["id"] != body["id"] or status != "pending" or stopped:
+                        raise ValueError("この申請は承認可能な状態ではありません")
+                    service._audit_first("asset.ownership_traffic_decided", actor=sess.operator,
+                                         asset_id=key[1], method=key[3], request_id=record["id"], decision=action)
+                    status = "approved" if action == "approve" else "rejected"
+                    record.update(status=status, expires_at=now + (_OWNERSHIP_APPROVAL_TTL if action == "approve" else _OWNERSHIP_REQUEST_TTL))
+                elif action == "request" and status not in ("pending", "approved"):
+                    if stopped:
+                        raise ValueError("緊急停止中は所有確認を申請できません")
+                    for expired in [k for k, v in ownership_requests.items() if now - v["expires_at"] > _OWNERSHIP_REQUEST_TTL]:
+                        del ownership_requests[expired]
+                    if len(ownership_requests) >= 5000 and key not in ownership_requests:
+                        raise ValueError("所有確認の申請件数が上限に達しました")
+                    status = "pending"
+                    record = {"id": secrets.token_urlsafe(18), "requester": sess.operator, "status": status,
+                              "expires_at": now + _OWNERSHIP_REQUEST_TTL, "epoch": epoch}
+                    service._audit_first("asset.ownership_traffic_requested", actor=sess.operator,
+                                         asset_id=key[1], method=key[3], request_id=record["id"])
+                    ownership_requests[key] = record
+                result = {"status": status, "stopped": stopped,
+                          "can_decide": bool(record and status == "pending" and "admin" in roles
+                                             and record["requester"] != sess.operator and not stopped),
+                          "can_verify": bool(record and status == "approved"
+                                             and record["requester"] == sess.operator and not stopped)}
+                if record:
+                    result.update(id=record["id"], expires_at=record["expires_at"])
+            return self._authorized_org_read(sess, org, lambda _: self._json(200, result), reader=False)
+
+        def _require_ownership_traffic(self, service, sess, value, method, expected=None):
+            mode = _ownership_traffic_mode()
+            if mode == "off":
+                raise ApproverRequired("この環境では所有確認用の通信が停止中です")
+            if mode == "existing":
+                with service._lock:
+                    if service.gateway.state is State.STOPPED or service.a.state == "stopped" or service._stop_flag().exists():
+                        raise ApproverRequired("緊急停止中は所有確認を行いません")
+                return None
+            key, epoch, stopped = self._ownership_target(service, value, method)
+            with ownership_lock:
+                record = ownership_requests.get(key)
+                if (stopped or self._ownership_status(record, epoch, time.time()) != "approved"
+                        or record["requester"] != sess.operator or (expected is not None and record["id"] != expected)):
+                    raise ApproverRequired("この対象・方法には有効な所有確認の通信承認がありません")
+                return record["id"]
+
         def _touches_real_site(self, p: str, osvc) -> bool:
             """Requests that would send traffic to a registered real site."""
             if p in ("/api/assets/verify-ownership", "/api/assets/cloud-run/finish"):
@@ -553,8 +697,11 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 # This reports the process configuration so the public launcher can
                 # still reject a broad setting, even though tenants stay read-only.
                 me["real_service_diagnosis"] = REAL_SERVICE_DIAGNOSIS
+                me["external_site_traffic_enabled"] = REAL_SITE_L1_ONLY or REAL_SERVICE_DIAGNOSIS
                 me["real_site_read_only"] = REAL_SITE_L1_ONLY or tenancy is not None
                 me["google_ownership"] = google_ownership.config() is not None
+                me["cloud_inventory_configured"] = cloud_inventory.config() is not None
+                me["ownership_traffic_mode"] = _ownership_traffic_mode()
                 me["optional_status_check"] = optional_status_check_configured()
                 me["development"] = development_mode()
                 if tenancy is not None:
@@ -990,7 +1137,9 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     # Mode 0 always disables real-site traffic. Only the legacy
                     # broad switch is narrowed to L1 when tenants are present.
                     read_only_real = REAL_SITE_L1_ONLY or (tenancy is not None and REAL_SERVICE_DIAGNOSIS)
-                    if (not REAL_SERVICE_DIAGNOSIS or tenancy is not None) and self._touches_real_site(p, osvc):
+                    if p in _OWNERSHIP_LOOKUPS and _ownership_traffic_mode() == "approved":
+                        real_site_traffic = True
+                    elif (not REAL_SERVICE_DIAGNOSIS or tenancy is not None) and self._touches_real_site(p, osvc):
                         refusal = self._real_site_refusal(p, osvc) if read_only_real else \
                             "このβ版では、実サイトへの通信（所有確認の実行・診断）はまだ有効になっていません。模擬ラボで機能をお試しください"
                         if refusal:
@@ -1015,7 +1164,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                             real_site_traffic = osvc.has_scoped_real_site()
                         except Exception:   # noqa: BLE001 - when in doubt, count it
                             real_site_traffic = True
-                    if real_site_traffic and read_only_real:
+                    if real_site_traffic and (read_only_real or p in _OWNERSHIP_LOOKUPS):
                         if p in ("/api/assets/verify-ownership", "/api/assets/cloud-run/finish"):
                             limited = (verify_times, verify_all, OWNERSHIP_CHECKS_PER_ORG_PER_HOUR,
                                        OWNERSHIP_CHECKS_PLATFORM_PER_HOUR,
@@ -1513,6 +1662,52 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             base = f"/api/assessments/{svc.a.id}"
             actor = sess.operator
             try:
+                if p == "/api/assets/ownership-traffic":
+                    return self._ownership_request(svc, sess, body)
+                elif p == "/api/assets/cloud-inventory":
+                    org = getattr(self, "_bound_org", DEFAULT_ORG)
+                    owner = (org, actor, hashlib.sha256(sess.token.encode()).digest())
+                    cfg = cloud_inventory.config()
+
+                    def deliver(action):
+                        return self._authorized_org_read(sess, org, action, reader=False)
+
+                    def reply(action):
+                        try:
+                            return self._json(200, action())
+                        except cloud_inventory.CloudInventoryError as e:
+                            return self._json(e.status, {"error": str(e)})
+
+                    action = body.get("action")
+                    if action == "status" and set(body) == {"action"}:
+                        return deliver(lambda _: self._json(200, {"configured": cfg is not None}))
+                    if cfg is None:
+                        return deliver(lambda _: self._json(404, {"error": "Google Cloud の閲覧連携は未設定です。"}))
+                    if action in ("start", "projects", "clear") and set(body) == {"action"}:
+                        if action == "start":
+                            return deliver(lambda _: reply(lambda: inventory.start(owner, cfg)))
+                        if action == "clear":
+                            return deliver(lambda _: reply(lambda: inventory.clear(owner) or {"configured": True}))
+                        return deliver(lambda _: reply(lambda: inventory.get(owner)))
+                    if action != "finish" or set(body) != {"action", "code", "state"}:
+                        return self._json(400, {"error": "不明な連携操作です。"})
+                    code, state = body["code"], body["state"]
+                    if (not isinstance(code, str) or not re.fullmatch(r"[!-~]{1,2048}", code)
+                            or not isinstance(state, str) or not re.fullmatch(r"[A-Za-z0-9_-]{43}", state)):
+                        return self._json(400, {"error": "Google の応答が無効です。"})
+                    try:
+                        with live_grant_roles(sess, org, reader=False):
+                            flow, verifier = inventory.claim(owner, state)
+                        result = cloud_inventory.fetch_projects(cfg, code, verifier)
+                    except cloud_inventory.CloudInventoryError as e:
+                        status, message = e.status, str(e)
+                        return deliver(lambda _: self._json(status, {"error": message}))
+
+                    def publish():
+                        inventory.publish(owner, flow, result)
+                        return {"connected": True}
+
+                    return deliver(lambda _: reply(publish))
                 if p == "/api/assets/local-defense":
                     org = getattr(self, "_bound_org", DEFAULT_ORG)
                     local_defense = local_control(org, svc)
@@ -1546,6 +1741,13 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     return self._authorized_org_read(
                         sess, getattr(self, "_bound_org", DEFAULT_ORG),
                         lambda _: self._json(200, payload), reader=False)
+                elif p == "/api/assets/project":
+                    if set(body) != {"id", "project_label"} or not isinstance(body["id"], str):
+                        return self._json(400, {"error": "対象とプロジェクト名を指定してください"})
+                    org = getattr(self, "_bound_org", DEFAULT_ORG)
+                    return self._authorized_org_read(sess, org, lambda _: self._json(200, {
+                        "assets": svc.set_asset_project(body["id"], body["project_label"], actor),
+                    }), reader=False)
                 elif p == "/api/assets/challenge":
                     target_host = ""
                     try:
@@ -1562,6 +1764,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         approver=actor,
                         kind=str(body.get("kind", "Webアプリケーション")),
                         environment=str(body.get("environment", "ステージング環境")),
+                        project_label=body.get("project_label", ""),
                         grant_guard=lambda: live_grant_roles(sess, getattr(self, "_bound_org", DEFAULT_ORG)),
                     )
                     payload = {**res, "assets": svc.assets()}
@@ -1601,6 +1804,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     if svc.real_service_has_authority(host) and "approver" not in sess.roles:
                         return self._json(403, {"error": "所有確認済みの対象の再確認には承認責任者の権限が必要です"})
                     with live_grant_roles(sess, getattr(self, "_bound_org", DEFAULT_ORG)) as current_roles:
+                        self._require_ownership_traffic(svc, sess, "https://" + host, "cloud_run_oidc")
                         res = svc.finish_cloud_run_challenge(
                             tenant=getattr(self, "_bound_org", DEFAULT_ORG), host=host,
                             requester=actor, challenge=str(body.get("challenge") or ""),
@@ -1614,7 +1818,9 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     cfg = google_ownership.config()
                     if cfg is None:
                         return self._json(404, {"error": "Google での所有確認は設定されていません"})
-                    g_host = parse_service_target(str(body.get("url") or body.get("host") or ""))["host"]
+                    ownership_value = str(body.get("url") or body.get("host") or "")
+                    grant = self._require_ownership_traffic(svc, sess, ownership_value, google_ownership.METHOD)
+                    g_host = parse_service_target(ownership_value)["host"]
                     g_asset = svc._asset_record(g_host)
                     if g_asset is None or not svc._in_ownership_flow(g_host):
                         return self._json(400, {"error": "先にサイトの URL を登録してください"})
@@ -1636,7 +1842,9 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     verifier, challenge = google_ownership.new_pkce()
                     with limits_lock:
                         google_states[state] = {"at": time.time(), "account": actor, "org": bound_org,
-                                                "host": g_host, "verifier": verifier,
+                                                "host": g_host, "verifier": verifier, "grant": grant,
+                                                "session": hashlib.sha256(sess.token.encode()).digest(),
+                                                "target_url": g_asset.get("target_url") or ownership_value,
                                                 "scheme": str(g_asset.get("scheme") or "https"),
                                                 "port": int(g_asset.get("port") or 443)}
                     auth_url = google_ownership.authorization_url(cfg, state, challenge)
@@ -1651,13 +1859,15 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     with limits_lock:
                         key = str(body.get("state") or "")
                         st = google_states.get(key)
-                        if st is not None and st["account"] == actor and st["org"] == bound_org:
+                        if (st is not None and st["account"] == actor and st["org"] == bound_org
+                                and st["session"] == hashlib.sha256(sess.token.encode()).digest()):
                             google_states.pop(key, None)                     # single use
                         else:
                             st = None                                        # someone else's: left alone
                     if st is None or time.time() - st["at"] > google_ownership.STATE_TTL_S:
                         return self._json(400, {"error": "確認の有効期限が切れたか、別の操作で開始されています。もう一度お試しください"})
                     g_host = st["host"]
+                    self._require_ownership_traffic(svc, sess, st["target_url"], google_ownership.METHOD, st["grant"])
                     if svc.real_service_has_authority(g_host) and "approver" not in sess.roles:
                         return self._json(403, {"error": "所有確認済みの対象の再確認には承認責任者の権限が必要です"})
                     try:
@@ -1672,6 +1882,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     # The outer lease supplies current roles; do not nest its
                     # non-reentrant account lock through grant_guard.
                     def finish_google(current):
+                        self._require_ownership_traffic(svc, sess, st["target_url"], google_ownership.METHOD, st["grant"])
                         res = svc.verify_asset_ownership(url_or_host=g_host, method=google_ownership.METHOD,
                                                          actor=actor, roles=tuple(current.roles), google_property=prop,
                                                          google_endpoint=(st["scheme"], st["port"]))
@@ -1680,6 +1891,10 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     return self._authorized_org_read(
                         sess, getattr(self, "_bound_org", DEFAULT_ORG), finish_google, reader=False)
                 elif p == "/api/assets/verify-ownership":
+                    ownership_value = str(body.get("url") or body.get("host") or "")
+                    method = str(body.get("method", "dns_txt"))
+                    if method not in OWNERSHIP_METHODS:
+                        return self._json(400, {"error": "この経路では選択した方法を使用できません"})
                     v_host = ""
                     try:
                         v_host = parse_service_target(str(body.get("url") or body.get("host") or ""))["host"]
@@ -1688,12 +1903,20 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     if v_host and svc.real_service_has_authority(v_host) and "approver" not in sess.roles:
                         # a failed re-check revokes scope and stored test accounts
                         return self._json(403, {"error": "所有確認済みの対象の再確認には承認責任者の権限が必要です"})
+                    grant = self._require_ownership_traffic(svc, sess, ownership_value, method)
+
+                    @contextlib.contextmanager
+                    def proof_guard():
+                        with live_grant_roles(sess, getattr(self, "_bound_org", DEFAULT_ORG)) as roles, svc._lock:
+                            self._require_ownership_traffic(svc, sess, ownership_value, method, grant)
+                            yield roles
+
                     res = svc.verify_asset_ownership(
-                        url_or_host=str(body.get("url") or body.get("host") or ""),
-                        method=str(body.get("method", "dns_txt")),
+                        url_or_host=ownership_value,
+                        method=method,
                         actor=actor,
                         roles=tuple(sess.roles),     # re-checked inside, when the result is applied
-                        grant_guard=lambda: live_grant_roles(sess, getattr(self, "_bound_org", DEFAULT_ORG)),
+                        grant_guard=proof_guard,
                     )
                     payload = {**res, "assets": svc.assets()}
                     return self._authorized_org_read(
@@ -1792,15 +2015,28 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                                          json.dumps({"nvd": body.get("nvd"), "kev": body.get("kev")},
                                                     sort_keys=True, default=str).encode()).hexdigest())
                     return self._authorized_platform_read(sess, lambda: self._json(200, st))
-                elif p == base + "/start":
-                    with live_grant_roles(sess, getattr(self, "_bound_org", DEFAULT_ORG)):
-                        svc.start(actor=actor)      # recorded first, by the service: no record, no run
-                elif p == base + "/restart":
-                    with live_grant_roles(sess, getattr(self, "_bound_org", DEFAULT_ORG)):
-                        result = svc.restart(actor)
-                    return self._authorized_org_read(
-                        sess, getattr(self, "_bound_org", DEFAULT_ORG),
-                        lambda _: self._json(200, result), reader=False)
+                elif p in (base + "/start", base + "/restart"):
+                    refusal = None
+                    with live_grant_roles(sess, getattr(self, "_bound_org", DEFAULT_ORG)), svc._lock:
+                        if (("reviewed_asset_id" in body or "reviewed_authority_generation" in body)
+                                and (body.get("reviewed_asset_id") != svc.a.asset["id"]
+                                     or body.get("reviewed_authority_generation") != svc.ledger.generation)):
+                            refusal = (409, "対象または診断許可が変更されました。画面を更新し、範囲を確認してください。")
+                        # The workspace can switch after the earlier route check.
+                        elif (not (REAL_SERVICE_DIAGNOSIS or REAL_SITE_L1_ONLY)
+                              and svc._in_ownership_flow(svc.a.asset.get("name"))):
+                            refusal = (403, "この環境では実サイトへの診断通信は無効です")
+                        elif p == base + "/start":
+                            svc.start(actor=actor)
+                        else:
+                            result = svc.restart(actor)
+                    if refusal:
+                        status, message = refusal
+                        return self._json(status, {"error": message})
+                    if p == base + "/restart":
+                        return self._authorized_org_read(
+                            sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                            lambda _: self._json(200, result), reader=False)
                 elif p == base + "/pause":
                     svc.pause(actor)
                     if not ops.trusted():
@@ -1998,7 +2234,7 @@ def _build_server(svc, a, data, first, seed, env_opt_out):
         print(f"前回正常に終了しなかったため、すべてのログインセッション（{n}件）を無効にしました。")
     svc._auth_recovered = True
     read_auth = False if a.no_read_auth else (True if a.require_read_auth else None)
-    srv = ThreadingHTTPServer(
+    srv = ControlPlaneHTTPServer(
         ("127.0.0.1", a.port),
         make_handler(svc, ops, require_read_auth=read_auth, tenancy=tenancy,
                      local_defense_python_root=getattr(a, "local_defense_python_root", None),

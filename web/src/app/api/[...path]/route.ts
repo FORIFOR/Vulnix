@@ -4,6 +4,7 @@
 // authenticate the operator. The CSRF guard and the session cookie are
 // independent; neither replaces the other.
 import type { NextRequest } from "next/server";
+import { existsSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { resolve } from "node:path";
 import { catalogSource } from "@/lib/catalogUpdate";
@@ -115,9 +116,13 @@ async function refreshCatalog(req: NextRequest) {
   if (!identity?.session) return Response.json({ error: "ログインしてください。" }, { status: 401 });
   if (catalogTransfer || Date.now() - (previousCatalogAttempts.get(source) ?? 0) < 60_000)
     return Response.json({ error: "別の更新が実行中か、直前に更新したカタログです。" }, { status: 429 });
+  const packaged = resolve(process.cwd(), "catalog/public_catalog.py");
+  const checkout = resolve(process.cwd(), "../aegis/public_catalog.py");
+  const helper = existsSync(packaged) ? packaged : checkout;
+  if (!existsSync(helper)) return Response.json({ code: "helper_missing" }, { status: 503 });
   previousCatalogAttempts.set(source, Date.now());
   catalogTransfer = true;
-  const child = spawn("python3", ["-I", "-u", resolve(process.cwd(), "../aegis/public_catalog.py"), source], {
+  const child = spawn("python3", ["-I", "-u", helper, source], {
     stdio: ["ignore", "pipe", "ignore"], timeout: 8 * 60_000,
   });
   const stop = () => { child.kill(); };

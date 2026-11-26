@@ -24,6 +24,7 @@ import subprocess
 import threading
 import time
 import urllib.parse
+import unicodedata
 import weakref
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_FLOOR
@@ -3187,7 +3188,47 @@ class AssessmentService:
                 dict(x) for x in self._extra_assets
                 if x["id"] != primary["id"] and x["name"].lower() != primary["name"].lower()
             ]
+            for asset in [primary, *extras]:
+                if not asset.get("challenge"):
+                    continue
+                proof = self._ownership_proofs.get(asset["name"]) or {}
+                verified_at = proof.get("verified_at")
+                scope_active = self._external_entry(asset["name"]) is not None
+                asset["scope_confirmed"] = scope_active
+                asset["ownership_verified"] = bool(
+                    scope_active or (
+                        proof.get("verified") is True and not proof.get("held_since")
+                        and (proof.get("scheme"), proof.get("port")) == (asset.get("scheme"), asset.get("port"))
+                        and isinstance(verified_at, (int, float))
+                        and 0 <= time.time() - verified_at <= OWNERSHIP_PROOF_MAX_AGE_S))
             return [primary, *extras]
+
+    @staticmethod
+    def _project_label(value: str) -> str:
+        if not isinstance(value, str) or len(value) > 80 or any(
+                unicodedata.category(char).startswith("C") for char in value):
+            raise ValueError("プロジェクト名は制御文字を含まない80文字以内にしてください")
+        return value.strip()
+
+    def set_asset_project(self, asset_id: str, label: str, actor: str) -> list[dict]:
+        label = self._project_label(label)
+        with self._lock:
+            record = next((item for item in (self.a.asset, *self._extra_assets)
+                           if item["id"] == asset_id), None)
+            if record is None:
+                raise ValueError("この組織に対象が見つかりません")
+            previous = record.get("project_label")
+            self._require_working_store()
+            self._audit_first("asset.project_changed", actor=actor, asset_id=asset_id)
+            record["project_label"] = label
+            self._save_state_locked()
+            if self._persist_error:
+                if previous is None:
+                    record.pop("project_label", None)
+                else:
+                    record["project_label"] = previous
+                raise ValueError("プロジェクト名を保存できませんでした")
+            return self.assets()
 
     def register_asset(self, *, name: str, kind: str, environment: str,
                        authorization_ref: str = "", ownership_verified: bool = False,
@@ -3316,7 +3357,7 @@ class AssessmentService:
             "environment": asset_record["environment"],
             # keep registration metadata of real services (ownership proof, URL)
             **{k: asset_record[k] for k in (
-                "display_name", "target_url", "scheme", "port", "gcp_project",
+                "display_name", "target_url", "scheme", "port", "gcp_project", "project_label", "ownership_registration_version",
                 "scope_confirmed", "challenge", "ownership_proof", "approver",
                 "sow_optional_ref") if k in asset_record},
         }
@@ -3406,7 +3447,7 @@ class AssessmentService:
                         "environment": next_auth["environment"],
                         # a real service keeps its registration metadata when promoted
                         **{k: next_auth[k] for k in (
-                            "display_name", "target_url", "scheme", "port", "gcp_project",
+                            "display_name", "target_url", "scheme", "port", "gcp_project", "project_label", "ownership_registration_version",
                             "scope_confirmed", "challenge", "ownership_proof", "approver",
                             "sow_optional_ref") if k in next_auth},
                     }
@@ -3597,11 +3638,13 @@ class AssessmentService:
         approver: str = "operator",
         kind: str = "Webアプリケーション",
         environment: str = "ステージング環境",
+        project_label: str = "",
         grant_guard=None,
     ) -> dict:
         """Step 1 & 2 of the 5-step registration flow: parse target URL, generate
         DNS TXT / .well-known challenge, and create an unverified asset record.
         SOW number is optional; an internal authorization record is generated if omitted."""
+        label = self._project_label(project_label)
         parsed = parse_service_target(url)
         host = parsed["host"]
         ch = challenge_for_host(host, self._ownership_secret)
@@ -3649,6 +3692,8 @@ class AssessmentService:
             endpoint_revoked = False
             self._real_service_hosts.add(host)
             if existing is not None:
+                if (existing.get("scheme"), existing.get("port")) != (parsed["scheme"], parsed["port"]):
+                    existing["ownership_registration_version"] = secrets.token_hex(8)
                 if (existing.get("scheme"), existing.get("port")) != (parsed["scheme"], parsed["port"]) and (
                         host in self._ownership_proofs or host in self._verified_external_hosts):
                     # a different endpoint of the host: the earlier proof, scope and
@@ -3669,6 +3714,8 @@ class AssessmentService:
                 existing["approver"] = approver
                 if not existing.get("ownership_verified"):
                     existing["status"] = "所有確認待ち"
+                if label:
+                    existing["project_label"] = label
                 asset_rec = dict(existing)
             else:
                 aid = "asset_" + secrets.token_hex(3)
@@ -3693,6 +3740,7 @@ class AssessmentService:
                     "ownership_verified": False,
                     "scope_confirmed": False,
                     "challenge": ch,
+                    **({"project_label": label} if label else {}),
                     "note": "Step 2: DNS TXT または検証ファイルで管理権限を確認してください",
                 }
                 self._extra_assets.insert(0, asset_rec)
@@ -4227,11 +4275,13 @@ class AssessmentService:
             # revoked or is held: it is never shown as the demo lab.
             is_ext = self._in_ownership_flow(self.a.asset.get("name"))
             scope_active = self._is_external_service_asset()
+            ext = self._external_entry(self.a.asset.get("name")) if scope_active else None
             return {
                 "id": self.a.id, "asset": self.a.asset, "demo": not is_ext,
                 "target_url": self.a.target_url,
                 "is_external_service": is_ext,
                 "scope_active": scope_active,
+                "optional_status_scope": bool(ext and ext.get("allow_status_probe")),
                 "real_site_read_only": bool(getattr(self, "real_site_read_only", False)),
                 "lab_mode": get_lab_mode(),
                 "lab_endpoint": self.a.target_url if is_ext else f"127.0.0.1:{self.lab_port}",

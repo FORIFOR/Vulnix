@@ -62,7 +62,7 @@ test("same CVE from NVD and OSV appears once and preserves the package match", a
   const nvd = { cve: { id: cve, configurations: [{ nodes: [{ operator: "OR", cpeMatch: [
     { vulnerable: true, criteria: "cpe:2.3:a:apache:http_server:2.4.49:*:*:*:*:*:*:*" },
   ] }] }] } };
-  const osv = { id: "GHSA-abc-test-only", aliases: [cve],
+  const osv = { id: "GHSA-abc-test-only", aliases: [cve], database_specific: { severity: "HIGH" },
     affected: [{ package: { ecosystem: "PyPI", name: "fixture" }, versions: ["1.0"] }] };
   const report = await scanProject([fixture("Dockerfile", "FROM httpd:2.4.49\n"),
     fixture("requirements.txt", "fixture==1.0\n")], { vulnerabilities: [nvd, nvd], osv: [osv] });
@@ -70,6 +70,7 @@ test("same CVE from NVD and OSV appears once and preserves the package match", a
   assert.equal(results.length, 1);
   assert.equal(results[0].location.path, "requirements.txt");
   assert.match(results[0].evidence, /NVDにも/);
+  assert.equal(results[0].severity, "HIGH");
 });
 
 test("automatically scans later batches and reads a repeated path once", async () => {
@@ -135,4 +136,30 @@ test("defense planning uses technology and assertions without granting a verdict
   assert.deepEqual(auth.candidates.map(({ path, permits, denies }) => [path, permits, denies]), [["tests/auth.test.ts", true, true]]);
   assert.deepEqual(report.runtimePlan.find(({ id }) => id === "saml").candidates, []);
   assert.ok(report.runtimePlan.every((row) => !("verdict" in row)));
+});
+
+test("an uploaded CycloneDX SBOM discovers fixed npm, PyPI and Go package identities", async () => {
+  const sbom = JSON.stringify({ bomFormat: "CycloneDX", components: [
+    { purl: "pkg:npm/%40fixture/pkg@1.2.3", version: "1.2.3" },
+    { purl: "pkg:pypi/Python_Fixture@2.0.0" },
+    { purl: "pkg:golang/example.invalid/fake@v1.2.3" },
+    { purl: "pkg:npm/fake@2.0.0", version: "3.0.0" },
+    { purl: "pkg:deb/debian/example@1" },
+  ] });
+  const report = await scanProject([fixture("inventory.sbom.json", sbom)], {});
+  assert.equal(report.packageCount, 3);
+  assert.equal(report.unsupported, 0);
+  assert.ok(report.skippedRules);
+});
+
+test("Google Artifact Analysis SPDX 2.3 maps package references without trusting inconsistent versions", async () => {
+  const reference = (referenceType, referenceLocator) => ({ referenceType, referenceLocator });
+  const input = { spdxVersion: "SPDX-2.3", packages: [
+    { versionInfo: "2.0.0", externalRefs: [reference("purl", "pkg:pypi/Python_Fixture@2.0.0")] },
+    { versionInfo: "3.0.0", externalRefs: [reference("purl", "pkg:npm/fake@2.0.0")] },
+    { externalRefs: [reference("purl", "pkg:npm/first@1.0.0"), reference("purl", "pkg:npm/second@1.0.0")] },
+  ] };
+  const report = await scanProject([fixture("inventory.sbom.json", JSON.stringify(input))], {});
+  assert.equal(report.packageCount, 1);
+  assert.ok(report.skippedRules);
 });

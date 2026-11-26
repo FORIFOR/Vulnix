@@ -13,6 +13,7 @@ export type CatalogManifest = {
   source: CatalogSource; generation: string; count: number; indexed: number;
   fetchedAt: string; publishedAt: string | null;
 };
+export type CatalogFailure = { source: CatalogSource; reason: string };
 type LegacyCatalog = Partial<Record<"NVD" | "npm" | "PyPI" | "Go", { records?: unknown[] }>>;
 type CatalogRow = { key: string; keys: string[]; payload: string };
 
@@ -119,29 +120,42 @@ export async function refreshCatalogs(sources: CatalogSource[], onProgress: (sou
   return navigator.locks.request("vulnix-catalog-refresh", { ifAvailable: true }, async (lock) => {
     if (!lock) throw new Error("catalog already updating");
     const db = await database();
-    const failed: CatalogSource[] = [];
+    const failed: CatalogFailure[] = [];
     const deadline = Date.now() + 25 * 60_000;
     try {
       for (const source of sources) {
-        if (Date.now() >= deadline) { failed.push(source); continue; }
+        if (Date.now() >= deadline) { failed.push({ source, reason: "更新の時間上限に達しました" }); continue; }
         onProgress(source, 0);
         const generation = crypto.randomUUID();
         const old = await result<CatalogManifest | undefined>(db.transaction(manifests).objectStore(manifests).get(source));
+        let reason = "ブラウザの保存領域を確認してください";
         try {
           await removeStaged(db, source, old?.generation);
+          reason = "ダウンロードが中断されました。通信を確認して再試行してください";
           const response = await fetch("/api/catalog/refresh", { method: "POST",
             headers: { "X-Aegis-Request": "1", "X-Vulnix-Catalog": source }, redirect: "error",
             signal: AbortSignal.timeout(Math.min(9 * 60_000, deadline - Date.now())),
           });
-          if (!response.ok || !response.body) throw new Error("catalog download failed");
+          if (!response.ok || !response.body) {
+            if (response.status === 401) reason = "ログインし直してください";
+            if (response.status === 429) reason = "別の更新が実行中か直前に試行しました。1分後に再試行してください";
+            if (response.status === 503) {
+              const problem = await response.json().catch(() => null);
+              if (problem?.code === "helper_missing") reason = "配布版に取得用ファイルがありません。Vulnixの運用者に連絡してください";
+            }
+            throw new Error("catalog download failed");
+          }
+          reason = "受信データを最後まで確認できませんでした。空き容量と通信を確認して再試行してください";
           const metadata = await importStream(db, source, generation, response.body, onProgress);
           const tx = db.transaction(manifests, "readwrite");
           const done = committed(tx);
           tx.objectStore(manifests).put(metadata);
           await done;
           await removeStaged(db, source, generation).catch(() => {});
-        } catch {
-          failed.push(source);
+        } catch (error) {
+          if (error instanceof DOMException && error.name === "QuotaExceededError")
+            reason = "ブラウザの空き容量が不足しています";
+          failed.push({ source, reason });
           await removeStaged(db, source, old?.generation).catch(() => {});
         }
       }

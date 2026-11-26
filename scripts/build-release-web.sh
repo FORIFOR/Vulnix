@@ -25,7 +25,7 @@ mkdir "$work/source" "$work/runtime" "$work/tmp"
 touch "$work/npm-user" "$work/npm-global"
 printf '%s\n' "$sha" > "$work/source-sha.txt"
 
-git -C "$root" archive --output="$work/source.tar" "$sha" web aegis/feeds/nvd-recent.json scripts/release-web-inventory.mjs
+git -C "$root" archive --output="$work/source.tar" "$sha" web aegis/feeds/nvd-recent.json aegis/public_catalog.py scripts/release-web-inventory.mjs
 tar -xf "$work/source.tar" -C "$work/source"
 cd "$work/source/web"
 
@@ -42,9 +42,11 @@ cp -R .next/standalone/. "$work/runtime/"
 cp -R public "$work/runtime/public"
 cp -R .next/static "$work/runtime/.next/static"
 test -f "$work/runtime/server.js"
+mkdir "$work/runtime/catalog"
+cp ../aegis/public_catalog.py "$work/runtime/catalog/public_catalog.py"
 offline node ../scripts/release-web-inventory.mjs "$lock" "$work/runtime" "$work/web.cdx.json"
 
-shasum -a 256 package-lock.json next.config.ts "$lock" "$node_bin" "$work/web.cdx.json" > "$work/build-inputs.sha256"
+shasum -a 256 package-lock.json next.config.ts "$lock" "$node_bin" "$work/runtime/catalog/public_catalog.py" "$work/web.cdx.json" > "$work/build-inputs.sha256"
 {
     node -p 'JSON.stringify(process.versions)'
     npm --version

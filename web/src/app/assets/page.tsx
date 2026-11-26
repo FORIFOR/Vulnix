@@ -1,12 +1,15 @@
 "use client";
 
-import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { assetProject, ProjectOverview } from "@/components/ProjectOverview";
+import { CloudInventory } from "@/components/CloudInventory";
+import { useSession } from "@/lib/useSession";
+import { Suspense, useEffect, useState } from "react";
 import { AssetRegistrationModal } from "@/components/AssetRegistrationModal";
 import { OwnershipWizard } from "@/components/OwnershipWizard";
 import { Card, Pill } from "@/components/ui";
 import { getJSON, postJSON } from "@/lib/api";
-import type { Asset } from "@/lib/types";
+import type { Asset, Snapshot } from "@/lib/types";
 
 const STATUS_CLS: Record<string, string> = {
   診断済み: "bg-emerald-100 text-emerald-900 dark:bg-emerald-900/50 dark:text-emerald-100",
@@ -20,7 +23,14 @@ const STATUS_CLS: Record<string, string> = {
 };
 
 export default function AssetsPage() {
+  return <Suspense fallback={null}><Assets /></Suspense>;
+}
+
+function Assets() {
   const router = useRouter();
+  const { session, org } = useSession();
+  const params = useSearchParams();
+  const orgKey = `${session?.operator ?? ""}:${org?.id ?? ""}`;
   const [assets, setAssets] = useState<Asset[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -28,18 +38,40 @@ export default function AssetsPage() {
   const [editingAsset, setEditingAsset] = useState<Asset | null>(null);
   const [wizardOpen, setWizardOpen] = useState(false);
   const [wizardAsset, setWizardAsset] = useState<Asset | null>(null);
+  const [cloudTarget, setCloudTarget] = useState<{ url: string; orgKey: string; project: string } | null>(null);
+
+  const requestedProject = params.get("project") ?? "";
+  const project = requestedProject && assets?.some((a) => assetProject(a) === requestedProject) ? requestedProject : "";
+  const visible = project ? assets?.filter((a) => assetProject(a) === project) : assets;
+  const canEdit = Boolean(session?.roles.some((role) => ["operator", "approver", "admin"].includes(role)));
 
   useEffect(() => {
-    getJSON<Asset[]>("/api/assets").then(setAssets, (e) => setErr(e.message));
-  }, []);
+    let active = true;
+    getJSON<Asset[]>("/api/assets").then((rows) => { if (active) setAssets(rows); }, (e) => { if (active) setErr(e.message); });
+    return () => { active = false; };
+  }, [orgKey]);
+
+  const saveProject = async (asset: Asset, label: string) => {
+    setBusyId(asset.id);
+    setErr(null);
+    try {
+      const result = await postJSON<{ assets: Asset[] }>("/api/assets/project", {id: asset.id, project_label: label});
+      setAssets(result.assets);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusyId(null);
+    }
+  };
 
   const handleSelectAsset = async (a: Asset) => {
     if (!a.assessment_id) return;
     setBusyId(a.id);
     setErr(null);
     try {
-      await postJSON("/api/assets/select", { id: a.id });
-      router.push(`/assessments/${a.assessment_id}`);
+      const { snapshot } = await postJSON<{ snapshot: Snapshot }>("/api/assets/select", { id: a.id });
+      if (snapshot.asset.id !== a.id) throw new Error("対象が切り替わりました。サイトを選び直してください。");
+      router.push(`/assessments/${snapshot.id}`);
     } catch (e) {
       setErr((e as Error).message);
       setBusyId(null);
@@ -66,15 +98,16 @@ export default function AssetsPage() {
     <main className="mx-auto max-w-5xl p-4 md:p-8">
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="mb-1 text-2xl font-bold">サイト</h1>
+          <h1 className="mb-1 text-2xl font-bold">診断対象の管理</h1>
           <p className="text-sm text-zinc-500">
-            診断するサイトの一覧です。サイトを追加すると、所有確認のあとすぐに診断できます。
+            Webサイト、API、クラウドをプロジェクトにまとめます。診断には対象ごとの所有確認と許可が必要です。
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
           <button
             type="button"
             onClick={() => {
+              setCloudTarget(null);
               setWizardAsset(null);
               setWizardOpen(true);
             }}
@@ -95,35 +128,56 @@ export default function AssetsPage() {
         </div>
       </div>
 
+      {assets && <ProjectOverview assets={assets} selected={project} page="/assets" />}
+      {session && <CloudInventory key={orgKey} projectLabel={project} onChoose={(url, cloudProject) => {
+        setCloudTarget({ url, orgKey, project: project || cloudProject });
+        setWizardAsset(null);
+        setWizardOpen(true);
+      }} />}
       {err && <p role="alert" className="mb-4 rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-800 dark:bg-red-950/40 dark:text-red-200">{err}</p>}
       {!assets && !err && <p className="text-sm text-zinc-500">読み込み中…</p>}
 
       <Card className="overflow-hidden p-0">
-        <table className="w-full text-sm">
-          <thead className="border-b border-zinc-200 bg-zinc-50 text-left text-xs text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900/60">
+        <table role="table" aria-label="登録済みのサイト" className="block w-full text-sm md:table">
+          <thead className="hidden md:table-header-group border-b border-zinc-200 bg-zinc-50 text-left text-xs text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900/60">
             <tr>
               <th scope="col" className="px-4 py-2 font-medium">資産</th>
-              <th scope="col" className="hidden px-4 py-2 font-medium sm:table-cell">種別</th>
+              <th scope="col" className="hidden px-4 py-2 font-medium md:table-cell">種別</th>
               <th scope="col" className="hidden px-4 py-2 font-medium md:table-cell">環境</th>
               <th scope="col" className="px-4 py-2 font-medium">状態</th>
               <th scope="col" className="px-4 py-2 font-medium">リスク（前回比）</th>
               <th scope="col" className="px-4 py-2 text-right font-medium">操作</th>
             </tr>
           </thead>
-          <tbody>
-            {assets?.map((a) => (
-              <tr key={a.id} className="border-b border-zinc-100 last:border-0 dark:border-zinc-800/60">
-                <td className="px-4 py-3">
-                  <div className="font-medium">{a.display_name ?? a.name}</div>
+          <tbody role="rowgroup" className="block md:table-row-group">
+            {visible?.map((a) => (
+              <tr key={a.id} role="row" className="grid min-w-0 grid-cols-2 md:table-row border-b border-zinc-100 last:border-0 dark:border-zinc-800/60">
+                <td role="cell" className="col-span-2 min-w-0 px-4 py-3 md:table-cell">
+                  <div className="break-all font-medium">{a.display_name ?? a.name}</div>
                   {a.display_name && <div className="break-all font-mono text-[11px] text-zinc-500">{a.name}</div>}
+                  {assetProject(a) && <p className="break-words text-xs text-zinc-600 dark:text-zinc-300">プロジェクト {assetProject(a)}</p>}
+                  {canEdit && a.id !== "lab" && <details className="mt-2 text-xs">
+                    <summary className="cursor-pointer underline">プロジェクトを設定</summary>
+                    <form className="mt-2 flex flex-wrap items-end gap-2" onSubmit={(e) => {
+                      e.preventDefault();
+                      const name = new FormData(e.currentTarget).get("name");
+                      if (typeof name === "string") void saveProject(a, name);
+                    }}>
+                      <label>プロジェクト名
+                        <input key={assetProject(a)} name="name" maxLength={80} defaultValue={assetProject(a)}
+                          list="asset-project-names" className="ml-1 max-w-full rounded border border-zinc-300 p-1 dark:border-zinc-700" />
+                      </label>
+                      <button type="submit" disabled={busyId === a.id} className="rounded border border-zinc-300 px-2 py-1 dark:border-zinc-700">保存</button>
+                    </form>
+                  </details>}
                   {a.note && <div className="text-xs text-amber-800 dark:text-amber-300">{a.note}</div>}
                 </td>
-                <td className="hidden px-4 py-3 text-zinc-500 sm:table-cell">{a.kind}</td>
+                <td className="hidden px-4 py-3 text-zinc-500 md:table-cell">{a.kind}</td>
                 <td className="hidden px-4 py-3 text-zinc-500 md:table-cell">{a.environment}</td>
-                <td className="px-4 py-3">
+                <td role="cell" className="px-4 py-1 md:py-3">
                   <Pill className={STATUS_CLS[a.status] ?? "bg-zinc-200 text-zinc-800"}>{a.status}</Pill>
                 </td>
-                <td className="px-4 py-3 tabular-nums">
+                <td role="cell" className="px-4 py-1 tabular-nums md:py-3">
                   {a.risk ? (
                     <span>
                       {a.risk.score}/100
@@ -139,13 +193,14 @@ export default function AssetsPage() {
                     <span className="text-zinc-400">—</span>
                   )}
                 </td>
-                <td className="px-4 py-3 text-right">
-                  <div className="inline-flex items-center justify-end gap-2">
+                <td role="cell" className="col-span-2 px-4 py-3 md:text-right">
+                  <div className="inline-flex flex-wrap items-center gap-2 md:justify-end">
                     {a.challenge && !(a.ownership_verified && a.scope_confirmed) ? (
                       <button
                         type="button"
                         disabled={busyId === a.id}
                         onClick={() => {
+                          setCloudTarget(null);
                           setWizardAsset(a);
                           setWizardOpen(true);
                         }}
@@ -191,11 +246,16 @@ export default function AssetsPage() {
         </table>
       </Card>
 
+      <datalist id="asset-project-names">
+        {[...new Set((assets ?? []).map(assetProject).filter(Boolean))].map((name) => <option key={name} value={name} />)}
+      </datalist>
       <OwnershipWizard
-        key={`wizard-${wizardAsset?.id ?? "new"}-${wizardOpen}`}
-        open={wizardOpen}
+        key={`wizard-${wizardAsset?.id ?? cloudTarget?.url ?? "new"}-${wizardOpen}-${orgKey}`}
+        open={wizardOpen && (!cloudTarget || cloudTarget.orgKey === orgKey)}
         onClose={() => setWizardOpen(false)}
         initialAsset={wizardAsset}
+        initialUrl={cloudTarget?.orgKey === orgKey ? cloudTarget.url : undefined}
+        projectLabel={wizardAsset ? assetProject(wizardAsset) : cloudTarget?.orgKey === orgKey ? cloudTarget.project : project}
         knownAssets={assets}
         onAssetsChanged={setAssets}
       />

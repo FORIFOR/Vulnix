@@ -71,13 +71,15 @@ export function RealServicePanel({ snap, onUpdate }: { snap: Snapshot; onUpdate:
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 space-y-0.5">
           <p className="font-semibold">
-            {readOnly ? "診断中のサイト（所有確認済み）：" : "実サービス診断（所有確認済み）："}
+            {snap.authorization.ownership_verified ? "所有確認済みの対象 " : "所有確認が必要な対象 "}
             <span className="break-all font-mono">{snap.target_url}</span>
           </p>
           <p className="text-sky-900 dark:text-sky-200">
             {readOnly
-              ? "公開されているページを読み取って調べた結果です。サイトのデータを変更したり、ログインを試したりはしていません。調べていない項目を「安全」とは表示しません。"
-              : "L1は読み取り専用の実測です。L2検証は検証用アカウントと模擬データに限定し、項目ごとに承認責任者が実行します（一括実行はしません）。未計測の項目を「安全」とは表示しません。"}
+              ? snap.state === "completed"
+                ? "公開応答から確認できた結果を表示しています。認証後の操作や実行時の防御は未確認です。"
+                : "公開応答を読み取る診断です。診断の実行状況と証拠は結果画面で確認できます。"
+              : "公開ページの読み取りが基本です。防御テストを行える環境では、別途承認済みの項目と専用データを使います。"}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">

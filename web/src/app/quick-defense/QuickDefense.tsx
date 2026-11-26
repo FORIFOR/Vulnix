@@ -1,12 +1,15 @@
 "use client";
 
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
+import { projectHref } from "@/components/ProjectOverview";
 import RuntimeDefense from "./RuntimeDefense";
 import ReviewedDefense from "./ReviewedDefense";
-import { useEffect, useRef, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { catalogSources, osvSources, type CatalogSource } from "@/lib/catalogUpdate";
 import type { ScanProgress } from "@/lib/projectDefense";
-import { readCatalogCache } from "@/lib/catalogCache";
+import { readCatalogCache, type CatalogFailure } from "@/lib/catalogCache";
+import { advisorySeverityLabels, groupDependencyFindings, sortByAdvisorySeverity } from "@/lib/resultPresentation";
 import { categories, checkControls, checkCves, demoEvidence, labels, record } from "@/lib/quickDefense";
 
 const button = "rounded-lg border border-zinc-300 px-3 py-2 text-sm font-medium dark:border-zinc-700";
@@ -14,16 +17,29 @@ const primary = "rounded-lg bg-zinc-900 px-3 py-2 text-sm font-semibold text-whi
 type ProjectReport = Awaited<ReturnType<typeof import("@/lib/projectDefense").scanProject>>;
 const maxInput = 2 * 1024 * 1024;
 
+function LocalProjectContext() {
+  const value = useSearchParams().get("project") ?? "";
+  if (!value || value.length > 80) return null;
+  return <p className="mb-2 break-words text-sm">
+    <Link href={projectHref("/dashboard", value)} className="underline">{value} に戻る</Link>
+    <span className="ml-2 text-zinc-600 dark:text-zinc-300">この画面の入力と結果はブラウザ内で扱います。</span>
+  </p>;
+}
+
 export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) {
   const [selected, setSelected] = useState(new Set<string>(categories));
   const [files, setFiles] = useState<File[]>([]);
+  const [sbom, setSbom] = useState<File | null>(null);
+  const sbomInput = useRef<HTMLInputElement>(null);
   const [nvd, setNvd] = useState<unknown>(bundledFeed);
   const [osv, setOsv] = useState<unknown[]>([]);
   const [official, setOfficial] = useState<Awaited<ReturnType<typeof readCatalogCache>>>({ sources: [], legacy: {} });
   const [updateProgress, setUpdateProgress] = useState<{ source: CatalogSource; count: number } | null>(null);
   const catalogWorker = useRef<Worker | null>(null);
   const [cacheReady, setCacheReady] = useState(false);
-  const [refreshErrors, setRefreshErrors] = useState<string[]>([]);
+  const [refreshErrors, setRefreshErrors] = useState<{ source: string; reason: string }[]>([]);
+  const [updateSources, setUpdateSources] = useState<CatalogSource[]>([]);
+  const folderInput = useRef<HTMLInputElement>(null);
   const [updating, setUpdating] = useState(false);
   const [display, setDisplay] = useState(100);
   const [feedLabels, setFeedLabels] = useState({
@@ -51,13 +67,14 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
 
   function updateOfficial(sources: CatalogSource[]) {
     setUpdating(true);
+    setUpdateSources(sources);
     setUpdateProgress(null);
     setRefreshErrors([]);
-    const finish = async (failed: string[]) => {
+    const finish = async (failed: { source: string; reason: string }[]) => {
       catalogWorker.current?.terminate();
       catalogWorker.current = null;
       try { setOfficial(await readCatalogCache()); }
-      catch { failed.push("ブラウザの保存領域"); }
+      catch { failed.push({ source: "保存領域", reason: "ブラウザに保存したカタログを読み込めませんでした" }); }
       setRefreshErrors(failed);
       setUpdating(false);
       setUpdateProgress(null);
@@ -67,14 +84,14 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
     try {
       const worker = new Worker(new URL("../../lib/catalogUpdate.worker.ts", import.meta.url));
       catalogWorker.current = worker;
-      worker.onmessage = ({ data }: MessageEvent<{ failed?: CatalogSource[]; progress?: { source: CatalogSource; count: number } }>) => {
+      worker.onmessage = ({ data }: MessageEvent<{ failed?: CatalogFailure[]; progress?: { source: CatalogSource; count: number } }>) => {
         if (catalogWorker.current !== worker) return;
         if (data.progress) setUpdateProgress(data.progress);
-        else void finish(data.failed ?? ["更新処理"]);
+        else void finish(data.failed ?? [{ source: "更新処理", reason: "別のタブでの更新を閉じ、再試行してください" }]);
       };
-      worker.onerror = () => { if (catalogWorker.current === worker) void finish(["更新処理"]); };
+      worker.onerror = () => { if (catalogWorker.current === worker) void finish([{ source: "更新処理", reason: "別のタブでの更新を閉じ、再試行してください" }]); };
       worker.postMessage(sources);
-    } catch { void finish(["更新処理"]); }
+    } catch { void finish([{ source: "更新処理", reason: "別のタブでの更新を閉じ、再試行してください" }]); }
   }
 
   async function importFeed(file: File) {
@@ -159,7 +176,9 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
         vulnerabilities: [...localNvd, ...(official.sources.some(({ source }) => source.startsWith("NVD-")) ? [] : official.legacy.NVD?.records ?? [])],
         osv: [...osv, ...osvSources.flatMap((source) => cachedSources.has(source) ? [] : official.legacy[source]?.records ?? [])],
       };
-      worker.postMessage({ files: files.map((file) => ({ file, path: file.webkitRelativePath || file.name })), feed });
+      const sources = files.map((file) => ({ file, path: file.webkitRelativePath || file.name }));
+      if (sbom) sources.push({ file: sbom, path: "inventory.sbom.json" });
+      worker.postMessage({ files: sources, feed });
     } catch {
       running.current?.();
       setBusy(false);
@@ -168,12 +187,15 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
   }
 
   const statusLabel = (status: keyof typeof labels) => mode === "local" && status === "confirmed" ? "設定・コードを確認" : labels[status];
-  const visible = results?.filter((row) => selected.has(row.category));
+  const visible = useMemo(() => results && sortByAdvisorySeverity(results.filter((row) => selected.has(row.category))),
+    [results, selected]);
+  const dependencyGroups = useMemo(() => visible ? groupDependencyFindings(visible) : [], [visible]);
 
   return (
     <main className="mx-auto max-w-3xl space-y-5 p-4 md:p-8">
+      <Suspense><LocalProjectContext /></Suspense>
       <h1 className="text-2xl font-bold">ローカルプロジェクトの診断</h1>
-      <p className="text-sm text-zinc-600 dark:text-zinc-300">プロジェクトのフォルダを選ぶと、設定・依存関係・関連ソースをブラウザ内で調べます。</p>
+      <p className="text-sm text-zinc-600 dark:text-zinc-300">プロジェクトのフォルダを選ぶと、設定・依存関係・関連ソースをブラウザ内で調べます。実行時の防御は、対応する許可済み防御テストから確認します。</p>
       <fieldset className="flex flex-wrap gap-4">
         <legend className="mb-2 font-medium">検証項目</legend>
         {categories.map((category) => <label key={category} className="flex items-center gap-2">
@@ -187,7 +209,7 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
       </fieldset>
       <section className="space-y-3 rounded-xl border border-zinc-200 p-4 dark:border-zinc-800">
         <label className="block text-sm font-semibold">プロジェクトフォルダを選択
-          <input type="file" {...{ webkitdirectory: "" }} multiple disabled={busy} className="mt-2 block w-full text-sm" onChange={(event) => {
+          <input ref={folderInput} type="file" {...{ webkitdirectory: "" }} multiple disabled={busy} className="mt-2 block w-full text-sm" onChange={(event) => {
             const list = event.target.files;
             const tooMany = (list?.length ?? 0) > 12000;
             setFiles(!tooMany && list ? Array.from(list) : []);
@@ -200,8 +222,24 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
           }} />
         </label>
         {files.length > 0 && <p className="text-sm">フォルダ内のファイルを {files.length} 件選択済み</p>}
+        <label id="sbom-input" className="block text-sm font-semibold">SBOM を選択（任意）
+          <input ref={sbomInput} type="file" accept=".json,application/json" disabled={busy}
+            className="mt-2 block w-full text-sm" onChange={(event) => {
+              const file = event.target.files?.[0];
+              event.target.value = "";
+              setReport(null);
+              setResults(null);
+              setEnded(null);
+              setSbom(file && file.size <= 4 * 1024 * 1024 ? file : null);
+              setError(file && file.size > 4 * 1024 * 1024 ? "4 MB以下のCycloneDX／SPDX 2.3 JSONを選んでください。" : "");
+            }} />
+        </label>
+        <p className="text-xs">CycloneDX／SPDX 2.3 JSONをブラウザ内で照合します。対応する識別子のない依存関係、SBOMと実配備の一致、実行時の防御は未確認です。</p>
+        {sbom && <p className="text-sm">SBOM を選択済み <button type="button" disabled={busy} className="ml-2 underline"
+          onClick={() => { setSbom(null); setReport(null); setResults(null); }}>選択を解除</button></p>}
+
         <div className="flex flex-wrap gap-2">
-          <button type="button" className={primary} disabled={!cacheReady || busy || updating || !selected.size || !files.length} onClick={() => run("local")}>
+          <button type="button" className={primary} disabled={!cacheReady || busy || updating || !selected.size || (!files.length && !sbom)} onClick={() => run("local")}>
             {busy ? "検証中…" : "ローカル検証を開始"}
           </button>
           <button type="button" className={button} disabled={busy || updating || !selected.size} onClick={() => run("demo")}>模擬データで試す</button>
@@ -238,8 +276,20 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
             }}>取得を中断</button>}
           </div>
           <p>OSVのnpm・PyPI・Go全件と、NVDの2002年版から今年までを順に取得します。初回は大容量です。プロジェクトの情報は送信しません。</p>
-          {updateProgress && <p role="status">{updateProgress.source} を取得中。処理済み {updateProgress.count.toLocaleString()}件。</p>}
-          {refreshErrors.length > 0 && <p role="alert">更新失敗 {refreshErrors.join("・")}。正常に保存済みのデータを使用します。</p>}
+          {updateProgress && <p role="status">
+            {updateSources.indexOf(updateProgress.source) + 1} / {updateSources.length}：{updateProgress.source}　
+            {updateProgress.count ? `索引を作成中。処理済み ${updateProgress.count.toLocaleString()}件。` : "公式データを取得中。"}
+          </p>}
+          {refreshErrors.length > 0 && <div role="alert" className="space-y-2 text-red-800 dark:text-red-200">
+            <p>一部の公式カタログを更新できませんでした。正常な保存済みデータで診断できます。</p>
+            <ul className="list-disc pl-5">{refreshErrors.map(({ source, reason }) => <li key={source}>{source} — {reason}</li>)}</ul>
+            {!updating && <button type="button" className={button} disabled={busy || !cacheReady}
+              onClick={() => {
+                const failed = new Set(refreshErrors.map(({ source }) => source));
+                const retry = updateSources.filter((source) => failed.has(source));
+                updateOfficial(retry.length ? retry : updateSources);
+              }}>失敗した更新を再試行</button>}
+          </div>}
           {official.sources.length > 0 && <details>
             <summary>提供元・年別の収録件数と取得日時</summary>
             {official.sources.map((entry) => <p key={entry.source}>
@@ -256,6 +306,7 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
           </label>
         </details>
         <div className="space-y-1 text-xs text-zinc-500" aria-label="ローカルで使用するCVEカタログ">
+          {!!official.sources.length && <p>保存済み {official.sources.reduce((sum, source) => sum + source.indexed, 0).toLocaleString()}件（索引対象）。最終更新 {new Date(Math.max(...official.sources.map(({ fetchedAt }) => Date.parse(fetchedAt)))).toLocaleString()}。</p>}
           <p>{feedLabels.nvd}</p>
           <p>{feedLabels.osv}</p>
           <p>公式アーカイブ {official.sources.length}/{catalogSources().length}件を保存済み。
@@ -266,7 +317,11 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
       </section>
       <ReviewedDefense files={files} />
       {visible && <section className="space-y-3" aria-label="検証結果">
-        <h2 className="text-lg font-semibold">{mode === "demo" ? "模擬データの結果" : "ローカル入力の結果"}</h2>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-lg font-semibold">{mode === "demo" ? "模擬データの結果" : "ローカル入力の結果"}</h2>
+          {mode === "local" && <button type="button" className={button} disabled={busy || updating}
+            onClick={() => (files.length ? folderInput : sbomInput).current?.click()}>{files.length ? "修正後のフォルダを選ぶ" : "更新したSBOMを選ぶ"}</button>}
+        </div>
         <p role="status" className="text-sm">{Object.keys(labels).map((key) =>
           `${statusLabel(key as keyof typeof labels)} ${visible.filter((row) => row.status === key).length}件`).join(" ・ ")}</p>
         {report && <p className="text-sm">
@@ -283,8 +338,30 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
         {report?.catalogIncomplete && <p role="alert">公式カタログを最後まで照合できませんでした。照合上限・時間上限または保存領域を確認してください。</p>}
         <p className="text-sm">{mode === "local" ? "設定を確認した項目の実行時の防御は未確認です。各項目の再検証方法を確認してください。" : "この結果は模擬入力に基づきます。"}</p>
         {mode === "local" && <a href="#runtime-defense" className="text-sm underline">実行時の防御確認へ</a>}
+        {mode === "local" && <a href="#a2b-defense" className="ml-3 text-sm underline">A2B防御の状況へ</a>}
+        {dependencyGroups.length > 0 && <details className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
+          <summary className="cursor-pointer font-semibold">依存関係ごとの修正（{dependencyGroups.length}組）</summary>
+          <p className="my-2 text-sm">勧告ごとの修正版候補です。すべての勧告に対応する導入可能な版を選び、ロックファイルを更新して再検証してください。</p>
+          <ul className="space-y-2">
+            {dependencyGroups.slice(0, display).map(({ name, version, ecosystem, severity, advisories }) => <li key={JSON.stringify([ecosystem, name, version])}>
+              <details className="rounded border border-zinc-200 p-2 text-sm dark:border-zinc-800">
+                <summary className="cursor-pointer break-all"><bdi>{name} {version}</bdi>{ecosystem && `（${ecosystem}）`} ／ {advisories.length}件 ／ {severity ? advisorySeverityLabels[severity] : "重大度不明"}</summary>
+                <ul className="mt-2 list-inside list-disc space-y-2">
+                  {advisories.map((entry) => <li key={entry.id}>
+                    {entry.id} ／ {entry.fixed.length ? `修正版候補 ${entry.fixed.join("・")}` : "修正版は勧告を確認"}
+                    <div className="break-all text-xs text-zinc-600 dark:text-zinc-300">
+                      {entry.locations[0] && <><bdi>{entry.locations[0].path}</bdi>{entry.locations[0].line ? `:${entry.locations[0].line}` : ""}</>}
+                      {entry.locations.length > 1 && ` ほか ${entry.locations.length - 1}か所（下の個別結果に表示）`}
+                    </div>
+                  </li>)}
+                </ul>
+              </details>
+            </li>)}
+          </ul>
+        </details>}
+        <p className="text-sm">個別結果は勧告の重大度順です（Critical → High → Medium → Low → 重大度不明）。対象サービスでの実際の影響は未確認です。</p>
         {visible.slice(0, display).map((row, index) => <details key={index} className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
-          <summary className="cursor-pointer font-medium">{row.category} ／ {row.title} ／ {statusLabel(row.status)}</summary>
+          <summary className="cursor-pointer font-medium">{row.category} ／ {row.title} ／ {statusLabel(row.status)}{row.severity && ` ／ 勧告の重大度 ${advisorySeverityLabels[row.severity]}`}</summary>
           <dl className="mt-2 space-y-1 break-words text-sm">
             {(row.locations?.length || row.location) && <><dt className="font-semibold">修正箇所</dt>
               {(row.locations ?? (row.location ? [row.location] : [])).map((location, i) => <dd key={i} className="font-mono">
@@ -292,17 +369,20 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
                 {location.dependency && <span> ／ <bdi>{location.dependency} {location.version}</bdi></span>}
                 {!!location.fixed?.length && <span> ／ 勧告の修正版 {location.fixed.join("・")}</span>}
               </dd>)}</>}
-            <dt className="font-semibold">根拠</dt><dd>{row.evidence}</dd>
+            <dt className="font-semibold">重大度</dt><dd>{row.severity
+              ? `${advisorySeverityLabels[row.severity]}（勧告の評価。対象サービスでの影響は未確認）`
+              : "重大度不明。危険性と実際の利用条件を確認してください。"}</dd>
+            <dt className="font-semibold">原因・根拠</dt><dd>{row.evidence}</dd>
             <dt className="font-semibold">危険性</dt><dd>{row.risk}</dd>
             <dt className="font-semibold">修正方法</dt><dd>{row.fix}</dd>
             <dt className="font-semibold">再検証方法</dt><dd>{row.retest}</dd>
           </dl>
         </details>)}
-        {visible.length > display && <button type="button" className={button} onClick={() => setDisplay(display + 100)}>
-          さらに表示（{visible.length - display}件）
+        {Math.max(visible.length, dependencyGroups.length) > display && <button type="button" className={button} onClick={() => setDisplay(display + 100)}>
+          さらに表示（{Math.max(visible.length, dependencyGroups.length) - display}件）
         </button>}
         {mode === "local" && <>
-          <RuntimeDefense plan={report?.runtimePlan ?? []} project={files[0]?.webkitRelativePath.split("/")[0] || "選択したフォルダ"} />
+          <RuntimeDefense plan={report?.runtimePlan ?? []} staticResults={visible} project={files[0]?.webkitRelativePath.split("/")[0] || "選択したフォルダ"} />
           <p className="text-sm">修正後は上のフォルダ選択から選び直して再検証してください。</p>
         </>}
       </section>}

@@ -174,7 +174,10 @@ export function AssessmentTabs({ id }: { id: string }) {
 
         {tab === "assessment" && snap.artex_plan?.configured
           && (!snap.is_external_service || snap.state === "completed") && (
-          <ArtexPlanPanel snap={snap} onUpdate={setSnap} />
+          <details className="mb-4 rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
+            <summary className="cursor-pointer text-sm font-semibold">追加確認の計画と出所</summary>
+            <div className="mt-3"><ArtexPlanPanel snap={snap} onUpdate={setSnap} /></div>
+          </details>
         )}
 
         {/* lab only: the API answers 404 for a real site, and the panel is never shown there */}
@@ -296,7 +299,7 @@ export function AssessmentTabs({ id }: { id: string }) {
             <div className="grid gap-3 md:grid-cols-2">
               {counts.findings === 0 && (
                 <p className="text-sm text-zinc-500 md:col-span-2">
-                  {snap.state === "idle" ? "診断を開始すると、ここに問題が表示されます。" : "まだ問題は検出されていません（未検出は安全という意味ではありません）。"}
+                  {snap.state === "idle" ? "診断を開始すると、ここに問題が表示されます。" : "今回の確認範囲で表示できる所見はありません。未確認項目は診断範囲を参照してください。"}
                 </p>
               )}
               {findings.filter((f) => evidenceFilter === "all" || f.evidence_status === evidenceFilter).map((f) => (
