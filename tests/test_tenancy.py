@@ -144,6 +144,27 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
         self.svc.close()
         self.tmp.cleanup()
 
+    def test_intelligence_history_is_bound_to_the_authenticated_org(self):
+        alice, bob = self.signup("historyalice"), self.signup("historybob")
+        org = alice["orgs"][0]["id"]
+        svc = self.reg.service(org)
+        with svc._lock:
+            svc._set_state("running")
+            svc._set_state("completed")
+        before = svc.a.asset["id"]
+        code, view = self.req(alice, "/assets/intelligence", org=org)
+        self.assertEqual(code, 200)
+        self.assertEqual(len(view["runs"]), 1)
+        self.assertEqual(view["runs"][0]["org_id"], org)
+        self.assertEqual(self.req(bob, "/assets/intelligence", org=org)[0], 403)
+        self.assertEqual(self.req(bob, "/assets/intelligence")[1]["runs"], [])
+        _, invite = self.reg.store.create_invite(org, "historyalice", ["viewer"])
+        self.reg.store.accept_invite(invite, "historybob")
+        self.assertEqual(self.req(bob, "/assets/intelligence", org=org)[0], 200)
+        self.reg.store.remove_member(org, "historyalice", "historybob")
+        self.assertEqual(self.req(bob, "/assets/intelligence", org=org)[0], 403)
+        self.assertEqual(svc.a.asset["id"], before)
+
     def test_project_label_is_org_scoped_and_grants_no_diagnosis_authority(self):
         alice, bob = self.signup("projectalice"), self.signup("projectbob")
         org = alice["orgs"][0]["id"]

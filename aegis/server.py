@@ -789,7 +789,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 org = self._bound_org if tenancy is not None else DEFAULT_ORG
                 if p.endswith("/events"):
                     return self._get_org(p, u, *bound)  # long stream: per-batch lease below
-                if p in {f"/api/assessments/{bound[0].a.id}",
+                if p in {"/api/assets/intelligence", f"/api/assessments/{bound[0].a.id}",
                          f"/api/assessments/{bound[0].a.id}/logs",
                          f"/api/assessments/{bound[0].a.id}/diagnosis",
                          f"/api/assessments/{bound[0].a.id}/report",
@@ -807,7 +807,9 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         return self._json(403, {"error": "この組織のメンバーではありません"})
                     if not allowed_identified:
                         return self._json(403, {"error": "匿名化なしの出力には承認責任者または管理者の権限が必要です"})
-                    if p == f"/api/assessments/{bound[0].a.id}":
+                    if p == "/api/assets/intelligence":
+                        payload = bound[0].intelligence_snapshot(org)
+                    elif p == f"/api/assessments/{bound[0].a.id}":
                         payload = bound[0].snapshot()
                     elif p.endswith("/logs"):
                         payload = bound[0].logs()
@@ -899,6 +901,10 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                                         and _approver_class(sess.operator) == "registered"})
             if p == "/api/assets":
                 return self._json(200, svc.assets())
+            if p == "/api/assets/intelligence":
+                if not sess:
+                    return self._json(401, {"error": "ログインが必要です"})
+                return self._json(200, svc.intelligence_snapshot(getattr(self, "_bound_org", DEFAULT_ORG)))
             if p == "/api/assets/cloud-run/binding":
                 if not sess or "admin" not in sess.roles:
                     return self._json(403, {"error": "組織管理者の権限が必要です"})
