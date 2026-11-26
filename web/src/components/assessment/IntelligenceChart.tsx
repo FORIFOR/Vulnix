@@ -1,0 +1,57 @@
+"use client";
+
+import { useEffect, useRef } from "react";
+import { init, use, type EChartsCoreOption } from "echarts/core";
+import { HeatmapChart, LineChart, PieChart, ScatterChart, TreemapChart } from "echarts/charts";
+import { GridComponent, TooltipComponent, VisualMapComponent } from "echarts/components";
+import { SVGRenderer } from "echarts/renderers";
+
+use([HeatmapChart, LineChart, PieChart, ScatterChart, TreemapChart, GridComponent, TooltipComponent, VisualMapComponent, SVGRenderer]);
+
+export function IntelligenceChart({ option, onSelect, label }: {
+  option: EChartsCoreOption;
+  onSelect?: (index: number, name: string) => void;
+  label: string;
+}) {
+  const host = useRef<HTMLDivElement>(null);
+  const chart = useRef<ReturnType<typeof init> | null>(null);
+  useEffect(() => {
+    const node = host.current;
+    if (!node) return;
+    const instance = init(node, undefined, { renderer: "svg" });
+    chart.current = instance;
+    const resize = new ResizeObserver(() => instance.resize());
+    resize.observe(node);
+    return () => { resize.disconnect(); instance.dispose(); chart.current = null; };
+  }, []);
+
+  useEffect(() => {
+    const instance = chart.current;
+    if (!instance) return;
+    const motion = matchMedia("(prefers-reduced-motion: reduce)");
+    const theme = new MutationObserver(update);
+    function update() {
+      const dark = document.documentElement.classList.contains("dark");
+      instance?.setOption({
+        ...option, backgroundColor: "transparent", animation: !motion.matches,
+        animationDuration: 260, animationDurationUpdate: 260,
+        textStyle: { color: dark ? "#d4d4d8" : "#3f3f46", fontFamily: "system-ui" },
+        tooltip: { trigger: "item", renderMode: "richText", confine: true, appendToBody: false, ...(typeof option.tooltip === "object" && option.tooltip !== null ? option.tooltip : {}) },
+      });
+    }
+    update();
+    theme.observe(document.documentElement, { attributeFilter: ["class"] });
+    motion.addEventListener("change", update);
+    return () => { theme.disconnect(); motion.removeEventListener("change", update); };
+  }, [option]);
+
+  useEffect(() => {
+    const instance = chart.current;
+    if (!instance || !onSelect) return;
+    const click = ({ dataIndex, name }: { dataIndex?: number; name?: string }) => { if (typeof dataIndex === "number") onSelect(dataIndex, name ?? ""); };
+    instance.on("click", click);
+    return () => { instance.off("click", click); };
+  }, [onSelect]);
+
+  return <div ref={host} className="h-60 w-full min-w-0 overflow-hidden" role="img" aria-label={label} />;
+}

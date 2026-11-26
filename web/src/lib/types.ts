@@ -10,6 +10,7 @@ export interface Phase { key: string; label: string; status: PhaseStatus; detail
 export interface Evidence {
   evidence_id: string;
   kind: string;
+  tool?: string;
   saved_at: number | null;
   audit_hash: string | null;
   content: string;
@@ -357,6 +358,9 @@ export interface ArtexPlanView {
 }
 
 export interface RunHistoryEntry {
+  run_id?: string;
+  asset_id?: string;
+  condition_id?: string;
   at: number;
   asset: string;
   score: number | null;

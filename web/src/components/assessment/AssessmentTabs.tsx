@@ -21,10 +21,13 @@ import { PhaseTimeline } from "./PhaseTimeline";
 import { RealServicePanel } from "./RealServicePanel";
 import { ReasoningTrace } from "./ReasoningTrace";
 import { EvidenceOverview, EVIDENCE_STATES } from "./EvidenceOverview";
+import { SecurityIntelligence } from "./SecurityIntelligence";
+import { aggregate, filterFindings } from "@/lib/securityIntelligence";
 
 const TABS = [
   { key: "assessment", label: "診断" },
   { key: "findings", label: "結果" },
+  { key: "intelligence", label: "分析" },
   { key: "logs", label: "ログ" },
 ] as const;
 
@@ -51,7 +54,10 @@ export function AssessmentTabs({ id }: { id: string }) {
       </div>
     );
   }
-  const findings = [...snap.findings].sort(
+  const intelligence = aggregate(snap.findings, Boolean(snap.is_external_service), chainValid, audit.map(({ hash }) => hash));
+  const filtered = filterFindings(intelligence.rows, params);
+  const hasFilter = ["evidence", "severity", "category"].some((key) => params.has(key));
+  const findings = filtered.sort(
     (a, b) => Number(a.demo_fixture) - Number(b.demo_fixture) || SEV_ORDER[a.severity] - SEV_ORDER[b.severity],
   );
   const counts = { findings: snap.findings.filter((f) => !f.demo_fixture).length, logs: audit.length };
@@ -127,12 +133,12 @@ export function AssessmentTabs({ id }: { id: string }) {
             className={`-mb-px border-b-2 px-3 py-2.5 text-sm ${tab === t.key ? "border-zinc-900 font-semibold dark:border-white" : "border-transparent text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100"}`}
           >
             {t.label}
-            {t.key !== "assessment" && <span className="ml-1 text-xs text-zinc-500">{counts[t.key]}</span>}
+            {(t.key === "findings" || t.key === "logs") && <span className="ml-1 text-xs text-zinc-500">{counts[t.key]}</span>}
           </Link>
         ))}
       </div>
 
-      <main className="mx-auto w-full max-w-5xl flex-1 p-4 md:p-6">
+      <main className="mx-auto w-full max-w-7xl flex-1 p-4 md:p-6">
         {snap.demo && (
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-violet-200 bg-violet-50/90 px-3.5 py-2.5 text-xs text-violet-950 dark:border-violet-900/60 dark:bg-violet-950/40 dark:text-violet-100">
             <div className="space-y-0.5">
@@ -170,7 +176,8 @@ export function AssessmentTabs({ id }: { id: string }) {
 
         {snap.is_external_service && <RealServicePanel snap={snap} onUpdate={setSnap} />}
 
-        <EvidenceOverview snap={snap} selected={tab === "findings" ? evidenceFilter : "all"} />
+        {tab !== "intelligence" && <EvidenceOverview snap={{ ...snap, evidence_summary: intelligence.evidence }} selected={tab === "findings" ? evidenceFilter : "all"} />}
+        {tab === "intelligence" && <SecurityIntelligence snap={snap} data={intelligence} conn={conn} chainValid={chainValid} />}
 
         {tab === "assessment" && snap.artex_plan?.configured
           && (!snap.is_external_service || snap.state === "completed") && (
@@ -283,26 +290,26 @@ export function AssessmentTabs({ id }: { id: string }) {
         {tab === "findings" && (
           <div className="min-w-0 space-y-4">
             <ReasoningTrace
-              snap={snap}
+              snap={{ ...snap, findings: intelligence.rows, evidence_summary: intelligence.evidence }}
               audit={audit}
               chainValid={chainValid}
               externalBusy={labBusy || cardBusy}
               compact
             />
-            {evidenceFilter !== "all" && (
+            {hasFilter && (
               <div role="status" className="flex items-center justify-between text-sm">
-                <span>{EVIDENCE_STATES.find((s) => s.key === evidenceFilter)?.label}：{snap.evidence_summary[evidenceFilter]} 件</span>
+                <span>{EVIDENCE_STATES.find((s) => s.key === evidenceFilter)?.label ?? "絞り込み結果"}：{findings.length} 件</span>
                 <Link href="?tab=findings" scroll={false} className="text-xs font-semibold underline">絞り込みを解除</Link>
               </div>
             )}
-            {evidenceFilter !== "all" && snap.evidence_summary[evidenceFilter] === 0 && <p className="text-sm text-zinc-500">この状態の問題はありません。別の状態を選ぶか、絞り込みを解除してください。</p>}
+            {hasFilter && findings.length === 0 && <p className="text-sm text-zinc-500">この状態の問題はありません。別の状態を選ぶか、絞り込みを解除してください。</p>}
             <div className="grid gap-3 md:grid-cols-2">
               {counts.findings === 0 && (
                 <p className="text-sm text-zinc-500 md:col-span-2">
                   {snap.state === "idle" ? "診断を開始すると、ここに問題が表示されます。" : "今回の確認範囲で表示できる所見はありません。未確認項目は診断範囲を参照してください。"}
                 </p>
               )}
-              {findings.filter((f) => evidenceFilter === "all" || f.evidence_status === evidenceFilter).map((f) => (
+              {findings.map((f) => (
                 <FindingCard
                   key={f.id}
                   f={f}

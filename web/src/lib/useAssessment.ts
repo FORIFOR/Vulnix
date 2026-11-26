@@ -118,7 +118,9 @@ export function useAssessment(id: string) {
         const logs = await getJSON<{ entries: AuditEntry[]; chain_valid: boolean }>(
           `/api/assessments/${id}/logs`,
         );
-        setChainValid(logs.chain_valid);
+        if (!accessDeniedRef.current && (logs.entries.at(-1)?.hash ?? null) === lastHashRef.current) {
+          setChainValid(logs.chain_valid);
+        }
       } catch {
         /* leave the last known value; a reconnect will refetch */
       }
@@ -174,9 +176,7 @@ export function useAssessment(id: string) {
         const entry = ev.entry as AuditEntry;
         if (!auditHashes.current.has(entry.hash)) {
           // Live link check: this entry must chain onto the previous hash.
-          if (lastHashRef.current !== null && entry.prev !== lastHashRef.current) {
-            setChainValid(false);
-          }
+          setChainValid(lastHashRef.current !== null && entry.prev !== lastHashRef.current ? false : null);
           lastHashRef.current = entry.hash;
           auditHashes.current.add(entry.hash);
           setAudit((a) => [...a, entry]);
@@ -190,6 +190,7 @@ export function useAssessment(id: string) {
       }
       if (ev.type === "agent.note") setNotes((n) => [...n, ev]);
       setSnap((s) => (s ? applyEvent(s, ev) : s));
+      if (ev.type === "assessment.state" && (ev.state === "completed" || ev.state === "failed")) void refetch();
     };
     const open = (after: number) => {
       es?.close();
@@ -198,7 +199,10 @@ export function useAssessment(id: string) {
       es = stream;
       streamOpenRef.current = true;
       stream.onopen = () => setConn("live");
-      stream.onerror = () => setConn(stream.readyState === EventSource.CLOSED ? "offline" : "reconnecting");
+      stream.onerror = () => {
+        setConn(stream.readyState === EventSource.CLOSED ? "offline" : "reconnecting");
+        void refetch();
+      };
       stream.addEventListener("heartbeat", onHeartbeat);
       stream.onmessage = onMessage;
     };
