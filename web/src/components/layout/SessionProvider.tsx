@@ -18,6 +18,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const [multiTenant, setMultiTenant] = useState(false);
   const [selfRegistration, setSelfRegistration] = useState(false);
   const [googleOwnership, setGoogleOwnership] = useState(false);
+  const [externalSiteTrafficEnabled, setExternalSiteTrafficEnabled] = useState<boolean | null>(null);
   const [optionalStatusCheck, setOptionalStatusCheck] = useState(false);
   const [logoutUnconfirmed, setLogoutUnconfirmed] = useState(false);
   const refreshVersion = useRef(0);
@@ -30,7 +31,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const refresh = useCallback(async () => {
     const version = ++refreshVersion.current;
     try {
-      const me = await getJSON<{ session: SessionInfo | null; orgs?: OrgInfo[]; multi_tenant?: boolean; self_registration?: boolean; google_ownership?: boolean; optional_status_check?: boolean }>("/api/auth/me");
+      const me = await getJSON<{ session: SessionInfo | null; orgs?: OrgInfo[]; multi_tenant?: boolean; self_registration?: boolean; google_ownership?: boolean; optional_status_check?: boolean; external_site_traffic_enabled?: boolean }>("/api/auth/me");
       if (!shouldApplySessionResponse(version, refreshVersion.current, signingOut.current)) return;
       const current = me.multi_tenant ? activeOrg(me.orgs ?? [], getSelectedOrg()) : null;
       // in an organization the workspace acts with the roles there, as the server does
@@ -42,6 +43,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       setSelfRegistration(Boolean(me.self_registration));
       setGoogleOwnership(Boolean(me.google_ownership));
       setOptionalStatusCheck(Boolean(me.optional_status_check));
+      setExternalSiteTrafficEnabled(me.external_site_traffic_enabled ?? null);
     } catch {
       if (!shouldApplySessionResponse(version, refreshVersion.current, signingOut.current)) return;
       setSession(null);
@@ -50,6 +52,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       setSelfRegistration(false);
       setGoogleOwnership(false);
       setOptionalStatusCheck(false);
+      setExternalSiteTrafficEnabled(null);
     } finally {
       if (shouldApplySessionResponse(version, refreshVersion.current, signingOut.current)) setLoading(false);
     }
@@ -63,6 +66,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     setSelfRegistration(false);
     setGoogleOwnership(false);
     setOptionalStatusCheck(false);
+    setExternalSiteTrafficEnabled(null);
     setLoading(true);
   }, []);
 
@@ -158,7 +162,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   }, [loading, session, path, router]);
 
   return (
-    <SessionContext.Provider value={{ session, loading, refresh, logout, orgs, multiTenant, selfRegistration, googleOwnership, optionalStatusCheck,
+    <SessionContext.Provider value={{ session, loading, refresh, logout, orgs, multiTenant, selfRegistration, googleOwnership, optionalStatusCheck, externalSiteTrafficEnabled,
                                       org: activeOrg(orgs, typeof document === "undefined" ? null : getSelectedOrg()) }}>
       {logoutUnconfirmed ? (
         <main className="flex min-h-dvh flex-col items-center justify-center gap-4 p-6 text-center text-sm">

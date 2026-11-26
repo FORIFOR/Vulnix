@@ -99,31 +99,31 @@ export default function AssetsPage() {
       {!assets && !err && <p className="text-sm text-zinc-500">読み込み中…</p>}
 
       <Card className="overflow-hidden p-0">
-        <table className="w-full text-sm">
-          <thead className="border-b border-zinc-200 bg-zinc-50 text-left text-xs text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900/60">
+        <table role="table" aria-label="登録済みのサイト" className="block w-full text-sm md:table">
+          <thead className="hidden md:table-header-group border-b border-zinc-200 bg-zinc-50 text-left text-xs text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900/60">
             <tr>
               <th scope="col" className="px-4 py-2 font-medium">資産</th>
-              <th scope="col" className="hidden px-4 py-2 font-medium sm:table-cell">種別</th>
+              <th scope="col" className="hidden px-4 py-2 font-medium md:table-cell">種別</th>
               <th scope="col" className="hidden px-4 py-2 font-medium md:table-cell">環境</th>
               <th scope="col" className="px-4 py-2 font-medium">状態</th>
               <th scope="col" className="px-4 py-2 font-medium">リスク（前回比）</th>
               <th scope="col" className="px-4 py-2 text-right font-medium">操作</th>
             </tr>
           </thead>
-          <tbody>
+          <tbody role="rowgroup" className="block md:table-row-group">
             {assets?.map((a) => (
-              <tr key={a.id} className="border-b border-zinc-100 last:border-0 dark:border-zinc-800/60">
-                <td className="px-4 py-3">
-                  <div className="font-medium">{a.display_name ?? a.name}</div>
+              <tr key={a.id} role="row" className="grid min-w-0 grid-cols-2 md:table-row border-b border-zinc-100 last:border-0 dark:border-zinc-800/60">
+                <td role="cell" className="col-span-2 min-w-0 px-4 py-3 md:table-cell">
+                  <div className="break-all font-medium">{a.display_name ?? a.name}</div>
                   {a.display_name && <div className="break-all font-mono text-[11px] text-zinc-500">{a.name}</div>}
                   {a.note && <div className="text-xs text-amber-800 dark:text-amber-300">{a.note}</div>}
                 </td>
-                <td className="hidden px-4 py-3 text-zinc-500 sm:table-cell">{a.kind}</td>
+                <td className="hidden px-4 py-3 text-zinc-500 md:table-cell">{a.kind}</td>
                 <td className="hidden px-4 py-3 text-zinc-500 md:table-cell">{a.environment}</td>
-                <td className="px-4 py-3">
+                <td role="cell" className="px-4 py-1 md:py-3">
                   <Pill className={STATUS_CLS[a.status] ?? "bg-zinc-200 text-zinc-800"}>{a.status}</Pill>
                 </td>
-                <td className="px-4 py-3 tabular-nums">
+                <td role="cell" className="px-4 py-1 tabular-nums md:py-3">
                   {a.risk ? (
                     <span>
                       {a.risk.score}/100
@@ -139,8 +139,8 @@ export default function AssetsPage() {
                     <span className="text-zinc-400">—</span>
                   )}
                 </td>
-                <td className="px-4 py-3 text-right">
-                  <div className="inline-flex items-center justify-end gap-2">
+                <td role="cell" className="col-span-2 px-4 py-3 md:text-right">
+                  <div className="inline-flex flex-wrap items-center gap-2 md:justify-end">
                     {a.challenge && !(a.ownership_verified && a.scope_confirmed) ? (
                       <button
                         type="button"

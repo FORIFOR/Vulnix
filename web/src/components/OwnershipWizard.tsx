@@ -92,7 +92,7 @@ function CopyRow({ label, value }: { label: string; value: string }) {
 
 export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, knownAssets, notice }: Props) {
   const router = useRouter();
-  const { googleOwnership, optionalStatusCheck, session } = useSession();
+  const { googleOwnership, optionalStatusCheck, externalSiteTrafficEnabled, session } = useSession();
   const [cloudOpen, setCloudOpen] = useState(false);
   const resumeAt = initialAsset?.challenge ? (initialAsset.ownership_verified ? 2 : 1) : 0;
   const [step, setStep] = useState(resumeAt);
@@ -114,6 +114,7 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
   const [cloudStatus, setCloudStatus] = useState("未設定");
   const cloudHost = (() => { try { return new URL(url).hostname; } catch { return ""; } })();
   const cloudSubject = cloudSubjectEntry.host === cloudHost ? cloudSubjectEntry.value : "";
+  const trafficBlocked = externalSiteTrafficEnabled === false;
   const cloudAdmin = session?.roles.includes("admin") ?? false;
 
   useEffect(() => {
@@ -270,7 +271,7 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
           <div>
             <h2 id="ownership-wizard-title" className="text-lg font-bold">サイトを診断する</h2>
             <p className="mt-0.5 text-xs text-zinc-500">
-              あなたが管理しているサイトだけを診断できます。所有確認には、利用可能なGoogle連携、DNS、確認用ファイルを使います。診断は所有確認と範囲の確定後に始まります。
+              第三者のサイトを誤って診断しないよう、まず管理権限を確認します。その後、画面に表示された読み取り範囲を確認してから診断を開始します。
             </p>
           </div>
           <button type="button" onClick={onClose} className="shrink-0 whitespace-nowrap rounded-lg px-2.5 py-1 text-xs text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800">
@@ -344,6 +345,11 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
             )}
             <fieldset className="space-y-2">
               <legend className="sr-only">確認方法</legend>
+              <p className="text-xs text-zinc-700 dark:text-zinc-300">
+                Webサイト・公開APIは、運用担当者に下のURLで確認用ファイルを配信してもらいます。
+                DNSを管理できる場合は、詳細設定から文字列を登録する方法も使えます。
+                非公開APIは公開設定を変えず、管理者にCloud Runの確認方法を相談してください。
+              </p>
               <label className={`block cursor-pointer rounded-xl border p-3 ${method === "well_known" ? "border-zinc-900 dark:border-white" : "border-zinc-200 dark:border-zinc-800"}`}>
                 <span className="flex items-center gap-2 text-xs font-semibold">
                   <input type="radio" name="own-method" checked={method === "well_known"} onChange={() => setMethod("well_known")} />
@@ -394,8 +400,11 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
                 {verifyDetail}
               </p>
             )}
+            {trafficBlocked && <p role="status" className="rounded-lg bg-amber-50 p-3 text-xs text-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
+              この起動環境ではサイトへの通信が停止中です。対象の管理者に確認方法と試験範囲を相談し、許可後にVulnixの運用者へ通信の有効化を依頼してください。
+            </p>}
             <div className="flex justify-end">
-              <button type="button" disabled={busy} onClick={verify} className="rounded-lg bg-zinc-900 px-4 py-2 text-xs font-semibold text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-white dark:text-zinc-900">
+              <button type="button" disabled={busy || trafficBlocked} onClick={verify} className="rounded-lg bg-zinc-900 px-4 py-2 text-xs font-semibold text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-white dark:text-zinc-900">
                 {busy ? "確認中…" : "確認する"}
               </button>
             </div>
@@ -422,7 +431,7 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
                       <textarea value={cloudToken} onChange={(e) => setCloudToken(e.target.value)}
                         className="mt-1 w-full rounded border border-zinc-300 px-2 py-1 dark:border-zinc-700 dark:bg-zinc-950" />
                     </label>
-                    <button type="button" disabled={busy || !cloudToken.trim()} onClick={finishCloud}
+                    <button type="button" disabled={busy || trafficBlocked || !cloudToken.trim()} onClick={finishCloud}
                       className="rounded border px-2 py-1 disabled:opacity-50">Cloud Run で確認</button>
                   </div>
                 )}
@@ -467,7 +476,7 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
               <span>AIが提案した場合、上記の固定パスへの追加の読み取りを最大1回許可します（任意）。</span>
             </label>}
             <div className="flex justify-end">
-              <button type="button" disabled={busy || !confirmed} onClick={confirmScope} className="rounded-lg bg-zinc-900 px-4 py-2 text-xs font-semibold text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-white dark:text-zinc-900">
+              <button type="button" disabled={busy || trafficBlocked || !confirmed} onClick={confirmScope} className="rounded-lg bg-zinc-900 px-4 py-2 text-xs font-semibold text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-white dark:text-zinc-900">
                 {busy ? "開始しています…" : "診断を開始"}
               </button>
             </div>

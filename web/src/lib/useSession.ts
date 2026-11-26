@@ -24,6 +24,7 @@ export interface SessionCtx {
   googleOwnership: boolean;
   /** Whether an optional second read-only status check is configured. */
   optionalStatusCheck: boolean;
+  externalSiteTrafficEnabled: boolean | null;
   org: OrgInfo | null;
   refresh: () => Promise<void>;
   logout: () => Promise<void>;
@@ -37,6 +38,7 @@ export const SessionContext = createContext<SessionCtx>({
   selfRegistration: false,
   googleOwnership: false,
   optionalStatusCheck: false,
+  externalSiteTrafficEnabled: null,
   org: null,
   refresh: async () => {},
   logout: async () => {},

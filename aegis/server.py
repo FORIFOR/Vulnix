@@ -553,6 +553,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 # This reports the process configuration so the public launcher can
                 # still reject a broad setting, even though tenants stay read-only.
                 me["real_service_diagnosis"] = REAL_SERVICE_DIAGNOSIS
+                me["external_site_traffic_enabled"] = REAL_SITE_L1_ONLY or REAL_SERVICE_DIAGNOSIS
                 me["real_site_read_only"] = REAL_SITE_L1_ONLY or tenancy is not None
                 me["google_ownership"] = google_ownership.config() is not None
                 me["optional_status_check"] = optional_status_check_configured()

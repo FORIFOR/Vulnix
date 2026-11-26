@@ -120,6 +120,9 @@ def osv_rows(path):
                 raise ValueError('invalid advisory')
             row = {key: advisory[key] for key in ('id', 'aliases', 'modified', 'withdrawn') if key in advisory}
             if not row.get('withdrawn'):
+                severity = advisory.get('database_specific')
+                if isinstance(severity, dict) and severity.get('severity') in ('LOW', 'MODERATE', 'MEDIUM', 'HIGH', 'CRITICAL'):
+                    row['database_specific'] = {'severity': severity['severity']}
                 row['affected'] = [
                     {key: affected[key] for key in ('package', 'ranges', 'versions') if key in affected}
                     for affected in advisory['affected']
@@ -181,7 +184,16 @@ def nvd_rows(stream, expected_size, expected_hash=None):
         cve = item['cve']
         if not re.fullmatch(r'CVE-[0-9]{4}-[0-9]{4,}', cve.get('id', '')):
             raise ValueError('invalid NVD id')
-        yield {'cve': {key: cve[key] for key in ('id', 'vulnStatus', 'lastModified', 'configurations') if key in cve}}
+        row = {key: cve[key] for key in ('id', 'vulnStatus', 'lastModified', 'configurations') if key in cve}
+        for kind in ('cvssMetricV40', 'cvssMetricV31', 'cvssMetricV30'):
+            scores = cve.get('metrics', {}).get(kind, [])
+            if scores:
+                score = next((score for score in scores if score.get('type') == 'Primary'), scores[0])
+                severity = score.get('cvssData', {}).get('baseSeverity')
+                if severity in ('LOW', 'MEDIUM', 'HIGH', 'CRITICAL'):
+                    row['severity'] = severity
+                    break
+        yield {'cve': row}
         buffer = buffer[offset:]
     skip_space()
     if not buffer.startswith(']'):

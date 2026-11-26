@@ -2,7 +2,7 @@ import ts from "typescript";
 import { parseAllDocuments } from "yaml";
 import { inspectRuntimeFile, type PlannedCheck } from "./runtimePlan";
 import { affects, collectPackages, compareVersions, propertyLine, type Package, type Location } from "./projectPackages";
-import { checkCloudFormation, checkControls, checkLockfile, record, type ResultLocation } from "./quickDefense";
+import { advisorySeverity, checkCloudFormation, checkControls, checkLockfile, record, type ResultLocation } from "./quickDefense";
 
 export const limits = { entries: 12000, files: 180, timeMs: 30000, findings: 5000, fileBytes: 256 * 1024, dependencyBytes: 4 * 1024 * 1024, bytes: 12 * 1024 * 1024 };
 export type ProjectFile = { file: File; path: string };
@@ -374,7 +374,7 @@ export function projectCves(feed: unknown, inventories: Component[][]): Result[]
     if (candidate) results.push({ ...item("CVE", cve.id, "unknown", applicable ?
       "プロジェクト資料にカタログ上の製品・版・構成条件の組み合わせがあります。実稼働構成と配布元の修正は未確認です。" :
       "製品・版は候補に一致します。必要な構成条件の一部を確認できません。",
-      "配布元の勧告で導入済みビルド、修正の有無、影響条件を照合し、必要な更新を適用する。"), location });
+      "配布元の勧告で導入済みビルド、修正の有無、影響条件を照合し、必要な更新を適用する。"), location, severity: advisorySeverity(cve.severity) });
 
   }
   return results.length ? results : [item("CVE", "公開CVEとの照合", "unknown",
@@ -415,7 +415,7 @@ function osvCves(feed: unknown, packages: Map<string, Package[]>, deadline: numb
     for (const id of ids) results.push({ ...item("CVE", id, "action",
       "依存関係資料の版が勧告の影響条件に一致しました。実行環境の版と到達性は未確認です。",
       "影響する依存関係を勧告の修正版へ更新し、新しい依存関係資料で照合する。"),
-      location: rows[0], locations: rows });
+      location: rows[0], locations: rows, severity: advisorySeverity(record(osv.database_specific).severity) });
   }
   return results.length ? results : [item("CVE", "依存関係と公開CVEの照合", "unknown",
     "対応する影響条件との一致はありません。対応外の版・未収録の勧告・実稼働の版は未確認です。",
@@ -638,7 +638,8 @@ export async function scanProject(files: ProjectFile[], feed: unknown, onProgres
     }
     const chosen = row.status === "action" && other.status !== "action"
       ? { ...row, evidence: `${row.evidence} NVDにも対応する候補があります。` } : other;
-    matched.set(row.title, { ...chosen, locations: [...merged.values()] });
+    matched.set(row.title, { ...chosen, severity: chosen.severity ?? other.severity ?? row.severity,
+      locations: [...merged.values()] });
   }
   let retainedCveLocations = 0;
   for (const row of matched.values()) {
