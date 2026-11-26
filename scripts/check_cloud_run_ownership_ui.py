@@ -133,9 +133,11 @@ def main() -> None:
                     page.get_by_text("所有確認が完了しました", exact=False).wait_for()
                     assert svc._external_entry(HOST) is None
                     page.get_by_label("このサイトの管理者として").check()
-                    page.get_by_role("button", name="診断を開始", exact=True).click()
+                    page.get_by_role("button", name="診断範囲を保存", exact=True).click()
                     page.wait_for_url("**/assessments/*")
                     assert svc._external_entry(HOST) is not None
+                    assert svc.snapshot()["state"] == "idle"
+                    page.get_by_text("診断内容と許可範囲", exact=True).wait_for()
                     page.goto(base + "/dashboard")
                     page.get_by_role("button", name="＋ サイトを診断する").click()
                     page.get_by_label("診断するサイトのURL").fill(f"https://{HOST}/")

@@ -177,6 +177,47 @@ class _Journal:
                 self.audit.record("grant.not_committed", grant=self.event, reason=reason)
 
 
+class ControlPlaneHTTPServer(ThreadingHTTPServer):
+    """Bound the production loopback listener before spawning handler threads."""
+
+    request_queue_size = 64
+    connection_limit = SSE_PLATFORM + 56
+    timeout_per_connection = 12
+    _busy_body = '{"error":"接続が混み合っています。少し待ってから再試行してください"}'.encode()
+    _busy_response = (
+        b"HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nRetry-After: 2\r\n"
+        b"Cache-Control: no-store\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: "
+        + str(len(_busy_body)).encode() + b"\r\n\r\n" + _busy_body
+    )
+
+    def __init__(self, address, handler):
+        self._slots = threading.BoundedSemaphore(self.connection_limit)
+        super().__init__(address, handler)
+
+    def process_request(self, request, client_address):
+        if not self._slots.acquire(blocking=False):
+            try:
+                request.setblocking(False)
+                request.sendall(self._busy_response)
+            except OSError:
+                pass
+            finally:
+                self.shutdown_request(request)
+            return
+        try:
+            request.settimeout(self.timeout_per_connection)
+            super().process_request(request, client_address)
+        except BaseException:
+            self._slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._slots.release()
+
+
 def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_auth: bool | None = None,
                  allow_self_registration: bool | None = None, tenancy: TenantRegistry | None = None,
                  public_signup: bool | None = None, local_defense_python_root: Path | None = None,
@@ -1793,15 +1834,28 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                                          json.dumps({"nvd": body.get("nvd"), "kev": body.get("kev")},
                                                     sort_keys=True, default=str).encode()).hexdigest())
                     return self._authorized_platform_read(sess, lambda: self._json(200, st))
-                elif p == base + "/start":
-                    with live_grant_roles(sess, getattr(self, "_bound_org", DEFAULT_ORG)):
-                        svc.start(actor=actor)      # recorded first, by the service: no record, no run
-                elif p == base + "/restart":
-                    with live_grant_roles(sess, getattr(self, "_bound_org", DEFAULT_ORG)):
-                        result = svc.restart(actor)
-                    return self._authorized_org_read(
-                        sess, getattr(self, "_bound_org", DEFAULT_ORG),
-                        lambda _: self._json(200, result), reader=False)
+                elif p in (base + "/start", base + "/restart"):
+                    refusal = None
+                    with live_grant_roles(sess, getattr(self, "_bound_org", DEFAULT_ORG)), svc._lock:
+                        if (("reviewed_asset_id" in body or "reviewed_authority_generation" in body)
+                                and (body.get("reviewed_asset_id") != svc.a.asset["id"]
+                                     or body.get("reviewed_authority_generation") != svc.ledger.generation)):
+                            refusal = (409, "対象または診断許可が変更されました。画面を更新し、範囲を確認してください。")
+                        # The workspace can switch after the earlier route check.
+                        elif (not (REAL_SERVICE_DIAGNOSIS or REAL_SITE_L1_ONLY)
+                              and svc._in_ownership_flow(svc.a.asset.get("name"))):
+                            refusal = (403, "この環境では実サイトへの診断通信は無効です")
+                        elif p == base + "/start":
+                            svc.start(actor=actor)
+                        else:
+                            result = svc.restart(actor)
+                    if refusal:
+                        status, message = refusal
+                        return self._json(status, {"error": message})
+                    if p == base + "/restart":
+                        return self._authorized_org_read(
+                            sess, getattr(self, "_bound_org", DEFAULT_ORG),
+                            lambda _: self._json(200, result), reader=False)
                 elif p == base + "/pause":
                     svc.pause(actor)
                     if not ops.trusted():
@@ -1999,7 +2053,7 @@ def _build_server(svc, a, data, first, seed, env_opt_out):
         print(f"前回正常に終了しなかったため、すべてのログインセッション（{n}件）を無効にしました。")
     svc._auth_recovered = True
     read_auth = False if a.no_read_auth else (True if a.require_read_auth else None)
-    srv = ThreadingHTTPServer(
+    srv = ControlPlaneHTTPServer(
         ("127.0.0.1", a.port),
         make_handler(svc, ops, require_read_auth=read_auth, tenancy=tenancy,
                      local_defense_python_root=getattr(a, "local_defense_python_root", None),

@@ -275,6 +275,11 @@ def main() -> None:
                             actions.append("confirm_scope")
                             page.get_by_label("AIが提案した場合").check()
                             actions.append("consent_to_extra_get")
+                            page.get_by_role("button", name="診断範囲を保存", exact=True).click()
+                            actions.append("save_scope")
+                            page.wait_for_url("**/assessments/scan_001")
+                            page.get_by_text("診断内容と許可範囲", exact=True).wait_for()
+                            assert site.seen == [], "saving scope unexpectedly contacted the target"
                             started = time.monotonic()
                             run_entered, run_release = threading.Event(), threading.Event()
                             original_run_inner = svc._run_inner

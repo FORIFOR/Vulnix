@@ -14,14 +14,19 @@ export function ExecutionControls({ snap, onUpdate, refetch }: {
   const [busy, setBusy] = useState(false);
   const [armed, setArmed] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const { multiTenant } = useSession();
+  const { multiTenant, externalSiteTrafficEnabled } = useSession();
+  const trafficBlocked = snap.is_external_service && externalSiteTrafficEnabled === false;
+  const canStart = !busy && !trafficBlocked && (!snap.is_external_service || snap.authorization.status === "authorized");
   const base = `/api/assessments/${snap.id}`;
 
   const run = async (path: string) => {
     setBusy(true);
     setErr(null);
     try {
-      const r = await command(base + path);
+      const reviewed = snap.is_external_service && (path === "/start" || path === "/restart")
+        ? { reviewed_asset_id: snap.asset.id, reviewed_authority_generation: snap.authority_generation }
+        : undefined;
+      const r = await command(base + path, reviewed);
       if ("state" in r) onUpdate(r as Snapshot);
       else refetch();
     } catch (e) {
@@ -35,8 +40,22 @@ export function ExecutionControls({ snap, onUpdate, refetch }: {
   const live = snap.state === "running" || snap.state === "paused";
   return (
     <div className="flex flex-wrap items-center gap-2">
+      {snap.is_external_service && !live && (
+        <div aria-label="診断内容と許可範囲" className="w-full rounded-lg border border-zinc-200 p-2 text-xs dark:border-zinc-800">
+          <p className="font-semibold">診断内容と許可範囲</p>
+          <p className="break-all">{snap.target_url ?? snap.asset.name}</p>
+          <p>公開ページを読み取り、HTTPS・セキュリティ設定・Cookieを確認します。攻撃の再現、ログインが必要な操作、データ変更は行いません。</p>
+          {snap.optional_status_scope && <p>保存済みの許可に、公的なApache状態ページの読み取りを最大1回含みます。</p>}
+          <p>依存関係のCVE照合、内部の権限、AIの操作権限と組織分離は、この診断では未確認です。</p>
+          {trafficBlocked && <p role="status">実サイト通信が無効です。対象ホストの許可を運用者に確認してください。</p>}
+          {!trafficBlocked && snap.authorization.status !== "authorized" && <p role="status">資産一覧で所有確認と診断範囲を確認してください。</p>}
+          {snap.authorization.status === "authorized" && snap.authorization.not_after > 0 && <p>
+            許可の期限 {new Date(snap.authorization.not_after * 1000).toLocaleString("ja-JP")}
+          </p>}
+        </div>
+      )}
       {snap.state === "idle" && (
-        <button disabled={busy} onClick={() => run("/start")}
+        <button disabled={!canStart} onClick={() => run("/start")}
           className="rounded-lg bg-zinc-900 px-3 py-2 text-sm font-semibold text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-white dark:text-zinc-900">
           診断を開始
         </button>
@@ -80,7 +99,7 @@ export function ExecutionControls({ snap, onUpdate, refetch }: {
       )}
       {(snap.state === "completed" || snap.state === "stopped" || snap.state === "failed") && (
         <button
-          disabled={busy}
+          disabled={!canStart}
           onClick={() => run("/restart")}
           className="rounded-lg bg-zinc-900 px-3 py-2 text-sm font-semibold text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-white dark:text-zinc-900"
         >

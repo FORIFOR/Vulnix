@@ -123,6 +123,21 @@ class TestServer(unittest.TestCase):
         self.login("op", "op-pw")
         self.assertEqual(self.get()["state"], "idle")
 
+    def test_reviewed_start_refuses_changed_target_or_authority(self):
+        self.login("op", "op-pw")
+        snapshot = self.get()
+        review = {
+            "reviewed_asset_id": snapshot["asset"]["id"],
+            "reviewed_authority_generation": snapshot["authority_generation"],
+        }
+        with patch.object(self.svc, "start") as start:
+            self.assertEqual(self.post("/start", {**review, "reviewed_asset_id": "other"})[0], 409)
+            self.assertEqual(self.post("/start", {**review, "reviewed_authority_generation": "stale"})[0], 409)
+            self.assertEqual(self.post("/start", {"reviewed_asset_id": review["reviewed_asset_id"]})[0], 409)
+            start.assert_not_called()
+            self.assertEqual(self.post("/start", review)[0], 200)
+            start.assert_called_once_with(actor="op")
+
     def test_single_org_logout_after_binding_cannot_read_logs(self):
         self.login("op", "op-pw")
         token = self.cookie.split("=", 1)[1]

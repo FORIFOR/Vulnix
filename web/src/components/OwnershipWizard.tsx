@@ -49,7 +49,7 @@ const FALLBACK_PROHIBITED = [
   "リンク先など、登録したサイト以外へのアクセス",
 ];
 
-const STEPS = ["URLを入力", "所有確認", "診断を開始"] as const;
+const STEPS = ["URLを入力", "所有確認", "診断範囲"] as const;
 
 function endpoint(value: string): string | null {
   try {
@@ -253,8 +253,6 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
         activate_workspace: true,
       });
       onAssetsChanged(res.assets);
-      // the diagnosis starts right away: the user asked for it with this button
-      await postJSON(`/api/assessments/${res.snapshot.id}/start`, {});
       onClose();
       router.push(`/assessments/${res.snapshot.id}`);
     });
@@ -477,7 +475,7 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
             </label>}
             <div className="flex justify-end">
               <button type="button" disabled={busy || trafficBlocked || !confirmed} onClick={confirmScope} className="rounded-lg bg-zinc-900 px-4 py-2 text-xs font-semibold text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-white dark:text-zinc-900">
-                {busy ? "開始しています…" : "診断を開始"}
+                {busy ? "保存しています…" : "診断範囲を保存"}
               </button>
             </div>
           </div>

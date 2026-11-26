@@ -24,6 +24,7 @@ export function WorkspaceHeader({ snap, conn, onUpdate, refetch }: {
   refetch: () => void;
 }) {
   const done = snap.phases.filter((p) => p.status === "done").length;
+  const currentCheck = snap.phases.find((phase) => phase.status === "running");
   const auth = snap.authorization;
   const source = diagnosisSource(snap);
   const { multiTenant } = useSession();
@@ -57,6 +58,9 @@ export function WorkspaceHeader({ snap, conn, onUpdate, refetch }: {
         <span className="text-zinc-600 dark:text-zinc-400">{source.explanation}</span>
         {snap.is_external_service && (multiTenant || snap.real_site_read_only) && <span className="text-zinc-600 dark:text-zinc-400">読み取り専用の診断</span>}
       </div>
+      {snap.state === "running" && <p role="status" className="mt-2 text-sm text-zinc-700 dark:text-zinc-300">
+        {currentCheck ? `現在の検査　${currentCheck.label}` : "次の検査を準備しています"}
+      </p>}
       <div className="mt-3">
         <ExecutionControls snap={snap} onUpdate={onUpdate} refetch={refetch} />
       </div>

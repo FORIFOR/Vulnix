@@ -6,7 +6,7 @@ import { AssetRegistrationModal } from "@/components/AssetRegistrationModal";
 import { OwnershipWizard } from "@/components/OwnershipWizard";
 import { Card, Pill } from "@/components/ui";
 import { getJSON, postJSON } from "@/lib/api";
-import type { Asset } from "@/lib/types";
+import type { Asset, Snapshot } from "@/lib/types";
 
 const STATUS_CLS: Record<string, string> = {
   診断済み: "bg-emerald-100 text-emerald-900 dark:bg-emerald-900/50 dark:text-emerald-100",
@@ -38,8 +38,9 @@ export default function AssetsPage() {
     setBusyId(a.id);
     setErr(null);
     try {
-      await postJSON("/api/assets/select", { id: a.id });
-      router.push(`/assessments/${a.assessment_id}`);
+      const { snapshot } = await postJSON<{ snapshot: Snapshot }>("/api/assets/select", { id: a.id });
+      if (snapshot.asset.id !== a.id) throw new Error("対象が切り替わりました。サイトを選び直してください。");
+      router.push(`/assessments/${snapshot.id}`);
     } catch (e) {
       setErr((e as Error).message);
       setBusyId(null);

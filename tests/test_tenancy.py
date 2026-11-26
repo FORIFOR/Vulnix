@@ -21,7 +21,7 @@ from aegis.lab import start_lab
 from aegis.local_defense import _canonical
 from aegis.workers.local_defense import sha256
 from aegis.operators import OperatorStore, hash_password, totp_code
-from aegis.server import make_handler
+from aegis.server import ControlPlaneHTTPServer, make_handler
 from aegis.tenancy import (DEFAULT_ORG, MAX_ORGS_PER_ACCOUNT, OrgStore, TenancyError, TenantRegistry,
                            default_members_from, service_roles)
 from tests.test_local_defense import synthetic_bundle
@@ -129,7 +129,7 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
             with patch.dict(os.environ, {}, clear=True):
                 return AssessmentService(path, LAB_PORT, verify_seconds=30)
         self.reg = TenantRegistry(store, self.svc, factory, d)
-        self.srv = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(self.svc, self.ops, tenancy=self.reg,
+        self.srv = ControlPlaneHTTPServer(("127.0.0.1", 0), make_handler(self.svc, self.ops, tenancy=self.reg,
                                                                       public_signup=True,
                                                                       local_defense_python_root=Path(__file__).resolve().parents[1]))
         self.srv.daemon_threads = True

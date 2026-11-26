@@ -201,6 +201,7 @@ export interface Snapshot {
   demo: boolean;
   target_url?: string;
   is_external_service?: boolean;
+  optional_status_scope?: boolean;
   /** public beta: a real site gets only the read-only diagnosis (no L2, no re-checks) */
   real_site_read_only?: boolean;
   l2_separation_required?: boolean;

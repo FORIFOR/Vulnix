@@ -4227,11 +4227,13 @@ class AssessmentService:
             # revoked or is held: it is never shown as the demo lab.
             is_ext = self._in_ownership_flow(self.a.asset.get("name"))
             scope_active = self._is_external_service_asset()
+            ext = self._external_entry(self.a.asset.get("name")) if scope_active else None
             return {
                 "id": self.a.id, "asset": self.a.asset, "demo": not is_ext,
                 "target_url": self.a.target_url,
                 "is_external_service": is_ext,
                 "scope_active": scope_active,
+                "optional_status_scope": bool(ext and ext.get("allow_status_probe")),
                 "real_site_read_only": bool(getattr(self, "real_site_read_only", False)),
                 "lab_mode": get_lab_mode(),
                 "lab_endpoint": self.a.target_url if is_ext else f"127.0.0.1:{self.lab_port}",
