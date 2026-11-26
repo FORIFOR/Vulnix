@@ -385,6 +385,7 @@ def main() -> None:
                             fixed_l1_only_label_visible = fallback_label.count() > 0
                             page.get_by_role("tab", name="診断").click()
                             assert page.get_by_role("button", name="L2検証", exact=False).count() == 0
+                            page.get_by_text("追加確認の計画と出所", exact=True).click()
                             expected_plan_heading = "ARTEXによる追加確認" if real_bin else "追加確認の計画"
                             page.get_by_role("heading", name=expected_plan_heading, exact=True).wait_for()
                             if not real_bin:
