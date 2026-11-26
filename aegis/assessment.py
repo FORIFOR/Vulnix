@@ -3188,6 +3188,19 @@ class AssessmentService:
                 dict(x) for x in self._extra_assets
                 if x["id"] != primary["id"] and x["name"].lower() != primary["name"].lower()
             ]
+            for asset in [primary, *extras]:
+                if not asset.get("challenge"):
+                    continue
+                proof = self._ownership_proofs.get(asset["name"]) or {}
+                verified_at = proof.get("verified_at")
+                scope_active = self._external_entry(asset["name"]) is not None
+                asset["scope_confirmed"] = scope_active
+                asset["ownership_verified"] = bool(
+                    scope_active or (
+                        proof.get("verified") is True and not proof.get("held_since")
+                        and (proof.get("scheme"), proof.get("port")) == (asset.get("scheme"), asset.get("port"))
+                        and isinstance(verified_at, (int, float))
+                        and 0 <= time.time() - verified_at <= OWNERSHIP_PROOF_MAX_AGE_S))
             return [primary, *extras]
 
     @staticmethod
@@ -3344,7 +3357,7 @@ class AssessmentService:
             "environment": asset_record["environment"],
             # keep registration metadata of real services (ownership proof, URL)
             **{k: asset_record[k] for k in (
-                "display_name", "target_url", "scheme", "port", "gcp_project", "project_label",
+                "display_name", "target_url", "scheme", "port", "gcp_project", "project_label", "ownership_registration_version",
                 "scope_confirmed", "challenge", "ownership_proof", "approver",
                 "sow_optional_ref") if k in asset_record},
         }
@@ -3434,7 +3447,7 @@ class AssessmentService:
                         "environment": next_auth["environment"],
                         # a real service keeps its registration metadata when promoted
                         **{k: next_auth[k] for k in (
-                            "display_name", "target_url", "scheme", "port", "gcp_project", "project_label",
+                            "display_name", "target_url", "scheme", "port", "gcp_project", "project_label", "ownership_registration_version",
                             "scope_confirmed", "challenge", "ownership_proof", "approver",
                             "sow_optional_ref") if k in next_auth},
                     }
@@ -3679,6 +3692,8 @@ class AssessmentService:
             endpoint_revoked = False
             self._real_service_hosts.add(host)
             if existing is not None:
+                if (existing.get("scheme"), existing.get("port")) != (parsed["scheme"], parsed["port"]):
+                    existing["ownership_registration_version"] = secrets.token_hex(8)
                 if (existing.get("scheme"), existing.get("port")) != (parsed["scheme"], parsed["port"]) and (
                         host in self._ownership_proofs or host in self._verified_external_hosts):
                     # a different endpoint of the host: the earlier proof, scope and

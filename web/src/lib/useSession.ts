@@ -22,6 +22,8 @@ export interface SessionCtx {
   selfRegistration: boolean;
   /** the control plane can prove site ownership through Google Search Console */
   googleOwnership: boolean;
+  cloudInventoryConfigured: boolean;
+  ownershipTrafficMode: "off" | "approved" | "existing";
   /** Whether an optional second read-only status check is configured. */
   optionalStatusCheck: boolean;
   externalSiteTrafficEnabled: boolean | null;
@@ -37,6 +39,8 @@ export const SessionContext = createContext<SessionCtx>({
   multiTenant: false,
   selfRegistration: false,
   googleOwnership: false,
+  cloudInventoryConfigured: false,
+  ownershipTrafficMode: "off",
   optionalStatusCheck: false,
   externalSiteTrafficEnabled: null,
   org: null,

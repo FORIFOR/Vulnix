@@ -164,6 +164,49 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
         self.assertFalse(grouped["assessment_id"])
         self.assertNotEqual(self.req(alice, "/assets/select", {"id": aid}, org)[0], 200)
 
+    def test_ownership_traffic_approval_is_bound_to_org_target_method_and_requester(self):
+        runner, outsider = self.signup("proofrunner"), self.signup("proofoutsider")
+        admin = self.login("padmin", "padmin-pw-1")
+        _, invite = self.reg.store.create_invite(DEFAULT_ORG, "padmin", ["runner"])
+        self.reg.store.accept_invite(invite, "proofrunner")
+        url = "https://ownership.lab.example"
+        request = {"url": url, "method": "dns_txt"}
+        endpoint = "/assets/ownership-traffic"
+        with patch.dict(os.environ, {"VULNIX_OWNERSHIP_TRAFFIC": "approved"}), \
+                patch("aegis.server.REAL_SITE_L1_ONLY", False), \
+                patch("aegis.server.REAL_SERVICE_DIAGNOSIS", False), \
+                patch("aegis.assessment.verify_ownership_challenge", return_value={
+                    "verified": True, "method": "dns_txt", "verified_at": time.time(), "detail": "fixture",
+                }) as check:
+            self.assertEqual(self.req(runner, "/assets/challenge", {"url": url}, DEFAULT_ORG)[0], 200)
+            self.assertEqual(self.req(runner, "/assets/verify-ownership", request, DEFAULT_ORG)[0], 403)
+            code, pending = self.req(runner, endpoint, {**request, "action": "request"}, DEFAULT_ORG)
+            self.assertEqual((code, pending.get("status")), (200, "pending"))
+            approve = {**request, "action": "approve", "id": pending["id"]}
+            self.assertEqual(self.req(outsider, endpoint, approve, DEFAULT_ORG)[0], 403)
+            self.assertEqual(self.req(runner, endpoint, approve, DEFAULT_ORG)[0], 403)
+            reject = {**approve, "action": "reject"}
+            self.assertEqual(self.req(admin, endpoint, reject, DEFAULT_ORG)[1]["status"], "rejected")
+            self.assertEqual(self.req(runner, "/assets/verify-ownership", request, DEFAULT_ORG)[0], 403)
+            code, pending = self.req(runner, endpoint, {**request, "action": "request"}, DEFAULT_ORG)
+            self.assertEqual((code, pending.get("status")), (200, "pending"))
+            approve["id"] = pending["id"]
+            self.assertEqual(self.req(admin, endpoint, approve, DEFAULT_ORG)[1]["status"], "approved")
+            self.assertEqual(self.req(admin, "/assets/verify-ownership", request, DEFAULT_ORG)[0], 403)
+            self.assertEqual(self.req(runner, "/assets/verify-ownership", {**request, "method": "well_known"}, DEFAULT_ORG)[0], 403)
+            self.assertEqual(self.req(runner, "/assets/verify-ownership", {**request, "url": url + ":8443"}, DEFAULT_ORG)[0], 409)
+            check.assert_not_called()
+            self.assertTrue(self.req(runner, "/assets/verify-ownership", request, DEFAULT_ORG)[1]["verified"])
+            check.assert_called_once()
+            self.assertIsNone(self.svc._external_entry("ownership.lab.example"))
+            future = time.time() + 901
+            with patch("aegis.server.time.time", return_value=future):
+                self.assertEqual(self.req(admin, endpoint, {**request, "action": "status"}, DEFAULT_ORG)[1]["status"], "expired")
+            self.svc.emergency_stop("padmin")
+            self.assertEqual(self.req(admin, endpoint, {**request, "action": "status"}, DEFAULT_ORG)[1]["status"], "expired")
+            self.assertEqual(self.req(runner, "/assets/verify-ownership", request, DEFAULT_ORG)[0], 403)
+            check.assert_called_once()
+
     def test_cloud_inventory_binds_single_use_oauth_to_active_session_and_org(self):
         from urllib.parse import parse_qs, urlsplit
         from aegis import cloud_inventory
