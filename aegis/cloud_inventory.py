@@ -12,7 +12,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from .google_ownership import AUTH_URL, TOKEN_URL, STATE_TTL_S, new_pkce
+from .google_ownership import AUTH_URL, TOKEN_URL, STATE_TTL_S, NoRedirect, new_pkce
 
 SCOPE = "https://www.googleapis.com/auth/cloud-platform.read-only"
 PROJECTS_URL = "https://cloudresourcemanager.googleapis.com/v3/projects:search"
@@ -40,11 +40,6 @@ def config() -> dict | None:
     except ValueError:
         return None
     return {"client_id": client, "client_secret": secret, "redirect_uri": redirect}
-
-
-class NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
 
 
 def _http(url, *, data=None, bearer=None):
