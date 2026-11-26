@@ -486,9 +486,9 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 record = ownership_requests.get(key)
                 status = self._ownership_status(record, epoch, now)
                 if action in ("approve", "reject"):
-                    if "admin" not in roles or not record or record["requester"] == sess.operator:
-                        raise ApproverRequired("依頼者とは別の組織管理者が操作してください")
-                    if record["id"] != body["id"] or status != "pending" or stopped:
+                    if "admin" not in roles:
+                        raise ApproverRequired("所有確認の通信承認には組織管理者の権限が必要です")
+                    if not record or record["id"] != body["id"] or status != "pending" or stopped:
                         raise ValueError("この申請は承認可能な状態ではありません")
                     service._audit_first("asset.ownership_traffic_decided", actor=sess.operator,
                                          asset_id=key[1], method=key[3], request_id=record["id"], decision=action)
@@ -508,8 +508,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                                          asset_id=key[1], method=key[3], request_id=record["id"])
                     ownership_requests[key] = record
                 result = {"status": status, "stopped": stopped,
-                          "can_decide": bool(record and status == "pending" and "admin" in roles
-                                             and record["requester"] != sess.operator and not stopped),
+                          "can_decide": bool(record and status == "pending" and "admin" in roles and not stopped),
                           "can_verify": bool(record and status == "approved"
                                              and record["requester"] == sess.operator and not stopped)}
                 if record:

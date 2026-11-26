@@ -207,6 +207,22 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
             self.assertEqual(self.req(runner, "/assets/verify-ownership", request, DEFAULT_ORG)[0], 403)
             check.assert_called_once()
 
+    def test_owner_can_explicitly_approve_ownership_traffic_without_approving_a_scan(self):
+        owner = self.login("padmin", "padmin-pw-1")
+        target = {"url": "https://admin-proof.lab.example", "method": "dns_txt"}
+        path = "/assets/ownership-traffic"
+        with patch.dict(os.environ, {"VULNIX_OWNERSHIP_TRAFFIC": "approved"}):
+            self.assertEqual(self.req(owner, "/assets/challenge", {"url": target["url"]}, DEFAULT_ORG)[0], 200)
+            self.assertEqual(self.req(owner, "/assets/verify-ownership", target, DEFAULT_ORG)[0], 403)
+            status, pending = self.req(owner, path, {**target, "action": "request"}, DEFAULT_ORG)
+            self.assertEqual(status, 200)
+            self.assertTrue(pending["can_decide"])
+            self.assertFalse(pending["can_verify"])
+            status, approved = self.req(owner, path, {**target, "action": "approve", "id": pending["id"]}, DEFAULT_ORG)
+            self.assertEqual(status, 200)
+            self.assertTrue(approved["can_verify"])
+            self.assertIsNone(self.svc._external_entry("admin-proof.lab.example"))
+
     def test_cloud_inventory_binds_single_use_oauth_to_active_session_and_org(self):
         from urllib.parse import parse_qs, urlsplit
         from aegis import cloud_inventory
