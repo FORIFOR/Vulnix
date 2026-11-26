@@ -5887,6 +5887,92 @@ class AssessmentService:
             self.a.activity = {"title": title, "tool": tool, "risk_level": level, **EXECUTOR}
             self.bus.publish(self.a.id, "activity.updated", activity=self.a.activity)
 
+    def _intelligence_condition_locked(self):
+        from .intelligence import fingerprint
+
+        engagement = self.a.engagement
+        target = engagement.targets["lab"]
+        external = self._in_ownership_flow(self.a.asset.get("name"))
+        entry = self._external_entry(self.a.asset.get("name")) if external else None
+        return fingerprint({
+            "version": 1, "asset_id": self.a.asset.get("id"), "target": self.a.target_url,
+            "external": external, "read_only": self.real_site_read_only,
+            "lab_mode": None if external else get_lab_mode(),
+            "hosts": sorted(target.hosts), "ports": sorted(target.ports),
+            "cidrs": sorted(target.cidrs), "actions": sorted(engagement.allowed_actions),
+            "status_probe": bool(entry and entry.get("allow_status_probe")),
+            "phase_keys": [phase["key"] for phase in self.a.phases],
+        })
+
+    def _save_intelligence_run_locked(self):
+        from . import intelligence
+
+        asset = self.a.asset
+        external = self._in_ownership_flow(asset.get("name"))
+        target = self.a.engagement.targets["lab"]
+        condition = getattr(self, "_intelligence_start_condition", None)
+        record = getattr(self, "_intelligence_started_id", None)
+        source = self.a.plan_source or {}
+        scan = self.ledger.scan_usage.get(asset["name"], {}) if external else {}
+        root_hash = scan.get("result_audit_hash")
+        # Variable planner plans and verification-only runs have no comparable recipe.
+        if (not record or condition != self._intelligence_condition_locked()
+                or source.get("engine") not in (None, "builtin")
+                or not external or not self.real_site_read_only or not root_hash or scan.get("status_probe_allowed")):
+            condition = None
+        states = dict.fromkeys(intelligence.STATES, 0)
+        severity = dict.fromkeys(intelligence.SEVERITIES, 0)
+        proofs = {root_hash} if root_hash else set()
+        unknown = False
+        for f in self._real_findings():
+            state = evidence_status(f)
+            entries = [e for e in f.get("evidence", []) if e.get("audit_hash") and e.get("saved_at") is not None]
+            if state in ("proven", "not_reproduced"):
+                entries = [e for e in entries if e.get("tool") == "reproduction_probe"]
+            if state in ("detected", "proven", "not_reproduced"):
+                if entries:
+                    proofs.add(entries[-1]["audit_hash"])
+                else:
+                    state = "incomplete"
+                    unknown = True
+            states[state] += 1
+            severity[f["severity"]] += 1
+        coverage = [{"key": p["key"], "status": p["status"]} for p in self.a.phases]
+        risk = self._risk()
+        summary = {
+            "run_id": record or secrets.token_hex(16), "assessment_id": self.a.id,
+            "asset_id": asset["id"], "asset": str(asset["name"])[:253],
+            "org_id": getattr(self, "_intelligence_org_id", "default"),
+            "at": time.time(), "external": external, "condition_id": condition,
+            "scope": {"port_count": len(target.ports), "host_count": len(target.hosts),
+                      "mode": "read_only" if external and self.real_site_read_only else "authorized"},
+            "coverage": coverage, "counts": states, "severity": severity,
+            "evidence_hashes": sorted(proofs),
+            "score": risk["score"] if not unknown and any(p["status"] == "done" for p in coverage) else None,
+            "label": risk["label"] if not unknown and any(p["status"] == "done" for p in coverage) else None,
+            "findings": sum(states.values()),
+        }
+        intelligence.append(self.data_dir / "intelligence-runs.json", summary, self.audit)
+
+    def intelligence_snapshot(self, org_id: str) -> dict:
+        from . import intelligence
+
+        with self._lock:
+            asset_ids = {a["id"] for a in (self.a.asset, *self._extra_assets)}
+            if self._persist_error:
+                return {"state": "persistence_error", "runs": []}
+            try:
+                rows = intelligence.load(self.data_dir / "intelligence-runs.json")
+            except (OSError, ValueError):
+                return {"state": "persistence_error", "runs": []}
+            archive_error = getattr(self, "_intelligence_archive_error", False)
+        entries, valid = self.audit.verified_entries()
+        if not valid:
+            return {"state": "audit_unavailable", "runs": []}
+        runs, damaged = intelligence.verify_rows(rows, entries, org_id, asset_ids)
+        return {"state": "audit_unavailable" if damaged else "persistence_error" if archive_error else "available",
+                "runs": runs}
+
     def _set_state(self, state, reason: str | None = None, kind: str = "run"):
         if self._stale_runner():
             raise _Stopped()
@@ -5896,7 +5982,14 @@ class AssessmentService:
                                   "at": time.time()}
         elif state in ("idle", "running", "completed"):
             self.a.failure = None
-        if state == "completed" and self.a.state != "completed":
+        completed_now = state == "completed" and self.a.state != "completed"
+        if state == "running" and self.a.state != "paused":
+            try:
+                self._intelligence_start_condition = self._intelligence_condition_locked()
+            except Exception:  # read-only history must never prevent the existing run
+                self._intelligence_start_condition = None
+            self._intelligence_started_id = secrets.token_hex(16)
+        if completed_now:
             # a real history entry per completed run (counts only; no finding text)
             risk = self._risk()
             summary = evidence_summary(list(self.a.findings.values()))
@@ -5909,6 +6002,17 @@ class AssessmentService:
             del self.a.run_history[MAX_RUN_HISTORY:]
         self.a.state = state
         self._save_state_locked()
+        if completed_now:
+            if self._persist_error:
+                self.a.run_history.pop(0)
+            else:
+                try:
+                    self._save_intelligence_run_locked()
+                    self._intelligence_archive_error = False
+                except Exception:  # a secondary archive failure does not change diagnostic authority
+                    self._intelligence_archive_error = True
+            self._intelligence_started_id = None
+            self._intelligence_start_condition = None
         if state == "completed" and self._persist_error:
             state = self.a.state        # the failed save has already made it "failed"
             try:

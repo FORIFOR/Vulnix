@@ -360,7 +360,14 @@ export interface ArtexPlanView {
 export interface RunHistoryEntry {
   run_id?: string;
   asset_id?: string;
-  condition_id?: string;
+  condition_id?: string | null;
+  assessment_id?: string;
+  org_id?: string;
+  external?: boolean;
+  audit_hash?: string;
+  coverage?: { key: string; status: PhaseStatus }[];
+  scope?: { port_count: number; host_count: number; mode: string };
+  severity?: Record<Severity, number>;
   at: number;
   asset: string;
   score: number | null;

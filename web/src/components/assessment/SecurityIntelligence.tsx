@@ -7,6 +7,7 @@ import type { ReactNode } from "react";
 import type { EChartsCoreOption } from "echarts/core";
 import type { Snapshot } from "@/lib/types";
 import type { Conn } from "@/lib/useAssessment";
+import { useIntelligenceArchive } from "@/lib/useIntelligenceArchive";
 import { EVIDENCE, EVIDENCE_LABEL, SEVERITIES, comparableRuns, findingQuery, type FindingFilters, type aggregate } from "@/lib/securityIntelligence";
 
 const Chart = dynamic(() => import("./IntelligenceChart").then((m) => m.IntelligenceChart), { ssr: false });
@@ -53,7 +54,13 @@ export function SecurityIntelligence({ snap, data, conn, chainValid }: {
     filter: { severity: s, evidence: e }, itemStyle: { color: data.matrix[s][e] ? severityColors[y] : "#e4e4e7" },
     label: { color: data.matrix[s][e] && y < 2 ? "#fff" : "#18181b" },
   })));
-  const persisted = snap.persistence_error ? [] : (snap.run_history ?? []);
+  const view = useIntelligenceArchive(snap.asset.id, snap.state, conn);
+  const archive = view?.archive;
+  const persisted = archive?.runs.filter((r) => r.asset_id === snap.asset.id) ?? [];
+  const archiveMessage = snap.persistence_error || archive?.state === "persistence_error" ? "保存できなかった診断は履歴から除外しています。"
+    : archive?.state === "audit_unavailable" ? "監査を確認できない診断は履歴から除外しています。"
+    : view?.denied ? "履歴の閲覧権限を確認してください。"
+    : !view ? "保存済みの履歴を読み込んでいます。" : !archive ? "診断履歴を取得できませんでした。" : null;
   const compared = comparableRuns(persisted, snap.asset.id);
   const points = persisted.filter((r) => typeof r.score === "number" && Number.isFinite(r.score) && Number.isFinite(r.at))
     .map((r) => [r.at * 1000, r.score]);
@@ -97,13 +104,14 @@ export function SecurityIntelligence({ snap, data, conn, chainValid }: {
         }} /><Links rows={categories} /></> : <Empty>分類できる所見がありません。</Empty>}
       </Panel>
       <Panel title="診断履歴・リスク">
+        {archiveMessage && <p role="status" className="text-xs text-zinc-500">{archiveMessage}</p>}
         {points.length ? <><Chart label="この資産の過去のリスクスコア" option={{
           grid: { left: 40, right: 18, top: 12, bottom: 35 }, xAxis: { ...axis, type: "time" },
           yAxis: { ...axis, type: "value", min: 0, max: 100, splitLine: { lineStyle: { color: "#a1a1aa", opacity: 0.25 } } },
           tooltip: { show: false },
           series: [{ type: "scatter", data: points, symbolSize: 10, itemStyle: { color: "#71717a" } },
             { type: "line", data: compared.length > 1 ? compared.map((r) => [r.at * 1000, r.score]) : [], itemStyle: { color: "#71717a" } }],
-        }} /><p className="text-xs text-zinc-500">比較できるのは同じ資産・診断条件で保存された診断です。</p></> : <Empty>{snap.persistence_error ? "保存の失敗を検出したため履歴を表示できません。" : "この資産の完了履歴はありません。"}</Empty>}
+        }} /><p className="text-xs text-zinc-500">比較できるのは同じ資産・診断条件で保存された診断です。</p></> : <Empty>{archiveMessage ? "表示できるリスクスコアはありません。" : "この資産のリスクスコア付き完了履歴はありません。"}</Empty>}
       </Panel>
       <Panel title="診断アクティビティ" wide>
         <ul className="grid gap-2 text-sm sm:grid-cols-2 lg:grid-cols-3" aria-live="polite">

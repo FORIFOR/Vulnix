@@ -340,6 +340,7 @@ class TenantRegistry:
         # Every organization, including the legacy default one, shares this
         # process-wide lab. No tenant may change its mode during another run.
         default_svc._may_switch_lab = False
+        default_svc._intelligence_org_id = DEFAULT_ORG
         # One external-advisor spend total for the whole platform: with public sign-up a
         # new organization must not bring a fresh budget (VULNIX_ADVISOR_PLATFORM_MAX_COST_USD).
         from .spend_cap import DurableSpendCap
@@ -361,6 +362,7 @@ class TenantRegistry:
                 # The mock lab is one process-wide service. A mode change would
                 # change what another organization's running check observes.
                 svc._may_switch_lab = False
+                svc._intelligence_org_id = org_id
                 svc._platform_advisor_cap = self.platform_advisor_cap
                 self._services[org_id] = svc
             return svc
