@@ -82,8 +82,8 @@ export function FindingCard({
           {f.help_term && <HelpPopover term={f.help_term} context={f.why_detected} findingId={f.id} />}
         </h3>
         <p className="mt-1 text-sm text-zinc-700 dark:text-zinc-300">{f.what_was_established ?? f.summary}</p>
-        {f.impact && <p className="mt-2 text-xs">起こり得る影響 {f.impact}</p>}
-        {f.remediation.steps[0] && <p className="mt-2 text-xs">最初の修正 {f.remediation.steps[0]}</p>}
+        {f.impact && <p className="mt-2 wrap-anywhere text-xs">起こり得る影響 {f.impact}</p>}
+        {f.remediation.steps[0] && <p className="mt-2 wrap-anywhere text-xs">最初の修正 {f.remediation.steps[0]}</p>}
         {f.last_run_verdict && <p className="mt-1 text-xs">直近の再検証 {VERDICT[f.last_run_verdict].label}</p>}
         {f.cookie_checks && f.cookie_checks.length > 0 && <CookieCheckList checks={f.cookie_checks} />}
         {f.verdict_note && (

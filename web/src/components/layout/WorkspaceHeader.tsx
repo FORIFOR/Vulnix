@@ -53,9 +53,9 @@ export function WorkspaceHeader({ snap, conn, onUpdate, refetch }: {
         </div>
       </div>
       <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg bg-zinc-100 px-3 py-2 text-xs dark:bg-zinc-900">
-        <span className="font-semibold">{source.plan}</span>
+        <span className="min-w-0 max-w-full wrap-anywhere font-semibold">{source.plan}</span>
         {/* zinc-600 on zinc-100 keeps 4.5:1 (WCAG AA); zinc-500 did not */}
-        <span className="text-zinc-600 dark:text-zinc-400">{source.explanation}</span>
+        <span className="min-w-0 max-w-full wrap-anywhere text-zinc-600 dark:text-zinc-400">{source.explanation}</span>
         {snap.is_external_service && (multiTenant || snap.real_site_read_only) && <span className="text-zinc-600 dark:text-zinc-400">読み取り専用の診断</span>}
       </div>
       {snap.state === "running" && <p role="status" className="mt-2 text-sm text-zinc-700 dark:text-zinc-300">
