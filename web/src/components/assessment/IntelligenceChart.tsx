@@ -20,7 +20,7 @@ export function IntelligenceChart({ option, onSelect, label }: {
     if (!node) return;
     const instance = init(node, undefined, { renderer: "svg" });
     chart.current = instance;
-    const resize = new ResizeObserver(() => { if (!instance.isDisposed()) instance.resize(); });
+    const resize = new ResizeObserver(() => { if (!instance.isDisposed() && node.clientWidth > 0 && node.clientHeight > 0) instance.resize(); });
     resize.observe(node);
     return () => { resize.disconnect(); instance.dispose(); chart.current = null; };
   }, []);

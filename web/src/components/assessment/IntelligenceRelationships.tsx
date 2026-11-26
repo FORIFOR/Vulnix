@@ -20,10 +20,14 @@ const axis = { axisLine: { lineStyle: { color: "#71717a" } }, axisTick: { show: 
 
 function graph(nodes: Node[], links: Edge[]): EChartsCoreOption {
   return {
+    grid: { left: 40, right: 52, top: 24, bottom: 30 },
+    xAxis: { type: "value", show: false, min: -10, max: 255 },
+    yAxis: { type: "value", show: false, inverse: true, min: -15, max: Math.max(35, ...nodes.map((node) => node.y + 15)) },
     tooltip: { show: false },
     series: [{
-      type: "graph", layout: "none", data: nodes, links, roam: false, symbolSize: 16,
-      left: "12%", right: "18%", top: 25, bottom: 35, label: { show: true, position: "bottom", fontSize: 10, color: "#71717a" },
+      type: "graph", coordinateSystem: "cartesian2d", layout: "none",
+      data: nodes.map(({ id, name, x, y }) => ({ id, name, value: [x, y] })),
+      links, roam: false, symbolSize: 16, label: { show: true, position: "bottom", fontSize: 10, color: "#71717a" },
       itemStyle: { color: "#707785" }, lineStyle: { color: "#8b909a", width: 1.2, opacity: 1 },
     }],
   };

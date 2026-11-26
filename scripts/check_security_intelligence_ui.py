@@ -125,6 +125,7 @@ def main():
             assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), width
             if args.screenshots:
                 args.screenshots.mkdir(mode=0o700, parents=True, exist_ok=True)
+                page.evaluate("window.scrollTo(0, 0)")
                 page.screenshot(path=args.screenshots / f"intelligence-{width}.png", full_page=True, animations="disabled")
         donut.scroll_into_view_if_needed()
         donut.click(position={"x": donut.bounding_box()["width"] / 2 + 72, "y": 120})
@@ -154,9 +155,11 @@ def main():
         expect(page.get_by_role("img", name="所見・観測・監査の関係")).to_be_visible(timeout=12000)
         expect(page.get_by_role("img", name="悪用の根拠と所見の重大度の散布図")).to_be_visible(timeout=12000)
         if args.screenshots:
+            page.evaluate("window.scrollTo(0, 0)")
             page.screenshot(path=args.screenshots / "intelligence-observed.png", full_page=True, animations="disabled")
         page.evaluate("document.documentElement.classList.add('dark')")
         if args.screenshots:
+            page.evaluate("window.scrollTo(0, 0)")
             page.screenshot(path=args.screenshots / "intelligence-dark.png", full_page=True, animations="disabled")
         count = len(connections)
         connections[-1].shutdown(socket.SHUT_RDWR)
