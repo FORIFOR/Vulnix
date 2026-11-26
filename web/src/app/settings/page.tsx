@@ -73,7 +73,10 @@ export default function Settings() {
           <div><dt className="inline font-medium">Vulnix</dt><dd className="ml-2 inline">{session ? "ログイン済み" : "未ログイン"}</dd></div>
           <div><dt className="inline font-medium">Google Cloudの閲覧連携</dt><dd className="ml-2 inline">{cloudInventoryConfigured ? "連携可能" : "運営者の設定待ち"}</dd></div>
           <div><dt className="inline font-medium">Google Search Consoleの所有確認</dt><dd className="ml-2 inline">{googleOwnership ? "連携可能" : "OAuthクライアント未設定"}</dd></div>
-          <div><dt className="inline font-medium">所有確認用の通信</dt><dd className="ml-2 inline">{ownershipTrafficMode === "approved" ? "対象と方法ごとに承認" : ownershipTrafficMode === "existing" ? "既存運用モード" : "停止中"}</dd></div>
+          <div><dt className="inline font-medium">所有確認用の通信</dt><dd className="ml-2 inline">{{
+            approved: "対象と方法ごとに承認", preapproved: "運営者が事前に許可した対象と方法のみ",
+            existing: "既存運用モード", off: "停止中",
+          }[ownershipTrafficMode]}</dd></div>
           <div><dt className="inline font-medium">診断用の通信</dt><dd className="ml-2 inline">{externalSiteTrafficEnabled ? "対象ごとの診断許可が必要" : "停止中"}</dd></div>
           <div><dt className="inline font-medium">隔離実行環境</dt><dd className="ml-2 inline">{snap?.l2_isolation?.ok ? "隔離を確認済み" : "未確認または利用不可"}</dd></div>
         </dl>

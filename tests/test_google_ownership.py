@@ -406,7 +406,7 @@ class TestGoogleOwnershipReview(TestGoogleOwnershipOverHttp):
 
         def boom(*a, **k):
             raise urllib.error.HTTPError(g.TOKEN_URL, 400, "ya29.SECRET-in-message", {}, None)
-        with patch("urllib.request.urlopen", side_effect=boom):
+        with patch("urllib.request.OpenerDirector.open", side_effect=boom):
             with self.assertRaises(g.GoogleOwnershipError) as cm:
                 g.owned_sites(cfg, "code", "verifier")
         self.assertNotIn("ya29", str(cm.exception))

@@ -28,7 +28,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from . import cloud_inventory, google_ownership
+from . import cloud_inventory, google_ownership, ownership_policy
 from .assessment import (ApproverRequired, AssessmentService, SeparationConfigError, StopNotConfirmed,
                          separate_l2_approver_from_env)
 from .audit import AuditWriteFailed
@@ -100,7 +100,7 @@ _OWNERSHIP_REQUEST_TTL = 24 * 3600
 
 def _ownership_traffic_mode() -> str:
     configured = os.environ.get("VULNIX_OWNERSHIP_TRAFFIC", "")
-    if configured == "approved":
+    if configured in ("approved", "preapproved"):
         return configured
     if configured:
         return "off"
@@ -473,13 +473,39 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             return record["status"]
 
         def _ownership_request(self, service, sess, body):
-            if _ownership_traffic_mode() != "approved":
+            mode = _ownership_traffic_mode()
+            if mode not in ("approved", "preapproved"):
                 return self._json(409, {"error": "所有確認の通信申請は運営者設定が必要です"})
             action = body.get("action")
             fields = {"action", "url", "method", "id"} if action in ("approve", "reject") else {"action", "url", "method"}
             if set(body) != fields or action not in ("status", "request", "approve", "reject"):
                 return self._json(400, {"error": "所有確認の操作が不正です"})
             org = getattr(self, "_bound_org", DEFAULT_ORG)
+            if mode == "preapproved":
+                if action != "status":
+                    return self._json(409, {"error": "通信許可は運営者が事前に設定します"})
+                with live_grant_roles(sess, org), service._lock:
+                    key, _, stopped = self._ownership_target(service, str(body["url"]), body["method"])
+                    now = time.time()
+                    policies = ownership_policy.load()
+                    available = [policy.method for policy in policies.values()
+                                 if (policy.org, policy.url) == (key[0], key[2])
+                                 and policy.not_before <= now < policy.expires_at
+                                 and not stopped and ownership_policy.has_budget(service.data_dir, policy)]
+                    policy = policies.get((key[0], key[2], key[3]))
+                    can_verify = key[3] in available
+                    if policy is None:
+                        status = "not_requested"
+                    elif now >= policy.expires_at:
+                        status = "expired"
+                    elif now < policy.not_before:
+                        status = "scheduled"
+                    else:
+                        status = "approved" if can_verify else "unavailable"
+                    result = {"status": status, "stopped": stopped, "can_decide": False,
+                              "can_verify": can_verify, "available_methods": available,
+                              "expires_at": policy.expires_at if policy else None}
+                return self._authorized_org_read(sess, org, lambda _: self._json(200, result), reader=False)
             with live_grant_roles(sess, org) as roles, service._lock, ownership_lock:
                 key, epoch, stopped = self._ownership_target(service, str(body["url"]), body["method"])
                 now = time.time()
@@ -516,8 +542,10 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     result.update(id=record["id"], expires_at=record["expires_at"])
             return self._authorized_org_read(sess, org, lambda _: self._json(200, result), reader=False)
 
-        def _require_ownership_traffic(self, service, sess, value, method, expected=None):
+        def _require_ownership_traffic(self, service, sess, value, method, expected=None, *, consume=False):
             mode = _ownership_traffic_mode()
+            if isinstance(expected, tuple) and mode != "preapproved":
+                raise ApproverRequired("所有確認の通信許可が変更されました。もう一度お試しください")
             if mode == "off":
                 raise ApproverRequired("この環境では所有確認用の通信が停止中です")
             if mode == "existing":
@@ -526,6 +554,22 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         raise ApproverRequired("緊急停止中は所有確認を行いません")
                 return None
             key, epoch, stopped = self._ownership_target(service, value, method)
+            if mode == "preapproved":
+                claim = "所有確認は運営者が事前に許可した対象・方法・期間に限られます"
+                policy = ownership_policy.load().get((key[0], key[2], method))
+                if stopped or not policy or not policy.not_before <= time.time() < policy.expires_at:
+                    raise ApproverRequired(claim)
+                current = ("preapproved", key, epoch, policy)
+                if expected is not None and expected != current:
+                    raise ApproverRequired(claim)
+                if (consume or expected is None) and not ownership_policy.has_budget(service.data_dir, policy, consume=consume):
+                    raise ApproverRequired("所有確認の試行上限に達したか、許可の状態を確認できません")
+                if consume:
+                    service._audit_first("asset.ownership_traffic_preapproved", actor=sess.operator,
+                                         asset_id=key[1], method=method, policy_id=policy.id)
+                    # Fail closed if the operator revoked the permission while the attempt was recorded.
+                    self._require_ownership_traffic(service, sess, value, method, current)
+                return current
             with ownership_lock:
                 record = ownership_requests.get(key)
                 if (stopped or self._ownership_status(record, epoch, time.time()) != "approved"
@@ -1137,7 +1181,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     # Mode 0 always disables real-site traffic. Only the legacy
                     # broad switch is narrowed to L1 when tenants are present.
                     read_only_real = REAL_SITE_L1_ONLY or (tenancy is not None and REAL_SERVICE_DIAGNOSIS)
-                    if p in _OWNERSHIP_LOOKUPS and _ownership_traffic_mode() == "approved":
+                    if p in _OWNERSHIP_LOOKUPS and _ownership_traffic_mode() in ("approved", "preapproved"):
                         real_site_traffic = True
                     elif (not REAL_SERVICE_DIAGNOSIS or tenancy is not None) and self._touches_real_site(p, osvc):
                         refusal = self._real_site_refusal(p, osvc) if read_only_real else \
@@ -1867,11 +1911,21 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     if st is None or time.time() - st["at"] > google_ownership.STATE_TTL_S:
                         return self._json(400, {"error": "確認の有効期限が切れたか、別の操作で開始されています。もう一度お試しください"})
                     g_host = st["host"]
-                    self._require_ownership_traffic(svc, sess, st["target_url"], google_ownership.METHOD, st["grant"])
                     if svc.real_service_has_authority(g_host) and "approver" not in sess.roles:
                         return self._json(403, {"error": "所有確認済みの対象の再確認には承認責任者の権限が必要です"})
+                    with live_grant_roles(sess, bound_org or DEFAULT_ORG), svc._lock:
+                        grant = self._require_ownership_traffic(
+                            svc, sess, st["target_url"], google_ownership.METHOD, st["grant"], consume=True)
+
+                    def guard_google_request():
+                        with live_grant_roles(sess, bound_org or DEFAULT_ORG), svc._lock:
+                            self._require_ownership_traffic(svc, sess, st["target_url"], google_ownership.METHOD, grant)
+
                     try:
-                        sites = google_ownership.owned_sites(cfg, str(body.get("code") or ""), st["verifier"])
+                        sites = google_ownership.owned_sites(
+                            cfg, str(body.get("code") or ""), st["verifier"],
+                            **({"before_request": guard_google_request} if isinstance(grant, tuple) else {}),
+                        )
                     except google_ownership.GoogleOwnershipError as e:
                         return self._json(502, {"error": str(e), "host": g_host})
                     # checked against the scheme / port registered when the check started;
@@ -1882,7 +1936,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     # The outer lease supplies current roles; do not nest its
                     # non-reentrant account lock through grant_guard.
                     def finish_google(current):
-                        self._require_ownership_traffic(svc, sess, st["target_url"], google_ownership.METHOD, st["grant"])
+                        self._require_ownership_traffic(svc, sess, st["target_url"], google_ownership.METHOD, grant)
                         res = svc.verify_asset_ownership(url_or_host=g_host, method=google_ownership.METHOD,
                                                          actor=actor, roles=tuple(current.roles), google_property=prop,
                                                          google_endpoint=(st["scheme"], st["port"]))
@@ -1903,7 +1957,8 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     if v_host and svc.real_service_has_authority(v_host) and "approver" not in sess.roles:
                         # a failed re-check revokes scope and stored test accounts
                         return self._json(403, {"error": "所有確認済みの対象の再確認には承認責任者の権限が必要です"})
-                    grant = self._require_ownership_traffic(svc, sess, ownership_value, method)
+                    with live_grant_roles(sess, getattr(self, "_bound_org", DEFAULT_ORG)), svc._lock:
+                        grant = self._require_ownership_traffic(svc, sess, ownership_value, method, consume=True)
 
                     @contextlib.contextmanager
                     def proof_guard():
