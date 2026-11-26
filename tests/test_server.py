@@ -117,6 +117,7 @@ class TestServer(unittest.TestCase):
             self.assertEqual(self._req(self.root + path)[0], 401, path)
         self.assertEqual(self._req(f"{self.root}/auth/me"), (200, {"session": None, "self_registration": False,
                                                                  "real_service_diagnosis": False, "real_site_read_only": True, "google_ownership": False,
+                                                                 "external_site_traffic_enabled": True,
                                                                  "optional_status_check": False, "development": False}))
         self.assertEqual(self._req(f"{self.root}/health"), (200, {"ok": True}))
         self.login("op", "op-pw")

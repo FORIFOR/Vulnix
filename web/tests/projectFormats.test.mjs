@@ -62,7 +62,7 @@ test("same CVE from NVD and OSV appears once and preserves the package match", a
   const nvd = { cve: { id: cve, configurations: [{ nodes: [{ operator: "OR", cpeMatch: [
     { vulnerable: true, criteria: "cpe:2.3:a:apache:http_server:2.4.49:*:*:*:*:*:*:*" },
   ] }] }] } };
-  const osv = { id: "GHSA-abc-test-only", aliases: [cve],
+  const osv = { id: "GHSA-abc-test-only", aliases: [cve], database_specific: { severity: "HIGH" },
     affected: [{ package: { ecosystem: "PyPI", name: "fixture" }, versions: ["1.0"] }] };
   const report = await scanProject([fixture("Dockerfile", "FROM httpd:2.4.49\n"),
     fixture("requirements.txt", "fixture==1.0\n")], { vulnerabilities: [nvd, nvd], osv: [osv] });
@@ -70,6 +70,7 @@ test("same CVE from NVD and OSV appears once and preserves the package match", a
   assert.equal(results.length, 1);
   assert.equal(results[0].location.path, "requirements.txt");
   assert.match(results[0].evidence, /NVDにも/);
+  assert.equal(results[0].severity, "HIGH");
 });
 
 test("automatically scans later batches and reads a repeated path once", async () => {
