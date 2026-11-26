@@ -100,10 +100,22 @@ def main():
                         route.fulfill(status=503)
 
                 page.route("**/api/catalog/refresh", catalog_refresh)
+
+                def expect_catalog_failures(*sources):
+                    notice = page.get_by_role("alert").filter(has_text="一部の公式カタログを更新できませんでした")
+                    expect(notice).to_be_visible(timeout=15000)
+                    for source in sources:
+                        expect(notice.get_by_role("listitem").filter(has_text=re.compile(rf"^{source} —"))).to_be_visible()
+                    return notice
                 update_details = page.get_by_text("CVEカタログの更新", exact=True)
                 update_details.click()
                 page.get_by_role("button", name="NVD・OSVの公式データを取得").click()
-                expect(page.get_by_text("更新失敗 PyPI・Go", exact=False)).to_be_visible(timeout=15000)
+                notice = expect_catalog_failures("PyPI", "Go")
+                before_retry = len(refresh_requests)
+                notice.get_by_role("button", name="失敗した更新を再試行").click()
+                expect_catalog_failures("PyPI", "Go")
+                assert {source for _, _, source in refresh_requests[before_retry:]} >= {"PyPI", "Go", "NVD-2002"}
+                assert all(source != "npm" for _, _, source in refresh_requests[before_retry:])
                 assert all(method == "POST" and body is None for method, body, _ in refresh_requests)
                 assert {source for _, _, source in refresh_requests} >= {"npm", "PyPI", "Go", "NVD-2002"}
                 attempts = len(refresh_requests)
@@ -236,12 +248,12 @@ def main():
                 update_details.click()
                 update_mode[0] = "truncated"
                 page.get_by_role("button", name="保存済みの分も再取得").click()
-                expect(page.get_by_text("更新失敗 npm・PyPI", exact=False)).to_be_visible(timeout=15000)
+                expect_catalog_failures("npm", "PyPI")
                 start.click()
                 expect(cached_match).to_be_visible()
                 update_mode[0] = "withdrawn"
                 page.get_by_role("button", name="保存済みの分も再取得").click()
-                expect(page.get_by_text("更新失敗 PyPI・Go", exact=False)).to_be_visible(timeout=15000)
+                expect_catalog_failures("PyPI", "Go")
                 start.click()
                 expect(section).to_be_visible()
                 expect(cached_match).to_have_count(0)
