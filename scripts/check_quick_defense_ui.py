@@ -74,7 +74,7 @@ def main():
                 page.wait_for_url(re.compile(r".*/(dashboard|welcome).*"))
                 page.goto(base + "/dashboard")
                 started = time.monotonic()
-                page.get_by_role("link", name="ローカルプロジェクトの診断").click()
+                page.get_by_role("link", name="ソースコード・SBOMを診断").click()
                 expect(page.get_by_role("checkbox")).to_have_count(3)
                 assert all(item.is_checked() for item in page.get_by_role("checkbox").all())
                 refresh_requests = []
