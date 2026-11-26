@@ -1,10 +1,10 @@
 "use client";
 
-import { useRouter } from "next/navigation";
-import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
+import { assetProject, ProjectOverview } from "@/components/ProjectOverview";
 import { CloudInventory } from "@/components/CloudInventory";
 import { useSession } from "@/lib/useSession";
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { AssetRegistrationModal } from "@/components/AssetRegistrationModal";
 import { OwnershipWizard } from "@/components/OwnershipWizard";
 import { Card, Pill } from "@/components/ui";
@@ -23,8 +23,13 @@ const STATUS_CLS: Record<string, string> = {
 };
 
 export default function AssetsPage() {
+  return <Suspense fallback={null}><Assets /></Suspense>;
+}
+
+function Assets() {
   const router = useRouter();
   const { session, org } = useSession();
+  const params = useSearchParams();
   const orgKey = `${session?.operator ?? ""}:${org?.id ?? ""}`;
   const [assets, setAssets] = useState<Asset[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -33,11 +38,31 @@ export default function AssetsPage() {
   const [editingAsset, setEditingAsset] = useState<Asset | null>(null);
   const [wizardOpen, setWizardOpen] = useState(false);
   const [wizardAsset, setWizardAsset] = useState<Asset | null>(null);
-  const [cloudTarget, setCloudTarget] = useState<{ url: string; orgKey: string } | null>(null);
+  const [cloudTarget, setCloudTarget] = useState<{ url: string; orgKey: string; project: string } | null>(null);
+
+  const requestedProject = params.get("project") ?? "";
+  const project = requestedProject && assets?.some((a) => assetProject(a) === requestedProject) ? requestedProject : "";
+  const visible = project ? assets?.filter((a) => assetProject(a) === project) : assets;
+  const canEdit = Boolean(session?.roles.some((role) => ["operator", "approver", "admin"].includes(role)));
 
   useEffect(() => {
-    getJSON<Asset[]>("/api/assets").then(setAssets, (e) => setErr(e.message));
-  }, []);
+    let active = true;
+    getJSON<Asset[]>("/api/assets").then((rows) => { if (active) setAssets(rows); }, (e) => { if (active) setErr(e.message); });
+    return () => { active = false; };
+  }, [orgKey]);
+
+  const saveProject = async (asset: Asset, label: string) => {
+    setBusyId(asset.id);
+    setErr(null);
+    try {
+      const result = await postJSON<{ assets: Asset[] }>("/api/assets/project", {id: asset.id, project_label: label});
+      setAssets(result.assets);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusyId(null);
+    }
+  };
 
   const handleSelectAsset = async (a: Asset) => {
     if (!a.assessment_id) return;
@@ -73,9 +98,9 @@ export default function AssetsPage() {
     <main className="mx-auto max-w-5xl p-4 md:p-8">
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="mb-1 text-2xl font-bold">サイト</h1>
+          <h1 className="mb-1 text-2xl font-bold">診断対象の管理</h1>
           <p className="text-sm text-zinc-500">
-            診断するサイトの一覧です。サイトを追加すると、所有確認のあとすぐに診断できます。
+            Webサイト、API、クラウドをプロジェクトにまとめます。診断には対象ごとの所有確認と許可が必要です。
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -103,9 +128,9 @@ export default function AssetsPage() {
         </div>
       </div>
 
-      <p className="mb-4 text-sm"><Link className="underline" href="/quick-defense">フォルダ・SBOMを診断する</Link></p>
-      {session && <CloudInventory key={orgKey} onChoose={(url) => {
-        setCloudTarget({ url, orgKey });
+      {assets && <ProjectOverview assets={assets} selected={project} page="/assets" />}
+      {session && <CloudInventory key={orgKey} projectLabel={project} onChoose={(url, cloudProject) => {
+        setCloudTarget({ url, orgKey, project: project || cloudProject });
         setWizardAsset(null);
         setWizardOpen(true);
       }} />}
@@ -125,11 +150,26 @@ export default function AssetsPage() {
             </tr>
           </thead>
           <tbody role="rowgroup" className="block md:table-row-group">
-            {assets?.map((a) => (
+            {visible?.map((a) => (
               <tr key={a.id} role="row" className="grid min-w-0 grid-cols-2 md:table-row border-b border-zinc-100 last:border-0 dark:border-zinc-800/60">
                 <td role="cell" className="col-span-2 min-w-0 px-4 py-3 md:table-cell">
                   <div className="break-all font-medium">{a.display_name ?? a.name}</div>
                   {a.display_name && <div className="break-all font-mono text-[11px] text-zinc-500">{a.name}</div>}
+                  {assetProject(a) && <p className="break-words text-xs text-zinc-600 dark:text-zinc-300">プロジェクト {assetProject(a)}</p>}
+                  {canEdit && a.id !== "lab" && <details className="mt-2 text-xs">
+                    <summary className="cursor-pointer underline">プロジェクトを設定</summary>
+                    <form className="mt-2 flex flex-wrap items-end gap-2" onSubmit={(e) => {
+                      e.preventDefault();
+                      const name = new FormData(e.currentTarget).get("name");
+                      if (typeof name === "string") void saveProject(a, name);
+                    }}>
+                      <label>プロジェクト名
+                        <input key={assetProject(a)} name="name" maxLength={80} defaultValue={assetProject(a)}
+                          list="asset-project-names" className="ml-1 max-w-full rounded border border-zinc-300 p-1 dark:border-zinc-700" />
+                      </label>
+                      <button type="submit" disabled={busyId === a.id} className="rounded border border-zinc-300 px-2 py-1 dark:border-zinc-700">保存</button>
+                    </form>
+                  </details>}
                   {a.note && <div className="text-xs text-amber-800 dark:text-amber-300">{a.note}</div>}
                 </td>
                 <td className="hidden px-4 py-3 text-zinc-500 md:table-cell">{a.kind}</td>
@@ -206,12 +246,16 @@ export default function AssetsPage() {
         </table>
       </Card>
 
+      <datalist id="asset-project-names">
+        {[...new Set((assets ?? []).map(assetProject).filter(Boolean))].map((name) => <option key={name} value={name} />)}
+      </datalist>
       <OwnershipWizard
         key={`wizard-${wizardAsset?.id ?? cloudTarget?.url ?? "new"}-${wizardOpen}-${orgKey}`}
         open={wizardOpen && (!cloudTarget || cloudTarget.orgKey === orgKey)}
         onClose={() => setWizardOpen(false)}
         initialAsset={wizardAsset}
         initialUrl={cloudTarget?.orgKey === orgKey ? cloudTarget.url : undefined}
+        projectLabel={wizardAsset ? assetProject(wizardAsset) : cloudTarget?.orgKey === orgKey ? cloudTarget.project : project}
         knownAssets={assets}
         onAssetsChanged={setAssets}
       />

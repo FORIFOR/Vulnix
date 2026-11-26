@@ -1,9 +1,11 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 import { command } from "@/lib/api";
 import type { Snapshot } from "@/lib/types";
 import { useSession } from "@/lib/useSession";
+import { assetProject, projectHref } from "../ProjectOverview";
 import { HelpPopover } from "../learning/HelpPopover";
 
 export function ExecutionControls({ snap, onUpdate, refetch }: {
@@ -14,9 +16,10 @@ export function ExecutionControls({ snap, onUpdate, refetch }: {
   const [busy, setBusy] = useState(false);
   const [armed, setArmed] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const { multiTenant, externalSiteTrafficEnabled } = useSession();
+  const { multiTenant, externalSiteTrafficEnabled, session } = useSession();
+  const canRun = Boolean(session?.roles.some((role) => ["operator", "approver", "admin"].includes(role)));
   const trafficBlocked = snap.is_external_service && externalSiteTrafficEnabled === false;
-  const canStart = !busy && !trafficBlocked && (!snap.is_external_service || snap.authorization.status === "authorized");
+  const canStart = canRun && !busy && !trafficBlocked && (!snap.is_external_service || snap.authorization.status === "authorized");
   const base = `/api/assessments/${snap.id}`;
 
   const run = async (path: string) => {
@@ -44,11 +47,15 @@ export function ExecutionControls({ snap, onUpdate, refetch }: {
         <div aria-label="診断内容と許可範囲" className="w-full rounded-lg border border-zinc-200 p-2 text-xs dark:border-zinc-800">
           <p className="font-semibold">診断内容と許可範囲</p>
           <p className="break-all">{snap.target_url ?? snap.asset.name}</p>
-          <p>公開ページを読み取り、HTTPS・セキュリティ設定・Cookieを確認します。攻撃の再現、ログインが必要な操作、データ変更は行いません。</p>
-          {snap.optional_status_scope && <p>保存済みの許可に、公的なApache状態ページの読み取りを最大1回含みます。</p>}
-          <p>依存関係のCVE照合、内部の権限、AIの操作権限と組織分離は、この診断では未確認です。</p>
-          {trafficBlocked && <p role="status">実サイト通信が無効です。対象ホストの許可を運用者に確認してください。</p>}
+          <dl className="mt-1 space-y-1">
+            <div><dt className="inline font-semibold">開始すると確認すること</dt><dd className="ml-2 inline">許可された公開ページの読み取り、HTTPS、セキュリティ設定、Cookieの属性、公開情報から分かるCVE候補</dd></div>
+            {snap.optional_status_scope && <div><dt className="inline font-semibold">条件付きの追加確認</dt><dd className="ml-2 inline">許可済みのApache状態ページを、初回応答と実行条件がそろったときに最大1回読み取ります。</dd></div>}
+            <div><dt className="inline font-semibold">この診断で未確認となること</dt><dd className="ml-2 inline">認証後の権限、組織分離、実行時のAI権限、依存関係。実サービスへの侵入の実証は行いません。</dd></div>
+          </dl>
+          <Link className="mt-1 inline-block underline" href={projectHref("/quick-defense", assetProject(snap.asset))}>ソースコード・SBOMの確認へ</Link>
+          {trafficBlocked && <p role="status">実サイト通信は停止中です。対象の試験許可と受入環境を運用担当者に確認してください。</p>}
           {!trafficBlocked && snap.authorization.status !== "authorized" && <p role="status">資産一覧で所有確認と診断範囲を確認してください。</p>}
+          {!canRun && <p role="status">閲覧権限のみです。診断担当者に実行を依頼してください。</p>}
           {snap.authorization.status === "authorized" && snap.authorization.not_after > 0 && <p>
             許可の期限 {new Date(snap.authorization.not_after * 1000).toLocaleString("ja-JP")}
           </p>}

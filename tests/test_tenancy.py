@@ -144,6 +144,26 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
         self.svc.close()
         self.tmp.cleanup()
 
+    def test_project_label_is_org_scoped_and_grants_no_diagnosis_authority(self):
+        alice, bob = self.signup("projectalice"), self.signup("projectbob")
+        org = alice["orgs"][0]["id"]
+        code, response = self.req(alice, "/assets/challenge", {"url": "https://project.lab.example/"}, org)
+        self.assertEqual(code, 200)
+        aid = response["asset"]["id"]
+        path = "/assets/project"
+        payload = {"id": aid, "project_label": "Synthetic STG"}
+        self.assertEqual(self.req(bob, path, payload, org)[0], 403)
+        self.assertNotEqual(self.req(bob, path, payload)[0], 200)
+        self.assertNotEqual(self.req(alice, path, {**payload, "ownership_verified": True}, org)[0], 200)
+        code, response = self.req(alice, path, payload, org)
+        self.assertEqual(code, 200)
+        grouped = next(a for a in response["assets"] if a["id"] == aid)
+        self.assertEqual(grouped["project_label"], "Synthetic STG")
+        self.assertFalse(grouped["ownership_verified"])
+        self.assertFalse(grouped["scope_confirmed"])
+        self.assertFalse(grouped["assessment_id"])
+        self.assertNotEqual(self.req(alice, "/assets/select", {"id": aid}, org)[0], 200)
+
     def test_cloud_inventory_binds_single_use_oauth_to_active_session_and_org(self):
         from urllib.parse import parse_qs, urlsplit
         from aegis import cloud_inventory

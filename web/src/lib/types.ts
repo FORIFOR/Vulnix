@@ -238,7 +238,7 @@ export interface Snapshot {
     note: string;
     backends: string[];
   };
-  asset: { id: string; name: string; kind: string; environment: string };
+  asset: Pick<Asset, "id" | "name" | "kind" | "environment" | "gcp_project" | "project_label">;
   authorization: {
     status: "authorized" | "missing";
     ref: string;
@@ -293,6 +293,8 @@ export interface Asset {
   id: string;
   name: string;
   display_name?: string;
+  gcp_project?: string;
+  project_label?: string;
   target_url?: string;
   scheme?: string;
   port?: number;

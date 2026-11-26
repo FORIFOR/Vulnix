@@ -24,6 +24,7 @@ import subprocess
 import threading
 import time
 import urllib.parse
+import unicodedata
 import weakref
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_FLOOR
@@ -3189,6 +3190,33 @@ class AssessmentService:
             ]
             return [primary, *extras]
 
+    @staticmethod
+    def _project_label(value: str) -> str:
+        if not isinstance(value, str) or len(value) > 80 or any(
+                unicodedata.category(char).startswith("C") for char in value):
+            raise ValueError("プロジェクト名は制御文字を含まない80文字以内にしてください")
+        return value.strip()
+
+    def set_asset_project(self, asset_id: str, label: str, actor: str) -> list[dict]:
+        label = self._project_label(label)
+        with self._lock:
+            record = next((item for item in (self.a.asset, *self._extra_assets)
+                           if item["id"] == asset_id), None)
+            if record is None:
+                raise ValueError("この組織に対象が見つかりません")
+            previous = record.get("project_label")
+            self._require_working_store()
+            self._audit_first("asset.project_changed", actor=actor, asset_id=asset_id)
+            record["project_label"] = label
+            self._save_state_locked()
+            if self._persist_error:
+                if previous is None:
+                    record.pop("project_label", None)
+                else:
+                    record["project_label"] = previous
+                raise ValueError("プロジェクト名を保存できませんでした")
+            return self.assets()
+
     def register_asset(self, *, name: str, kind: str, environment: str,
                        authorization_ref: str = "", ownership_verified: bool = False,
                        activate_workspace: bool = False, actor: str = "operator") -> dict:
@@ -3316,7 +3344,7 @@ class AssessmentService:
             "environment": asset_record["environment"],
             # keep registration metadata of real services (ownership proof, URL)
             **{k: asset_record[k] for k in (
-                "display_name", "target_url", "scheme", "port", "gcp_project",
+                "display_name", "target_url", "scheme", "port", "gcp_project", "project_label",
                 "scope_confirmed", "challenge", "ownership_proof", "approver",
                 "sow_optional_ref") if k in asset_record},
         }
@@ -3406,7 +3434,7 @@ class AssessmentService:
                         "environment": next_auth["environment"],
                         # a real service keeps its registration metadata when promoted
                         **{k: next_auth[k] for k in (
-                            "display_name", "target_url", "scheme", "port", "gcp_project",
+                            "display_name", "target_url", "scheme", "port", "gcp_project", "project_label",
                             "scope_confirmed", "challenge", "ownership_proof", "approver",
                             "sow_optional_ref") if k in next_auth},
                     }
@@ -3597,11 +3625,13 @@ class AssessmentService:
         approver: str = "operator",
         kind: str = "Webアプリケーション",
         environment: str = "ステージング環境",
+        project_label: str = "",
         grant_guard=None,
     ) -> dict:
         """Step 1 & 2 of the 5-step registration flow: parse target URL, generate
         DNS TXT / .well-known challenge, and create an unverified asset record.
         SOW number is optional; an internal authorization record is generated if omitted."""
+        label = self._project_label(project_label)
         parsed = parse_service_target(url)
         host = parsed["host"]
         ch = challenge_for_host(host, self._ownership_secret)
@@ -3669,6 +3699,8 @@ class AssessmentService:
                 existing["approver"] = approver
                 if not existing.get("ownership_verified"):
                     existing["status"] = "所有確認待ち"
+                if label:
+                    existing["project_label"] = label
                 asset_rec = dict(existing)
             else:
                 aid = "asset_" + secrets.token_hex(3)
@@ -3693,6 +3725,7 @@ class AssessmentService:
                     "ownership_verified": False,
                     "scope_confirmed": False,
                     "challenge": ch,
+                    **({"project_label": label} if label else {}),
                     "note": "Step 2: DNS TXT または検証ファイルで管理権限を確認してください",
                 }
                 self._extra_assets.insert(0, asset_rec)

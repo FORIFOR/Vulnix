@@ -1,9 +1,11 @@
 "use client";
 
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
+import { projectHref } from "@/components/ProjectOverview";
 import RuntimeDefense from "./RuntimeDefense";
 import ReviewedDefense from "./ReviewedDefense";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { catalogSources, osvSources, type CatalogSource } from "@/lib/catalogUpdate";
 import type { ScanProgress } from "@/lib/projectDefense";
 import { readCatalogCache, type CatalogFailure } from "@/lib/catalogCache";
@@ -14,6 +16,15 @@ const button = "rounded-lg border border-zinc-300 px-3 py-2 text-sm font-medium 
 const primary = "rounded-lg bg-zinc-900 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50 dark:bg-white dark:text-zinc-900";
 type ProjectReport = Awaited<ReturnType<typeof import("@/lib/projectDefense").scanProject>>;
 const maxInput = 2 * 1024 * 1024;
+
+function LocalProjectContext() {
+  const value = useSearchParams().get("project") ?? "";
+  if (!value || value.length > 80) return null;
+  return <p className="mb-2 break-words text-sm">
+    <Link href={projectHref("/dashboard", value)} className="underline">{value} に戻る</Link>
+    <span className="ml-2 text-zinc-600 dark:text-zinc-300">この画面の入力と結果はブラウザ内で扱います。</span>
+  </p>;
+}
 
 export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) {
   const [selected, setSelected] = useState(new Set<string>(categories));
@@ -182,8 +193,9 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
 
   return (
     <main className="mx-auto max-w-3xl space-y-5 p-4 md:p-8">
+      <Suspense><LocalProjectContext /></Suspense>
       <h1 className="text-2xl font-bold">ローカルプロジェクトの診断</h1>
-      <p className="text-sm text-zinc-600 dark:text-zinc-300">プロジェクトのフォルダを選ぶと、設定・依存関係・関連ソースをブラウザ内で調べます。</p>
+      <p className="text-sm text-zinc-600 dark:text-zinc-300">プロジェクトのフォルダを選ぶと、設定・依存関係・関連ソースをブラウザ内で調べます。実行時の防御は、対応する許可済み防御テストから確認します。</p>
       <fieldset className="flex flex-wrap gap-4">
         <legend className="mb-2 font-medium">検証項目</legend>
         {categories.map((category) => <label key={category} className="flex items-center gap-2">

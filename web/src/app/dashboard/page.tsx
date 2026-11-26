@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
 import { AssetRegistrationModal } from "@/components/AssetRegistrationModal";
+import { assetProject, ProjectOverview } from "@/components/ProjectOverview";
 import { OwnershipWizard } from "@/components/OwnershipWizard";
 import { RiskScore } from "@/components/findings/RiskScore";
 import { Card, Pill } from "@/components/ui";
@@ -39,7 +40,10 @@ function DashboardInner() {
   // public beta: plain view (no permit records, no demo targets that need one)
   const { multiTenant: plain } = useSession();
   const lab = assets?.find((asset) => asset.id === "lab" && asset.name === "lab.test" && asset.assessment_id);
-  const visible = assets?.filter((a) => !(plain && !a.assessment_id && !a.challenge));
+  const requestedProject = params.get("project") ?? "";
+  const project = requestedProject && assets?.some((a) => assetProject(a) === requestedProject) ? requestedProject : "";
+  const visible = assets?.filter((a) => (!project || assetProject(a) === project)
+    && !(plain && !a.assessment_id && !a.challenge));
 
   const [wizardNotice, setWizardNotice] = useState<string | null>(null);
 
@@ -99,9 +103,6 @@ function DashboardInner() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Link href="/quick-defense" className="rounded-lg border border-zinc-300 px-3.5 py-2 text-sm font-semibold dark:border-zinc-700">
-            ローカルプロジェクトの診断
-          </Link>
           {lab ? <button
             type="button"
             disabled={busyId === lab.id}
@@ -127,13 +128,14 @@ function DashboardInner() {
       {err && <p role="alert" className="mb-4 rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-800 dark:bg-red-950/40 dark:text-red-200">{err}</p>}
       {!assets && !err && <p className="text-sm text-zinc-500">読み込み中…</p>}
 
+      {assets && <ProjectOverview assets={assets} selected={project} page="/dashboard" />}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {visible?.map((a) => (
           <Card key={a.id} className="flex h-full flex-col justify-between">
             <div>
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
-                  <div className="truncate font-semibold">{a.name}</div>
+                  <div className="truncate font-semibold">{a.display_name ?? a.name}</div>
                   <div className="text-xs text-zinc-500">{a.kind}・{a.environment}</div>
                 </div>
                 <Pill className={STATUS_CLS[a.status] ?? "bg-zinc-200 text-zinc-800"}>{a.status}</Pill>
@@ -150,7 +152,7 @@ function DashboardInner() {
             </div>
 
             <div className="mt-4 flex items-center justify-between gap-2 border-t border-zinc-100 pt-3 dark:border-zinc-800">
-              {a.assessment_id ? (
+              {a.assessment_id && (!a.challenge || (a.ownership_verified && a.scope_confirmed)) ? (
                 <button
                   type="button"
                   disabled={busyId === a.id}
@@ -168,7 +170,7 @@ function DashboardInner() {
                   }}
                   className="flex-1 rounded-lg bg-zinc-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-zinc-700 dark:bg-white dark:text-zinc-900"
                 >
-                  所有確認を続ける →
+                  {a.ownership_verified ? "診断範囲を確認する →" : "所有確認を続ける →"}
                 </button>
               ) : (
                 <button
@@ -212,6 +214,7 @@ function DashboardInner() {
         key={wizardOpen ? `open-${wizardAsset?.id ?? "new"}` : "closed"}
         open={wizardOpen}
         initialAsset={wizardAsset}
+        projectLabel={wizardAsset ? assetProject(wizardAsset) : project}
         knownAssets={assets}
         notice={wizardNotice}
         onClose={() => setWizardOpen(false)}

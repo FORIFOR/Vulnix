@@ -1633,6 +1633,13 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     return self._authorized_org_read(
                         sess, getattr(self, "_bound_org", DEFAULT_ORG),
                         lambda _: self._json(200, payload), reader=False)
+                elif p == "/api/assets/project":
+                    if set(body) != {"id", "project_label"} or not isinstance(body["id"], str):
+                        return self._json(400, {"error": "対象とプロジェクト名を指定してください"})
+                    org = getattr(self, "_bound_org", DEFAULT_ORG)
+                    return self._authorized_org_read(sess, org, lambda _: self._json(200, {
+                        "assets": svc.set_asset_project(body["id"], body["project_label"], actor),
+                    }), reader=False)
                 elif p == "/api/assets/challenge":
                     target_host = ""
                     try:
@@ -1649,6 +1656,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         approver=actor,
                         kind=str(body.get("kind", "Webアプリケーション")),
                         environment=str(body.get("environment", "ステージング環境")),
+                        project_label=body.get("project_label", ""),
                         grant_guard=lambda: live_grant_roles(sess, getattr(self, "_bound_org", DEFAULT_ORG)),
                     )
                     payload = {**res, "assets": svc.assets()}

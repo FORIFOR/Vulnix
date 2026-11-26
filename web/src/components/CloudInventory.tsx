@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
+import { projectHref } from "./ProjectOverview";
 import { postJSON } from "@/lib/api";
 import { cloudExportLimit, importCloudRunService, type CloudProject, type CloudRunService } from "@/lib/cloudRunInventory";
 
@@ -10,7 +11,7 @@ interface Inventory { configured: boolean; projects?: CloudProject[]; incomplete
 const actionClass = "rounded border border-zinc-300 px-3 py-2 text-sm font-semibold disabled:opacity-50";
 const inputClass = "mt-1 block w-full rounded border border-zinc-300 p-2 text-sm";
 
-export function CloudInventory({ onChoose }: { onChoose: (url: string) => void }) {
+export function CloudInventory({ onChoose, projectLabel }: { onChoose: (url: string, project: string) => void; projectLabel?: string }) {
   const [data, setData] = useState<Inventory>();
   const [projectId, setProjectId] = useState("");
   const [services, setServices] = useState<CloudRunService[]>([]);
@@ -140,13 +141,13 @@ export function CloudInventory({ onChoose }: { onChoose: (url: string) => void }
         <p className="break-all">{service.url}</p>
         <p className="break-all">取り込んだ配備リビジョン {service.revision ?? "未確認"}</p>
         <p className="break-all">定義上のイメージ {service.images.join("、") || "未確認"}</p>
-        <p>配備実体は未確認です。依存関係は対象イメージのSBOMを用意し、ブラウザ内で確認できます。</p>
+        <p>この定義からは実際に稼働中の構成と所有権は確認できません。対象イメージのSBOMを別途照合できます。</p>
         <p>Artifact Registry で対象ダイジェストの「依存関係」から既存のSBOMを開けます。閲覧には対象リポジトリ、分析の記録、保存先ファイルへの読み取り権限が必要です。</p>
         <div className="flex flex-wrap gap-3">
           <a className="underline" target="_blank" rel="noreferrer" href={`https://console.cloud.google.com/artifacts?project=${encodeURIComponent(project.id)}`}>Artifact Registry を開く</a>
-          <Link className="underline" href="/quick-defense#sbom-input">SBOMを取り込んで調べる</Link>
+          <Link className="underline" href={`${projectHref("/quick-defense", projectLabel || project.id)}#sbom-input`}>SBOMを取り込んで調べる</Link>
         </div>
-        <div><button type="button" className={actionClass} onClick={() => onChoose(service.url)}>このURLの所有確認へ</button></div>
+        <div><button type="button" className={actionClass} onClick={() => onChoose(service.url, project.id)}>プロジェクトに追加して所有確認へ</button></div>
       </div>}
     </>}
     {!data && !error && <p role="status" className="text-sm">連携の設定を確認しています…</p>}

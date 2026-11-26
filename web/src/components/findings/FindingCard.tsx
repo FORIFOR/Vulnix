@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import { postJSON } from "@/lib/api";
+import { VERDICT } from "@/lib/labels";
 import { findingReason } from "@/lib/findingReason";
 import type { Finding, Snapshot } from "@/lib/types";
 import { canApprove, useSession } from "@/lib/useSession";
@@ -30,6 +31,9 @@ export function FindingCard({
   const [err, setErr] = useState<string | null>(null);
   const latestEv = f.evidence.at(-1);
   const reason = findingReason(f);
+  const measured = f.evidence.some((entry) => entry.kind === "reproduction_probe" && entry.audit_hash);
+  const evidenceLabel = f.demo_fixture ? "模擬データ" : measured ? "防御テストの証拠あり"
+    : f.evidence_status === "detected" ? "観測した証拠" : "防御の実証は未確認";
   // L2 on a real service: an explicit, per-item approval by an approver.
   const needsApproval = Boolean(f.requires_l2_approval);
   // A rule that is not confirmed against the target API can never run (the server refuses it too).
@@ -69,6 +73,7 @@ export function FindingCard({
         <div className="flex flex-wrap items-center gap-2">
           {f.evidence_status !== "candidate" && <SeverityBadge s={f.severity} />}
           {f.evidence_status === "candidate" ? <Pill className="border border-zinc-400">未計測の候補</Pill> : <VerdictBadge v={f.verdict} />}
+          {!f.demo_fixture && <Pill className="border border-zinc-300 dark:border-zinc-700">{evidenceLabel}</Pill>}
           {(f._in_verification || busy) && <Pill className="bg-blue-600 text-white">検証中</Pill>}
           {f.demo_fixture && <FixtureBadge />}
         </div>
@@ -77,6 +82,9 @@ export function FindingCard({
           {f.help_term && <HelpPopover term={f.help_term} context={f.why_detected} findingId={f.id} />}
         </h3>
         <p className="mt-1 text-sm text-zinc-700 dark:text-zinc-300">{f.what_was_established ?? f.summary}</p>
+        {f.impact && <p className="mt-2 text-xs">起こり得る影響 {f.impact}</p>}
+        {f.remediation.steps[0] && <p className="mt-2 text-xs">最初の修正 {f.remediation.steps[0]}</p>}
+        {f.last_run_verdict && <p className="mt-1 text-xs">直近の再検証 {VERDICT[f.last_run_verdict].label}</p>}
         {f.cookie_checks && f.cookie_checks.length > 0 && <CookieCheckList checks={f.cookie_checks} />}
         {f.verdict_note && (
           <p className="mt-1.5 rounded bg-zinc-100 px-2 py-1 text-xs text-zinc-700 dark:bg-zinc-800/80 dark:text-zinc-300">
@@ -132,7 +140,7 @@ export function FindingCard({
       </div>
 
       <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-zinc-100 pt-2.5 text-xs text-zinc-500 dark:border-zinc-800">
-        <span>{f.category}・実測証拠 {f.evidence.length} 件</span>
+        <span>{f.category}・記録 {f.evidence.length} 件</span>
         <div className="flex items-center gap-2">
           {!readOnly && <button
             type="button"

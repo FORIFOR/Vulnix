@@ -49,7 +49,7 @@ export function ArtexPlanPanel({ snap, onUpdate }: {
         <div className="min-w-0">
           <h2 className="font-semibold">{realSite ? (verified ? "ARTEXによる追加確認" : "追加確認の計画") : "ARTEX 計画（提案のみ・Gateway 経由で実行）"}</h2>
           <p className="mt-0.5 text-xs text-zinc-500">
-            {realSite ? "計画の提案元を確認し、安全性を確認した読み取り専用の検査だけを実行できます。提案は検出結果ではありません。"
+            {realSite ? "計画の提案元を確認し、許可範囲の読み取り項目だけが追加候補になります。実際に得られた証拠は結果タブで確認できます。"
               : "ARTEX は方向を提案するだけです。対象・操作・引数は Vulnix が登録済み対象と許可済み検証カタログから再構成します。"}
           </p>
         </div>
@@ -60,7 +60,7 @@ export function ArtexPlanPanel({ snap, onUpdate }: {
           className="rounded-lg bg-zinc-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-white dark:text-zinc-900"
         >
           {busy === "plan" ? "計画中…" : realSite ? (plan ? "追加確認を考え直す" : "追加確認を考える")
-            : plan ? "ARTEX で再計画" : "ARTEX で計画を作成"}
+            : plan ? "候補を見直す" : "追加確認の候補を見る"}
         </button>
       </div>
 
