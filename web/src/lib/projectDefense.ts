@@ -402,7 +402,7 @@ function osvCves(feed: unknown, packages: Map<string, Package[]>, deadline: numb
           .flatMap((range) => array(range.events).flatMap((event) => typeof event.fixed === "string" &&
             (compareVersions(match.ecosystem, match.version, event.fixed) ?? 0) < 0 &&
             !affects(event.fixed, match.ecosystem, affected) ? [event.fixed] : [])))];
-        const location = { path: match.path, line: match.line, dependency: match.name, version: match.version, fixed };
+        const location = { path: match.path, line: match.line, dependency: match.name, ecosystem: match.ecosystem, version: match.version, fixed };
         const key = locationIdentity(location);
         if (locations.has(key)) continue;
         if (retained + locations.size >= 12000) { markIncomplete(); break; }
@@ -423,7 +423,7 @@ function osvCves(feed: unknown, packages: Map<string, Package[]>, deadline: numb
 }
 
 function locationIdentity(location: ResultLocation) {
-  return JSON.stringify([location.path, location.line, location.dependency, location.version]);
+  return JSON.stringify([location.path, location.line, location.dependency, location.ecosystem, location.version]);
 }
 
 export type CatalogLookup = (packageKeys: string[], cpeKeys: string[], deadline: number) => Promise<{

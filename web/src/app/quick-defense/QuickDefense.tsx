@@ -3,16 +3,16 @@
 import Link from "next/link";
 import RuntimeDefense from "./RuntimeDefense";
 import ReviewedDefense from "./ReviewedDefense";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { catalogSources, osvSources, type CatalogSource } from "@/lib/catalogUpdate";
 import type { ScanProgress } from "@/lib/projectDefense";
 import { readCatalogCache, type CatalogFailure } from "@/lib/catalogCache";
+import { advisorySeverityLabels, groupDependencyFindings, sortByAdvisorySeverity } from "@/lib/resultPresentation";
 import { categories, checkControls, checkCves, demoEvidence, labels, record } from "@/lib/quickDefense";
 
 const button = "rounded-lg border border-zinc-300 px-3 py-2 text-sm font-medium dark:border-zinc-700";
 const primary = "rounded-lg bg-zinc-900 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50 dark:bg-white dark:text-zinc-900";
 type ProjectReport = Awaited<ReturnType<typeof import("@/lib/projectDefense").scanProject>>;
-const severityLabels = { LOW: "低", MEDIUM: "中", HIGH: "高", CRITICAL: "緊急" } as const;
 const maxInput = 2 * 1024 * 1024;
 
 export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) {
@@ -172,7 +172,9 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
   }
 
   const statusLabel = (status: keyof typeof labels) => mode === "local" && status === "confirmed" ? "設定・コードを確認" : labels[status];
-  const visible = results?.filter((row) => selected.has(row.category));
+  const visible = useMemo(() => results && sortByAdvisorySeverity(results.filter((row) => selected.has(row.category))),
+    [results, selected]);
+  const dependencyGroups = useMemo(() => visible ? groupDependencyFindings(visible) : [], [visible]);
 
   return (
     <main className="mx-auto max-w-3xl space-y-5 p-4 md:p-8">
@@ -304,8 +306,30 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
         {report?.catalogIncomplete && <p role="alert">公式カタログを最後まで照合できませんでした。照合上限・時間上限または保存領域を確認してください。</p>}
         <p className="text-sm">{mode === "local" ? "設定を確認した項目の実行時の防御は未確認です。各項目の再検証方法を確認してください。" : "この結果は模擬入力に基づきます。"}</p>
         {mode === "local" && <a href="#runtime-defense" className="text-sm underline">実行時の防御確認へ</a>}
+        {mode === "local" && <a href="#a2b-defense" className="ml-3 text-sm underline">A2B防御の状況へ</a>}
+        {dependencyGroups.length > 0 && <details className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
+          <summary className="cursor-pointer font-semibold">依存関係ごとの修正（{dependencyGroups.length}組）</summary>
+          <p className="my-2 text-sm">勧告ごとの修正版候補です。すべての勧告に対応する導入可能な版を選び、ロックファイルを更新して再検証してください。</p>
+          <ul className="space-y-2">
+            {dependencyGroups.slice(0, display).map(({ name, version, ecosystem, severity, advisories }) => <li key={JSON.stringify([ecosystem, name, version])}>
+              <details className="rounded border border-zinc-200 p-2 text-sm dark:border-zinc-800">
+                <summary className="cursor-pointer break-all"><bdi>{name} {version}</bdi>{ecosystem && `（${ecosystem}）`} ／ {advisories.length}件 ／ {severity ? advisorySeverityLabels[severity] : "重大度不明"}</summary>
+                <ul className="mt-2 list-inside list-disc space-y-2">
+                  {advisories.map((entry) => <li key={entry.id}>
+                    {entry.id} ／ {entry.fixed.length ? `修正版候補 ${entry.fixed.join("・")}` : "修正版は勧告を確認"}
+                    <div className="break-all text-xs text-zinc-600 dark:text-zinc-300">
+                      {entry.locations[0] && <><bdi>{entry.locations[0].path}</bdi>{entry.locations[0].line ? `:${entry.locations[0].line}` : ""}</>}
+                      {entry.locations.length > 1 && ` ほか ${entry.locations.length - 1}か所（下の個別結果に表示）`}
+                    </div>
+                  </li>)}
+                </ul>
+              </details>
+            </li>)}
+          </ul>
+        </details>}
+        <p className="text-sm">個別結果は勧告の重大度順です（Critical → High → Medium → Low → 重大度不明）。対象サービスでの実際の影響は未確認です。</p>
         {visible.slice(0, display).map((row, index) => <details key={index} className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
-          <summary className="cursor-pointer font-medium">{row.category} ／ {row.title} ／ {statusLabel(row.status)}{row.severity && ` ／ 勧告の重大度 ${severityLabels[row.severity]}`}</summary>
+          <summary className="cursor-pointer font-medium">{row.category} ／ {row.title} ／ {statusLabel(row.status)}{row.severity && ` ／ 勧告の重大度 ${advisorySeverityLabels[row.severity]}`}</summary>
           <dl className="mt-2 space-y-1 break-words text-sm">
             {(row.locations?.length || row.location) && <><dt className="font-semibold">修正箇所</dt>
               {(row.locations ?? (row.location ? [row.location] : [])).map((location, i) => <dd key={i} className="font-mono">
@@ -314,19 +338,19 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
                 {!!location.fixed?.length && <span> ／ 勧告の修正版 {location.fixed.join("・")}</span>}
               </dd>)}</>}
             <dt className="font-semibold">重大度</dt><dd>{row.severity
-              ? `${severityLabels[row.severity]}（勧告の評価。対象サービスでの影響は未確認）`
-              : "未評価。下の危険性と実際の利用条件を確認してください。"}</dd>
+              ? `${advisorySeverityLabels[row.severity]}（勧告の評価。対象サービスでの影響は未確認）`
+              : "重大度不明。危険性と実際の利用条件を確認してください。"}</dd>
             <dt className="font-semibold">原因・根拠</dt><dd>{row.evidence}</dd>
             <dt className="font-semibold">危険性</dt><dd>{row.risk}</dd>
             <dt className="font-semibold">修正方法</dt><dd>{row.fix}</dd>
             <dt className="font-semibold">再検証方法</dt><dd>{row.retest}</dd>
           </dl>
         </details>)}
-        {visible.length > display && <button type="button" className={button} onClick={() => setDisplay(display + 100)}>
-          さらに表示（{visible.length - display}件）
+        {Math.max(visible.length, dependencyGroups.length) > display && <button type="button" className={button} onClick={() => setDisplay(display + 100)}>
+          さらに表示（{Math.max(visible.length, dependencyGroups.length) - display}件）
         </button>}
         {mode === "local" && <>
-          <RuntimeDefense plan={report?.runtimePlan ?? []} project={files[0]?.webkitRelativePath.split("/")[0] || "選択したフォルダ"} />
+          <RuntimeDefense plan={report?.runtimePlan ?? []} staticResults={visible} project={files[0]?.webkitRelativePath.split("/")[0] || "選択したフォルダ"} />
           <p className="text-sm">修正後は上のフォルダ選択から選び直して再検証してください。</p>
         </>}
       </section>}

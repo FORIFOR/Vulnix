@@ -103,7 +103,18 @@ function CheckRow({ check, plan, report, verdict, setVerdict }: {
   </details>;
 }
 
-export default function RuntimeDefense({ project, plan }: { project: string; plan: PlannedCheck[] }) {
+const a2bChecks = [
+  ["認証", "authentication", "ログインと認証情報の期限を確認"],
+  ["認可", "authorization", "API側で操作と対象の権限を確認"],
+  ["組織分離", "isolation", "別組織の合成データを拒否することを確認"],
+  ["資格情報保護", null, "鍵の保存・配布・失効の運用を確認"],
+  ["公開API", null, "配備済みの公開経路と公開予定のAPIを照合"],
+  ["入力制限", "input", "配備先の入力サイズ・回数の上限を確認"],
+] as const;
+
+export default function RuntimeDefense({ project, plan, staticResults }: {
+  project: string; plan: PlannedCheck[]; staticResults: { title: string; status: string }[];
+}) {
   const [report, setReport] = useState<JUnitReport | null>(null);
   const tests = report?.tests ?? [];
   const [verdicts, setVerdicts] = useState<Partial<Record<RuntimeCheck[0], Verdict>>>({});
@@ -131,6 +142,24 @@ export default function RuntimeDefense({ project, plan }: { project: string; pla
   return <section id="runtime-defense" aria-label="実行時の防御確認" className="space-y-3 rounded-xl border border-zinc-200 p-4 text-sm dark:border-zinc-800">
     <h3 className="text-lg font-semibold">実行時の防御確認</h3>
     <p>対象　<bdi>{project}</bdi></p>
+    <section id="a2b-defense" aria-label="A2B防御の状況" className="space-y-2 rounded border border-zinc-200 p-3 dark:border-zinc-800">
+      <h4 className="font-semibold">A2B防御の状況</h4>
+      <p>アプリからAPIへの通信を守る確認項目です。下の防御確認で登録した証拠だけを、対応する環境・条件の確認として表示します。</p>
+      <dl className="grid gap-2 sm:grid-cols-2">
+        {a2bChecks.map(([label, id, next]) => {
+          const recorded = id && label !== "入力制限" ? verdicts[id] : undefined;
+          const candidate = id && plan.some((item) => item.id === id);
+          const clue = label === "資格情報保護" ? staticResults.some((row) => row.title === "ソース内の秘密鍵形式" || row.title === "Gitleaksの資格情報候補")
+            : label === "公開API" && staticResults.some((row) => row.title === "管理面・ディレクトリ公開の制限" && row.status !== "unknown");
+          return <div key={label} className="rounded border border-zinc-200 p-2 dark:border-zinc-800">
+            <dt className="font-semibold">{label}</dt>
+            <dd>{recorded ? `${evidenceLabels[recorded.kind]} ／ ${recorded.scope}`
+              : candidate || clue ? "未確認（資料・既存テストに確認候補あり）" : "未確認"}</dd>
+            <dd className="text-zinc-600 dark:text-zinc-300">{next}</dd>
+          </div>;
+        })}
+      </dl>
+    </section>
     <p>対象の既存テストで出力したJUnit XMLを読み込み、合格条件に対応するケースを選びます。テストの出力やファイルは送信されません。設定は許可された管理画面で読み取り専用で確認できます。</p>
     <p>資料から検証候補を {plan.length} 件選びました。候補は内容の確認に使い、テスト名や成功結果で動作を確定しません。</p>
     <details className="rounded border border-zinc-200 p-2 dark:border-zinc-800">
