@@ -17,6 +17,7 @@ export function CloudInventory({ onChoose, projectLabel }: { onChoose: (url: str
   const [services, setServices] = useState<CloudRunService[]>([]);
   const [url, setUrl] = useState("");
   const [input, setInput] = useState("");
+  const [serviceUrl, setServiceUrl] = useState("");
   const [busy, setBusy] = useState(false);
   const [cancelled, setCancelled] = useState(false);
   const [error, setError] = useState("");
@@ -46,6 +47,7 @@ export function CloudInventory({ onChoose, projectLabel }: { onChoose: (url: str
     setServices([]);
     setUrl("");
     setInput("");
+    setServiceUrl("");
   }
 
   function add(text: string, selected: CloudProject, generation: number) {
@@ -108,10 +110,20 @@ export function CloudInventory({ onChoose, projectLabel }: { onChoose: (url: str
     </>}
     {project && <>
       <p className="text-sm">
-        Cloud Run の一覧取得には書き込みにも使える Google Cloud スコープが必要です。
-        <a className="mx-1 underline" target="_blank" rel="noreferrer" href={`https://console.cloud.google.com/run?project=${encodeURIComponent(project.id)}`}>Cloud Run コンソールを開く</a>
-        からサービスの「YAML」表示をコピーするか、保存済みの定義を読み込んでください。閲覧には対象サービスの Cloud Run 閲覧者権限が必要です。
+        <a className="underline" target="_blank" rel="noreferrer" href={`https://console.cloud.google.com/run/services?project=${encodeURIComponent(project.id)}`}>Cloud Run コンソールでサービスを選ぶ</a>
+        。サービス詳細のURLを入力すると、対象の所有確認へ進めます。
       </p>
+      <form onSubmit={(event) => {
+        event.preventDefault();
+        onChoose(serviceUrl.trim(), project.id);
+      }} className="flex flex-wrap items-end gap-2">
+        <label className="flex-1 text-sm">サービスのURL
+          <input type="url" required value={serviceUrl} onChange={(event) => setServiceUrl(event.target.value)} className={inputClass} placeholder="https://example.run.app" />
+        </label>
+        <button type="submit" className={actionClass} disabled={!serviceUrl.trim()}>所有確認へ</button>
+      </form>
+      <details className="space-y-2">
+        <summary className="cursor-pointer text-sm">保存済みの配備資料を確認する</summary>
       <label className="block text-sm">サービス定義（YAML）
         <textarea className={inputClass} rows={3} maxLength={cloudExportLimit} value={input} onChange={(e) => setInput(e.target.value)} />
       </label>
@@ -132,6 +144,7 @@ export function CloudInventory({ onChoose, projectLabel }: { onChoose: (url: str
           }
         }} />
       </label>
+      </details>
       {services.length > 0 && <label className="block text-sm">Cloud Run サービス
         <select className={inputClass} value={url} onChange={(e) => setUrl(e.target.value)}>
           {services.map((s) => <option key={s.url} value={s.url}>{s.name}</option>)}

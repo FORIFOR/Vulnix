@@ -23,7 +23,7 @@ export interface SessionCtx {
   /** the control plane can prove site ownership through Google Search Console */
   googleOwnership: boolean;
   cloudInventoryConfigured: boolean;
-  ownershipTrafficMode: "off" | "approved" | "existing";
+  ownershipTrafficMode: "off" | "approved" | "preapproved" | "existing";
   /** Whether an optional second read-only status check is configured. */
   optionalStatusCheck: boolean;
   externalSiteTrafficEnabled: boolean | null;

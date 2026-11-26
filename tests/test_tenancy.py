@@ -228,6 +228,123 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
             self.assertEqual(self.req(runner, "/assets/verify-ownership", request, DEFAULT_ORG)[0], 403)
             check.assert_called_once()
 
+    def test_mixed_ownership_modes_do_not_change_other_orgs_or_grant_diagnosis(self):
+        owner = self.signup("mixedowner")
+        personal = owner["orgs"][0]["id"]
+        corporate = self.reg.store.create_org("Corporate integration", "mixedowner")
+        url = "https://mixed.example.test/"
+        proof = {"url": url, "method": "dns_txt"}
+        endpoint = "/assets/ownership-traffic"
+        file = Path(self.tmp.name) / "mixed-policy.json"
+        now = int(time.time())
+        file.write_text(json.dumps([{"id": name, "org": name, "url": url, "method": "dns_txt",
+                                     "not_before": now - 1, "expires_at": now + 60, "max_checks": 2}
+                                    for name in (personal, corporate)]))
+        file.chmod(0o600)
+        env = {"VULNIX_OWNERSHIP_TRAFFIC": "hybrid", "VULNIX_PERSONAL_OWNERSHIP_ORGS": personal,
+               "VULNIX_OWNERSHIP_POLICY_FILE": str(file)}
+        with patch.dict(os.environ, env), patch.multiple(
+                "aegis.server", REAL_SERVICE_DIAGNOSIS=False, REAL_SITE_L1_ONLY=False), patch(
+                "aegis.assessment.verify_ownership_challenge", return_value={
+                    "verified": True, "method": "dns_txt", "verified_at": now, "detail": "fixture",
+                }) as verifier:
+            for org in (personal, corporate):
+                self.assertEqual(self.req(owner, "/assets/challenge", {"url": url}, org)[0], 200)
+            self.assertEqual(self.req(owner, "/auth/me", org=personal)[1]["ownership_traffic_mode"], "preapproved")
+            self.assertEqual(self.req(owner, "/auth/me", org=corporate)[1]["ownership_traffic_mode"], "approved")
+            self.assertEqual(self.req(owner, "/auth/me", org=DEFAULT_ORG)[1]["ownership_traffic_mode"], "approved")
+            self.assertEqual(self.req(owner, "/assets/verify-ownership", proof, corporate)[0], 403)
+            verifier.assert_not_called()
+            status, request = self.req(owner, endpoint, {**proof, "action": "request"}, corporate)
+            self.assertEqual((status, request["status"]), (200, "pending"))
+            self.assertEqual(self.req(owner, endpoint, {**proof, "action": "approve", "id": request["id"]}, corporate)[0], 403)
+            self.assertTrue(self.req(owner, "/assets/verify-ownership", proof, personal)[1]["verified"])
+            self.assertIsNone(self.reg.service(personal)._external_entry("mixed.example.test"))
+            self.assertEqual(self.req(owner, "/assets/intelligence", org=personal)[1]["runs"], [])
+            self.reg.service(personal).emergency_stop("mixedowner")
+            self.assertEqual(self.req(owner, "/assets/verify-ownership", proof, personal)[0], 403)
+            verifier.assert_called_once()
+            with patch.dict(os.environ, {"VULNIX_PERSONAL_OWNERSHIP_ORGS": f"{personal},default"}):
+                self.assertEqual(self.req(owner, "/auth/me", org=personal)[1]["ownership_traffic_mode"], "approved")
+
+    def test_personal_ownership_policy_is_limited_and_revocable(self):
+        alice, outsider = self.signup("personalalice"), self.signup("personaloutsider")
+        org = alice["orgs"][0]["id"]
+        alt = self.reg.store.create_org("Other personal workspace", "personalalice")
+        url = "https://personal.lab.example/"
+        policyfile = Path(self.tmp.name) / "ownership-policy.json"
+        record = {"id": "reviewed-policy", "org": org, "url": url, "method": "dns_txt",
+                  "not_before": int(time.time()) - 10, "expires_at": int(time.time()) + 60, "max_checks": 2}
+        policyfile.write_text(json.dumps([record]))
+        policyfile.chmod(0o600)
+        endpoint = "/assets/ownership-traffic"
+        proof = "/assets/verify-ownership"
+        request = {"url": url, "method": "dns_txt"}
+        env = {"VULNIX_OWNERSHIP_TRAFFIC": "preapproved",
+               "VULNIX_OWNERSHIP_POLICY_FILE": str(policyfile)}
+        with patch.dict(os.environ, env), patch.multiple(
+                "aegis.server", REAL_SERVICE_DIAGNOSIS=False, REAL_SITE_L1_ONLY=False), patch(
+                "aegis.assessment.verify_ownership_challenge", return_value={
+                    "verified": False, "method": "dns_txt", "verified_at": time.time(), "detail": "fixture",
+                }) as check:
+            for scope in (org, alt):
+                self.assertEqual(self.req(alice, "/assets/challenge", {"url": url}, scope)[0], 200)
+            self.assertEqual(self.req(outsider, endpoint, {**request, "action": "status"}, org)[0], 403)
+            self.assertEqual(self.req(alice, proof, request, alt)[0], 403)
+            self.assertEqual(self.req(alice, proof, {**request, "method": "well_known"}, org)[0], 403)
+            self.assertEqual(self.req(alice, endpoint, {**request, "action": "request"}, org)[0], 409)
+            check.assert_not_called()
+            self.assertTrue(self.req(alice, endpoint, {**request, "action": "status"}, org)[1]["can_verify"])
+            with patch("aegis.server.time.time", return_value=record["expires_at"]):
+                self.assertEqual(self.req(alice, endpoint, {**request, "action": "status"}, org)[1]["status"], "expired")
+                self.assertEqual(self.req(alice, proof, request, org)[0], 403)
+            self.assertEqual(self.req(alice, proof, request, org)[0], 200)
+            policyfile.write_text("[]")
+            self.assertEqual(self.req(alice, proof, request, org)[0], 403)
+            policyfile.write_text(json.dumps([record]))
+            self.assertEqual(self.req(alice, proof, request, org)[0], 200)
+            self.assertEqual(self.req(alice, proof, request, org)[0], 403)
+            self.assertEqual(check.call_count, 2)
+            self.assertFalse(self.req(alice, endpoint, {**request, "action": "status"}, org)[1]["can_verify"])
+
+    def test_personal_google_ownership_rechecks_approval_between_requests(self):
+        from aegis import google_ownership
+
+        alice = self.signup("personalgoogle")
+        org = alice["orgs"][0]["id"]
+        url = "https://personal-google.lab.example/"
+        policyfile = Path(self.tmp.name) / "google-policy.json"
+        record = {"id": "reviewed-google", "org": org, "url": url, "method": google_ownership.METHOD,
+                  "not_before": int(time.time()) - 10, "expires_at": int(time.time()) + 60, "max_checks": 2}
+        policyfile.write_text(json.dumps([record]))
+        policyfile.chmod(0o600)
+        env = {"VULNIX_OWNERSHIP_TRAFFIC": "preapproved", "VULNIX_OWNERSHIP_POLICY_FILE": str(policyfile),
+               "VULNIX_GOOGLE_CLIENT_ID": "lab", "VULNIX_GOOGLE_CLIENT_SECRET": "synthetic-only",
+               "VULNIX_GOOGLE_REDIRECT_URI": "https://vulnix.lab.test/verify/google"}
+
+        cases = []
+
+        def revoke_after_token(config, code, verifier, **kwargs):
+            def http(endpoint, **_):
+                cases.append(endpoint)
+                policyfile.write_text("[]")
+                return {"access_token": "synthetic", "scope": google_ownership.SCOPE}
+            return original(config, code, verifier, http=http, **kwargs)
+
+        original = google_ownership.owned_sites
+        with patch.dict(os.environ, env), patch("aegis.google_ownership.owned_sites", side_effect=revoke_after_token):
+            self.assertEqual(self.req(alice, "/assets/challenge", {"url": url}, org)[0], 200)
+            code, started = self.req(alice, "/assets/google/start", {"url": url}, org)
+            self.assertEqual(code, 200)
+            from urllib.parse import parse_qs, urlsplit
+            state = parse_qs(urlsplit(started["url"]).query)["state"][0]
+            payload = {"state": state, "code": "synthetic"}
+            self.assertEqual(self.req(alice, "/assets/google/finish", payload, org)[0], 403)
+            self.assertEqual(cases, [google_ownership.TOKEN_URL])
+            self.assertEqual(self.req(alice, "/assets/google/finish", payload, org)[0], 400)
+            _, assets = self.req(alice, "/assets", org=org)
+            self.assertFalse(next(asset for asset in assets if asset.get("target_url") == url)["ownership_verified"])
+
     def test_cloud_inventory_binds_single_use_oauth_to_active_session_and_org(self):
         from urllib.parse import parse_qs, urlsplit
         from aegis import cloud_inventory
