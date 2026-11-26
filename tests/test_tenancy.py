@@ -158,6 +158,11 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
         self.assertEqual(view["runs"][0]["org_id"], org)
         self.assertEqual(self.req(bob, "/assets/intelligence", org=org)[0], 403)
         self.assertEqual(self.req(bob, "/assets/intelligence")[1]["runs"], [])
+        _, invite = self.reg.store.create_invite(org, "historyalice", ["viewer"])
+        self.reg.store.accept_invite(invite, "historybob")
+        self.assertEqual(self.req(bob, "/assets/intelligence", org=org)[0], 200)
+        self.reg.store.remove_member(org, "historyalice", "historybob")
+        self.assertEqual(self.req(bob, "/assets/intelligence", org=org)[0], 403)
         self.assertEqual(svc.a.asset["id"], before)
 
     def test_project_label_is_org_scoped_and_grants_no_diagnosis_authority(self):

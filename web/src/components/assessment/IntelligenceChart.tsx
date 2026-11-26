@@ -1,12 +1,12 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { init, use, type EChartsCoreOption } from "echarts/core";
-import { HeatmapChart, LineChart, PieChart, ScatterChart, TreemapChart } from "echarts/charts";
+import { init, use as registerCharts, type EChartsCoreOption } from "echarts/core";
+import { GraphChart, HeatmapChart, LineChart, PieChart, ScatterChart, TreemapChart } from "echarts/charts";
 import { GridComponent, TooltipComponent, VisualMapComponent } from "echarts/components";
 import { SVGRenderer } from "echarts/renderers";
 
-use([HeatmapChart, LineChart, PieChart, ScatterChart, TreemapChart, GridComponent, TooltipComponent, VisualMapComponent, SVGRenderer]);
+registerCharts([GraphChart, HeatmapChart, LineChart, PieChart, ScatterChart, TreemapChart, GridComponent, TooltipComponent, VisualMapComponent, SVGRenderer]);
 
 export function IntelligenceChart({ option, onSelect, label }: {
   option: EChartsCoreOption;
@@ -20,7 +20,7 @@ export function IntelligenceChart({ option, onSelect, label }: {
     if (!node) return;
     const instance = init(node, undefined, { renderer: "svg" });
     chart.current = instance;
-    const resize = new ResizeObserver(() => instance.resize());
+    const resize = new ResizeObserver(() => { if (!instance.isDisposed()) instance.resize(); });
     resize.observe(node);
     return () => { resize.disconnect(); instance.dispose(); chart.current = null; };
   }, []);
@@ -31,12 +31,21 @@ export function IntelligenceChart({ option, onSelect, label }: {
     const motion = matchMedia("(prefers-reduced-motion: reduce)");
     const theme = new MutationObserver(update);
     function update() {
+      if (!instance || instance.isDisposed()) return;
       const dark = document.documentElement.classList.contains("dark");
-      instance?.setOption({
-        ...option, backgroundColor: "transparent", animation: !motion.matches,
+      const fg = dark ? "#d4d4d8" : "#3f3f46";
+      const axes = Object.fromEntries(["xAxis", "yAxis"].flatMap((key) => {
+        const value = option[key];
+        if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+        const axis = value as Record<string, unknown>;
+        const labels = typeof axis.axisLabel === "object" && axis.axisLabel !== null ? axis.axisLabel : {};
+        return [[key, { ...axis, axisLabel: { color: fg, ...labels } }]];
+      }));
+      instance.setOption({
+        ...option, ...axes, backgroundColor: "transparent", animation: !motion.matches,
         animationDuration: 260, animationDurationUpdate: 260,
-        textStyle: { color: dark ? "#d4d4d8" : "#3f3f46", fontFamily: "system-ui" },
-        tooltip: { trigger: "item", renderMode: "richText", confine: true, appendToBody: false, ...(typeof option.tooltip === "object" && option.tooltip !== null ? option.tooltip : {}) },
+        textStyle: { color: fg, fontFamily: "system-ui" },
+        tooltip: { trigger: "item", ...(typeof option.tooltip === "object" && option.tooltip !== null ? option.tooltip : {}), renderMode: "richText", confine: true, appendToBody: false },
       });
     }
     update();

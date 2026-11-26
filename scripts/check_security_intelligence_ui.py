@@ -5,6 +5,7 @@ import argparse
 from contextlib import ExitStack
 import json
 import os
+import re
 from pathlib import Path
 import secrets
 import socket
@@ -18,6 +19,7 @@ from urllib.request import urlopen
 
 from playwright.sync_api import expect, sync_playwright
 
+from aegis import intelligence
 from aegis.assessment import AssessmentService, _fixture_findings
 from aegis.operators import OperatorStore, hash_password
 from aegis.server import make_handler
@@ -40,10 +42,30 @@ def main():
         rows = _fixture_findings()
         with service._lock:
             service.a.findings.clear()
+            for asset in (service.a.asset, *service._extra_assets):
+                if asset["name"] in ("lab.test", "api.lab.test"):
+                    asset["project_label"] = "Synthetic intelligence project"
         finding = {**rows[0], "id": "f_intelligence", "severity": "critical", "verdict": "candidate",
                    "title": "合成データ — TLSの確認候補", "demo_fixture": False, "evidence": [], "category": "暗号・TLS設定"}
         service._upsert_finding(finding)
-        backend = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(service, OperatorStore(seed)))
+        # Same-condition synthetic summaries are written through the real audited archive.
+        for i, score in enumerate((43, 18)):
+            intelligence.append(root / "intelligence-runs.json", {
+                "run_id": f"ui-fixture-{i}", "asset_id": service.a.asset["id"], "asset": service.a.asset["name"],
+                "org_id": "default", "at": time.time() - (2 - i) * 3600, "condition_id": "ui-fixture",
+                "external": False, "evidence_hashes": [], "score": score, "findings": 1,
+                "severity": {**dict.fromkeys(intelligence.SEVERITIES, 0), "critical": 1}, "counts": {"detected": 1},
+            }, service.audit)
+        ops = OperatorStore(seed)
+        connections = []
+        handler = make_handler(service, ops)
+
+        class DisconnectableHandler(handler):
+            def _sse_loop(self, *args):
+                connections.append(self.connection)
+                return super()._sse_loop(*args)
+
+        backend = ThreadingHTTPServer(("127.0.0.1", 0), DisconnectableHandler)
         threading.Thread(target=backend.serve_forever, daemon=True).start()
         close.callback(backend.server_close)
         close.callback(backend.shutdown)
@@ -73,7 +95,7 @@ def main():
         ctx.route("**/*", lambda route: route.continue_() if route.request.url.startswith(base + "/") else route.abort())
         page = ctx.new_page()
         errors = []
-        page.on("pageerror", lambda error: errors.append(str(error)))
+        page.on("pageerror", lambda error: errors.append(error.stack or str(error)))
         page.goto(base + "/login")
         page.get_by_label("ユーザー名", exact=True).fill("reviewer")
         page.get_by_label("パスワード", exact=True).fill(password)
@@ -82,6 +104,10 @@ def main():
         page.goto(base + "/assessments/scan_001?tab=intelligence")
         expect(page.get_by_role("heading", name="Security Intelligence")).to_be_visible()
         expect(page.get_by_text("ライブ接続中", exact=False)).to_be_visible()
+        comparison = page.get_by_role("region", name="修正前後の比較")
+        expect(comparison.get_by_text("43/100", exact=True)).to_be_visible()
+        expect(comparison.get_by_text("18/100", exact=True)).to_be_visible()
+        expect(page.get_by_role("img", name="登録された資産とプロジェクトの関係").get_by_text("登録プロジェクト 1", exact=True)).to_be_visible()
         for width, height in ((390, 844), (768, 1024), (1440, 900)):
             page.set_viewport_size({"width": width, "height": height})
             donut = page.get_by_role("img", name="重大度別ドーナツグラフ")
@@ -104,8 +130,35 @@ def main():
         tree.click(position={"x": tree.bounding_box()["width"] / 2, "y": 110})
         page.wait_for_url("**?tab=findings&category=*")
         expect(page.get_by_text("絞り込み結果：2 件", exact=True)).to_be_visible()
+        page.go_back()
+        expect(page.get_by_role("heading", name="Security Intelligence")).to_be_visible()
+        service.audit.record("assessment.start_requested", actor="synthetic")
+        with service._lock:
+            service._set_state("running")
+            phase = service.a.phases[0]
+            service._phase(phase["key"], "running", "Synthetic activity")
+        expect(page.get_by_role("region", name="診断アクティビティ").get_by_text(phase["label"])).to_be_visible()
+        audited = service.audit.record("fixture.observation", case="intelligence")
+        service._upsert_finding({**finding, "id": "f_audited", "severity": "medium", "verdict": "detected",
+                                 "evidence": [{"evidence_id": "synthetic", "kind": "synthetic", "tool": "http_probe",
+                                               "saved_at": audited["ts"], "audit_hash": audited["hash"], "content": "{}"}]})
+        expect(page.get_by_role("img", name="所見・観測・監査の関係")).to_be_visible(timeout=12000)
+        expect(page.get_by_role("img", name="悪用の根拠と所見の重大度の散布図")).to_be_visible(timeout=12000)
+        if args.screenshots:
+            page.screenshot(path=args.screenshots / "intelligence-observed.png", full_page=True, animations="disabled")
+        page.evaluate("document.documentElement.classList.add('dark')")
+        if args.screenshots:
+            page.screenshot(path=args.screenshots / "intelligence-dark.png", full_page=True, animations="disabled")
+        count = len(connections)
+        connections[-1].shutdown(socket.SHUT_RDWR)
+        expect(page.get_by_text(re.compile("再接続中|通信切断")).first).to_be_visible(timeout=10000)
+        expect(page.get_by_text("ライブ接続中", exact=False)).to_be_visible(timeout=15000)
+        assert len(connections) > count
+        ops.logout(next(cookie["value"] for cookie in ctx.cookies(base) if cookie["name"] == "aegis_session"))
+        connections[-1].shutdown(socket.SHUT_RDWR)
+        expect(page.get_by_role("heading", name="Security Intelligence")).to_have_count(0, timeout=10000)
         assert not errors, errors
-        print("PASS: 390/768/1440, chart-to-results navigation, category chart, SSE updates")
+        print("PASS: 390/768/1440, chart filtering, SSE activity/reconnect/revocation, evidence graph, persisted comparison")
 
 
 if __name__ == "__main__":

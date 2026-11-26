@@ -103,6 +103,9 @@ function DashboardInner() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <Link href="/assessments/scan_001?tab=intelligence" className="rounded-lg border border-zinc-300 px-3.5 py-2 text-sm font-semibold dark:border-zinc-700">
+            分析を開く
+          </Link>
           {lab ? <button
             type="button"
             disabled={busyId === lab.id}

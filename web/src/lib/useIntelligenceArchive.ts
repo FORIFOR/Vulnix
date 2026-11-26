@@ -5,7 +5,12 @@ import { ApiHttpError, getJSON } from "./api";
 import type { RunHistoryEntry } from "./types";
 import type { Conn } from "./useAssessment";
 
-export type Archive = { state: "available" | "audit_unavailable" | "persistence_error"; runs: RunHistoryEntry[] };
+export interface ArchivedAsset { id: string; name: string; project_key: string | null; external: boolean }
+export type Archive = {
+  state: "available" | "audit_unavailable" | "persistence_error";
+  runs: RunHistoryEntry[];
+  assets?: ArchivedAsset[];
+};
 
 export function useIntelligenceArchive(asset: string, state: string, conn: Conn) {
   const [view, setView] = useState<{ asset: string; archive: Archive | null; denied: boolean } | null>(null);

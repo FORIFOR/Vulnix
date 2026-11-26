@@ -56,7 +56,7 @@ export function AssessmentTabs({ id }: { id: string }) {
   }
   const intelligence = aggregate(snap.findings, Boolean(snap.is_external_service), chainValid, audit.map(({ hash }) => hash));
   const filtered = filterFindings(intelligence.rows, params);
-  const hasFilter = ["evidence", "severity", "category"].some((key) => params.has(key));
+  const hasFilter = ["evidence", "severity", "category", "finding"].some((key) => params.has(key));
   const findings = filtered.sort(
     (a, b) => Number(a.demo_fixture) - Number(b.demo_fixture) || SEV_ORDER[a.severity] - SEV_ORDER[b.severity],
   );
@@ -139,7 +139,7 @@ export function AssessmentTabs({ id }: { id: string }) {
       </div>
 
       <main className="mx-auto w-full max-w-7xl flex-1 p-4 md:p-6">
-        {snap.demo && (
+        {snap.demo && tab !== "intelligence" && (
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-violet-200 bg-violet-50/90 px-3.5 py-2.5 text-xs text-violet-950 dark:border-violet-900/60 dark:bg-violet-950/40 dark:text-violet-100">
             <div className="space-y-0.5">
               <div className="flex flex-wrap items-center gap-2 font-semibold">
@@ -177,7 +177,7 @@ export function AssessmentTabs({ id }: { id: string }) {
         {snap.is_external_service && <RealServicePanel snap={snap} onUpdate={setSnap} />}
 
         {tab !== "intelligence" && <EvidenceOverview snap={{ ...snap, evidence_summary: intelligence.evidence }} selected={tab === "findings" ? evidenceFilter : "all"} />}
-        {tab === "intelligence" && <SecurityIntelligence snap={snap} data={intelligence} conn={conn} chainValid={chainValid} />}
+        {tab === "intelligence" && <SecurityIntelligence snap={snap} data={intelligence} conn={conn} chainValid={chainValid} audit={audit} />}
 
         {tab === "assessment" && snap.artex_plan?.configured
           && (!snap.is_external_service || snap.state === "completed") && (

@@ -5901,6 +5901,7 @@ class AssessmentService:
             "hosts": sorted(target.hosts), "ports": sorted(target.ports),
             "cidrs": sorted(target.cidrs), "actions": sorted(engagement.allowed_actions),
             "status_probe": bool(entry and entry.get("allow_status_probe")),
+            "scope_generation": self._scope_generation(entry) if entry else None,
             "phase_keys": [phase["key"] for phase in self.a.phases],
         })
 
@@ -5941,7 +5942,8 @@ class AssessmentService:
         risk = self._risk()
         summary = {
             "run_id": record or secrets.token_hex(16), "assessment_id": self.a.id,
-            "asset_id": asset["id"], "asset": str(asset["name"])[:253],
+            "asset_id": asset["id"],
+            "asset": asset["name"] if re.fullmatch(r"[A-Za-z0-9.-]{1,253}", str(asset["name"])) else "登録資産",
             "org_id": getattr(self, "_intelligence_org_id", "default"),
             "at": time.time(), "external": external, "condition_id": condition,
             "scope": {"port_count": len(target.ports), "host_count": len(target.hosts),
@@ -5958,7 +5960,17 @@ class AssessmentService:
         from . import intelligence
 
         with self._lock:
-            asset_ids = {a["id"] for a in (self.a.asset, *self._extra_assets)}
+            assets = []
+            for asset in (self.a.asset, *self._extra_assets):
+                name = str(asset.get("name") or "")
+                project = asset.get("project_label") or asset.get("gcp_project")
+                assets.append({
+                    "id": asset["id"],
+                    "name": name if re.fullmatch(r"[A-Za-z0-9.-]{1,253}", name) else "登録資産",
+                    "external": self._in_ownership_flow(name),
+                    "project_key": intelligence.fingerprint(project) if isinstance(project, str) and project else None,
+                })
+            asset_ids = {a["id"] for a in assets}
             if self._persist_error:
                 return {"state": "persistence_error", "runs": []}
             try:
@@ -5971,7 +5983,7 @@ class AssessmentService:
             return {"state": "audit_unavailable", "runs": []}
         runs, damaged = intelligence.verify_rows(rows, entries, org_id, asset_ids)
         return {"state": "audit_unavailable" if damaged else "persistence_error" if archive_error else "available",
-                "runs": runs}
+                "runs": runs, "assets": assets}
 
     def _set_state(self, state, reason: str | None = None, kind: str = "run"):
         if self._stale_runner():

@@ -32,7 +32,9 @@ export function aggregate(findings: Finding[], external: boolean, chainValid: bo
     const s = SEVERITIES.includes(finding.severity) ? finding.severity : "info";
     let state = fixture ? "fixture" : EVIDENCE.includes(finding.evidence_status) ? finding.evidence_status : "incomplete";
     const proof = [...(finding.evidence ?? [])].reverse().find((entry) => entry.tool === "reproduction_probe" || entry.kind === "reproduction_probe");
-    if ((state === "proven" || state === "not_reproduced") &&
+    const showsProof = state === "proven" || state === "not_reproduced" || finding.verdict === "proven"
+      || finding.last_run_verdict === "proven" || finding.last_run_verdict === "not_reproduced";
+    if (!fixture && showsProof &&
       (chainValid !== true || !proof?.audit_hash || proof.saved_at == null || !verified.has(proof.audit_hash))) {
       state = "incomplete";
       rows.push({ ...finding, evidence_status: state, verdict: "unverified", last_run_verdict: undefined,
@@ -49,7 +51,7 @@ export function aggregate(findings: Finding[], external: boolean, chainValid: bo
   return { rows, severity, evidence, matrix, categories };
 }
 
-export interface FindingFilters { severity?: Severity; evidence?: EvidenceStatus; category?: string }
+export interface FindingFilters { severity?: Severity; evidence?: EvidenceStatus; category?: string; finding?: string }
 export function findingQuery(filters: FindingFilters = {}) {
   const params = new URLSearchParams({ tab: "findings" });
   for (const [key, value] of Object.entries(filters)) if (value) params.set(key, value);
@@ -60,7 +62,8 @@ export function filterFindings(rows: Finding[], params: { get: (key: string) => 
   const severity = SEVERITIES.find((key) => key === params.get("severity"));
   const evidence = EVIDENCE.find((key) => key === params.get("evidence"));
   const category = CATEGORIES.find((key) => key === params.get("category"));
-  return rows.filter((row) => (!severity || row.severity === severity)
+  const finding = params.get("finding");
+  return rows.filter((row) => (!finding || row.id === finding) && (!severity || row.severity === severity)
     && (!evidence || row.evidence_status === evidence) && (!category || knownCategory(row.category) === category));
 }
 

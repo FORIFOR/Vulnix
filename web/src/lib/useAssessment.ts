@@ -200,7 +200,10 @@ export function useAssessment(id: string) {
       streamOpenRef.current = true;
       stream.onopen = () => setConn("live");
       stream.onerror = () => {
-        setConn(stream.readyState === EventSource.CLOSED ? "offline" : "reconnecting");
+        if (cancelled || es !== stream) return;
+        const closed = stream.readyState === EventSource.CLOSED;
+        if (closed) streamOpenRef.current = false;
+        setConn(closed ? "offline" : "reconnecting");
         void refetch();
       };
       stream.addEventListener("heartbeat", onHeartbeat);

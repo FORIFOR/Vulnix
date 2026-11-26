@@ -31,6 +31,20 @@ class TestIntelligenceArchive(unittest.TestCase):
         self.assertEqual(self.service.intelligence_snapshot("org_aaaaaaaaaaaa")["runs"], [])
         self.assertEqual(self.service.a.asset["id"], before)
 
+    def test_asset_switch_preserves_only_existing_assets_and_keeps_scope_separate(self):
+        self.complete()
+        original = self.service.a.asset["id"]
+        with self.service._lock:
+            next_asset = next(asset for asset in self.service._extra_assets if asset["name"] == "api.lab.test")
+            self.service._activate_asset_locked(next_asset, self.service.a.engagement.authorization_ref)
+        self.complete()
+        other = self.service.a.asset["id"]
+        self.assertNotEqual(original, other)
+        runs = self.service.intelligence_snapshot("default")["runs"]
+        self.assertEqual({entry["asset_id"] for entry in runs}, {original, other})
+        self.assertTrue(all(entry["condition_id"] is None for entry in runs))
+        self.assertEqual(self.service.a.asset["id"], other)
+
     def test_failed_state_save_cannot_create_an_intelligence_history(self):
         with patch.object(self.service, "_save_state_locked", side_effect=lambda: setattr(self.service, "_persist_error", "disk")):
             self.complete()
