@@ -22,6 +22,7 @@ type Advisory = {
 
 type Dependency = {
   name: string; version: string; ecosystem?: string; severity?: Severity; advisories: Map<string, Advisory>;
+  reachable?: "imported" | "not_imported_directly";
 };
 
 export function groupDependencyFindings(rows: readonly Finding[]) {
@@ -29,12 +30,13 @@ export function groupDependencyFindings(rows: readonly Finding[]) {
   const seen = new Map<Advisory, Set<string>>();
   for (const row of sortByAdvisorySeverity(rows)) {
     if (row.category !== "CVE" || row.status !== "action" || !/^CVE-\d{4}-\d{4,}$/.test(row.title)) continue;
-    for (const { dependency, ecosystem, version, path, line, fixed } of row.locations ?? (row.location ? [row.location] : [])) {
+    for (const { dependency, ecosystem, version, path, line, fixed, reachable } of row.locations ?? (row.location ? [row.location] : [])) {
       if (!dependency || !version) continue;
       const key = JSON.stringify([ecosystem, dependency, version]);
       const group: Dependency = grouped.get(key) ?? {
         name: dependency, version, ecosystem, severity: row.severity, advisories: new Map(),
       };
+      if (reachable && group.reachable !== "imported") group.reachable = reachable;
       grouped.set(key, group);
       const advisory = group.advisories.get(row.title) ?? {
         id: row.title, severity: row.severity, fixed: [], locations: [],

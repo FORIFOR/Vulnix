@@ -359,9 +359,12 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
           <summary className="cursor-pointer font-semibold">依存関係ごとの修正（{dependencyGroups.length}組）</summary>
           <p className="my-2 text-sm">勧告ごとの修正版候補です。すべての勧告に対応する導入可能な版を選び、ロックファイルを更新して再検証してください。</p>
           <ul className="space-y-2">
-            {dependencyGroups.slice(0, display).map(({ name, version, ecosystem, severity, advisories }) => <li key={JSON.stringify([ecosystem, name, version])}>
+            {dependencyGroups.slice(0, display).map(({ name, version, ecosystem, severity, advisories, reachable }) => <li key={JSON.stringify([ecosystem, name, version])}>
               <details className="rounded border border-zinc-200 p-2 text-sm dark:border-zinc-800">
-                <summary className="cursor-pointer break-all"><bdi>{name} {version}</bdi>{ecosystem && `（${ecosystem}）`} ／ {advisories.length}件 ／ {severity ? advisorySeverityLabels[severity] : "重大度不明"}</summary>
+                <summary className="cursor-pointer break-all"><bdi>{name} {version}</bdi>{ecosystem && `（${ecosystem}）`} ／ {advisories.length}件 ／ {severity ? advisorySeverityLabels[severity] : "重大度不明"}
+                  {" ／ "}<span className={reachable === "imported" ? "text-red-700 dark:text-red-300" : "text-zinc-500"}>
+                    {reachable === "imported" ? "コードで使用（版一致・影響は未実証）" : reachable === "not_imported_directly"
+                      ? "直接のimportなし（間接利用は未確認）" : "使用箇所は未確認"}</span></summary>
                 <ul className="mt-2 list-inside list-disc space-y-2">
                   {advisories.map((entry) => <li key={entry.id}>
                     {entry.id} ／ {entry.fixed.length ? `修正版候補 ${entry.fixed.join("・")}` : "修正版は勧告を確認"}

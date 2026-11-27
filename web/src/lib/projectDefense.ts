@@ -474,6 +474,9 @@ export async function scanProject(files: ProjectFile[], feed: unknown, onProgres
     return kind ? [{ file, path: path.split("/").slice(1).join("/") || file.name, ...kind }] : [];
   }).sort((a, b) => a.priority - b.priority);
   const rows: Result[] = [];
+  // package names the scanned source imports (reachability of a dependency CVE, by name only)
+  const imported = { npm: new Set<string>(), PyPI: new Set<string>() };
+  const sourcesSeen = { npm: 0, PyPI: 0 };
   const findings = new Set<string>();
   const retained = { action: 0, other: 0 };
   let unretained = 0;
@@ -616,6 +619,9 @@ export async function scanProject(files: ProjectFile[], feed: unknown, onProgres
       }
       if (Object.keys(record(record(parsed).packages)).length > 10000) skippedRules++;
     } else if (priority > 0 && ext === "py") {
+      sourcesSeen.PyPI++;
+      for (const m of content.matchAll(/^\s*(?:from\s+([A-Za-z_][\w]*)[\w.]*\s+import|import\s+([A-Za-z_][\w]*))/gm))
+        imported.PyPI.add((m[1] ?? m[2]).toLowerCase());
       coverage.source++;
       coverage.pythonFlow++;
       const flows = pythonFlow(content);
@@ -662,6 +668,9 @@ export async function scanProject(files: ProjectFile[], feed: unknown, onProgres
       }
     } else if (componentsFrom(name, content, parsed, path).length) skippedRules++;
     if (/^[cm]?[jt]sx?$/i.test(ext)) {
+      sourcesSeen.npm++;
+      for (const m of content.matchAll(/(?:require\(\s*|import\(\s*|\bfrom\s+|\bimport\s+)["']((?:@[\w.-]+\/)?[\w.-]+)/g))
+        if (!m[1].startsWith(".")) imported.npm.add(m[1].toLowerCase());
       coverage.source++;
       const findings = jsFlow(name, content, path);
       if (findings.length === 10) skippedRules++;
@@ -703,7 +712,22 @@ export async function scanProject(files: ProjectFile[], feed: unknown, onProgres
       locations: [...merged.values()] });
   }
   let retainedCveLocations = 0;
+  const reach = (eco?: string, name?: string): ResultLocation["reachable"] => {
+    if (!name || (eco !== "npm" && eco !== "PyPI") || !sourcesSeen[eco]) return undefined;
+    const key = eco === "PyPI" ? name.toLowerCase().replace(/-/g, "_") : name.toLowerCase();
+    if (imported[eco].has(key)) return "imported";
+    // a PyPI distribution can be imported under another name: no match is "not determined"
+    return eco === "npm" ? "not_imported_directly" : undefined;
+  };
   for (const row of matched.values()) {
+    row.locations = row.locations?.map((l) => {
+      const r = reach(l.ecosystem, l.dependency);
+      return r ? { ...l, reachable: r } : l;
+    });
+    if (row.location) {
+      const r = reach(row.location.ecosystem, row.location.dependency);
+      if (r) row.location = { ...row.location, reachable: r };
+    }
     const available = Math.max(0, 12000 - retainedCveLocations);
     if (row.locations && row.locations.length > available) {
       catalogIncomplete = true;

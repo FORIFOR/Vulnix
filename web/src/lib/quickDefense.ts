@@ -1,6 +1,8 @@
 type Category = "ARTEX" | "CVE" | "Claude Code";
 type Status = "confirmed" | "action" | "unknown" | "na";
-export type ResultLocation = { path: string; line?: number; dependency?: string; ecosystem?: string; version?: string; fixed?: string[] };
+export type ResultLocation = { path: string; line?: number; dependency?: string; ecosystem?: string; version?: string; fixed?: string[];
+  /** whether scanned source imports the package by name (absent: not determined) */
+  reachable?: "imported" | "not_imported_directly" };
 export type Severity = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
 export function advisorySeverity(value: unknown): Severity | undefined {
   if (value === "MODERATE") return "MEDIUM";

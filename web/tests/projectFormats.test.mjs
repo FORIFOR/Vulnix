@@ -233,3 +233,16 @@ test("a redirect finding carries a minimal fix diff; other findings carry none",
   assert.match(redirectRow.patch.diff, /^\+    return redirect\(_vulnix_safe_redirect\(to\)\)$/m);
   assert.equal(pathRow?.patch, undefined);
 });
+
+test("a dependency CVE says whether scanned code imports the package, never more", async () => {
+  const osv = [{ id: "GHSA-test-0001", aliases: ["CVE-2099-0001"], affected: [
+    { package: { ecosystem: "PyPI", name: "fixture-used" }, versions: ["1.0"] },
+    { package: { ecosystem: "PyPI", name: "fixture-other" }, versions: ["1.0"] }] }];
+  const report = await scanProject([fixture("requirements.txt", "fixture-used==1.0\nfixture-other==1.0\n"),
+    fixture("app/auth.py", "import fixture_used\nfrom os import path\n")], { vulnerabilities: [], osv });
+  const where = Object.fromEntries(report.rows.filter((r) => r.title === "CVE-2099-0001")
+    .flatMap((r) => r.locations ?? []).map((l) => [l.dependency, l.reachable ?? "not_determined"]));
+  assert.equal(where["fixture-used"], "imported");
+  // a distribution may be imported under another name: no match is not "unused"
+  assert.equal(where["fixture-other"], "not_determined");
+});
