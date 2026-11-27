@@ -2051,6 +2051,61 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
             self.assertIn("VULNIX_AGENT_DEFENSE_LOCAL", rep["reason"])
             self.assertEqual(self.req(p, "/agent-defense/status")[1]["available"], False)
 
+    def test_agent_check_runs_only_for_this_machine_and_stops_when_the_role_is_lost(self):
+        from aegis import agent_defense
+        p = self.login("padmin", "padmin-pw-1")
+        avail = {"available": True, "reason": None}
+
+        def call(path, body=None, host=None):
+            h = {"Content-Type": "application/json", "Cookie": p["cookie"]}
+            if body is not None:
+                h["X-Aegis-Request"] = "1"
+            if host:
+                h["Host"] = host
+            r = urllib.request.Request(self.root + path, json.dumps(body).encode() if body is not None else None, h)
+            with urllib.request.urlopen(r) as resp:
+                return json.load(resp)
+        with patch.object(agent_defense, "availability", return_value=avail), \
+                patch.object(agent_defense, "evaluate_settings") as run:
+            for path, body in (("/agent-defense/status", None), ("/agent-defense/evaluate", {"settings_json": None})):
+                with self.assertRaises(urllib.error.HTTPError) as err:   # a foreign Host never reaches the route
+                    call(path, body, host="vulnix.example")
+                err.exception.close()
+                self.assertEqual(err.exception.code, 421)
+            run.assert_not_called()
+            self.assertTrue(call("/agent-defense/status")["available"])
+            seen = {}
+
+            def fake(text, *, still_allowed):
+                seen["before"] = still_allowed()
+                self.req(p, "/auth/logout", {})          # the session ends during the run
+                seen["after"] = still_allowed()
+                return {"status": "stopped", "reason": seen["after"]}
+            run.return_value = {"status": "done", "results": []}
+            rep = call("/agent-defense/evaluate", {"settings_json": None, "settings_path": "app/.claude/settings.json"})
+            self.assertEqual(rep["settings_path"], "app/.claude/settings.json")   # result names its target
+            run.side_effect = fake
+            with self.assertRaises(urllib.error.HTTPError) as err:     # nor is the result handed to a lost session
+                call("/agent-defense/evaluate", {"settings_json": None})
+            err.exception.close()
+            self.assertEqual(err.exception.code, 401)
+            self.assertIsNone(seen["before"])
+            self.assertIn("失効", seen["after"])
+
+    def test_a2b_profile_draft_is_platform_config_held_until_an_admin_accepts_it(self):
+        from tests.test_a2b_profile import DRAFT
+        a = self.signup("alice")              # owner of her own org, no platform role
+        self.assertEqual(self.req(a, "/a2b/profile-draft", {"draft": DRAFT})[0], 403)
+        self.assertEqual(self.req({}, "/a2b/profile-draft", {"draft": DRAFT})[0], 401)
+        p = self.login("padmin", "padmin-pw-1")
+        code, rep = self.req(p, "/a2b/profile-draft", {"draft": {**DRAFT, "own_marker": "x"}})
+        self.assertEqual(code, 400)
+        code, rep = self.req(p, "/a2b/profile-draft", {"draft": DRAFT})
+        self.assertEqual((code, rep["saved"]), (200, "a2b_a2b_lab"))
+        saved = next(x for x in rep["profiles"] if x["id"] == "a2b_a2b_lab")
+        self.assertFalse(saved["accepted"])                     # nothing runs before acceptance
+        self.assertEqual(self.req(a, "/l2-profiles")[0], 403)        # nor is it readable by other orgs
+
     def test_pre_existing_accounts_keep_the_existing_workspace(self):
         p = self.login("padmin", "padmin-pw-1")
         self.assertEqual(self.add_site(p, "legacy.lab.test")[0], 200)

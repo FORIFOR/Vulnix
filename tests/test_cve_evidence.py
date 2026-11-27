@@ -39,6 +39,12 @@ class TestImpactChain(unittest.TestCase):
             self.assertEqual(with_reproduction(c, weak)["status"], "version_match")
         self.assertEqual(with_reproduction(self.chain("2.4.62"), "proven")["status"], "not_affected")
 
+    def test_a_fix_after_a_reproduction_keeps_both_results(self):
+        after = with_reproduction(with_reproduction(self.chain("2.4.49"), "proven"), "not_reproduced")
+        self.assertEqual(after["lab_history"], ["proven", "not_reproduced"])
+        self.assertTrue(after["fixed_after_reproduction"])
+        self.assertFalse(with_reproduction(self.chain("2.4.49"), "not_reproduced")["fixed_after_reproduction"])
+
 
 class TestLabChain(unittest.TestCase):
     """The lab's banner finding carries the chain; the approved reproduction completes it."""

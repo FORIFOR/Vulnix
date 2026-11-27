@@ -1754,6 +1754,23 @@ class AssessmentService:
             "spec_evidence": c["spec_evidence"],
         }
 
+    def save_a2b_profile_draft(self, draft: dict, actor: str) -> dict:
+        """Write an A2B profile built from the UI draft into the site-profile directory. It is
+        held like every site profile: nothing runs until an admin accepts its exact content."""
+        from .a2b_profile import build_profile, save_site_profile
+        profile = build_profile(draft)             # DraftError (a ValueError) for the user to correct
+        with self._lock:
+            if self.a.state == "running":
+                raise ValueError("診断実行中はプロファイルを保存できません")
+            self._audit_first("l2.profile_drafted", actor=actor, profile=profile["id"],
+                              hosts=profile["applies_to"]["hosts"],
+                              checks={c["id"]: c["spec_status"] for c in profile["checks"]})
+            save_site_profile(self.data_dir, profile)
+            self.l2 = self._read_l2_profiles()
+            self._apply_profile_acceptance_locked()
+        status = self.l2_profiles_status()
+        return {**status, "saved": profile["id"]}
+
     def accept_l2_profile(self, profile_id: str, sha256: str, actor: str) -> dict:
         """An admin accepts the exact content of a site profile. The file is read
         again now: what is accepted is what is on disk at this moment, and it has

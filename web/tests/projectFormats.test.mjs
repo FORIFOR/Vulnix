@@ -232,6 +232,12 @@ test("a redirect finding carries a minimal fix diff; other findings carry none",
   assert.match(redirectRow.patch.diff, /^-    return redirect\(to\)$/m);
   assert.match(redirectRow.patch.diff, /^\+    return redirect\(_vulnix_safe_redirect\(to\)\)$/m);
   assert.equal(pathRow?.patch, undefined);
+  // each patch names where and why, and keeps the sample-app check apart from this project
+  assert.equal(redirectRow.patch.file, "app.py");
+  assert.equal(redirectRow.patch.line, 8);
+  assert.match(redirectRow.patch.reason, /相対パス/);
+  assert.equal(redirectRow.patch.sampleVerified, true);
+  assert.equal(redirectRow.patch.projectRecheck, "cleared");
 });
 
 test("a dependency CVE says whether scanned code imports the package, never more", async () => {

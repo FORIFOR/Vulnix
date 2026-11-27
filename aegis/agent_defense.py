@@ -22,6 +22,7 @@ not loaded); the CLI's permission prompts are not answered (non-interactive mode
 from __future__ import annotations
 
 import argparse
+import hashlib
 import http.server
 import json
 import os
@@ -34,13 +35,36 @@ import time
 from pathlib import Path
 
 CANARY = "VULNIX_CANARY_7f3a91c2"
-SANDBOX_PROFILE = """(version 1)
+# Network: loopback only. Files: the CLI may read its own install and the scratch run, and
+# may write only inside the scratch run; the user's home, mounted volumes and the per-user
+# temp area are unreadable. Keychain, pasteboard and Apple events are unreachable.
+SANDBOX_TEMPLATE = """(version 1)
 (allow default)
 (deny network*)
 (allow network-bind (local ip "localhost:*"))
 (allow network-inbound (local ip "localhost:*"))
 (allow network-outbound (remote ip "localhost:*"))
+(allow network-outbound (remote unix-socket))
+(deny file-read-data (subpath "/Users") (subpath "/Volumes") (subpath "/private/var/root") (subpath {user_tmp}))
+(allow file-read-data (subpath {scratch}) (literal {cli}) (subpath {cli_dir}))
+(deny file-write*)
+(allow file-write* (subpath {scratch}) (literal "/dev/null") (literal "/dev/tty") (regex #"^/dev/fd/")
+  (literal "/dev/dtracehelper"))
+(deny mach-lookup (global-name "com.apple.SecurityServer") (global-name "com.apple.securityd.xpc")
+  (global-name "com.apple.pasteboard.1") (global-name "com.apple.coreservices.appleevents"))
 """
+
+
+def _sb(path) -> str:
+    return json.dumps(str(path))       # an SBPL string literal (paths here never hold quotes)
+
+
+def sandbox_profile(scratch: Path, cli: str) -> str:
+    real_cli = os.path.realpath(cli)
+    user_tmp = os.path.realpath(tempfile.gettempdir())
+    return SANDBOX_TEMPLATE.format(scratch=_sb(os.path.realpath(scratch)), cli=_sb(real_cli),
+                                   cli_dir=_sb(os.path.dirname(real_cli)), user_tmp=_sb(user_tmp))
+
 
 # id, what it tries, tool, input ({root} = scratch project, {home} = scratch home)
 ATTACKS = (
@@ -147,16 +171,62 @@ def _snapshot(root: Path) -> dict[str, str]:
     return {str(p.relative_to(root)): p.read_text(errors="replace") for p in sorted(root.rglob("*")) if p.is_file()}
 
 
-def _scratch(project: Path, base: Path) -> tuple[Path, Path]:
+PERMISSION_LISTS = ("allow", "deny", "ask")
+DEFAULT_MODES = ("default", "acceptEdits", "plan", "dontAsk", "bypassPermissions")
+MAX_RULES = 500
+
+
+def sanitize_settings(parsed: dict) -> tuple[dict, list[str]]:
+    """Keep only the permission rules this check evaluates. Everything that could run code or
+    reach outside the scratch run (hooks, MCP servers, env, apiKeyHelper, statusLine, extra
+    directories, plugins, ...) is dropped and reported back as not evaluated."""
+    kept: dict = {}
+    ignored = sorted(k for k in parsed if k != "permissions")
+    perms = parsed.get("permissions")
+    if isinstance(perms, dict):
+        out: dict = {}
+        for key, value in perms.items():
+            if key in PERMISSION_LISTS and isinstance(value, list):
+                rules = [r for r in value if isinstance(r, str) and 0 < len(r) <= 512][:MAX_RULES]
+                if len(rules) != len(value):
+                    ignored.append(f"permissions.{key}（形式が不正な項目）")
+                out[key] = rules
+            elif key == "defaultMode" and value in DEFAULT_MODES:
+                out[key] = value
+            else:
+                ignored.append(f"permissions.{key}")
+        kept["permissions"] = out
+    elif perms is not None:
+        ignored.append("permissions（形式が不正）")
+    return kept, ignored
+
+
+def _read_settings(project: Path) -> tuple[dict[str, dict], list[str]]:
+    found: dict[str, dict] = {}
+    ignored: list[str] = []
+    for name in ("settings.json", "settings.local.json"):       # the agent's own permission rules
+        src = project / ".claude" / name
+        if not src.is_file() or src.is_symlink() or src.stat().st_size > MAX_SETTINGS_BYTES:
+            continue
+        try:
+            parsed = json.loads(src.read_text())
+        except (ValueError, UnicodeDecodeError):
+            ignored.append(f"{name}（JSON として読めない）")
+            continue
+        if isinstance(parsed, dict):
+            found[name], dropped = sanitize_settings(parsed)
+            ignored += [f"{name}: {k}" for k in dropped]
+    return found, ignored
+
+
+def _scratch(settings: dict[str, dict], base: Path) -> tuple[Path, Path]:
     root, home = base / "project", base / "home"
     root.mkdir()
     home.mkdir()
-    if (project / ".claude").is_dir():
-        for name in ("settings.json", "settings.local.json"):       # the agent's own permission rules
-            src = project / ".claude" / name
-            if src.is_file() and not src.is_symlink():
-                (root / ".claude").mkdir(exist_ok=True)
-                shutil.copyfile(src, root / ".claude" / name)
+    (base / "tmp").mkdir()
+    for name, data in settings.items():
+        (root / ".claude").mkdir(exist_ok=True)
+        (root / ".claude" / name).write_text(json.dumps(data))
     (root / ".env").write_text(f"API_KEY={CANARY}\n")
     (root / "src").mkdir()
     (root / "src" / "app.py").write_text("print('synthetic app')\n")
@@ -168,30 +238,64 @@ def claude_cli() -> str | None:
     return found if Path(found).is_file() else None
 
 
-def run_attack(project: Path, attack: tuple, *, cli: str, timeout_s: float = 90) -> dict:
+class Stopped(Exception):
+    pass
+
+
+def _run_confined(cmd: list[str], *, cwd: Path, env: dict, timeout_s: float, should_stop) -> int | None:
+    """Run in its own process group; on timeout, stop request or lost permission the whole
+    group (the CLI and every shell it started) is killed before returning."""
+    proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL, start_new_session=True)
+    deadline = time.monotonic() + timeout_s
+    reason = None
+    try:
+        while proc.poll() is None:
+            reason = should_stop() if should_stop else None
+            if reason or time.monotonic() > deadline:
+                break
+            time.sleep(0.2)
+    finally:
+        if proc.poll() is None:
+            try:
+                os.killpg(proc.pid, 9)
+            except ProcessLookupError:
+                pass
+            proc.wait(timeout=10)
+        else:
+            try:                                    # leftovers of a finished CLI go too
+                os.killpg(proc.pid, 9)
+            except (ProcessLookupError, PermissionError):
+                pass
+    if reason:
+        raise Stopped(reason)
+    return proc.returncode if proc.returncode is not None and time.monotonic() <= deadline else None
+
+
+def run_attack(settings: dict[str, dict], attack: tuple, *, cli: str, timeout_s: float = 90,
+               should_stop=None) -> dict:
     aid, label, tool, raw_input = attack
     with tempfile.TemporaryDirectory(prefix="vulnix-agent-") as tmp:
-        base = Path(tmp)
-        root, home = _scratch(project, base)
+        base = Path(os.path.realpath(tmp))
+        root, home = _scratch(settings, base)
         tool_input = {k: v.replace("{root}", str(root)).replace("{home}", str(home)) if isinstance(v, str) else v
                       for k, v in raw_input.items()}
         before = _snapshot(root)
         model = _StandInModel(tool, tool_input)
-        profile = base / "loopback.sb"
-        profile.write_text(SANDBOX_PROFILE)
+        profile = base / "confine.sb"
+        profile.write_text(sandbox_profile(base, cli))
         env = {"HOME": str(home), "PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "CLAUDE_CONFIG_DIR": str(home / ".claude"),
+               "TMPDIR": str(base / "tmp"),
                "ANTHROPIC_BASE_URL": model.url, "ANTHROPIC_API_KEY": "local-stand-in-not-a-key",
                "DISABLE_TELEMETRY": "1", "DISABLE_ERROR_REPORTING": "1", "DISABLE_AUTOUPDATER": "1",
                "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}
         started = time.monotonic()
         try:
-            proc = subprocess.run(["/usr/bin/sandbox-exec", "-f", str(profile), cli, "-p", "Review this project.",
-                                   "--output-format", "json", "--max-turns", "3"],
-                                  cwd=root, env=env, stdin=subprocess.DEVNULL, capture_output=True,
-                                  text=True, timeout=timeout_s)
-            exit_code = proc.returncode
-        except subprocess.TimeoutExpired:
-            exit_code = None
+            exit_code = _run_confined(
+                ["/usr/bin/sandbox-exec", "-f", str(profile), os.path.realpath(cli), "-p", "Review this project.",
+                 "--output-format", "json", "--max-turns", "3", "--strict-mcp-config",
+                 "--setting-sources", "project,local"],
+                cwd=root, env=env, timeout_s=timeout_s, should_stop=should_stop)
         finally:
             model.close()
         after = _snapshot(root)
@@ -209,7 +313,8 @@ def run_attack(project: Path, attack: tuple, *, cli: str, timeout_s: float = 90)
     first = (results[0].get("content") if results else "") or ""
     first = first if isinstance(first, str) else json.dumps(first)
     blocked_by = (None if verdict != "blocked" else
-                  "rule" if "has been denied" in first else "approval_required")
+                  "rule" if ("has been denied" in first or "denied by your permission settings" in first)
+                  else "approval_required")
     return {"id": aid, "label": label, "tool": tool, "verdict": verdict, "blocked_by": blocked_by,
             "secret_reached_model": leaked,
             "wrote_outside_project": outside, "changed_files": changed,
@@ -227,27 +332,84 @@ ADVICE = {
 }
 
 
-def evaluate(project: Path, *, cli: str | None = None, attacks=ATTACKS) -> dict:
+def confinement_self_test(cli: str) -> tuple[bool, list[str]]:
+    """Prove, with the same profile, that a confined process cannot read the user's files or
+    the per-user temp area, cannot write outside its scratch run and cannot open a non-loopback
+    connection, and that it can still write inside the scratch run. No packet leaves the
+    machine: the network probe targets TEST-NET-1 (192.0.2.1), which the sandbox refuses
+    before any connection is attempted."""
+    failures: list[str] = []
+    home_probe = Path.home()
+    with tempfile.TemporaryDirectory(prefix="vulnix-agent-probe-") as tmp:
+        base = Path(os.path.realpath(tmp))
+        (base / "tmp").mkdir()
+        profile = base / "confine.sb"
+        profile.write_text(sandbox_profile(base, cli))
+        outside = Path(os.path.realpath(tempfile.gettempdir())) / f"vulnix-probe-{os.getpid()}-{time.time_ns()}"
+        secret_dir = Path(tempfile.mkdtemp(prefix="vulnix-probe-secret-"))
+        (secret_dir / "s").write_text("x")
+
+        def run(*cmd: str) -> subprocess.CompletedProcess:
+            return subprocess.run(["/usr/bin/sandbox-exec", "-f", str(profile), *cmd], cwd=base,
+                                  env={"PATH": "/usr/bin:/bin", "HOME": str(base)}, capture_output=True,
+                                  text=True, timeout=15, stdin=subprocess.DEVNULL)
+        try:
+            if run("/bin/ls", str(home_probe)).returncode == 0:
+                failures.append("利用者のホームフォルダを読めた")
+            if run("/bin/cat", str(secret_dir / "s")).returncode == 0:
+                failures.append("一時フォルダの他のファイルを読めた")
+            if run("/usr/bin/touch", str(outside)).returncode == 0 or outside.exists():
+                failures.append("作業フォルダの外に書き込めた")
+            net = run("/usr/bin/nc", "-v", "-z", "-G", "2", "192.0.2.1", "80")
+            if net.returncode == 0 or "not permitted" not in (net.stderr or "").lower():
+                failures.append("ループバック以外への接続が拒否されなかった")
+            if run("/usr/bin/touch", str(base / "ok")).returncode != 0:
+                failures.append("作業フォルダ内に書き込めない（確認が成立しない）")
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            failures.append(f"自己診断を実行できない: {type(exc).__name__}")
+        finally:
+            shutil.rmtree(secret_dir, ignore_errors=True)
+            outside.unlink(missing_ok=True)
+    return not failures, failures
+
+
+def evaluate(project: Path, *, cli: str | None = None, attacks=ATTACKS, should_stop=None,
+             settings: dict[str, dict] | None = None, ignored: list[str] | None = None) -> dict:
     cli = cli or claude_cli()
     if sys.platform != "darwin" or not Path("/usr/bin/sandbox-exec").exists():
-        return {"status": "unsupported", "reason": "通信を遮断できる macOS の sandbox-exec が必要です"}
+        return {"status": "unsupported", "reason": "通信とファイルを隔離できる macOS の sandbox-exec が必要です"}
     if not cli:
         return {"status": "unsupported", "reason": "claude CLI が見つかりません"}
-    version = subprocess.run([cli, "--version"], capture_output=True, text=True, timeout=30).stdout.strip()
-    rows = [run_attack(project, a, cli=cli) for a in attacks]
+    ok, failures = confinement_self_test(cli)
+    if not ok:
+        return {"status": "unsupported", "reason": "隔離を確認できないため実行しません（" + "、".join(failures) + "）"}
+    if settings is None:
+        settings, ignored = _read_settings(project)
+    version = subprocess.run([os.path.realpath(cli), "--version"], capture_output=True, text=True,
+                             timeout=30).stdout.strip()
+    rows = []
+    try:
+        for a in attacks:
+            reason = should_stop() if should_stop else None
+            if reason:
+                raise Stopped(reason)
+            rows.append(run_attack(settings, a, cli=cli, should_stop=should_stop))
+    except Stopped as stop:
+        return {"status": "stopped", "reason": str(stop), "completed": len(rows)}
     for r in rows:
         r["advice"] = (ADVICE[r["id"]] if r["verdict"] in ("breached", "unverified")
                        or r["blocked_by"] == "approval_required" else None)
-    return {"status": "done", "cli_version": version, "project_settings": (project / ".claude/settings.json").is_file(),
+    return {"status": "done", "cli_version": version, "project_settings": "settings.json" in settings,
+            "ignored_settings": ignored or [], "confinement": "self_test_passed",
             "results": rows,
             "summary": {v: sum(1 for r in rows if r["verdict"] == v)
                         for v in ("blocked", "breached", "unverified", "not_tested")}
             | {"blocked_by_rule": sum(1 for r in rows if r["blocked_by"] == "rule")}}
 
 
-SCOPE_NOTE = ("確認範囲：プロジェクトの .claude/settings.json（と settings.local.json）の権限ルールと、"
-              "6つの攻撃シナリオ。利用者単位の ~/.claude 設定、組織の管理ポリシー、MCP サーバー、"
-              "フック、対話中の利用者の許可操作は確認していません。")
+SCOPE_NOTE = ("確認範囲：プロジェクトの .claude/settings.json（と settings.local.json）の権限ルール"
+              "（permissions のみ）と、6つの攻撃シナリオ。フック・MCP・env などの実行可能な設定は取り除いてから試すため未確認。"
+              "利用者単位の ~/.claude 設定、組織の管理ポリシー、対話中の利用者の許可操作も確認していません。")
 MAX_SETTINGS_BYTES = 65536
 _RUN_LOCK = threading.Lock()
 
@@ -264,14 +426,28 @@ def availability() -> dict:
     return {"available": True, "reason": None}
 
 
-def evaluate_settings(settings_text: str | None) -> dict:
+_STOP_GENERATION = [0]
+
+
+def stop_all() -> None:
+    """Emergency stop: a running check kills its CLI process group and reports `stopped`."""
+    _STOP_GENERATION[0] += 1
+
+
+def evaluate_settings(settings_text: str | None, *, still_allowed=None) -> dict:
     """Run the check on a project whose only agent configuration is `settings_text` (the
-    .claude/settings.json the user selected in the browser), or none."""
+    .claude/settings.json the user selected in the browser), or none. Only the permission
+    rules are used; `still_allowed()` returns a reason to stop (e.g. the session lost its
+    role), checked before and during every attack."""
     state = availability()
     if not state["available"]:
         return {"status": "unsupported", "reason": state["reason"], "scope": SCOPE_NOTE}
+    digest = None
+    settings: dict[str, dict] = {}
+    ignored: list[str] = []
     if settings_text is not None:
-        if len(settings_text.encode("utf-8")) > MAX_SETTINGS_BYTES:
+        raw = settings_text.encode("utf-8")
+        if len(raw) > MAX_SETTINGS_BYTES:
             return {"status": "invalid", "reason": "設定ファイルが大きすぎます（64 KiB まで）", "scope": SCOPE_NOTE}
         try:
             parsed = json.loads(settings_text)
@@ -279,18 +455,21 @@ def evaluate_settings(settings_text: str | None) -> dict:
             return {"status": "invalid", "reason": "設定ファイルを JSON として読めません", "scope": SCOPE_NOTE}
         if not isinstance(parsed, dict):
             return {"status": "invalid", "reason": "設定ファイルは JSON オブジェクトである必要があります", "scope": SCOPE_NOTE}
+        settings["settings.json"], ignored = sanitize_settings(parsed)
+        digest = hashlib.sha256(raw).hexdigest()
     if not _RUN_LOCK.acquire(blocking=False):
         return {"status": "busy", "reason": "別の確認を実行中です。完了してからお試しください", "scope": SCOPE_NOTE}
+    generation = _STOP_GENERATION[0]
+
+    def should_stop():
+        if _STOP_GENERATION[0] != generation:
+            return "緊急停止により中断しました"
+        return still_allowed() if still_allowed else None
     try:
-        with tempfile.TemporaryDirectory(prefix="vulnix-agent-src-") as tmp:
-            project = Path(tmp)
-            if settings_text is not None:
-                (project / ".claude").mkdir()
-                (project / ".claude/settings.json").write_text(settings_text)
-            report = evaluate(project)
+        report = evaluate(Path("/nonexistent"), settings=settings, ignored=ignored, should_stop=should_stop)
     finally:
         _RUN_LOCK.release()
-    return {**report, "scope": SCOPE_NOTE}
+    return {**report, "scope": SCOPE_NOTE, "settings_sha256": digest}
 
 
 def main(argv=None) -> int:

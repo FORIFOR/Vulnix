@@ -9,11 +9,15 @@ type AgentRow = {
   id: string; label: string; verdict: "blocked" | "breached" | "unverified" | "not_tested";
   blocked_by: "rule" | "approval_required" | null; advice: string | null; secret_reached_model: boolean;
 };
-type AgentReport = { status: string; reason?: string; scope?: string; cli_version?: string; results?: AgentRow[] };
+type AgentReport = { status: string; reason?: string; scope?: string; cli_version?: string; results?: AgentRow[];
+  ignored_settings?: string[]; settings_path?: string | null; target?: string };
 
 /** One view of the four defense areas for the selected project, from what was actually measured. */
 export default function DefenseOverview({ rows, files, signedIn }: { rows: Row[] | null; files: File[]; signedIn: boolean }) {
-  const [agent, setAgent] = useState<AgentReport | null>(null);
+  // a result belongs to the folder (and sign-in) it was run for: anything else hides it
+  const [run, setRun] = useState<{ files: File[]; signedIn: boolean; report: AgentReport } | null>(null);
+  const agent = run && run.files === files && run.signedIn === signedIn ? run.report : null;
+  const setAgent = (report: AgentReport | null) => setRun(report ? { files, signedIn, report } : null);
   const count = (pred: (r: Row) => boolean) => rows?.filter(pred).length ?? 0;
   const area = (category: string) => ({
     action: count((r) => r.category === category && r.status === "action"),
@@ -53,8 +57,8 @@ export default function DefenseOverview({ rows, files, signedIn }: { rows: Row[]
         <div className="rounded-xl border border-dashed border-zinc-300 bg-white p-3 dark:border-zinc-700 dark:bg-zinc-900">
           <p className="font-semibold">A2B対策</p>
           <p className="text-xs text-zinc-500">API認証・認可・組織分離</p>
-          <p className="mt-2 text-xs">フォルダ診断では実行しません。所有確認したサイトまたは検証ラボのAPIに対し、
-            テスト用アカウントで確認します。{signedIn ? <Link className="underline" href="/assets">サイト・APIの診断へ</Link> : "ログイン後に使えます。"}</p>
+          <p className="mt-2 text-xs">API 定義やルート定義から確認項目の候補を作ります（通信なし）。実行時の確認は、
+            管理者が承認した検証プロファイルと試験用アカウントで行います。<Link className="underline" href="/api-check">APIの安全性を確認へ</Link></p>
         </div>
       </div>
       <AgentDefensePanel files={files} signedIn={signedIn} report={agent} onReport={setAgent} />
@@ -86,7 +90,8 @@ function AgentDefensePanel({ files, signedIn, report, onReport }: {
     setError("");
     try {
       const text = settings ? await settings.text() : null;     // only this file is sent, to this machine's Vulnix
-      onReport(await postJSON<AgentReport>("/api/agent-defense/evaluate", { settings_json: text }));
+      const path = settings ? (settings.webkitRelativePath || settings.name) : null;
+      onReport(await postJSON<AgentReport>("/api/agent-defense/evaluate", { settings_json: text, settings_path: path }));
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -125,6 +130,10 @@ function AgentDefensePanel({ files, signedIn, report, onReport }: {
           </li>;
         })}
       </ul>}
+      {report?.results && <p className="text-xs text-zinc-500">対象：{report.settings_path ?? "設定なし"}
+        {report.cli_version ? `（Claude Code ${report.cli_version}、隔離の自己診断に合格した環境で実行）` : ""}</p>}
+      {!!report?.ignored_settings?.length && <p className="text-xs text-amber-700 dark:text-amber-300">
+        実行できる設定は取り除いて試しました（未確認）：{report.ignored_settings.join("、")}</p>}
       {(report?.scope || status?.scope) && <p className="text-xs text-zinc-500">{report?.scope ?? status?.scope}</p>}
     </div>
   );

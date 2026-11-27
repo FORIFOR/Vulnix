@@ -8,7 +8,14 @@ export function advisorySeverity(value: unknown): Severity | undefined {
   if (value === "MODERATE") return "MEDIUM";
   if (value === "LOW" || value === "MEDIUM" || value === "HIGH" || value === "CRITICAL") return value;
 }
-export type FixCandidate = { file: string; diff: string; patched: string; changedLines: number };
+export type FixCandidate = {
+  file: string; line: number; kind: string; reason: string; diff: string; patched: string; changedLines: number;
+  /** The fix method passes the attack and normal-request checks on the sample apps (real Flask, CI). */
+  sampleVerified: boolean;
+  /** This project: the patched file was analysed again; "cleared" = the same flow is no longer found.
+   *  Static only: nothing was run against the user's project. */
+  projectRecheck: "cleared" | "still_found";
+};
 type Result = { severity?: Severity; location?: ResultLocation; locations?: ResultLocation[]; category: Category; title: string; status: Status; evidence: string; risk: string; fix: string; retest: string; patch?: FixCandidate };
 type RecordValue = Record<string, unknown>;
 

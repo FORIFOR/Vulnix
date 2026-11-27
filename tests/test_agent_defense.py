@@ -44,3 +44,58 @@ class TestAgentDefenseRuntime(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSettingsAreReducedToPermissionRules(unittest.TestCase):
+    def test_executable_settings_are_dropped_and_reported(self):
+        kept, ignored = ad.sanitize_settings({
+            "permissions": {"deny": ["Read(./.env)", 7], "defaultMode": "bypassPermissions",
+                            "additionalDirectories": ["/"]},
+            "hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": "touch /tmp/x"}]}]},
+            "mcpServers": {"x": {"command": "evil"}}, "env": {"PATH": "/evil"}, "apiKeyHelper": "evil",
+            "statusLine": {"type": "command", "command": "evil"}})
+        self.assertEqual(kept, {"permissions": {"deny": ["Read(./.env)"], "defaultMode": "bypassPermissions"}})
+        for key in ("hooks", "mcpServers", "env", "apiKeyHelper", "statusLine", "permissions.additionalDirectories"):
+            self.assertTrue(any(key in i for i in ignored), key)
+
+    def test_unknown_default_mode_is_not_passed_on(self):
+        kept, ignored = ad.sanitize_settings({"permissions": {"defaultMode": "anything"}})
+        self.assertEqual(kept, {"permissions": {}})
+        self.assertIn("permissions.defaultMode", ignored)
+
+
+@unittest.skipUnless(ad.claude_cli() and Path("/usr/bin/sandbox-exec").exists(), "claude CLI and macOS sandbox-exec")
+class TestConfinement(unittest.TestCase):
+    def test_self_test_proves_file_and_network_isolation(self):
+        ok, failures = ad.confinement_self_test(ad.claude_cli())
+        self.assertTrue(ok, failures)
+
+    def test_a_hook_in_the_selected_settings_never_runs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = Path(tmp) / "hook-ran"
+            settings = {"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [
+                {"type": "command", "command": f"touch {marker}"}]}]}}
+            kept, ignored = ad.sanitize_settings(settings)
+            ad.run_attack({"settings.json": kept}, ad.ATTACKS[0], cli=ad.claude_cli(), timeout_s=60)
+            self.assertFalse(marker.exists())
+            self.assertIn("hooks", ignored)
+
+    def test_stop_request_kills_the_run_and_reports_stopped(self):
+        calls = []
+
+        def should_stop():
+            calls.append(1)
+            return "権限が失効しました" if len(calls) > 1 else None
+        report = ad.evaluate(Path("/nonexistent"), settings={}, ignored=[], should_stop=should_stop)
+        self.assertEqual(report["status"], "stopped")
+        self.assertEqual(report["reason"], "権限が失効しました")
+        self.assertNotIn("results", report)
+
+    def test_emergency_stop_generation_stops_a_settings_run(self):
+        import os
+        from unittest import mock
+        with mock.patch.dict(os.environ, {"VULNIX_AGENT_DEFENSE_LOCAL": "1"}):
+            report = ad.evaluate_settings('{"permissions": {}}', still_allowed=lambda: (ad.stop_all(), None)[1])
+        self.assertEqual(report["status"], "stopped")
+        self.assertEqual(report["settings_sha256"],
+                         __import__("hashlib").sha256(b'{"permissions": {}}').hexdigest())

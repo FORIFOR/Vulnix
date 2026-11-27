@@ -33,6 +33,7 @@ function UnstoppedWorkersAlert() {
 const NAV = [
   { href: "/dashboard", label: "ホーム", icon: "⌂" },
   { href: "/assets", label: "サイト", icon: "▤" },
+  { href: "/api-check", label: "API診断", icon: "⇄" },
   { href: "/assessments/scan_001", label: "診断ワークスペース", icon: "◎" },
   { href: "/settings", label: "設定", icon: "⚙" },
 ];

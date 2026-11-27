@@ -43,6 +43,7 @@ test("pages that skip the login redirect and the app chrome", () => {
 
 test("only the in-browser folder scan is usable signed out; the internet public mode still redirects it", () => {
   assert.equal(isGuestPage("/quick-defense"), true);
-  for (const p of ["/assets", "/settings", "/quick-defense/x", "/quick-defense/", "/QUICK-DEFENSE", "/"]) assert.equal(isGuestPage(p), false, p);
+  assert.equal(isGuestPage("/api-check"), true);      // static analysis only; saving needs a platform role
+  for (const p of ["/assets", "/settings", "/quick-defense/x", "/quick-defense/", "/QUICK-DEFENSE", "/api-check/x", "/"]) assert.equal(isGuestPage(p), false, p);
   assert.equal(publicDecision("/quick-defense"), "redirect");
 });

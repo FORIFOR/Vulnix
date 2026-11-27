@@ -125,7 +125,7 @@ ARTEX_LLM_PLANS_PLATFORM_PER_HOUR = int(os.environ.get("VULNIX_ARTEX_LLM_PLANS_P
 # every organization, so they are decided by the account's own (global) roles.
 PLATFORM_POST_ROUTES = frozenset({"/api/l2-profiles/accept", "/api/router/verify", "/api/cve/sync",
                                   "/api/system/verify-controls", "/api/cve/real-software-verify",
-                                  "/api/agent-defense/evaluate"})
+                                  "/api/agent-defense/evaluate", "/api/a2b/profile-draft"})
 # Routes that start a verification job (spawn workers / probes on this machine).
 JOB_ROUTES = frozenset({"/api/system/verify-controls", "/api/cve/real-software-verify",
                         "/api/agent-defense/evaluate"})
@@ -449,6 +449,13 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 if auth_hdr.startswith("Bearer "):
                     token = auth_hdr[7:].strip()
             return ops.resolve(token)
+
+        def _loopback_client(self) -> bool:
+            """The agent check runs only for a browser on this machine talking to this machine."""
+            host = (self.headers.get("Host") or "").rsplit(":", 1)[0].strip("[]").lower()
+            return (self.client_address[0] in ("127.0.0.1", "::1", "::ffff:127.0.0.1")
+                    and host in ("127.0.0.1", "localhost", "::1")
+                    and not self.headers.get("X-Forwarded-For"))
 
         def _public_session(self, sess):
             return {"operator": sess.operator, "roles": list(sess.roles),
@@ -1003,8 +1010,11 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 return self._json(405, {"error": "この操作は POST で実行してください"}, [("Allow", "POST")])
             if p == "/api/agent-defense/status":
                 from . import agent_defense
+                state = agent_defense.availability()
+                if state["available"] and not self._loopback_client():
+                    state = {"available": False, "reason": "この端末以外からの接続では実行しません"}
                 return self._authorized_platform_read(sess, lambda: self._json(
-                    200, {**agent_defense.availability(), "scope": agent_defense.SCOPE_NOTE}))
+                    200, {**state, "scope": agent_defense.SCOPE_NOTE}))
             if p == "/api/cve/status":
                 status_payload = svc.cve_monitor.status()
                 if enforce_read_auth:
@@ -2148,6 +2158,16 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         return self._json(403, {"error": "プロファイルの承認には管理者の権限が必要です"})
                     result = svc.accept_l2_profile(str(body.get("id", "")), str(body.get("sha256", "")), actor)
                     return self._authorized_platform_read(sess, lambda: self._json(200, result), admin=True)
+                elif p == "/api/a2b/profile-draft":
+                    if not ({"approver", "admin"} & set(sess.roles)):
+                        paudit.record("l2.profile_draft_denied", actor=actor)
+                        return self._json(403, {"error": "検証プロファイルの保存には承認責任者または管理者の権限が必要です"})
+                    draft = body.get("draft")
+                    try:
+                        result = svc.save_a2b_profile_draft(draft if isinstance(draft, dict) else {}, actor)
+                    except ValueError as exc:
+                        return self._json(400, {"error": str(exc)[:300]})
+                    return self._authorized_platform_read(sess, lambda: self._json(200, result))
                 elif p in ("/api/router/verify", "/api/cve/sync") and not ({"approver", "admin"} & set(sess.roles)):
                     # one spawns the planner CLI and an outbound model call, the other replaces feed data
                     paudit.record("system.job_denied", actor=actor, job=p)
@@ -2168,7 +2188,21 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         # network sandbox, scratch copy); only the selected settings text is sent
                         from . import agent_defense
                         text = body.get("settings_json")
-                        rep = agent_defense.evaluate_settings(text if isinstance(text, str) else None)
+                        if not self._loopback_client():
+                            rep = {"status": "unsupported", "scope": agent_defense.SCOPE_NOTE,
+                                   "reason": "この端末以外からの接続では実行しません"}
+                        else:
+                            def still_allowed():
+                                # re-checked during the run: a logout, expiry or lost role stops it
+                                cur = self._session()
+                                if not cur or cur.operator != sess.operator:
+                                    return "ログインが失効したため中断しました"
+                                if not ({"approver", "admin"} & set(cur.roles)):
+                                    return "権限が変更されたため中断しました"
+                                return None
+                            rep = agent_defense.evaluate_settings(text if isinstance(text, str) else None,
+                                                                  still_allowed=still_allowed)
+                        rep["settings_path"] = str(body.get("settings_path") or "")[:256] or None
                         paudit.record("agent_defense.evaluated", actor=actor, status=rep.get("status"),
                                       summary=rep.get("summary"))
                     else:
@@ -2223,6 +2257,8 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     with live_grant_roles(sess, getattr(self, "_bound_org", DEFAULT_ORG)):
                         svc.resume(actor)
                 elif p == base + "/emergency-stop":
+                    from . import agent_defense
+                    agent_defense.stop_all()            # a running agent check dies with it
                     stop_report = svc.emergency_stop(actor)
                     if not ops.trusted():
                         return self._json(200, {"stopped": True, "details_unavailable": True})

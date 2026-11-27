@@ -83,8 +83,12 @@ def with_reproduction(entry: dict, verdict: str | None) -> dict:
     status = ("reproduced" if rep == "proven" else "not_reproduced" if rep == "not_reproduced" else
               "conditions_unmet" if False in base.values() else
               "conditions_met" if all(v is True for v in base.values()) else "version_match")
+    history = list(entry.get("lab_history") or [])
+    if rep:
+        history.append(rep)        # kept, so "reproduced, then not after the fix" stays visible
     return {**entry, "reproduction": rep, "status": status, "status_label": LABELS[status],
-            "confirmed_impact": status == "reproduced"}
+            "confirmed_impact": status == "reproduced", "lab_history": history[-10:],
+            "fixed_after_reproduction": rep == "not_reproduced" and "proven" in history[:-1]}
 
 
 __all__ = ["CONDITIONS", "LABELS", "fixed_versions", "impact_chain", "with_reproduction"]

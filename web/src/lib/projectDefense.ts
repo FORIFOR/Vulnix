@@ -3,6 +3,16 @@ import { parseAllDocuments } from "yaml";
 import { inspectRuntimeFile, type PlannedCheck } from "./runtimePlan";
 import { pythonFlow, type PythonFlowKind } from "./pythonFlow";
 import { generateFixes } from "./fixPatch";
+
+// fix methods checked on the sample apps with real Flask (tests/fixtures/fix_eval, CI web job)
+const SAMPLE_VERIFIED = new Set(["redirect", "path", "sql", "command", "xss"]);
+const FIX_REASON: Record<string, string> = {
+  redirect: "外部から渡された戻り先を、同じサイト内の相対パスだけに限定する",
+  path: "結合したパスを実体パスに直し、許可したフォルダの外なら拒否する",
+  sql: "要求データを SQL 文に連結せず、プレースホルダーとパラメーターで渡す",
+  command: "要求データをシェルの1つの引数として引用し、コマンドとして解釈させない",
+  xss: "要求データを HTML として出力する前にエスケープする",
+};
 import { affects, collectPackages, compareVersions, propertyLine, sbomComponents, type Package, type Location } from "./projectPackages";
 import { advisorySeverity, checkCloudFormation, checkControls, checkLockfile, record, type ResultLocation } from "./quickDefense";
 
@@ -631,7 +641,11 @@ export async function scanProject(files: ProjectFile[], feed: unknown, onProgres
       addRows(...flows.map((flow) => ({
         ...(() => {
           const fix = fixes.find((f) => f.ok && f.finding.line === flow.line && f.finding.kind === flow.kind);
-          return fix && fix.ok ? { patch: { file: path, diff: fix.diff, patched: fix.patched, changedLines: fix.changedLines } } : {};
+          if (!fix || !fix.ok) return {};
+          const again = pythonFlow(fix.patched).some((f) => f.kind === flow.kind && f.func === flow.func && f.sink === flow.sink);
+          return { patch: { file: path, line: flow.line, kind: flow.kind, reason: FIX_REASON[flow.kind] ?? "",
+            diff: fix.diff, patched: fix.patched, changedLines: fix.changedLines,
+            sampleVerified: SAMPLE_VERIFIED.has(flow.kind), projectRecheck: (again ? "still_found" : "cleared") as "still_found" | "cleared" } };
         })(),
         ...item("Claude Code", PYTHON_FLOW[flow.kind][0], "action",
           `ソースの${flow.line}行目。関数 ${flow.func} の中で、要求データが ${flow.sink} に渡る経路を静的に確認しました（同じ関数内の追跡。実行時の到達性・入力検証は未確認）。`,

@@ -12,7 +12,7 @@ import { catalogSources, osvSources, type CatalogSource } from "@/lib/catalogUpd
 import type { ScanProgress } from "@/lib/projectDefense";
 import { readCatalogCache, type CatalogFailure } from "@/lib/catalogCache";
 import { advisorySeverityLabels, groupDependencyFindings, sortByAdvisorySeverity } from "@/lib/resultPresentation";
-import { categories, checkControls, checkCves, demoEvidence, labels, record } from "@/lib/quickDefense";
+import { categories, checkControls, checkCves, demoEvidence, labels, record, type FixCandidate } from "@/lib/quickDefense";
 
 const button = "rounded-lg border border-zinc-300 px-3 py-2 text-sm font-medium dark:border-zinc-700";
 const primary = "rounded-lg bg-zinc-900 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50 dark:bg-white dark:text-zinc-900";
@@ -444,7 +444,7 @@ function StatusBar({ rows, label, active, onSelect }: {
 }
 
 /** A minimal fix as a diff. Vulnix never writes the project: the user copies or saves it. */
-function PatchView({ patch }: { patch: { file: string; diff: string; patched: string; changedLines: number } }) {
+function PatchView({ patch }: { patch: FixCandidate }) {
   const [copied, setCopied] = useState(false);
   const save = () => {
     const url = URL.createObjectURL(new Blob([patch.diff], { type: "text/x-diff" }));
@@ -456,7 +456,10 @@ function PatchView({ patch }: { patch: { file: string; diff: string; patched: st
   };
   return <div className="mt-3 space-y-2 rounded-lg border border-emerald-200 bg-emerald-50/60 p-3 text-sm dark:border-emerald-900 dark:bg-emerald-950/30">
     <div className="flex flex-wrap items-center justify-between gap-2">
-      <p className="font-semibold">修正案（{patch.changedLines}行の差分）</p>
+      <div>
+        <p className="font-semibold">修正案（{patch.changedLines}行の差分）</p>
+        <p className="font-mono text-xs text-zinc-600 dark:text-zinc-400">{patch.file}:{patch.line}</p>
+      </div>
       <div className="flex gap-2">
         <button type="button" className="rounded-md border border-zinc-300 bg-white px-2.5 py-1 text-xs transition-colors hover:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-900"
           onClick={() => { void navigator.clipboard?.writeText(patch.diff).then(() => { setCopied(true); window.setTimeout(() => setCopied(false), 1500); }); }}>
@@ -468,6 +471,19 @@ function PatchView({ patch }: { patch: { file: string; diff: string; patched: st
     <pre className="max-h-72 overflow-auto rounded-md bg-white p-2 font-mono text-xs leading-5 dark:bg-zinc-900">{patch.diff.split("\n").map((line, i) =>
       <span key={i} className={line.startsWith("+") && !line.startsWith("+++") ? "block bg-emerald-100 dark:bg-emerald-900/40"
         : line.startsWith("-") && !line.startsWith("---") ? "block bg-red-100 dark:bg-red-900/40" : "block"}>{line || " "}</span>)}</pre>
-    <p className="text-xs text-zinc-600 dark:text-zinc-400">元のフォルダは変更していません。適用後に「修正後のフォルダを選ぶ」で同じ検査を再実行すると、この項目が消えるか確認できます。同一サイト内の相対パスへの戻りはそのまま動きます。</p>
+    {patch.reason && <p className="text-xs"><span className="text-zinc-500">変更理由 </span>{patch.reason}</p>}
+    <ul className="space-y-1 text-xs" aria-label="この修正案の検証状態">
+      <li className="flex items-start gap-2"><span className={`mt-1 h-2 w-2 shrink-0 rounded-full ${patch.sampleVerified ? "bg-emerald-500" : "border border-amber-500"}`} />
+        <span><span className="text-zinc-500">サンプルアプリ </span>{patch.sampleVerified
+          ? "同じ修正方式で、本物の Flask 上で攻撃が止まり正常な動作が保たれることを確認済み"
+          : "未確認"}</span></li>
+      <li className="flex items-start gap-2"><span className={`mt-1 h-2 w-2 shrink-0 rounded-full ${patch.projectRecheck === "cleared" ? "bg-emerald-500" : "bg-red-500"}`} />
+        <span><span className="text-zinc-500">このプロジェクト（静的） </span>{patch.projectRecheck === "cleared"
+          ? "修正後のコードを再解析し、同じ経路は検出されなくなった"
+          : "修正後のコードでも同じ経路が残る。手作業での修正が必要"}</span></li>
+      <li className="flex items-start gap-2"><span className="mt-1 h-2 w-2 shrink-0 rounded-full border border-amber-500" />
+        <span><span className="text-zinc-500">このプロジェクト（実行時） </span>未確認。適用して動作を確かめてから、「修正後のフォルダを選ぶ」で再検査してください</span></li>
+    </ul>
+    <p className="text-xs text-zinc-600 dark:text-zinc-400">差分はファイル単位です（同じファイルにある他の項目の修正も含みます）。元のフォルダは変更していません。</p>
   </div>;
 }
