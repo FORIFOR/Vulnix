@@ -267,6 +267,48 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
             with patch.dict(os.environ, {"VULNIX_PERSONAL_OWNERSHIP_ORGS": f"{personal},default"}):
                 self.assertEqual(self.req(owner, "/auth/me", org=personal)[1]["ownership_traffic_mode"], "approved")
 
+    def test_personal_ownership_requests_require_a_live_platform_operator(self):
+        owner = self.signup("requestowner")
+        stranger = self.signup("requeststranger")
+        operator = self.login("padmin", "padmin-pw-1")
+        org = owner["orgs"][0]["id"]
+        _, invite = self.reg.store.create_invite(org, "requestowner", ["admin"])
+        self.reg.store.accept_invite(invite, "padmin")
+        _, invite = self.reg.store.create_invite(org, "requestowner", ["admin"])
+        self.reg.store.accept_invite(invite, "requeststranger")
+        proof = {"url": "https://request.example.test/", "method": "dns_txt"}
+        endpoint = "/assets/ownership-traffic"
+        env = {"VULNIX_OWNERSHIP_TRAFFIC": "hybrid", "VULNIX_PERSONAL_OWNERSHIP_ORGS": org,
+               "VULNIX_PERSONAL_OWNERSHIP_REQUESTS": "1"}
+        with patch.dict(os.environ, env), patch.multiple(
+                "aegis.server", REAL_SERVICE_DIAGNOSIS=False, REAL_SITE_L1_ONLY=False), patch(
+                "aegis.assessment.verify_ownership_challenge", return_value={
+                    "verified": True, "method": "dns_txt", "verified_at": time.time(), "detail": "synthetic lookup",
+                }) as verifier:
+            self.assertEqual(self.req(owner, "/assets/challenge", {"url": proof["url"]}, org)[0], 200)
+            code, request = self.req(owner, endpoint, {**proof, "action": "request"}, org)
+            self.assertEqual(code, 200)
+            self.assertEqual(request["status"], "pending")
+            self.assertFalse(request["can_verify"])
+            approve = {**proof, "action": "approve", "id": request["id"]}
+            self.assertEqual(self.req(owner, endpoint, approve, org)[0], 403)
+            self.assertEqual(self.req(stranger, endpoint, approve, org)[0], 403)
+            self.assertEqual(self.req(operator, endpoint, approve, stranger["orgs"][0]["id"])[0], 403)
+            self.assertEqual(self.req(owner, "/assets/verify-ownership", proof, org)[0], 403)
+            verifier.assert_not_called()
+            self.assertTrue(self.req(operator, endpoint, {**proof, "action": "status"}, org)[1]["can_decide"])
+            self.assertEqual(self.req(operator, endpoint, approve, org)[0], 200)
+            self.assertEqual(self.req(stranger, "/assets/verify-ownership", proof, org)[0], 403)
+            self.assertEqual(self.req(owner, "/assets/verify-ownership", {**proof, "method": "well_known"}, org)[0], 403)
+            self.assertTrue(self.req(owner, endpoint, {**proof, "action": "status"}, org)[1]["can_verify"])
+            self.assertTrue(self.req(owner, "/assets/verify-ownership", proof, org)[1]["verified"])
+            verifier.assert_called_once()
+            self.assertIsNone(self.reg.service(org)._external_entry("request.example.test"))
+            code, revoked = self.req(operator, endpoint, {**approve, "action": "revoke"}, org)
+            self.assertEqual(code, 200, revoked)
+            self.assertEqual(self.req(owner, "/assets/verify-ownership", proof, org)[0], 403)
+            verifier.assert_called_once()
+
     def test_personal_ownership_policy_is_limited_and_revocable(self):
         alice, outsider = self.signup("personalalice"), self.signup("personaloutsider")
         org = alice["orgs"][0]["id"]

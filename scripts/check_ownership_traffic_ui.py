@@ -20,6 +20,7 @@ from playwright.sync_api import expect, sync_playwright
 from aegis.assessment import AssessmentService
 from aegis.operators import OperatorStore, hash_password
 from aegis.server import make_handler
+from aegis.tenancy import OrgStore, TenantRegistry, default_members_from
 
 ROOT = Path(__file__).resolve().parents[1]
 TARGET = "https://ownership.example.test/"
@@ -28,7 +29,9 @@ TARGET = "https://ownership.example.test/"
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--evidence", type=Path)
-    parser.add_argument("--preapproved", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--preapproved", action="store_true")
+    mode.add_argument("--managed", action="store_true")
     args = parser.parse_args()
     if args.evidence:
         args.evidence.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -44,6 +47,7 @@ def main() -> None:
         seed.write_text(json.dumps({"operators": operators}))
         service = AssessmentService(data, 18081, real_site_read_only=True)
         cleanup.callback(service.close)
+        initial_service = service
         environment = {"VULNIX_OWNERSHIP_TRAFFIC": "approved"}
         if args.preapproved:
             policy = data / "ownership-policy.json"
@@ -56,10 +60,23 @@ def main() -> None:
             ]))
             policy.chmod(0o600)
             environment.update(VULNIX_OWNERSHIP_TRAFFIC="preapproved", VULNIX_OWNERSHIP_POLICY_FILE=str(policy))
+        ops = OperatorStore(seed)
+        registry = None
+        personal_org = None
+        if args.managed:
+            store = OrgStore(data / "orgs.json", bootstrap_members=lambda: default_members_from(ops))
+            registry = TenantRegistry(store, service, lambda path: AssessmentService(path, 18081), data)
+            cleanup.callback(registry.close_all)
+            personal_org = store.create_org("Browser acceptance", "runner")
+            _, invitation = store.create_invite(personal_org, "runner", ["admin"])
+            store.accept_invite(invitation, "reviewer")
+            service = registry.service(personal_org)
+            environment.update(VULNIX_OWNERSHIP_TRAFFIC="hybrid", VULNIX_PERSONAL_OWNERSHIP_ORGS=personal_org,
+                               VULNIX_PERSONAL_OWNERSHIP_REQUESTS="1")
         cleanup.enter_context(patch.dict(os.environ, environment))
         cleanup.enter_context(patch.multiple("aegis.server", REAL_SITE_L1_ONLY=False, REAL_SERVICE_DIAGNOSIS=False))
         calls = cleanup.enter_context(patch("aegis.ownership.default_dns_txt_lookup"))
-        backend = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(service, OperatorStore(seed)))
+        backend = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(initial_service, ops, tenancy=registry))
         backend.daemon_threads = True
         cleanup.callback(backend.server_close)
         threading.Thread(target=backend.serve_forever, daemon=True).start()
@@ -112,6 +129,9 @@ def main() -> None:
                 page.get_by_label("パスワード", exact=True).fill(password)
                 page.get_by_role("button", name="ログイン", exact=True).click()
                 page.wait_for_url("**/dashboard")
+                if personal_org:
+                    page.get_by_label("組織", exact=True).select_option(personal_org)
+                    expect(page.get_by_label("組織", exact=True)).to_have_value(personal_org)
                 return page
 
             def capture(page, label):
@@ -160,9 +180,10 @@ def main() -> None:
             # The target remains visible while using the setup controls further down.
             expect(chooser.get_by_text(target, exact=True)).to_be_in_viewport()
             chooser.locator(".overflow-y-auto").evaluate("el => { el.scrollTop = 0; }")
-            expect(chooser.get_by_role("button", name="管理者に所有確認の許可を依頼する")).to_be_in_viewport()
+            request_name = "運営者に確認通信の許可を申請する" if args.managed else "管理者に所有確認の許可を依頼する"
+            expect(chooser.get_by_role("button", name=request_name)).to_be_in_viewport()
             capture(user_page, "before-request")
-            chooser.get_by_role("button", name="管理者に所有確認の許可を依頼する").click()
+            chooser.get_by_role("button", name=request_name).click()
             expect(chooser.get_by_text("所有確認用の通信 申請中", exact=True)).to_be_visible()
             capture(user_page, "pending")
             calls.assert_not_called()
@@ -170,17 +191,24 @@ def main() -> None:
             admin_page = sign_in(reviewer, "reviewer")
             admin_page.get_by_role("button", name="所有確認を続ける", exact=False).click()
             admin_page.get_by_role("radio", name="DNS", exact=True).check()
-            admin_page.get_by_role("button", name="この方法を15分間承認する").click()
+            approve_name = "この方法を15分間・最大3回許可する" if args.managed else "この方法を15分間承認する"
+            admin_page.get_by_role("button", name=approve_name).click()
             expect(chooser.get_by_text("所有確認用の通信 承認済み", exact=True)).to_be_visible(timeout=10000)
             capture(user_page, "approved")
             calls.assert_not_called()
             calls.return_value = [asset["challenge"]["dns_txt_value"]]
             chooser.get_by_role("button", name="確認する", exact=True).click()
             expect(chooser.get_by_text("所有確認が完了しました", exact=False)).to_be_visible()
-            expect(chooser.get_by_role("button", name="診断範囲を保存", exact=True)).to_be_disabled()
+            if not args.managed:
+                expect(chooser.get_by_role("button", name="診断範囲を保存", exact=True)).to_be_disabled()
             calls.assert_called_once_with(asset["challenge"]["dns_txt_name"])
             assert service._external_entry(asset["name"]) is None
             capture(user_page, "ownership-only")
+            if args.managed:
+                admin_page.get_by_role("button", name="確認通信の許可を取り消す").click()
+                expect(admin_page.get_by_text("所有確認用の通信 拒否", exact=True)).to_be_visible()
+                print(json.dumps({"width": width, "registration_to_proof_seconds": round(time.monotonic() - started, 3),
+                                  "diagnosis_granted": False}))
             runner.close()
             reviewer.close()
         print(json.dumps({"viewport_widths": [390, 1440], "ownership_verified": True,

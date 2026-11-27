@@ -363,7 +363,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
         return bool(latest and "approver" in (latest.get("after") or []))
 
     @contextlib.contextmanager
-    def live_grant_roles(sess, org_id: str, *, approver: bool = False, reader: bool = False):
+    def live_grant_roles(sess, org_id: str, *, approver: bool = False, reader: bool = False, include_platform: bool = False):
         """Serialize a signed ownership/scope grant with logout and role removal.
 
         External ownership lookups happen before this guard is acquired. The short
@@ -381,7 +381,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     raise ApproverRequired("この組織で所有確認を行う権限がありません")
                 if approver and "approver" not in roles:
                     raise ApproverRequired("診断範囲の確定には承認責任者の権限が必要です")
-                yield roles
+                yield (roles, current.roles) if include_platform else roles
 
     def live_request_allowed(sess, org_id: str, *, approver: bool = False) -> bool:
         # Used between turns of a long planner or just before a foreground
@@ -478,79 +478,115 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 return "expired"
             return record["status"]
 
+        @staticmethod
+        def _managed_ownership(mode, method):
+            return (mode == "preapproved" and method in ownership_policy.METHODS
+                    and os.environ.get("VULNIX_OWNERSHIP_TRAFFIC") == "hybrid"
+                    and os.environ.get("VULNIX_PERSONAL_OWNERSHIP_REQUESTS") == "1")
+
         def _ownership_request(self, service, sess, body):
             mode = _ownership_traffic_mode(getattr(self, "_bound_org", None))
             if mode not in ("approved", "preapproved"):
                 return self._json(409, {"error": "所有確認の通信申請は運営者設定が必要です"})
             action = body.get("action")
-            fields = {"action", "url", "method", "id"} if action in ("approve", "reject") else {"action", "url", "method"}
-            if set(body) != fields or action not in ("status", "request", "approve", "reject"):
+            deciding = ("approve", "reject", "revoke")
+            fields = {"action", "url", "method", "id"} if action in deciding else {"action", "url", "method"}
+            if set(body) != fields or action not in ("status", "request", *deciding):
                 return self._json(400, {"error": "所有確認の操作が不正です"})
             org = getattr(self, "_bound_org", DEFAULT_ORG)
-            if mode == "preapproved":
-                if action != "status":
-                    return self._json(409, {"error": "通信許可は運営者が事前に設定します"})
-                with live_grant_roles(sess, org), service._lock:
-                    key, _, stopped = self._ownership_target(service, str(body["url"]), body["method"])
-                    now = time.time()
+            managed = self._managed_ownership(mode, body["method"])
+            with live_grant_roles(sess, org, include_platform=True) as (roles, platform_roles), service._lock, ownership_lock:
+                key, epoch, stopped = self._ownership_target(service, str(body["url"]), body["method"])
+                now = time.time()
+                if mode == "preapproved":
                     policies = ownership_policy.load()
                     available = [policy.method for policy in policies.values()
                                  if (policy.org, policy.url) == (key[0], key[2])
                                  and policy.not_before <= now < policy.expires_at
                                  and not stopped and ownership_policy.has_budget(service.data_dir, policy)]
                     policy = policies.get((key[0], key[2], key[3]))
-                    can_verify = key[3] in available
-                    if policy is None:
-                        status = "not_requested"
-                    elif now >= policy.expires_at:
-                        status = "expired"
-                    elif now < policy.not_before:
-                        status = "scheduled"
-                    else:
-                        status = "approved" if can_verify else "unavailable"
-                    result = {"status": status, "stopped": stopped, "can_decide": False,
-                              "can_verify": can_verify, "available_methods": available,
-                              "expires_at": policy.expires_at if policy else None}
-                return self._authorized_org_read(sess, org, lambda _: self._json(200, result), reader=False)
-            with live_grant_roles(sess, org) as roles, service._lock, ownership_lock:
-                key, epoch, stopped = self._ownership_target(service, str(body["url"]), body["method"])
-                now = time.time()
-                record = ownership_requests.get(key)
+                    if policy or not managed:
+                        if action != "status":
+                            return self._json(409, {"error": "この対象と方法の通信許可は運営者設定で管理します"})
+                        can_verify = key[3] in available
+                        if policy is None:
+                            status = "not_requested"
+                        elif now >= policy.expires_at:
+                            status = "expired"
+                        elif now < policy.not_before:
+                            status = "scheduled"
+                        else:
+                            status = "approved" if can_verify else "unavailable"
+                        result = {"status": status, "stopped": stopped, "can_decide": False,
+                                  "can_verify": can_verify, "available_methods": available, "managed": managed,
+                                  "expires_at": policy.expires_at if policy else None}
+                        previous_timeout = self.connection.gettimeout()
+                        self.connection.settimeout(2.0)
+                        try:
+                            return self._json(200, result)
+                        finally:
+                            self.connection.settimeout(previous_timeout)
+                    if not key[2].startswith("https://"):
+                        raise ValueError("この通信申請はHTTPSの対象だけに利用できます")
+                request_key = (mode, key)
+                record = ownership_requests.get(request_key)
                 status = self._ownership_status(record, epoch, now)
-                if action in ("approve", "reject"):
-                    if "admin" not in roles or not record or record["requester"] == sess.operator:
-                        raise ApproverRequired("依頼者とは別の組織管理者が操作してください")
-                    if record["id"] != body["id"] or status != "pending" or stopped:
-                        raise ValueError("この申請は承認可能な状態ではありません")
-                    service._audit_first("asset.ownership_traffic_decided", actor=sess.operator,
-                                         asset_id=key[1], method=key[3], request_id=record["id"], decision=action)
-                    status = "approved" if action == "approve" else "rejected"
-                    record.update(status=status, expires_at=now + (_OWNERSHIP_APPROVAL_TTL if action == "approve" else _OWNERSHIP_REQUEST_TTL))
+                eligible_operator = "admin" in roles and (not managed or "admin" in platform_roles)
+                separate_operator = bool(record and record["requester"] != sess.operator and eligible_operator)
+                if action in deciding:
+                    if not separate_operator:
+                        raise ApproverRequired("依頼者とは別の、必要な権限を持つ運営者が操作してください"
+                                               if managed else "依頼者とは別の組織管理者が操作してください")
+                    if action == "revoke":
+                        if not managed or record["id"] != body["id"] or status != "approved":
+                            raise ValueError("この通信許可は取り消し可能な状態ではありません")
+                        status = "rejected"
+                        record.update(status=status, expires_at=now + _OWNERSHIP_REQUEST_TTL)
+                        error = service._audit_reduction("asset.ownership_traffic_revoked", actor=sess.operator,
+                                                         asset_id=key[1], method=key[3], request_id=record["id"])
+                        if error:
+                            raise error
+                    else:
+                        if record["id"] != body["id"] or status != "pending" or stopped:
+                            raise ValueError("この申請は承認可能な状態ではありません")
+                        service._audit_first("asset.ownership_traffic_decided", actor=sess.operator,
+                                             asset_id=key[1], method=key[3], request_id=record["id"], decision=action)
+                        status = "approved" if action == "approve" else "rejected"
+                        record.update(status=status, expires_at=now + (_OWNERSHIP_APPROVAL_TTL if action == "approve" else _OWNERSHIP_REQUEST_TTL))
                 elif action == "request" and status not in ("pending", "approved"):
                     if stopped:
                         raise ValueError("緊急停止中は所有確認を申請できません")
                     for expired in [k for k, v in ownership_requests.items() if now - v["expires_at"] > _OWNERSHIP_REQUEST_TTL]:
                         del ownership_requests[expired]
-                    if len(ownership_requests) >= 5000 and key not in ownership_requests:
+                    if len(ownership_requests) >= 5000 and request_key not in ownership_requests:
                         raise ValueError("所有確認の申請件数が上限に達しました")
                     status = "pending"
                     record = {"id": secrets.token_urlsafe(18), "requester": sess.operator, "status": status,
-                              "expires_at": now + _OWNERSHIP_REQUEST_TTL, "epoch": epoch}
+                              "expires_at": now + _OWNERSHIP_REQUEST_TTL, "epoch": epoch, "remaining": 3}
                     service._audit_first("asset.ownership_traffic_requested", actor=sess.operator,
                                          asset_id=key[1], method=key[3], request_id=record["id"])
-                    ownership_requests[key] = record
-                result = {"status": status, "stopped": stopped,
-                          "can_decide": bool(record and status == "pending" and "admin" in roles
-                                             and record["requester"] != sess.operator and not stopped),
-                          "can_verify": bool(record and status == "approved"
-                                             and record["requester"] == sess.operator and not stopped)}
+                    ownership_requests[request_key] = record
+                can_verify = bool(record and status == "approved" and record["requester"] == sess.operator
+                                  and not stopped and (not managed or record["remaining"] > 0))
+                result = {"status": status, "stopped": stopped, "can_decide": bool(separate_operator and status == "pending" and not stopped),
+                          "can_verify": can_verify, "managed": managed,
+                          "can_revoke": bool(managed and separate_operator and status == "approved")}
+                if managed:
+                    result.update(available_methods=available + ([key[3]] if can_verify else []),
+                                  can_request=not stopped and status in ("not_requested", "expired", "rejected"))
+                    if record and status == "approved" and record["remaining"] == 0:
+                        result["status"] = "unavailable"
                 if record:
                     result.update(id=record["id"], expires_at=record["expires_at"])
             return self._authorized_org_read(sess, org, lambda _: self._json(200, result), reader=False)
 
         def _require_ownership_traffic(self, service, sess, value, method, expected=None, *, consume=False):
             mode = _ownership_traffic_mode(getattr(self, "_bound_org", None))
-            if isinstance(expected, tuple) and mode != "preapproved":
+            managed = self._managed_ownership(mode, method)
+            saved_method = expected[0] if isinstance(expected, tuple) else None
+            if ((expected is not None and mode not in ("approved", "preapproved"))
+                    or (saved_method == "managed" and not managed)
+                    or (saved_method == "preapproved" and mode != "preapproved")):
                 raise ApproverRequired("所有確認の通信許可が変更されました。もう一度お試しください")
             if mode == "off":
                 raise ApproverRequired("この環境では所有確認用の通信が停止中です")
@@ -563,25 +599,36 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             if mode == "preapproved":
                 claim = "所有確認は運営者が事前に許可した対象・方法・期間に限られます"
                 policy = ownership_policy.load().get((key[0], key[2], method))
-                if stopped or not policy or not policy.not_before <= time.time() < policy.expires_at:
-                    raise ApproverRequired(claim)
-                current = ("preapproved", key, epoch, policy)
-                if expected is not None and expected != current:
-                    raise ApproverRequired(claim)
-                if (consume or expected is None) and not ownership_policy.has_budget(service.data_dir, policy, consume=consume):
-                    raise ApproverRequired("所有確認の試行上限に達したか、許可の状態を確認できません")
-                if consume:
-                    service._audit_first("asset.ownership_traffic_preapproved", actor=sess.operator,
-                                         asset_id=key[1], method=method, policy_id=policy.id)
-                    # Fail closed if the operator revoked the permission while the attempt was recorded.
-                    self._require_ownership_traffic(service, sess, value, method, current)
-                return current
+                if policy or saved_method == "preapproved" or not managed:
+                    if stopped or not policy or not policy.not_before <= time.time() < policy.expires_at:
+                        raise ApproverRequired(claim)
+                    current = ("preapproved", key, epoch, policy)
+                    if expected is not None and expected != current:
+                        raise ApproverRequired(claim)
+                    if (consume or expected is None) and not ownership_policy.has_budget(service.data_dir, policy, consume=consume):
+                        raise ApproverRequired("所有確認の試行上限に達したか、許可の状態を確認できません")
+                    if consume:
+                        service._audit_first("asset.ownership_traffic_preapproved", actor=sess.operator,
+                                             asset_id=key[1], method=method, policy_id=policy.id)
+                        # Fail closed if the operator revoked the permission while the attempt was recorded.
+                        self._require_ownership_traffic(service, sess, value, method, current)
+                    return current
             with ownership_lock:
-                record = ownership_requests.get(key)
+                record = ownership_requests.get((mode, key))
                 if (stopped or self._ownership_status(record, epoch, time.time()) != "approved"
-                        or record["requester"] != sess.operator or (expected is not None and record["id"] != expected)):
+                        or record["requester"] != sess.operator):
                     raise ApproverRequired("この対象・方法には有効な所有確認の通信承認がありません")
-                return record["id"]
+                current = ("managed", key, epoch, record["id"]) if managed else record["id"]
+                if expected is not None and expected != current:
+                    raise ApproverRequired("所有確認の通信許可が変更されました。もう一度お試しください")
+                if managed and (consume or expected is None):
+                    if not record["remaining"]:
+                        raise ApproverRequired("所有確認の試行上限に達しました")
+                    if consume:
+                        service._audit_first("asset.ownership_traffic_managed", actor=sess.operator,
+                                             asset_id=key[1], method=method, request_id=record["id"])
+                        record["remaining"] -= 1
+                return current
 
         def _touches_real_site(self, p: str, osvc) -> bool:
             """Requests that would send traffic to a registered real site."""
