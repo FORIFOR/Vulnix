@@ -2,6 +2,7 @@
 import argparse
 import hashlib
 import json
+import os
 import shutil
 import socket
 import subprocess
@@ -55,7 +56,14 @@ class _Served:
         self.proc.wait(timeout=5)
 
 
-@unittest.skipUnless(shutil.which("node"), "node is required for the browser-side patch generator")
+# The generator is browser TypeScript; it needs node and web/node_modules (typescript). The Web
+# CI job installs both and sets VULNIX_REQUIRE_FIX_PATCH_TEST=1, where a skip is a failure.
+_READY = bool(shutil.which("node")) and (ROOT / "web/node_modules/typescript").is_dir()
+if os.environ.get("VULNIX_REQUIRE_FIX_PATCH_TEST") == "1" and not _READY:
+    raise RuntimeError("node and web/node_modules are required for this test")
+
+
+@unittest.skipUnless(_READY, "node and web/node_modules are required for the browser-side patch generator")
 class TestGeneratedRedirectFix(unittest.TestCase):
     def test_the_fix_is_minimal_applied_to_a_copy_and_reverified_with_the_same_probe(self):
         original = (APP / "app.py").read_bytes()

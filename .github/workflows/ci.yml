@@ -178,6 +178,10 @@ jobs:
       - name: Run Frontend Unit Tests
         run: npm test
 
+      - name: Generated fix applied to a copy and re-verified with the same probe
+        working-directory: .
+        run: VULNIX_NO_ENV_LOCAL=1 VULNIX_REQUIRE_FIX_PATCH_TEST=1 python3 -m unittest -v tests.test_fix_patch_redirect
+
       - name: Lint
         run: npm run lint
 
