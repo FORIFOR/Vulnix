@@ -327,9 +327,14 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
         {report && <p className="text-sm">
           {report.scanProgress.batches}バッチで処理。
           {report.read}ファイルの読取を試行。対象外 {report.skipped}件 ／ ファイル上限 {report.omitted}件 ／
-          未対応形式または固定版なし {report.unsupported}件 ／ 読取失敗 {report.unreadable}件 ／ 解析上限 {report.skippedRules}か所 ／ 未処理 {report.pending}件 ／ 保存上限による未表示 {report.unretained}件。
+          一部の検査を適用できなかったファイル {report.unsupported}件 ／ 読取失敗 {report.unreadable}件 ／ 解析上限 {report.skippedRules}か所 ／ 未処理 {report.pending}件 ／ 保存上限による未表示 {report.unretained}件。
           言語 {report.languages.join("・") || "不明"} ／ フレームワーク {report.frameworks.join("・") || "不明"} ／ ロック形式 {report.lockKinds}種 ／ 照合対象の固定依存関係 {report.packageCount}件。
         </p>}
+        {report && <ul className="list-inside list-disc space-y-1 text-sm" aria-label="検査の内訳">
+          <li>データフローを解析したJavaScript・TypeScript {report.coverage.source}件。共通検査のみのソース {report.coverage.noSourceRules}件。</li>
+          <li>固定版を照合した依存資料 {report.coverage.packageFiles}件。固定版不明のPython依存指定 {report.coverage.unresolvedDependencies}行。構文・記法で読むことができなかった設定 {report.coverage.parseFailed}件。</li>
+          <li>今回の照合候補はOSV {report.coverage.osvAdvisories}件、NVD {report.coverage.nvdAdvisories}件。カタログ全体の収録件数は上の取得状況で確認できます。</li>
+        </ul>}
         {report && report.incomplete.length > 0 && <details className="text-sm">
           <summary>検査が完了しなかったファイル（最大100件）</summary>
           <ul>{report.incomplete.map(({ path, reason }) => <li key={path}><bdi>{path}</bdi> ／ {reason}</li>)}</ul>

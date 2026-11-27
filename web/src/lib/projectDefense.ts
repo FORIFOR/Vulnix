@@ -10,6 +10,7 @@ type Result = ReturnType<typeof checkControls>[number];
 type Component = { location?: Location; part: string; vendor: string; product: string; version: string };
 const excluded = /^(?:\.|node_modules$|vendor$|dist$|build$|coverage$|target$|__pycache__$|secrets?$)/i;
 const source = /\.(?:[cm]?[jt]s|[jt]sx|py|rb|php|go|rs|java|cs)$/i;
+const sbomName = /(?:sbom|cyclonedx|spdx).*\.json$|(?:^|\.)bom\.json$/i;
 const artifact = /^(?:gitleaks-redacted\.json|package(?:-lock)?\.json|npm-shrinkwrap\.json|requirements[^/]*\.txt|pyproject\.toml|poetry\.lock|uv\.lock|yarn\.lock|pnpm-lock\.yaml|go\.(?:mod|sum)|Cargo\.(?:toml|lock)|Gemfile(?:\.lock)?|composer\.(?:json|lock)|pom\.xml|Dockerfile(?:\.[\w-]+)?|.*(?:sbom|cloudformation|template|cfn|manifest|k8s|policy).*\.json)$/i;
 
 export function classifyPath(path: string) {
@@ -20,7 +21,7 @@ export function classifyPath(path: string) {
   if (name === "settings.json" && parts.length === 2 && parts[1] === ".claude") return { name, priority: 0 };
   if (parts.slice(1).some((part) => excluded.test(part)) ||
       excluded.test(name) || /(?:secret|credential|private.?key)|(?:\.min\.|\.generated\.)/i.test(name)) return null;
-  if (artifact.test(name) || /\.(?:ya?ml|tf\.json|tf)$/i.test(name)) return { name, priority: 0 };
+  if (sbomName.test(name) || artifact.test(name) || /\.(?:ya?ml|tf\.json|tf)$/i.test(name)) return { name, priority: 0 };
   if (source.test(name)) return { name, priority: /auth|access|db|sql|xml|render|route|handler|webhook|session|middleware/i.test(name) ? 1 : 2 };
   return null;
 }
@@ -473,7 +474,9 @@ export async function scanProject(files: ProjectFile[], feed: unknown, onProgres
       rows.push(row);
     }
   }
-  addRows(...checkControls(undefined));
+  addRows(...checkControls(undefined).map((row) => ({ ...row,
+    evidence: "この項目を判定できる実効設定やレビュー済みテストの結果は、フォルダ診断からは取得していません。",
+  })));
   const paths = new Set(candidates.map((candidate) => candidate.path));
   paths.delete("gitleaks-redacted.json");
   const runtimePlan = new Map<PlannedCheck["id"], PlannedCheck>();
@@ -485,6 +488,8 @@ export async function scanProject(files: ProjectFile[], feed: unknown, onProgres
   const packages = new Map<string, Package[]>();
   let packageCount = 0;
   let unsupported = 0;
+  const coverage = { source: 0, noSourceRules: 0, parseFailed: 0, packageFiles: 0,
+    unresolvedDependencies: 0, sbomWithoutPackages: 0, osvAdvisories: 0, nvdAdvisories: 0 };
   let skippedRules = 0;
   let unreadable = 0;
   let read = 0;
@@ -500,7 +505,7 @@ export async function scanProject(files: ProjectFile[], feed: unknown, onProgres
   onProgress?.(progress());
   for (const { file, path, name, priority } of candidates) {
     if (performance.now() >= deadline) break;
-    const dependency = /^(?:package-lock\.json|npm-shrinkwrap\.json|requirements.*\.txt|go\.mod|inventory\.sbom\.json)$/i.test(name);
+    const dependency = sbomName.test(name) || /^(?:package-lock\.json|npm-shrinkwrap\.json|requirements.*\.txt|go\.mod)$/i.test(name);
     const tooLarge = file.size > (dependency ? limits.dependencyBytes : limits.fileBytes);
     const bytesToRead = tooLarge ? 0 : file.size;
     if (batchFiles === limits.files || batchBytes + bytesToRead > limits.bytes || batches === 0) {
@@ -525,9 +530,9 @@ export async function scanProject(files: ProjectFile[], feed: unknown, onProgres
       if (incomplete.length < 100) incomplete.push({ path, reason: "読取失敗" });
       continue;
     }
-    const notParsed = () => {
+    const notParsed = (reason: string) => {
       unsupported++;
-      if (incomplete.length < 100) incomplete.push({ path, reason: "未対応形式または固定版なし" });
+      if (incomplete.length < 100) incomplete.push({ path, reason });
     };
     const ext = name.split(".").at(-1)?.toLowerCase() ?? "";
     const language: Record<string, string> = { ts: "TypeScript", tsx: "TypeScript", js: "JavaScript", jsx: "JavaScript",
@@ -535,7 +540,7 @@ export async function scanProject(files: ProjectFile[], feed: unknown, onProgres
     if (priority > 0 && language[ext]) languages.add(language[ext]);
     if (/lock|shrinkwrap|\.sum$/i.test(name)) lockKinds.add(ext === "lock" ? "lock" : name.toLowerCase());
     let documents: unknown[];
-    try { documents = configDocuments(name, content); } catch { notParsed(); continue; }
+    try { documents = configDocuments(name, content); } catch { coverage.parseFailed++; notParsed("構文エラーまたは未対応の記法"); continue; }
     const parsed = documents[0];
     const manifestDependencies = name === "package.json" ? Object.keys(record(record(parsed).dependencies)) :
       /^requirements[^/]*\.txt$/i.test(name) ? content.split("\n").flatMap((line) => {
@@ -545,7 +550,7 @@ export async function scanProject(files: ProjectFile[], feed: unknown, onProgres
     inspectRuntimeFile(runtimePlan, path, content, manifestDependencies);
     if (name === "gitleaks-redacted.json") {
       const imported = redactedGitleaks(parsed, paths);
-      if (!Array.isArray(parsed)) notParsed();
+      if (!Array.isArray(parsed)) notParsed("対応する監査記録の形式ではない");
       if (Array.isArray(parsed) && parsed.length > 100) skippedRules++;
       addRows(...imported);
       continue;
@@ -566,8 +571,27 @@ export async function scanProject(files: ProjectFile[], feed: unknown, onProgres
     }
     if (dependency) {
       const dependencies = collectPackages(name, path, content, parsed);
-      if (!dependencies.length && (!/\.sbom\.json$/i.test(name) || !componentsFrom(name, content, parsed, path).length)) notParsed();
-      if (name === "inventory.sbom.json" && sbomComponents(parsed).total > dependencies.length) skippedRules++;
+      if (dependencies.length) coverage.packageFiles++;
+      else if (!sbomName.test(name) || !componentsFrom(name, content, parsed, path).length)
+        notParsed(sbomName.test(name) ? "対応する版・識別子のあるSBOM項目なし" : "照合可能な固定版なし");
+      if (/^requirements.*\.txt$/i.test(name)) {
+        const selectedLines = new Set(dependencies.map((entry) => entry.line));
+        const unresolved = content.split(/\r?\n/).filter((line, index) =>
+          /^\s*(?:[a-z0-9_.]|-(?:r|c)\s|--(?:requirement|constraint)\b)/i.test(line) &&
+          !selectedLines.has(index + 1)).length;
+        coverage.unresolvedDependencies += unresolved;
+        if (unresolved && dependencies.length && incomplete.length < 100)
+          incomplete.push({ path, reason: `固定版を特定できない依存指定が ${unresolved} 行` });
+      }
+      if (sbomName.test(name)) {
+        const unmatched = Math.max(0, sbomComponents(parsed).total - dependencies.length);
+        coverage.sbomWithoutPackages += unmatched;
+        if (unmatched) {
+          skippedRules++;
+          if (dependencies.length && incomplete.length < 100)
+            incomplete.push({ path, reason: `パッケージ名と固定版を照合できないSBOM項目が ${unmatched} 件（製品識別子での照合は別）` });
+        }
+      }
       for (const entry of dependencies) {
         if (packageCount >= 12000) { skippedRules++; break; }
         const key = `${entry.ecosystem}:${entry.name}`;
@@ -577,8 +601,11 @@ export async function scanProject(files: ProjectFile[], feed: unknown, onProgres
         packageCount++;
       }
       if (Object.keys(record(record(parsed).packages)).length > 10000) skippedRules++;
-    } else if (/\.(?:lock|sum|toml|tf|xml)$/.test(name) || (priority > 0 && !/^[cm]?[jt]sx?$/i.test(ext))) {
-      notParsed();
+    } else if (priority > 0 && !/^[cm]?[jt]sx?$/i.test(ext)) {
+      coverage.noSourceRules++;
+      notParsed("この言語にはデータフロー検査がない（共通検査のみ）");
+    } else if (/\.(?:lock|sum|toml|tf|xml)$/.test(name)) {
+      notParsed("この形式から依存関係の固定版や設定を抽出できない");
     }
     for (const document of documents) {
       addRows(...deploymentChecks(name, content, document, path), ...configurationChecks(document, path));
@@ -604,6 +631,7 @@ export async function scanProject(files: ProjectFile[], feed: unknown, onProgres
       }
     } else if (componentsFrom(name, content, parsed, path).length) skippedRules++;
     if (/^[cm]?[jt]sx?$/i.test(ext)) {
+      coverage.source++;
       const findings = jsFlow(name, content, path);
       if (findings.length === 10) skippedRules++;
       addRows(...findings);
@@ -623,6 +651,8 @@ export async function scanProject(files: ProjectFile[], feed: unknown, onProgres
   const nvdEntries = new Map([...array(parsedFeed.vulnerabilities), ...array(indexed?.vulnerabilities)].map((entry) => [record(entry.cve).id, entry]));
   const nvdRows = projectCves({ vulnerabilities: [...nvdEntries.values()] }, inventories);
   const osvEntries = new Map([...array(osvFeed), ...array(indexed?.osv)].map((entry) => [entry.id, entry]));
+  coverage.nvdAdvisories = nvdEntries.size;
+  coverage.osvAdvisories = osvEntries.size;
   const osvRows = osvEntries.size ? osvCves([...osvEntries.values()], packages, deadline, () => { catalogIncomplete = true; }) : [];
   const matched = new Map<string, Result>();
   for (const row of [...nvdRows, ...osvRows]) {
@@ -663,5 +693,5 @@ export async function scanProject(files: ProjectFile[], feed: unknown, onProgres
   }
   return { rows, read, omitted, unsupported, unreadable, skippedRules, skipped: excluded,
     pending: candidates.length - processed, incomplete, unretained, scanProgress, catalogIncomplete, runtimePlan: [...runtimePlan.values()],
-    languages: [...languages], frameworks: [...frameworks], lockKinds: lockKinds.size, packageCount };
+    languages: [...languages], frameworks: [...frameworks], lockKinds: lockKinds.size, packageCount, coverage };
 }
