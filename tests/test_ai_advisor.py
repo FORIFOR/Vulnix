@@ -848,7 +848,8 @@ class TestServiceIntegration(RealServiceBase):
         self.svc._real_site_safe_ai = True
         item = _ok_item(remediation=[_rem("CSPを適切に設定する", "set_csp")],
                         next_checks=[_chk("confirm_fix", "l1_recheck_security_headers")])
-        reply = json.dumps({"choices": [{"message": {"content": _advice_reply([item])([])}}]}).encode()
+        content = json.dumps({"advice": [item]}, ensure_ascii=False)
+        reply = json.dumps({"choices": [{"finish_reason": "stop", "message": {"content": content}}]}).encode()
         env = {"VULNIX_ADVISOR_PRICE_MODEL": "mock",
                "VULNIX_ADVISOR_MAX_COST_USD": "0.50",
                "VULNIX_ADVISOR_USD_PER_1K_INPUT": "0.10",
@@ -884,7 +885,8 @@ class TestServiceIntegration(RealServiceBase):
         self.svc._real_site_safe_ai = True
         item = _ok_item(remediation=[_rem("CSPを適切に設定する", "set_csp")],
                         next_checks=[_chk("confirm_fix", "l1_recheck_security_headers")])
-        reply = json.dumps({"choices": [{"message": {"content": _advice_reply([item])([])}}]}).encode()
+        content = json.dumps({"advice": [item]}, ensure_ascii=False)
+        reply = json.dumps({"choices": [{"finish_reason": "stop", "message": {"content": content}}]}).encode()
         env = {"VULNIX_ADVISOR_PRICE_MODEL": "mock", "VULNIX_ADVISOR_MAX_COST_USD": "0.50",
                "VULNIX_ADVISOR_USD_PER_1K_INPUT": "0.10", "VULNIX_ADVISOR_USD_PER_1K_OUTPUT": "0.10",
                **platform_env}
