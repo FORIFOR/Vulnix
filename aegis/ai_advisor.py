@@ -76,7 +76,9 @@ SEVERITIES = ("critical", "high", "medium", "low", "info")
 VERDICTS = ("candidate", "detected", "proven", "not_reproduced", "unverified", "fixed")
 VERDICT_BASES = ("l1_observation", "l2_reproduction", "demo_fixture")
 _CVE_RE = re.compile(r"^CVE-\d{4}-\d{4,7}$")
-_CVE_IN_TEXT_RE = re.compile(r"CVE-[0-9]{4}-[0-9]{4,}", re.ASCII | re.IGNORECASE)
+# Any dash-like character or spacing between the parts, after NFKC normalization.
+_CVE_SEP = r"[\s\-\u2010-\u2015\u2212\u30fc_]*"
+_CVE_IN_TEXT_RE = re.compile(rf"CVE{_CVE_SEP}([0-9]{{4}}){_CVE_SEP}([0-9]{{4,}})", re.IGNORECASE)
 MAX_FINDINGS = 20
 
 
@@ -292,7 +294,7 @@ def _text_problem(text: str, *, cited_cves: set[str], overclaim_ok: bool, rules)
     if leak_reasons(text):
         return f"leak: {leak_reasons(text)}"
     n = _norm(text)
-    if any(cve.upper() not in cited_cves for cve in _CVE_IN_TEXT_RE.findall(n)):
+    if any(f"CVE-{year}-{number}" not in cited_cves for year, number in _CVE_IN_TEXT_RE.findall(n)):
         return "unfaithful_cite: CVE in text was not cited for this finding"
     if _TOOLING_RE.search(n):
         return "text: commands or attack tools"

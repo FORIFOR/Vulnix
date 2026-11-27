@@ -170,6 +170,8 @@ class TestPayloadIsAnAllowList(unittest.TestCase):
             ({**valid, "cites": ["rule", "verdict"]}, "risk_explanation"),
             ({**valid, "risk_explanation": "ＣＶＥ－２０２４－１２３４にも注意してください。"}, "risk_explanation"),
             ({**valid, "remediation": [_rem("CVE-2024-1234に対応するため設定を見直す。")]}, "remediation"),
+            ({**valid, "risk_explanation": "CVE 2024 1234 にも注意してください。"}, "risk_explanation"),
+            ({**valid, "risk_explanation": "CVE\u20102024\u22121234 にも注意してください。"}, "risk_explanation"),
         ]
         for item, field in cases:
             with self.subTest(field=field):

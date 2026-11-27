@@ -45,10 +45,9 @@ test("an old access error cannot revoke a newer request or applied snapshot", ()
   assert.equal(shouldApplyRequestFailure(2, 2, 2), true);
 });
 
-test("ownership status is re-read only while it can change without the user", () => {
-  assert.equal(needsOwnershipRefresh({ status: "pending", can_verify: false }), true);
-  assert.equal(needsOwnershipRefresh({ status: "approved", can_verify: true }), true);           // grant can lapse
+test("ownership status is re-read unless only the user's own attempts can change it", () => {
+  for (const status of ["pending", "not_requested", "scheduled", "approved", "expired", "unavailable"])
+    assert.equal(needsOwnershipRefresh({ status, can_verify: status === "approved" }), true);
   assert.equal(needsOwnershipRefresh({ status: "approved", can_verify: true, self_service: true }), false);
-  assert.equal(needsOwnershipRefresh({ status: "not_requested", can_verify: false }), false);
   assert.equal(needsOwnershipRefresh({ status: "unavailable", can_verify: false, self_service: true }), false);
 });

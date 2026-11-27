@@ -60,9 +60,9 @@ export function eventDecision(seq: unknown, seenSeq: number): "drop" | "refetch"
   return seq > seenSeq + 1 ? "refetch" : "apply";
 }
 
-/** Ownership-traffic status needs re-reading only while another person's decision
- *  is pending or a time-limited grant can lapse. A standing self-service budget
- *  changes only through the user's own attempts, which trigger a re-read. */
-export function needsOwnershipRefresh(value: { status: string; can_verify: boolean; self_service?: boolean }): boolean {
-  return value.status === "pending" || (value.can_verify && value.self_service !== true);
+/** A standing self-service budget changes only through the user's own attempts,
+ *  which trigger a re-read. Every other state can change with time or another
+ *  person's action (scheduled start, a new request, approval, expiry), so it is polled. */
+export function needsOwnershipRefresh(value: { self_service?: boolean }): boolean {
+  return value.self_service !== true;
 }
