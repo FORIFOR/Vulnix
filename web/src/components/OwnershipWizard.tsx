@@ -165,9 +165,11 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
   const matchingTraffic = proofTraffic?.key.startsWith(`${proofUrl}:`) ? proofTraffic.value : undefined;
   const availableMethods = matchingTraffic?.available_methods;
   const managed = matchingTraffic?.managed === true;
-  const recommended = preapproved ? METHOD_CARDS.find(
-    ({ id }) => availableMethods?.includes(id) && (id !== "google_search_console" || googleOwnership),
-  )?.id : recommendedMethod;
+  const usable = (id: Method) => availableMethods?.includes(id) && (id !== "google_search_console" || googleOwnership);
+  // The same preference as outside preapproval, narrowed to the methods allowed now.
+  const recommended = preapproved
+    ? (usable(recommendedMethod) ? recommendedMethod : METHOD_CARDS.find(({ id }) => usable(id))?.id)
+    : recommendedMethod;
   const expires = permission?.expires_at;
   const proofAllowed = ownershipTrafficMode === "existing" || (checkTraffic && permission?.can_verify === true);
 
@@ -184,7 +186,8 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
             const allowed = METHOD_CARDS.map(({ id }) => id).filter(
               (id) => value.available_methods?.includes(id) && (id !== "google_search_console" || googleOwnership),
             );
-            setMethod((selected) => allowed.some((id) => id === selected) ? selected : allowed[0] ?? selected);
+            const preferred = allowed.some((id) => id === recommendedMethod) ? recommendedMethod : allowed[0];
+            setMethod((selected) => allowed.some((id) => id === selected) ? selected : preferred ?? selected);
           }
         }
       } catch {
@@ -195,7 +198,7 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
     // Re-read only while another person's decision or an expiring grant can change the state.
     const timer = window.setInterval(() => { if (pendingRef.current) void read(); }, 5000);
     return () => { active = false; window.clearInterval(timer); };
-  }, [open, step, checkTraffic, preapproved, googleOwnership, proofUrl, proofMethod, proofKey, canRegister, trafficTick]);
+  }, [open, step, checkTraffic, preapproved, googleOwnership, recommendedMethod, proofUrl, proofMethod, proofKey, canRegister, trafficTick]);
 
   useEffect(() => {
     if (!open || !cloudAdmin || !cloudHost || !cloudOpen || step !== 1) return;
