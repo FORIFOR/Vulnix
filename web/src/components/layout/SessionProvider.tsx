@@ -1,7 +1,7 @@
 "use client";
 
 import { usePathname, useRouter } from "next/navigation";
-import { isPublicPage } from "@/lib/publicMode";
+import { isGuestPage, isPublicPage } from "@/lib/publicMode";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getJSON } from "@/lib/api";
 import { SessionContext, type SessionCtx, type SessionInfo } from "@/lib/useSession";
@@ -166,7 +166,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     // Keep protected content hidden while the logout POST is pending, but do
     // not offer another login until its Set-Cookie response has settled.
-    if (!loading && !session && !signingOut.current && !isPublicPage(path)) router.replace("/login");
+    if (!loading && !session && !signingOut.current && !isPublicPage(path) && !isGuestPage(path)) router.replace("/login");
   }, [loading, session, path, router]);
 
   return (

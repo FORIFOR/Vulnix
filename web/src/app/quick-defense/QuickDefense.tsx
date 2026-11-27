@@ -6,6 +6,7 @@ import { projectHref } from "@/components/ProjectOverview";
 import RuntimeDefense from "./RuntimeDefense";
 import ReviewedDefense from "./ReviewedDefense";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { useSession } from "@/lib/useSession";
 import { catalogSources, osvSources, type CatalogSource } from "@/lib/catalogUpdate";
 import type { ScanProgress } from "@/lib/projectDefense";
 import { readCatalogCache, type CatalogFailure } from "@/lib/catalogCache";
@@ -50,6 +51,8 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
   const [results, setResults] = useState<ReturnType<typeof checkControls> | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const { session } = useSession();
+  const signedIn = !!session;
   const [statusFilter, setStatusFilter] = useState<keyof typeof labels | null>(null);
   const [progress, setProgress] = useState<ScanProgress | null>(null);
   const [ended, setEnded] = useState<"timeout" | "cancelled" | null>(null);
@@ -318,7 +321,10 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
         </div>
         {error && <p role="alert" className="text-sm text-red-700 dark:text-red-300">{error}</p>}
       </section>
-      <ReviewedDefense files={files} />
+      {signedIn ? <ReviewedDefense files={files} />
+        : <p className="text-sm text-zinc-600 dark:text-zinc-400">
+          隔離環境でのレビュー済み防御テストと、サイト・APIの診断は<Link className="underline" href="/login">ログイン</Link>後に使えます。
+        </p>}
       {visible && <section className="space-y-3" aria-label="検証結果">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h2 className="text-lg font-semibold">{mode === "demo" ? "模擬データの結果" : "ローカル入力の結果"}</h2>
