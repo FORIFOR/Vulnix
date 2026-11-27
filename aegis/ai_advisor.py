@@ -53,6 +53,7 @@ _PROMPT_BEFORE_CATALOG = (
     "remediation の fix と next_checks の operation は、次の一覧の id だけを使えます。"
     "それ以外の操作は提案できません。実行は Vulnix の承認ゲートを通ります。"
     "URL、ホスト名、コマンド、攻撃手順は書かないでください。"
+    "CVE番号を書く場合は対象所見の cve から選び、cites に cve を含めてください。"
 )
 _PROMPT_AFTER_CATALOG = (
     ' JSON だけを返してください: {"advice": [{"ref": "F1", "claim_level": "observed", "cites": ["rule", "verdict"], '
@@ -75,6 +76,7 @@ SEVERITIES = ("critical", "high", "medium", "low", "info")
 VERDICTS = ("candidate", "detected", "proven", "not_reproduced", "unverified", "fixed")
 VERDICT_BASES = ("l1_observation", "l2_reproduction", "demo_fixture")
 _CVE_RE = re.compile(r"^CVE-\d{4}-\d{4,7}$")
+_CVE_IN_TEXT_RE = re.compile(r"CVE-[0-9]{4}-[0-9]{4,}", re.ASCII | re.IGNORECASE)
 MAX_FINDINGS = 20
 
 
@@ -285,11 +287,13 @@ def _clean_text(value: object, limit: int) -> str | None:
     return s
 
 
-def _text_problem(text: str, *, overclaim_ok: bool, rules) -> str | None:
+def _text_problem(text: str, *, cited_cves: set[str], overclaim_ok: bool, rules) -> str | None:
     """Secondary, best-effort checks on the model's free text (structure is checked first)."""
     if leak_reasons(text):
         return f"leak: {leak_reasons(text)}"
     n = _norm(text)
+    if any(cve.upper() not in cited_cves for cve in _CVE_IN_TEXT_RE.findall(n)):
+        return "unfaithful_cite: CVE in text was not cited for this finding"
     if _TOOLING_RE.search(n):
         return "text: commands or attack tools"
     if not overclaim_ok and _OVERCLAIM_RE.search(n):
@@ -352,12 +356,13 @@ def validate_advice(raw: object, ref_map: dict[str, dict]) -> tuple[list[Advice]
         if bad_cite is not None:
             reject("cites", f"unfaithful_cite: {bad_cite} was not in the input")
             continue
+        cited_cves = set(sent["cve"]) if "cve" in cites else set()
         overclaim_ok = claim == "reproduced"
         explanation = _clean_text(item.get("risk_explanation"), MAX_EXPLANATION)
         if explanation is None:
             reject("risk_explanation", "schema: missing, empty, too long or control characters")
             continue
-        if (p := _text_problem(explanation, overclaim_ok=overclaim_ok, rules=())):
+        if (p := _text_problem(explanation, cited_cves=cited_cves, overclaim_ok=overclaim_ok, rules=())):
             reject("risk_explanation", p)
             continue
         # remediation: catalog actions allowed for this rule
@@ -390,7 +395,8 @@ def validate_advice(raw: object, ref_map: dict[str, dict]) -> tuple[list[Advice]
             if detail is None:
                 reject("remediation", "schema: detail too long or control characters")
                 continue
-            if (p := _text_problem(detail, overclaim_ok=overclaim_ok, rules=_REMEDIATION_FORBIDDEN)):
+            if (p := _text_problem(detail, cited_cves=cited_cves, overclaim_ok=overclaim_ok,
+                                   rules=_REMEDIATION_FORBIDDEN)):
                 reject("remediation", p)
                 continue
             actions.add(action)

@@ -161,6 +161,22 @@ class TestPayloadIsAnAllowList(unittest.TestCase):
         self.assertTrue(result.advice, result.rejected)
         self.assertTrue(all(a.claim_level in {"suspected", "inconclusive"} for a in result.advice))
 
+    def test_japanese_explanation_and_remediation_use_only_cited_cves(self):
+        finding = _leaky_finding()
+        valid = _ok_item(cites=["rule", "verdict", "cve"],
+                         risk_explanation="入力情報にはCVE-2021-41773が含まれます。")
+        self.assertEqual(len(adv.validate_advice({"advice": [valid]}, {"F1": finding})[0]), 1)
+        cases = [
+            ({**valid, "cites": ["rule", "verdict"]}, "risk_explanation"),
+            ({**valid, "risk_explanation": "ＣＶＥ－２０２４－１２３４にも注意してください。"}, "risk_explanation"),
+            ({**valid, "remediation": [_rem("CVE-2024-1234に対応するため設定を見直す。")]}, "remediation"),
+        ]
+        for item, field in cases:
+            with self.subTest(field=field):
+                accepted, rejected = adv.validate_advice({"advice": [item]}, {"F1": finding})
+                self.assertFalse(accepted)
+                self.assertEqual(rejected[0]["where"], field)
+
     def test_a_payload_that_still_leaks_is_refused_before_sending(self):
         calls = []
         a = adv.AbliterationAdvisor("http://127.0.0.1:9/v1/chat/completions",
