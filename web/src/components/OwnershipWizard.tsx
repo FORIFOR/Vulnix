@@ -24,17 +24,21 @@ interface Props {
 type Method = "google_search_console" | "dns_txt" | "well_known" | "meta_tag" | "verification_code";
 
 interface OwnershipTraffic {
-  status: "not_requested" | "pending" | "approved" | "rejected" | "expired";
+  status: "not_requested" | "pending" | "approved" | "rejected" | "expired" | "scheduled" | "unavailable";
   id?: string;
   expires_at?: number;
   can_decide: boolean;
   can_verify: boolean;
   stopped: boolean;
+  available_methods?: Method[];
+  managed?: boolean;
+  can_request?: boolean;
+  can_revoke?: boolean;
 }
 
 const TRAFFIC_STATUS = {
   not_requested: "未申請", pending: "申請中", approved: "承認済み",
-  rejected: "拒否", expired: "期限切れ",
+  rejected: "拒否", expired: "期限切れ", scheduled: "開始時刻待ち", unavailable: "現在利用不可",
 };
 
 const METHOD_CARDS = [
@@ -148,20 +152,36 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
   const canConfirmScope = canApprove(session);
   const fileAvailable = supportsFileProof(url);
   const approvalRequired = ownershipTrafficMode === "approved";
+  const preapproved = ownershipTrafficMode === "preapproved";
+  const checkTraffic = approvalRequired || preapproved;
   const proofMethod = cloudOpen ? "cloud_run_oidc" : method;
   const proofUrl = targetUrl || url.trim();
   const proofKey = `${proofUrl}:${proofMethod}`;
   const permission = proofTraffic?.key === proofKey ? proofTraffic.value : null;
+  const matchingTraffic = proofTraffic?.key.startsWith(`${proofUrl}:`) ? proofTraffic.value : undefined;
+  const availableMethods = matchingTraffic?.available_methods;
+  const managed = matchingTraffic?.managed === true;
+  const recommended = preapproved ? METHOD_CARDS.find(
+    ({ id }) => availableMethods?.includes(id) && (id !== "google_search_console" || googleOwnership),
+  )?.id : recommendedMethod;
   const expires = permission?.expires_at;
-  const proofAllowed = ownershipTrafficMode === "existing" || (approvalRequired && permission?.can_verify === true);
+  const proofAllowed = ownershipTrafficMode === "existing" || (checkTraffic && permission?.can_verify === true);
 
   useEffect(() => {
-    if (!open || step !== 1 || !approvalRequired || !proofUrl || !canRegister) return;
+    if (!open || step !== 1 || !checkTraffic || !proofUrl || !canRegister) return;
     let active = true;
     const read = async () => {
       try {
         const value = await postJSON<OwnershipTraffic>("/api/assets/ownership-traffic", { action: "status", url: proofUrl, method: proofMethod });
-        if (active) setProofTraffic({ key: proofKey, value });
+        if (active) {
+          setProofTraffic({ key: proofKey, value });
+          if (preapproved && value.available_methods && !value.managed) {
+            const allowed = METHOD_CARDS.map(({ id }) => id).filter(
+              (id) => value.available_methods?.includes(id) && (id !== "google_search_console" || googleOwnership),
+            );
+            setMethod((selected) => allowed.some((id) => id === selected) ? selected : allowed[0] ?? selected);
+          }
+        }
       } catch {
         if (active) setProofTraffic(null);
       }
@@ -169,7 +189,7 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
     void read();
     const timer = window.setInterval(read, 5000);
     return () => { active = false; window.clearInterval(timer); };
-  }, [open, step, approvalRequired, proofUrl, proofMethod, proofKey, canRegister]);
+  }, [open, step, checkTraffic, preapproved, googleOwnership, proofUrl, proofMethod, proofKey, canRegister]);
 
   useEffect(() => {
     if (!open || !cloudAdmin || !cloudHost || !cloudOpen || step !== 1) return;
@@ -271,7 +291,7 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
       if (res.verified) setStep(2);
     });
 
-  const changeTraffic = (action: "request" | "approve" | "reject") => run(async () => {
+  const changeTraffic = (action: "request" | "approve" | "reject" | "revoke") => run(async () => {
     const value = await postJSON<OwnershipTraffic>("/api/assets/ownership-traffic", {
       url: proofUrl, method: proofMethod, action, ...(action !== "request" ? { id: permission?.id } : {}),
     });
@@ -410,8 +430,9 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
               <legend className="mb-2 font-semibold">所有確認の方法を選ぶ</legend>
               <div className="grid gap-2 sm:grid-cols-3">
                 {METHOD_CARDS.map((option) => {
-                  const unavailable = option.id === "google_search_console" ? !googleOwnership
+                  const notConfigured = option.id === "google_search_console" ? !googleOwnership
                     : option.id === "well_known" && !fileAvailable;
+                  const unavailable = notConfigured || (preapproved && !managed && !!availableMethods && !availableMethods.includes(option.id));
                   return <label key={option.id} className={`rounded-xl border p-3 ${method === option.id ? "border-zinc-900 bg-zinc-50 dark:border-white dark:bg-zinc-800" : "border-zinc-200 dark:border-zinc-700"}`}>
                     <span className="flex items-center gap-2 font-semibold">
                       <input type="radio" name="own-method" aria-label={option.name} checked={method === option.id} disabled={unavailable}
@@ -419,28 +440,46 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
                       {option.name}
                     </span>
                     <span className="mt-1 block text-zinc-600 dark:text-zinc-300">{option.hint}</span>
-                    {option.id === recommendedMethod && <span className="mt-1 block font-medium text-emerald-700 dark:text-emerald-300">おすすめ</span>}
-                    {option.id === "google_search_console" && unavailable && <Link className="mt-1 block underline" href="/settings#ownership-google">未設定・設定状況を確認</Link>}
-                    {option.id === "well_known" && unavailable && <span className="mt-1 block">HTTPSの標準ポートが必要です。</span>}
+                    {option.id === recommended && <span className="mt-1 block font-medium text-emerald-700 dark:text-emerald-300">おすすめ</span>}
+                    {preapproved && !managed && availableMethods && !availableMethods.includes(option.id) && <span className="mt-1 block text-zinc-600 dark:text-zinc-300">この対象では現在利用できません</span>}
+                    {option.id === "google_search_console" && notConfigured && <Link className="mt-1 block underline" href="/settings#ownership-google">未設定・設定状況を確認</Link>}
+                    {option.id === "well_known" && notConfigured && <span className="mt-1 block">HTTPSの標準ポートが必要です。</span>}
                   </label>;
                 })}
               </div>
             </fieldset>
             {verifyDetail && <p role="status" className="rounded-lg bg-amber-50 p-3 dark:bg-amber-950/40">{verifyDetail}</p>}
-            {approvalRequired && <div className="space-y-2 rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
+            {preapproved && !managed && <div role="status" className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-700">
+              {permission?.stopped ? "緊急停止中です。運用担当者に確認してください。"
+                : permission?.can_verify ? "この方法で確認できます。利用者からの通信申請は不要です。"
+                : recommended ? "選んだ方法は現在利用できません。「おすすめ」の方法で続けてください。"
+                : permission?.status === "expired" ? "事前許可の期限が切れました。運営者に対象URLと確認方法を伝えてください。"
+                : permission?.status === "scheduled" ? "事前許可の開始時刻を過ぎてから、もう一度お試しください。"
+                : permission?.status === "unavailable" ? "試行上限に達したか、許可を確認できません。運営者に確認してください。"
+                : "事前許可のある方法を利用できません。運営者に対象URLと確認方法を伝えるか、ソースコード・SBOM診断に進んでください。"}
+              {permission?.can_verify && expires ? <p>有効期限 {new Date(expires * 1000).toLocaleString("ja-JP")}</p> : null}
+            </div>}
+            {(approvalRequired || managed) && <div className="space-y-2 rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
               <p className="font-semibold" role="status">
                 {cloudOpen ? "Cloud Run の確認通信" : "所有確認用の通信"} {permission ? TRAFFIC_STATUS[permission.status] : "状態を確認中"}
               </p>
               {expires && permission?.status === "approved" && <p>有効期限 {new Date(expires * 1000).toLocaleString("ja-JP")}</p>}
               {permission?.stopped && <p>緊急停止中です。運用担当者に確認してください。</p>}
-              {permission && !permission.stopped && ["not_requested", "expired", "rejected"].includes(permission.status)
+              {managed && !permission?.stopped && permission?.status === "unavailable" &&
+                <p>この許可で試せる回数に達しました。時間をおいてもう一度申請してください。</p>}
+              {permission && !permission.stopped && (managed ? permission.can_request === true :
+                ["not_requested", "expired", "rejected"].includes(permission.status))
                 && (proofMethod !== "google_search_console" || googleOwnership)
                 && (proofMethod === "dns_txt" || proofMethod === "google_search_console" || fileAvailable)
                 && <button type="button" disabled={busy} onClick={() => changeTraffic("request")} className="rounded-lg border px-3 py-2 font-medium">
-                  管理者に所有確認の許可を依頼する
+                  {managed ? "運営者に確認通信の許可を申請する" : "管理者に所有確認の許可を依頼する"}
                 </button>}
+              {permission?.can_revoke && <button type="button" disabled={busy} onClick={() => changeTraffic("revoke")}
+                className="rounded-lg border px-3 py-2">確認通信の許可を取り消す</button>}
               {permission?.can_decide && <div className="flex flex-wrap gap-2">
-                <button type="button" disabled={busy} onClick={() => changeTraffic("approve")} className="rounded-lg border px-3 py-2">この方法を15分間承認する</button>
+                <button type="button" disabled={busy} onClick={() => changeTraffic("approve")} className="rounded-lg border px-3 py-2">
+                  {managed ? "この方法を15分間・最大3回許可する" : "この方法を15分間承認する"}
+                </button>
                 <button type="button" disabled={busy} onClick={() => changeTraffic("reject")} className="rounded-lg border px-3 py-2">拒否する</button>
               </div>}
             </div>}
@@ -478,7 +517,7 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
                 }}>{copiedDns ? "名前と値をコピーしました" : "名前と値をまとめてコピー"}</button>
               </div>
             )}
-            <details className="space-y-2">
+            {!preapproved && <details className="space-y-2">
               <summary className="cursor-pointer text-sm">その他の確認方法</summary>
               <label className="block"><input type="radio" name="own-method" checked={method === "meta_tag"}
                 disabled={!fileAvailable} onChange={() => setMethod("meta_tag")} /> HTMLに確認タグを追加</label>
@@ -490,8 +529,9 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
               {method === "verification_code" && canRegister && ownershipTrafficMode !== "off" && <dl>
                 <CopyRow label="コード" value={challenge.code || challenge.token} />
               </dl>}
-            </details>
-            {cloudAdmin && ownershipTrafficMode !== "off" && fileAvailable && (
+            </details>}
+            {/\.run\.app$/.test(cloudHost) && <p>Cloud Runのサービスも、使える方法で所有確認できます。Cloud Runの閲覧連携では所有確認は完了しません。</p>}
+            {cloudAdmin && !preapproved && ownershipTrafficMode !== "off" && fileAvailable && (
               <details onToggle={(event) => setCloudOpen(event.currentTarget.open)} className="space-y-2 rounded-xl border border-zinc-300 p-3 text-xs dark:border-zinc-700">
                 <summary className="cursor-pointer font-semibold">詳細設定（Cloud Run OIDC 所有確認）</summary>
                 {cloudOpen && <div className="space-y-2">

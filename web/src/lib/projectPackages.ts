@@ -87,8 +87,8 @@ export function sbomComponents(value: unknown): { rows: Array<Record<string, unk
 }
 
 export function collectPackages(name: string, path: string, body: string, parsed: unknown): Package[] {
-  if (name === "inventory.sbom.json") {
-    const { rows, key } = sbomComponents(parsed);
+  const { rows, key, total } = sbomComponents(parsed);
+  if (total) {
     const line = propertyLine(body, key);
     return rows.flatMap<Package>((entry) => {
       const purl = typeof entry.purl === "string" && entry.purl.length <= 600
@@ -136,7 +136,7 @@ export function collectPackages(name: string, path: string, body: string, parsed
   if (name === "go.mod" && lines.some((line) => /^\s*(?:replace|exclude)\b/.test(line))) return [];
   return lines.flatMap<Package>((line, index) => {
     if (name !== "go.mod") {
-      const match = line.match(/^\s*([a-z0-9_.-]+)==([^\s;#*\\]+)\s*(?:#.*)?$/i);
+      const match = line.match(/^\s*([a-z0-9_.-]+)(?:\[[a-z0-9_.-]+(?:\s*,\s*[a-z0-9_.-]+)*\])?\s*==\s*([^\s;#*\\]+)\s*(?:#.*)?$/i);
       return match && match[2].length <= 128 && pepValid(match[2]) ? [{
         ecosystem: "PyPI", name: match[1].toLowerCase().replace(/[-_.]+/g, "-"),
         version: match[2], path, line: index + 1,

@@ -437,8 +437,17 @@ jobs:
       - name: Local defense checks with a first-time user
         run: VULNIX_NO_ENV_LOCAL=1 python3 -m scripts.check_quick_defense_ui
 
+      - name: Security Intelligence charts and audited history in the browser
+        run: VULNIX_NO_ENV_LOCAL=1 python3 -m scripts.check_security_intelligence_ui
+
       - name: Separate ownership traffic approval in the browser
         run: VULNIX_NO_ENV_LOCAL=1 python3 -m scripts.check_ownership_traffic_ui
+
+      - name: Preapproved ownership traffic from a single account
+        run: VULNIX_NO_ENV_LOCAL=1 python3 -m scripts.check_ownership_traffic_ui --preapproved
+
+      - name: Operator-managed personal ownership requests
+        run: VULNIX_NO_ENV_LOCAL=1 python3 -m scripts.check_ownership_traffic_ui --managed
 
       - name: Reviewed defense from a browser with distinct approval and the real kernel Worker
         run: |

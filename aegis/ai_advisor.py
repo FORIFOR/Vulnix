@@ -507,6 +507,12 @@ class AbliterationAdvisor:
         }
         return json.dumps(payload, ensure_ascii=False).encode("utf-8"), ref_map
 
+    def _parse_choice(self, choice: dict) -> object:
+        if choice.get("finish_reason") in ("length", "content_filter"):
+            raise ValueError("incomplete advisor reply")
+        content = choice["message"]["content"]
+        return _extract_json_from_text(content) if isinstance(content, str) else None
+
     def advise(self, findings: list[dict], *, before_send=None, send_scope=None) -> AdviceResult:
         body, ref_map = self.build_request(findings)
         if not ref_map:
@@ -521,13 +527,9 @@ class AbliterationAdvisor:
             else:
                 raw = self._send(self.url, self._headers(), body)
             data = json.loads(raw)
-            choice = data["choices"][0]
-            if choice.get("finish_reason") in ("length", "content_filter"):
-                raise ValueError(f"unusable finish_reason: {choice.get('finish_reason')}")
-            content = choice["message"]["content"]
+            parsed = self._parse_choice(data["choices"][0])
         except Exception as e:  # noqa: BLE001 - any transport / format failure is one error
             raise AdvisorError(f"no usable reply: {type(e).__name__}") from None
-        parsed = _extract_json_from_text(content) if isinstance(content, str) else None
         try:
             advice, rejected = validate_advice(parsed, ref_map)
         except Exception as e:  # noqa: BLE001 - a reply the validator cannot even walk is one error, audited
@@ -612,6 +614,23 @@ class ExternalAbliterationAdvisor(AbliterationAdvisor):
         if self.model in ("abliterated-model", "abliterated-model-large-flash"):
             payload["reasoning_effort"] = "none"
         return json.dumps(payload, ensure_ascii=False).encode("utf-8"), ref_map
+
+    def _parse_choice(self, choice: dict) -> object:
+        message = choice["message"]
+        if choice.get("finish_reason") != "stop" or any(message.get(key) for key in
+                                                       ("tool_calls", "function_call", "refusal")):
+            raise ValueError("expected a completed advisory response")
+
+        def unique_object(pairs):
+            result = dict(pairs)
+            if len(result) != len(pairs):
+                raise ValueError("duplicate JSON key")
+            return result
+
+        def invalid_constant(_):
+            raise ValueError("invalid JSON constant")
+
+        return json.loads(message["content"], object_pairs_hook=unique_object, parse_constant=invalid_constant)
 
     def __post_init__(self) -> None:
         super().__post_init__()

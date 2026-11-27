@@ -15,7 +15,7 @@ export function RunHistoryCard({ runs }: { runs: RunHistoryEntry[] }) {
         <ol className="space-y-2 text-xs">
           {runs.slice(0, 10).map((r, i) => {
             const prev = runs[i + 1];
-            const delta = prev && r.score != null && prev.score != null ? r.score - prev.score : null;
+            const delta = prev && r.condition_id && r.asset_id === prev.asset_id && r.condition_id === prev.condition_id && r.score != null && prev.score != null ? r.score - prev.score : null;
             return (
               <li key={`${r.at}-${i}`} className="rounded-lg border border-zinc-100 px-2.5 py-2 dark:border-zinc-800">
                 <div className="flex items-center justify-between gap-2">
@@ -23,7 +23,7 @@ export function RunHistoryCard({ runs }: { runs: RunHistoryEntry[] }) {
                   <span className="shrink-0 tabular-nums text-zinc-500">{fmtTime(r.at)}</span>
                 </div>
                 <div className="mt-1 flex flex-wrap gap-x-3 text-zinc-600 dark:text-zinc-400">
-                  <span>リスク {r.score ?? "—"}/100（{r.label ?? "—"}）{delta != null && delta !== 0 && <span className={delta > 0 ? "text-red-700 dark:text-red-300" : "text-emerald-700 dark:text-emerald-300"}>（前回比 {delta > 0 ? "+" : ""}{delta}）</span>}</span>
+                  <span>リスク {r.score ?? "—"}/100（{r.label ?? "—"}）{delta != null && delta !== 0 && <span className={delta > 0 ? "text-red-700 dark:text-red-300" : "text-zinc-600 dark:text-zinc-400"}>（前回比 {delta > 0 ? "+" : ""}{delta}）</span>}</span>
                   <span>実証 {r.counts?.proven ?? 0}</span>
                   <span>検出・未実証 {r.counts?.detected ?? 0}</span>
                   <span>再現せず {r.counts?.not_reproduced ?? 0}</span>

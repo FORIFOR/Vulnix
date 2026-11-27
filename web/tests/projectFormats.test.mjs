@@ -163,3 +163,33 @@ test("Google Artifact Analysis SPDX 2.3 maps package references without trusting
   assert.equal(report.packageCount, 1);
   assert.ok(report.skippedRules);
 });
+
+test("folder inventory checks named SPDX and CycloneDX files and reports partial requirements coverage", async () => {
+  const cve = "CVE-2099-12345";
+  const feed = { osv: [{ id: cve, affected: [{ package: { ecosystem: "PyPI", name: "example-auth" },
+    ranges: [{ type: "ECOSYSTEM", events: [{ introduced: "0" }, { fixed: "2.0" }] }],
+  }] }] };
+  const inputs = (version) => [
+    fixture("api/requirements-prod.txt", `Example_Auth[http,crypto]==${version}\nunresolved>=2\n`),
+    fixture("deploy/api-sbom.json", JSON.stringify({ bomFormat: "CycloneDX",
+      components: [{ purl: `pkg:pypi/example-auth@${version}`, version }] })),
+    fixture("deploy/web.spdx.json", JSON.stringify({ spdxVersion: "SPDX-2.3",
+      packages: [{ versionInfo: version, externalRefs: [{ referenceType: "purl",
+        referenceLocator: `pkg:pypi/example-auth@${version}` }] }] })),
+    fixture("src/service.py", "def ready(): return True"),
+    fixture("config/broken.yaml", "spec: !unsupported value"),
+    fixture("README.md", "# Example"),
+  ];
+  const affected = await scanProject(inputs("1.0"), feed);
+  assert.deepEqual(affected.rows.find((row) => row.title === cve)?.locations?.map(({ path }) => path),
+    ["api/requirements-prod.txt", "deploy/api-sbom.json", "deploy/web.spdx.json"]);
+  assert.equal(affected.coverage.source, 0);
+  assert.equal(affected.coverage.packageFiles, 3);
+  assert.equal(affected.coverage.noSourceRules, 1);
+  assert.equal(affected.coverage.parseFailed, 1);
+  assert.equal(affected.coverage.unresolvedDependencies, 1);
+  assert.equal(affected.coverage.osvAdvisories, 1);
+  const repaired = await scanProject(inputs("2.0"), feed);
+  assert.ok(!repaired.rows.some((row) => row.title === cve));
+  assert.ok(repaired.rows.some((row) => row.status === "unknown"));
+});
