@@ -393,6 +393,7 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
             <dt className="font-semibold">修正方法</dt><dd>{row.fix}</dd>
             <dt className="font-semibold">再検証方法</dt><dd>{row.retest}</dd>
           </dl>
+          {row.patch && <PatchView patch={row.patch} />}
         </details>)}
         {Math.max(shown.length, dependencyGroups.length) > display && <button type="button" className={button} onClick={() => setDisplay(display + 100)}>
           さらに表示（{Math.max(shown.length, dependencyGroups.length) - display}件）
@@ -434,5 +435,34 @@ function StatusBar({ rows, label, active, onSelect }: {
       </button>)}
       {active && <button type="button" onClick={() => onSelect(active)} className="text-xs underline">すべて表示</button>}
     </div>
+  </div>;
+}
+
+/** A minimal fix as a diff. Vulnix never writes the project: the user copies or saves it. */
+function PatchView({ patch }: { patch: { file: string; diff: string; patched: string; changedLines: number } }) {
+  const [copied, setCopied] = useState(false);
+  const save = () => {
+    const url = URL.createObjectURL(new Blob([patch.diff], { type: "text/x-diff" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${patch.file.split("/").pop() || "fix"}.vulnix.patch`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+  return <div className="mt-3 space-y-2 rounded-lg border border-emerald-200 bg-emerald-50/60 p-3 text-sm dark:border-emerald-900 dark:bg-emerald-950/30">
+    <div className="flex flex-wrap items-center justify-between gap-2">
+      <p className="font-semibold">修正案（{patch.changedLines}行の差分）</p>
+      <div className="flex gap-2">
+        <button type="button" className="rounded-md border border-zinc-300 bg-white px-2.5 py-1 text-xs transition-colors hover:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-900"
+          onClick={() => { void navigator.clipboard?.writeText(patch.diff).then(() => { setCopied(true); window.setTimeout(() => setCopied(false), 1500); }); }}>
+          {copied ? "コピーしました" : "差分をコピー"}</button>
+        <button type="button" className="rounded-md border border-zinc-300 bg-white px-2.5 py-1 text-xs transition-colors hover:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-900"
+          onClick={save}>パッチを保存</button>
+      </div>
+    </div>
+    <pre className="max-h-72 overflow-auto rounded-md bg-white p-2 font-mono text-xs leading-5 dark:bg-zinc-900">{patch.diff.split("\n").map((line, i) =>
+      <span key={i} className={line.startsWith("+") && !line.startsWith("+++") ? "block bg-emerald-100 dark:bg-emerald-900/40"
+        : line.startsWith("-") && !line.startsWith("---") ? "block bg-red-100 dark:bg-red-900/40" : "block"}>{line || " "}</span>)}</pre>
+    <p className="text-xs text-zinc-600 dark:text-zinc-400">元のフォルダは変更していません。適用後に「修正後のフォルダを選ぶ」で同じ検査を再実行すると、この項目が消えるか確認できます。同一サイト内の相対パスへの戻りはそのまま動きます。</p>
   </div>;
 }

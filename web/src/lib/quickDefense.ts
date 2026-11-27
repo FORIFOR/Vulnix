@@ -6,7 +6,8 @@ export function advisorySeverity(value: unknown): Severity | undefined {
   if (value === "MODERATE") return "MEDIUM";
   if (value === "LOW" || value === "MEDIUM" || value === "HIGH" || value === "CRITICAL") return value;
 }
-type Result = { severity?: Severity; location?: ResultLocation; locations?: ResultLocation[]; category: Category; title: string; status: Status; evidence: string; risk: string; fix: string; retest: string };
+export type FixCandidate = { file: string; diff: string; patched: string; changedLines: number };
+type Result = { severity?: Severity; location?: ResultLocation; locations?: ResultLocation[]; category: Category; title: string; status: Status; evidence: string; risk: string; fix: string; retest: string; patch?: FixCandidate };
 type RecordValue = Record<string, unknown>;
 
 export const categories = ["ARTEX", "CVE", "Claude Code"] as const;

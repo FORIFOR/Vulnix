@@ -17,8 +17,9 @@ const packages = source("projectPackages", {
   "./quickDefense": quick, semver: import.meta.resolve("semver"),
   "@renovatebot/pep440": import.meta.resolve("@renovatebot/pep440"),
 });
+const flow = source("pythonFlow", {});
 const { scanProject, limits } = await import(source("projectDefense", {
-  "./quickDefense": quick, "./projectPackages": packages, "./runtimePlan": source("runtimePlan", {}), "./pythonFlow": source("pythonFlow", {}), typescript: import.meta.resolve("typescript"),
+  "./quickDefense": quick, "./projectPackages": packages, "./runtimePlan": source("runtimePlan", {}), "./pythonFlow": flow, "./fixPatch": source("fixPatch", { "./pythonFlow": flow }), typescript: import.meta.resolve("typescript"),
   yaml: import.meta.resolve("yaml"),
 }));
 const fixture = (path, contents) => ({ path: `project/${path}`, file: new File([contents], path.split("/").at(-1)) });
@@ -218,4 +219,17 @@ test("Python sources get the single-function flow check instead of being listed 
   assert.equal(report.incomplete.filter((entry) => /データフロー検査がない/.test(entry.reason)).length, 0);
   // no finding is not a pass
   assert.equal(report.rows.filter((row) => row.location?.path === "app/util.py" && row.status === "confirmed").length, 0);
+});
+
+test("a redirect finding carries a minimal fix diff; other findings carry none", async () => {
+  const app = ["from flask import Flask, redirect, request", "", "app = Flask(__name__)", "",
+    "@app.route('/cb')", "def cb():", "    to = request.args.get('return_to') or '/'", "    return redirect(to)", "",
+    "@app.route('/f')", "def f():", "    return open(request.args['p']).read()", ""].join("\n");
+  const report = await scanProject([fixture("app.py", app)]);
+  const redirectRow = report.rows.find((r) => r.title.includes("リダイレクト"));
+  const pathRow = report.rows.find((r) => r.title.includes("ファイルパス"));
+  assert.ok(redirectRow?.patch, "redirect fix");
+  assert.match(redirectRow.patch.diff, /^-    return redirect\(to\)$/m);
+  assert.match(redirectRow.patch.diff, /^\+    return redirect\(_vulnix_safe_redirect\(to\)\)$/m);
+  assert.equal(pathRow?.patch, undefined);
 });

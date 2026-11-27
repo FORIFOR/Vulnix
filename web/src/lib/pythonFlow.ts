@@ -26,6 +26,8 @@ const SANITIZERS: Partial<Record<PythonFlowKind, string>> = {
   xss: String.raw`(?:\w+\.)*escape\w*|(?:bleach\.)?clean`,
   path: String.raw`(?:werkzeug\.utils\.)?secure_filename|(?:os\.path\.)?basename`,
   command: String.raw`(?:shlex\.)?quote`,
+  // the helper a Vulnix fix adds (fixPatch.ts) and similarly named same-site checks
+  redirect: String.raw`[\w.]*safe_redirect\w*`,
 };
 const SANITIZER: Record<string, RegExp> = Object.fromEntries(KINDS.map((k) =>
   [k, new RegExp(String.raw`(?<![\w.])(?:${ANY_KIND}${SANITIZERS[k] ? "|" + SANITIZERS[k] : ""})\s*\(`, "g")]));

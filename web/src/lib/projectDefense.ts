@@ -2,6 +2,7 @@ import ts from "typescript";
 import { parseAllDocuments } from "yaml";
 import { inspectRuntimeFile, type PlannedCheck } from "./runtimePlan";
 import { pythonFlow, type PythonFlowKind } from "./pythonFlow";
+import { redirectFixes } from "./fixPatch";
 import { affects, collectPackages, compareVersions, propertyLine, sbomComponents, type Package, type Location } from "./projectPackages";
 import { advisorySeverity, checkCloudFormation, checkControls, checkLockfile, record, type ResultLocation } from "./quickDefense";
 
@@ -619,7 +620,13 @@ export async function scanProject(files: ProjectFile[], feed: unknown, onProgres
       coverage.pythonFlow++;
       const flows = pythonFlow(content);
       if (flows.length === 20) skippedRules++;
+      // minimal fix candidates (a diff to review; the project itself is never written)
+      const fixes = flows.some((f) => f.kind === "redirect") ? redirectFixes(path, content) : [];
       addRows(...flows.map((flow) => ({
+        ...(() => {
+          const fix = fixes.find((f) => f.ok && f.finding.line === flow.line && flow.kind === "redirect");
+          return fix && fix.ok ? { patch: { file: path, diff: fix.diff, patched: fix.patched, changedLines: fix.changedLines } } : {};
+        })(),
         ...item("Claude Code", PYTHON_FLOW[flow.kind][0], "action",
           `ソースの${flow.line}行目。関数 ${flow.func} の中で、要求データが ${flow.sink} に渡る経路を静的に確認しました（同じ関数内の追跡。実行時の到達性・入力検証は未確認）。`,
           PYTHON_FLOW[flow.kind][1]),
