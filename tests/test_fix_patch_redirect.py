@@ -33,11 +33,13 @@ def _fixes(path: Path, name: str) -> list:
 
 
 class _Served:
-    def __init__(self, folder: Path):
+    def __init__(self, folder: Path, python: str | None = None):
+        """With `python`, the app runs on that interpreter's real Flask (no shim on the path)."""
         self.port = _port()
-        code = (f"import sys, runpy; sys.path[:0] = [{str(SHIM)!r}, {str(folder)!r}]; "
+        paths = [str(folder)] if python else [str(SHIM), str(folder)]
+        code = (f"import sys, runpy; sys.path[:0] = {paths!r}; "
                 f"sys.argv = ['app.py', '{self.port}']; runpy.run_path({str(folder / 'app.py')!r}, run_name='__main__')")
-        self.proc = subprocess.Popen([sys.executable, "-I", "-c", code], cwd=folder,
+        self.proc = subprocess.Popen([python or sys.executable, "-I", "-c", code], cwd=folder,
                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         for _ in range(100):
             try:
@@ -50,6 +52,16 @@ class _Served:
     def check(self):
         return probe(argparse.Namespace(check="open_redirect", ip="127.0.0.1", port=self.port,
                                         host="127.0.0.1", scheme="http"))
+
+    def page(self, path: str) -> tuple[int, str]:
+        import http.client
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        try:
+            conn.request("GET", path)
+            r = conn.getresponse()
+            return r.status, r.read().decode()
+        finally:
+            conn.close()
 
     def close(self):
         self.proc.terminate()
@@ -91,6 +103,36 @@ class TestGeneratedRedirectFix(unittest.TestCase):
         self.assertEqual(open_redirect_verdict(fixed), "not_reproduced")
         self.assertTrue(fixed["control_verified"])        # a legitimate same-site return still works
         self.assertEqual(hashlib.sha256((APP / "app.py").read_bytes()).digest(), hashlib.sha256(original).digest())
+
+
+REAL_FLASK = os.environ.get("VULNIX_REAL_FLASK_PYTHON", "")
+if os.environ.get("VULNIX_REQUIRE_FIX_PATCH_TEST") == "1" and not REAL_FLASK:
+    raise RuntimeError("VULNIX_REAL_FLASK_PYTHON is required where this test is required")
+
+
+@unittest.skipUnless(_READY and REAL_FLASK, "set VULNIX_REAL_FLASK_PYTHON to an interpreter with Flask installed")
+class TestGeneratedRedirectFixOnRealFlask(unittest.TestCase):
+    """The same fix on the real framework (an isolated interpreter; Vulnix does not depend on Flask)."""
+
+    def test_real_flask_original_is_open_patched_is_not_and_normal_pages_still_work(self):
+        fix = _fixes(APP / "app.py", "app.py")[0]
+        with tempfile.TemporaryDirectory() as tmp:
+            copy = Path(tmp) / "work"
+            shutil.copytree(APP, copy)
+            (copy / "app.py").write_text(fix["patched"])
+            before, after = _Served(APP, REAL_FLASK), _Served(copy, REAL_FLASK)
+            try:
+                vulnerable, fixed = before.check(), after.check()
+                pages = {path: after.page(path) for path in ("/dashboard", "/auth/callback?return_to=/dashboard",
+                                                             "/auth/callback")}
+            finally:
+                before.close()
+                after.close()
+        self.assertEqual(open_redirect_verdict(vulnerable), "proven")
+        self.assertEqual(open_redirect_verdict(fixed), "not_reproduced")
+        self.assertEqual(pages["/dashboard"], (200, "dashboard"))
+        self.assertEqual(pages["/auth/callback?return_to=/dashboard"][0], 302)   # same-site return kept
+        self.assertEqual(pages["/auth/callback"][0], 302)                         # default "/" still works
 
 
 if __name__ == "__main__":

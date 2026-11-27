@@ -180,7 +180,11 @@ jobs:
 
       - name: Generated fix applied to a copy and re-verified with the same probe
         working-directory: .
-        run: VULNIX_NO_ENV_LOCAL=1 VULNIX_REQUIRE_FIX_PATCH_TEST=1 python3 -m unittest -v tests.test_fix_patch_redirect
+        run: |
+          # the real framework in a throwaway venv (Vulnix itself does not depend on Flask)
+          python3 -m venv /tmp/flask-venv && /tmp/flask-venv/bin/pip install -q "flask==3.1.2"
+          VULNIX_NO_ENV_LOCAL=1 VULNIX_REQUIRE_FIX_PATCH_TEST=1 VULNIX_REAL_FLASK_PYTHON=/tmp/flask-venv/bin/python \
+            python3 -m unittest -v tests.test_fix_patch_redirect
 
       - name: Lint
         run: npm run lint
