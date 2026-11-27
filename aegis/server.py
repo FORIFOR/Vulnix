@@ -124,9 +124,11 @@ ARTEX_LLM_PLANS_PLATFORM_PER_HOUR = int(os.environ.get("VULNIX_ARTEX_LLM_PLANS_P
 # Platform-wide POST routes: they act on this machine or on configuration shared by
 # every organization, so they are decided by the account's own (global) roles.
 PLATFORM_POST_ROUTES = frozenset({"/api/l2-profiles/accept", "/api/router/verify", "/api/cve/sync",
-                                  "/api/system/verify-controls", "/api/cve/real-software-verify"})
+                                  "/api/system/verify-controls", "/api/cve/real-software-verify",
+                                  "/api/agent-defense/evaluate"})
 # Routes that start a verification job (spawn workers / probes on this machine).
-JOB_ROUTES = frozenset({"/api/system/verify-controls", "/api/cve/real-software-verify"})
+JOB_ROUTES = frozenset({"/api/system/verify-controls", "/api/cve/real-software-verify",
+                        "/api/agent-defense/evaluate"})
 
 # Audit before state (docs/AUDIT_BEFORE_STATE.md): a grant is recorded first and is not
 # made without its record; a removal is made whatever the audit log does, then recorded.
@@ -999,6 +1001,10 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             if p in JOB_ROUTES:
                 # these START a verification job: POST only (CSRF-checked, role-checked, audited)
                 return self._json(405, {"error": "この操作は POST で実行してください"}, [("Allow", "POST")])
+            if p == "/api/agent-defense/status":
+                from . import agent_defense
+                return self._authorized_platform_read(sess, lambda: self._json(
+                    200, {**agent_defense.availability(), "scope": agent_defense.SCOPE_NOTE}))
             if p == "/api/cve/status":
                 status_payload = svc.cve_monitor.status()
                 if enforce_read_auth:
@@ -2157,6 +2163,14 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     if p == "/api/system/verify-controls":
                         rep = run_live_control_verification()
                         paudit.record("system.controls_verified", actor=actor, all_passed=rep["all_passed"])
+                    elif p == "/api/agent-defense/evaluate":
+                        # the AI coding agent's own rules, run offline (loopback stand-in model,
+                        # network sandbox, scratch copy); only the selected settings text is sent
+                        from . import agent_defense
+                        text = body.get("settings_json")
+                        rep = agent_defense.evaluate_settings(text if isinstance(text, str) else None)
+                        paudit.record("agent_defense.evaluated", actor=actor, status=rep.get("status"),
+                                      summary=rep.get("summary"))
                     else:
                         rep = run_real_software_cve_comparison()
                         paudit.record("cve.real_software_verified", actor=actor, all_passed=rep["all_passed"])

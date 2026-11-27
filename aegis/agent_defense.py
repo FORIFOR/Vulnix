@@ -245,6 +245,54 @@ def evaluate(project: Path, *, cli: str | None = None, attacks=ATTACKS) -> dict:
             | {"blocked_by_rule": sum(1 for r in rows if r["blocked_by"] == "rule")}}
 
 
+SCOPE_NOTE = ("確認範囲：プロジェクトの .claude/settings.json（と settings.local.json）の権限ルールと、"
+              "6つの攻撃シナリオ。利用者単位の ~/.claude 設定、組織の管理ポリシー、MCP サーバー、"
+              "フック、対話中の利用者の許可操作は確認していません。")
+MAX_SETTINGS_BYTES = 65536
+_RUN_LOCK = threading.Lock()
+
+
+def availability() -> dict:
+    """Whether this server may run the check: only on the user's own machine, by explicit choice."""
+    if os.environ.get("VULNIX_AGENT_DEFENSE_LOCAL") != "1":
+        return {"available": False, "reason": "このサーバーでは実行できません。利用者の端末で起動した Vulnix で、"
+                                              "VULNIX_AGENT_DEFENSE_LOCAL=1 を設定したときだけ実行します"}
+    if sys.platform != "darwin" or not Path("/usr/bin/sandbox-exec").exists():
+        return {"available": False, "reason": "通信を遮断できる実行環境（macOS の sandbox-exec）がないため実行しません"}
+    if not claude_cli():
+        return {"available": False, "reason": "Claude Code の CLI（claude）が見つかりません"}
+    return {"available": True, "reason": None}
+
+
+def evaluate_settings(settings_text: str | None) -> dict:
+    """Run the check on a project whose only agent configuration is `settings_text` (the
+    .claude/settings.json the user selected in the browser), or none."""
+    state = availability()
+    if not state["available"]:
+        return {"status": "unsupported", "reason": state["reason"], "scope": SCOPE_NOTE}
+    if settings_text is not None:
+        if len(settings_text.encode("utf-8")) > MAX_SETTINGS_BYTES:
+            return {"status": "invalid", "reason": "設定ファイルが大きすぎます（64 KiB まで）", "scope": SCOPE_NOTE}
+        try:
+            parsed = json.loads(settings_text)
+        except ValueError:
+            return {"status": "invalid", "reason": "設定ファイルを JSON として読めません", "scope": SCOPE_NOTE}
+        if not isinstance(parsed, dict):
+            return {"status": "invalid", "reason": "設定ファイルは JSON オブジェクトである必要があります", "scope": SCOPE_NOTE}
+    if not _RUN_LOCK.acquire(blocking=False):
+        return {"status": "busy", "reason": "別の確認を実行中です。完了してからお試しください", "scope": SCOPE_NOTE}
+    try:
+        with tempfile.TemporaryDirectory(prefix="vulnix-agent-src-") as tmp:
+            project = Path(tmp)
+            if settings_text is not None:
+                (project / ".claude").mkdir()
+                (project / ".claude/settings.json").write_text(settings_text)
+            report = evaluate(project)
+    finally:
+        _RUN_LOCK.release()
+    return {**report, "scope": SCOPE_NOTE}
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("project")

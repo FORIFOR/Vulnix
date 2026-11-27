@@ -802,6 +802,7 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
             ("/cve/sync", self.svc.cve_monitor, "ingest_payloads"),
             ("/system/verify-controls", "aegis.server.run_live_control_verification", None),
             ("/cve/real-software-verify", "aegis.server.run_real_software_cve_comparison", None),
+            ("/agent-defense/evaluate", "aegis.agent_defense.evaluate_settings", None),
         )
         for path, target, method in cases:
             with self.subTest(path=path):
@@ -2038,9 +2039,17 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
         self.assertEqual(self.req(a, "/operators")[0], 403)
         self.assertEqual(self.req(a, "/l2-profiles")[0], 403)
         self.assertEqual(self.req(a, "/system/verify-controls", {})[0], 403)
+        # the AI-agent defense check runs a program on this machine: platform roles only
+        self.assertEqual(self.req(a, "/agent-defense/evaluate", {"settings_json": None})[0], 403)
+        self.assertEqual(self.req({}, "/agent-defense/status")[0], 401)
         self.assertEqual(self.req(a, "/operators/roles", {"name": "alice", "roles": ["admin"]})[0], 403)
         p = self.login("padmin", "padmin-pw-1")
         self.assertEqual(self.req(p, "/operators")[0], 200)
+        with patch.dict(os.environ, {"VULNIX_AGENT_DEFENSE_LOCAL": ""}):
+            code, rep = self.req(p, "/agent-defense/evaluate", {"settings_json": None})
+            self.assertEqual((code, rep["status"]), (200, "unsupported"))     # never runs unless enabled here
+            self.assertIn("VULNIX_AGENT_DEFENSE_LOCAL", rep["reason"])
+            self.assertEqual(self.req(p, "/agent-defense/status")[1]["available"], False)
 
     def test_pre_existing_accounts_keep_the_existing_workspace(self):
         p = self.login("padmin", "padmin-pw-1")
