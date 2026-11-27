@@ -246,3 +246,19 @@ test("a dependency CVE says whether scanned code imports the package, never more
   // a distribution may be imported under another name: no match is not "unused"
   assert.equal(where["fixture-other"], "not_determined");
 });
+
+test("npm: an imported package is marked, one only in the manifest is not directly imported", async () => {
+  const osv = [{ id: "GHSA-test-0002", aliases: ["CVE-2099-0002"], affected: [
+    { package: { ecosystem: "npm", name: "left-pad" }, versions: ["1.3.0"] },
+    { package: { ecosystem: "npm", name: "unused-lib" }, versions: ["1.0.0"] }] }];
+  const entry = (name, version) => ({ version, resolved: `https://registry.npmjs.org/${name}/-/${name}-${version}.tgz`,
+    integrity: "sha512-synthetic" });
+  const lock = JSON.stringify({ name: "demo", lockfileVersion: 3, packages: { "": { name: "demo" },
+    "node_modules/left-pad": entry("left-pad", "1.3.0"), "node_modules/unused-lib": entry("unused-lib", "1.0.0") } });
+  const report = await scanProject([fixture("package-lock.json", lock),
+    fixture("src/auth.js", "import pad from 'left-pad';\nexport default pad;\n")], { vulnerabilities: [], osv });
+  const where = Object.fromEntries(report.rows.filter((r) => r.title === "CVE-2099-0002")
+    .flatMap((r) => r.locations ?? []).map((l) => [l.dependency, l.reachable ?? "not_determined"]));
+  assert.equal(where["left-pad"], "imported");
+  assert.equal(where["unused-lib"], "not_imported_directly");
+});

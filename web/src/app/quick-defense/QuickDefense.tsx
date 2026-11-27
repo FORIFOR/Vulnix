@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { projectHref } from "@/components/ProjectOverview";
 import RuntimeDefense from "./RuntimeDefense";
 import ReviewedDefense from "./ReviewedDefense";
+import DefenseOverview from "./DefenseOverview";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useSession } from "@/lib/useSession";
 import { catalogSources, osvSources, type CatalogSource } from "@/lib/catalogUpdate";
@@ -325,6 +326,7 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
         : <p className="text-sm text-zinc-600 dark:text-zinc-400">
           隔離環境でのレビュー済み防御テストと、サイト・APIの診断は<Link className="underline" href="/login">ログイン</Link>後に使えます。
         </p>}
+      {visible && mode === "local" && <DefenseOverview rows={visible} files={files} signedIn={signedIn} />}
       {visible && <section className="space-y-3" aria-label="検証結果">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h2 className="text-lg font-semibold">{mode === "demo" ? "模擬データの結果" : "ローカル入力の結果"}</h2>
