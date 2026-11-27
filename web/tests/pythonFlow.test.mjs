@@ -85,3 +85,75 @@ test("output is bounded and survives unterminated input", () => {
   assert.equal(pythonFlow(many).length, 20);
   assert.deepEqual(kinds("def g():\n    x = request.args['q\n    eval(x"), []);
 });
+
+test("a conditional reassignment keeps the taint, a sanitizer clears only its own kind", () => {
+  const code = [
+    "@app.route('/x', methods=['POST'])",
+    "def x():",
+    "    param = request.form.get('p')",
+    "    if not param:",
+    "        param = ''",
+    "    bar = html.escape(param)",
+    "    pickle.loads(bar)",
+    "    return make_response(bar)",
+  ].join("\n");
+  assert.deepEqual(kinds(code), ["deserialize@7"]);
+});
+
+test("literal keys of dicts and ConfigParser are tracked separately", () => {
+  const code = [
+    "def y():",
+    "    param = request.args.get('p')",
+    "    m = {}",
+    "    m['safe'] = 'a'",
+    "    m['user'] = param",
+    "    flask.redirect(m['safe'])",
+    "    conf = configparser.ConfigParser()",
+    "    conf.set('s', 'keyA', 'a')",
+    "    conf.set('s', 'keyB', param)",
+    "    codecs.open(conf.get('s', 'keyA'))",
+    "    codecs.open(conf.get('s', 'keyB'))",
+    "    flask.redirect(m['user'])",
+    "    eval('{0[user]}'.format(m))",
+  ].join("\n");
+  assert.deepEqual(kinds(code), ["path@11", "redirect@12", "code@13"]);
+});
+
+test("returned request data is HTML only in Flask views, and a '..' check guards a path", () => {
+  const code = [
+    "@app.route('/a')",
+    "def a():",
+    "    name = request.args['n']",
+    "    if '../' in name:",
+    "        abort(400)",
+    "    open(name)",
+    "    return f'<p>{name}</p>'",
+    "",
+    "@router.get('/b')",
+    "def b(q: str):",
+    "    return q",
+    "",
+    "@app.route('/c')",
+    "def c():",
+    "    return jsonify(request.args['n'])",
+  ].join("\n");
+  assert.deepEqual(kinds(code), ["xss@7"]);
+});
+
+test("a resolved path checked against its base directory is not reported", () => {
+  const code = [
+    "@app.get('/audio/{path:path}')",
+    "def audio(path: str):",
+    "    base = AUDIO.resolve()",
+    "    p = (base / path).resolve()",
+    "    if base not in p.parents or not p.is_file():",
+    "        raise HTTPException(404)",
+    "    return FileResponse(p)",
+    "",
+    "@app.get('/{path:path}')",
+    "async def spa(path: str):",
+    "    f = DIST / path",
+    "    return FileResponse(f)",
+  ].join("\n");
+  assert.deepEqual(kinds(code), ["path@12"]);
+});

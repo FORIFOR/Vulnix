@@ -8,8 +8,9 @@
  * therefore "not found by these rules", never "safe".
  */
 
-export type PythonFlowKind = "sql" | "command" | "code" | "template" | "path" | "ssrf" | "deserialize" | "redirect";
+export type PythonFlowKind = "sql" | "command" | "code" | "template" | "xss" | "path" | "ssrf" | "deserialize" | "redirect";
 export type PythonFlowFinding = { kind: PythonFlowKind; line: number; func: string; sink: string };
+const KINDS: PythonFlowKind[] = ["sql", "command", "code", "template", "xss", "path", "ssrf", "deserialize", "redirect"];
 
 type Logical = { indent: number; code: string; line: number };
 
@@ -17,9 +18,27 @@ const MAX_FINDINGS = 20;
 const SOURCE = /\brequest\.(?:args|form|values|json|files|cookies|headers|data|get_json|get_data|GET|POST|COOKIES|META|FILES|body|query_params|path_params)\b/;
 const ROUTE_DECORATOR = /^@[\w.]*\.(?:route|get|post|put|patch|delete|api_route|websocket)\s*\(/;
 const NOT_INPUT_PARAM = /^(?:self|cls|request|req|db|session|current_user|background_tasks|response)$/;
-const SANITIZER = /(?<![\w.])(?:[\w]+\.)*(?:int|float|bool|len|escape|quote|secure_filename|clean|UUID)\s*\(/g;
+// A sanitizer only clears the kinds it actually protects: html.escape stops HTML
+// injection but not a pickle or a shell, and secure_filename only a file path.
+const ANY_KIND = String.raw`int|float|bool|len|UUID|uuid\.UUID`;
+const SANITIZERS: Partial<Record<PythonFlowKind, string>> = {
+  template: String.raw`(?:\w+\.)*escape\w*|(?:bleach\.)?clean`,
+  xss: String.raw`(?:\w+\.)*escape\w*|(?:bleach\.)?clean`,
+  path: String.raw`(?:werkzeug\.utils\.)?secure_filename|(?:os\.path\.)?basename`,
+  command: String.raw`(?:shlex\.)?quote`,
+};
+const SANITIZER: Record<string, RegExp> = Object.fromEntries(KINDS.map((k) =>
+  [k, new RegExp(String.raw`(?<![\w.])(?:${ANY_KIND}${SANITIZERS[k] ? "|" + SANITIZERS[k] : ""})\s*\(`, "g")]));
+const CONDITIONAL = /^(?:if|elif|else|for|async\s+for|while|except|case|match)\b/;
+const MUTATOR = /^([A-Za-z_]\w*)\.(?:append|extend|insert|add|update|set|put|setdefault|write|writelines|__setitem__)\s*\(/;
+const STORE = /^([A-Za-z_]\w*)(\[.*\]|\.\w+)\s*(?::[^=]+)?\+?=(?!=)\s*(.+)$/;
+const NOT_HTML = /^(?:jsonify|json\.dumps|render_template|redirect|flask\.redirect|send_file|send_from_directory|abort|make_response|HttpResponse|JsonResponse|Response|FileResponse|RedirectResponse|None|True|False)\b|^[{[]|^-?\d/;
 
-/** Logical lines with comments removed, plain strings as "" and f-strings as F(expr, ...). */
+/**
+ * Logical lines with comments removed and f-strings as F(expr, ...). Plain strings keep
+ * their text only when it is a short word-like key or a path fragment ("keyA", "../");
+ * any other string becomes "". Quotes therefore only ever delimit literals.
+ */
 export function logicalLines(input: string): Logical[] {
   const out: Logical[] = [];
   let cur = "";
@@ -81,7 +100,7 @@ export function logicalLines(input: string): Logical[] {
           k = j - 1;
         }
         cur += `F(${exprs.join(",")})`;
-      } else cur += "\"\"";
+      } else cur += /^(?:[./\\]{1,4}|[\w.-]{1,40})$/.test(body) ? `"${body}"` : "\"\"";
       continue;
     }
     if (ch === "(" || ch === "[" || ch === "{") depth++;
@@ -120,11 +139,12 @@ function splitTop(text: string): string[] {
   return parts;
 }
 
-function withoutSanitized(expr: string): string {
+function withoutSanitized(expr: string, kind: PythonFlowKind): string {
+  const pattern = SANITIZER[kind];
   let text = expr;
   for (let guard = 0; guard < 20; guard++) {
-    SANITIZER.lastIndex = 0;
-    const m = SANITIZER.exec(text);
+    pattern.lastIndex = 0;
+    const m = pattern.exec(text);
     if (!m) break;
     const open = m.index + m[0].length - 1;
     let level = 0;
@@ -138,11 +158,40 @@ function withoutSanitized(expr: string): string {
   return text;
 }
 
-function isTainted(expr: string, tainted: Set<string>): boolean {
-  const text = withoutSanitized(expr);
+type Taint = Map<string, Set<PythonFlowKind>>;
+
+// d["key"], d.get("key", ...) and ConfigParser's conf.get("section", "key")
+const KEY_READ = /(?<![\w.])([A-Za-z_]\w*)\s*(?:\[\s*"([^"]*)"\s*\]|\.get\(\s*(?:"[^"]*"\s*,\s*)?"([^"]*)"[^()]*\))/g;
+
+function taintedFor(expr: string, kind: PythonFlowKind, tainted: Taint): boolean {
+  let text = withoutSanitized(expr, kind);
   if (SOURCE.test(text)) return true;
-  for (const m of text.matchAll(/(?<![\w.])[A-Za-z_]\w*/g)) if (tainted.has(m[0])) return true;
+  // A container that only holds request data under some literal keys is tainted only
+  // when one of those keys is read; a whole-object taint is kept under the bare name.
+  let hit = false;
+  text = text.replace(KEY_READ, (all, name: string, a?: string, b?: string) => {
+    if (tainted.get(`${name}[${a ?? b}]`)?.has(kind)) hit = true;
+    return tainted.has(name) ? all : "0";
+  });
+  if (hit) return true;
+  text = text.replace(/"[^"]*"/g, "\"\"");
+  for (const m of text.matchAll(/(?<![\w.])[A-Za-z_]\w*/g)) {
+    if (tainted.get(m[0])?.has(kind)) return true;
+    // the whole container, e.g. "...".format(d), carries every key it holds
+    for (const [name, kinds] of tainted) if (kinds.has(kind) && name.startsWith(`${m[0]}[`)) return true;
+  }
   return false;
+}
+
+/** The kinds of sink this expression would be dangerous in. */
+function taintKinds(expr: string, tainted: Taint): Set<PythonFlowKind> {
+  return new Set(KINDS.filter((k) => taintedFor(expr, k, tainted)));
+}
+
+function merge(tainted: Taint, name: string, kinds: Set<PythonFlowKind>): void {
+  if (!kinds.size) return;
+  const prior = tainted.get(name);
+  tainted.set(name, prior ? new Set([...prior, ...kinds]) : kinds);
 }
 
 type Sink = { kind: PythonFlowKind; pattern: RegExp; arg?: number; requires?: RegExp; unless?: RegExp };
@@ -151,13 +200,14 @@ const SINKS: Sink[] = [
   { kind: "command", pattern: /(?<![\w.])os\.(?:system|popen)\s*\(/g },
   { kind: "command", pattern: /(?<![\w.])subprocess\.(?:run|call|check_call|check_output|Popen)\s*\(/g, requires: /\bshell\s*=\s*True\b/ },
   { kind: "code", pattern: /(?<![\w.])(?:eval|exec)\s*\(/g },
-  { kind: "template", pattern: /(?<![\w.])(?:render_template_string|Markup|mark_safe)\s*\(/g },
-  { kind: "path", pattern: /(?<![\w.])(?:open|send_file|FileResponse)\s*\(/g },
+  { kind: "template", pattern: /(?<![\w.])(?:flask\.)?(?:render_template_string|Markup|mark_safe)\s*\(/g },
+  { kind: "xss", pattern: /(?<![\w.])(?:flask\.)?(?:make_response|HttpResponse)\s*\(/g },
+  { kind: "path", pattern: /(?<![\w.])(?:codecs\.|io\.|os\.)?open\s*\(|(?<![\w.])(?:flask\.)?(?:send_file|FileResponse)\s*\(/g },
   { kind: "ssrf", pattern: /(?<![\w.])(?:requests|httpx)\.(?:get|post|put|patch|delete|head)\s*\(|(?<![\w])urlopen\s*\(/g },
   { kind: "ssrf", pattern: /(?<![\w.])(?:requests|httpx)\.request\s*\(/g, arg: 1 },
   { kind: "deserialize", pattern: /(?<![\w.])(?:pickle|marshal|dill)\.loads?\s*\(/g },
   { kind: "deserialize", pattern: /(?<![\w.])yaml\.(?:load|load_all)\s*\(/g, unless: /SafeLoader|CSafeLoader/ },
-  { kind: "redirect", pattern: /(?<![\w.])(?:redirect|HttpResponseRedirect|RedirectResponse)\s*\(/g },
+  { kind: "redirect", pattern: /(?<![\w.])(?:flask\.|shortcuts\.)?(?:redirect|HttpResponseRedirect|RedirectResponse)\s*\(/g },
 ];
 
 function params(signature: string): string[] {
@@ -171,7 +221,7 @@ function params(signature: string): string[] {
 export function pythonFlow(input: string): PythonFlowFinding[] {
   const lines = logicalLines(input);
   const findings: PythonFlowFinding[] = [];
-  type Scope = { indent: number; name: string; tainted: Set<string> };
+  type Scope = { indent: number; name: string; flask: boolean; tainted: Taint; blocks: { indent: number; conditional: boolean }[] };
   const stack: Scope[] = [];
   for (let index = 0; index < lines.length && findings.length < MAX_FINDINGS; index++) {
     const { indent, code, line } = lines[index];
@@ -185,12 +235,24 @@ export function pythonFlow(input: string): PythonFlowFinding[] {
       const firstName = /^\*{0,2}([A-Za-z_]\w*)/.exec(all[0] ?? "")?.[1];
       const route = decorators.some((d) => ROUTE_DECORATOR.test(d));
       const djangoView = !route && firstName === "request";
-      stack.push({ indent, name: def[1], tainted: new Set(route || djangoView ? params(def[2]) : []) });
+      const tainted: Taint = new Map();
+      if (route || djangoView) for (const name of params(def[2])) tainted.set(name, new Set(KINDS));
+      // Flask sends a returned str as HTML; FastAPI encodes it as JSON and Django needs a response object.
+      const flask = decorators.some((d) => /^@[\w.]*\.route\s*\(/.test(d));
+      stack.push({ indent, name: def[1], flask, tainted, blocks: [] });
       continue;
     }
     const scope = stack[stack.length - 1];
     if (!scope) continue;
+    while (scope.blocks.length && indent <= scope.blocks[scope.blocks.length - 1].indent) scope.blocks.pop();
+    // An assignment under if/else/for/while/except may not run, so it adds taint but never clears it.
+    const conditional = scope.blocks.some((b) => b.conditional);
     const reported = new Set<PythonFlowKind>();
+    const report = (kind: PythonFlowKind, sink: string) => {
+      if (reported.has(kind) || findings.length >= MAX_FINDINGS) return;
+      reported.add(kind);
+      findings.push({ kind, line, func: scope.name, sink });
+    };
     for (const sink of SINKS) {
       sink.pattern.lastIndex = 0;
       for (const m of code.matchAll(sink.pattern)) {
@@ -200,26 +262,54 @@ export function pythonFlow(input: string): PythonFlowFinding[] {
         if (value === undefined || /^\w+\s*=/.test(value) && !/^\w+\s*==/.test(value)) continue;
         if (sink.requires && !args.some((a) => sink.requires!.test(a))) continue;
         if (sink.unless && args.some((a) => sink.unless!.test(a))) continue;
-        if (!isTainted(value, scope.tainted)) continue;
-        reported.add(sink.kind);
-        findings.push({ kind: sink.kind, line, func: scope.name, sink: m[0].replace(/\s*\($/, "") });
-        if (findings.length >= MAX_FINDINGS) break;
+        if (!taintedFor(value, sink.kind, scope.tainted)) continue;
+        report(sink.kind, m[0].replace(/\s*\($/, ""));
       }
     }
-    const loop = /^(?:async\s+)?for\s+(.+?)\s+in\s+(.+):\s*$/.exec(code);
-    if (loop) {
-      if (isTainted(loop[2], scope.tainted)) for (const name of loop[1].match(/[A-Za-z_]\w*/g) ?? []) scope.tainted.add(name);
+    // A Flask view that returns request data as a plain string sends it as HTML.
+    const ret = /^return\s+(.+)$/.exec(code);
+    if (ret && scope.flask && !NOT_HTML.test(ret[1]) && taintedFor(ret[1], "xss", scope.tainted)) report("xss", "return");
+    if (/:\s*$/.test(code) && /^(?:if|elif|else|for|async\s+for|while|try|except|finally|with|async\s+with|match|case)\b/.test(code)) {
+      // `if '..' in name:` (or '/', '\\') rejects path traversal for that name.
+      const guard = /^if\s+"(?:\.\.?[/\\]?|[/\\])"\s+in\s+([A-Za-z_]\w*)\s*:/.exec(code);
+      if (guard) scope.tainted.get(guard[1])?.delete("path");
+      // a containment check after resolving: p.is_relative_to(base), base in p.parents, commonpath
+      for (const m of code.matchAll(/(?<![\w.])([A-Za-z_]\w*)\.(?:is_relative_to\s*\(|parents\b)|commonpath\s*\(\s*\[[^\]]*?(?<![\w.])([A-Za-z_]\w*)\s*\]/g))
+        scope.tainted.get(m[1] ?? m[2])?.delete("path");
+      const loop = /^(?:async\s+)?for\s+(.+?)\s+in\s+(.+):\s*$/.exec(code);
+      if (loop) {
+        const kinds = taintKinds(loop[2], scope.tainted);
+        for (const name of loop[1].match(/[A-Za-z_]\w*/g) ?? []) merge(scope.tainted, name, kinds);
+      }
+      const asName = /^(?:async\s+)?with\s+(.+?)\s+as\s+([A-Za-z_]\w*)\s*:\s*$/.exec(code);
+      if (asName) merge(scope.tainted, asName[2], taintKinds(asName[1], scope.tainted));
+      scope.blocks.push({ indent, conditional: CONDITIONAL.test(code) });
+      continue;
+    }
+    const mutate = MUTATOR.exec(code);
+    if (mutate) {
+      const args = callArgs(code, code.indexOf("(", mutate[1].length));
+      // conf.set("section", "key", value) stores under one literal key
+      const key = /\.set\s*\($/.test(mutate[0]) && args.length === 3 ? /^"([^"]*)"$/.exec(args[1])?.[1] : undefined;
+      if (key !== undefined) merge(scope.tainted, `${mutate[1]}[${key}]`, taintKinds(args[2], scope.tainted));
+      else merge(scope.tainted, mutate[1], taintKinds(args.join(","), scope.tainted));
       continue;
     }
     const assign = /^((?:[A-Za-z_]\w*\s*,\s*)*[A-Za-z_]\w*)\s*(?::[^=]+)?(\+?=)(?!=)\s*(.+)$/.exec(code);
-    if (!assign) continue;
+    if (!assign) {
+      // Storing into a container or attribute taints the whole object (never cleared).
+      const store = STORE.exec(code);
+      const key = store && /^\[\s*"([^"]*)"\s*\]$/.exec(store[2])?.[1];
+      if (store) merge(scope.tainted, key !== undefined && key !== null ? `${store[1]}[${key}]` : store[1], taintKinds(store[3], scope.tainted));
+      continue;
+    }
     const names = assign[1].split(",").map((s) => s.trim());
     const values = names.length > 1 ? splitTop(assign[3].replace(/^\((.*)\)$/, "$1")) : [assign[3]];
     names.forEach((name, k) => {
-      const expr = values.length === names.length ? values[k] : assign[3];
-      const tainted = isTainted(expr, scope.tainted);
-      if (tainted) scope.tainted.add(name);
-      else if (assign[2] === "=") scope.tainted.delete(name);
+      const kinds = taintKinds(values.length === names.length ? values[k] : assign[3], scope.tainted);
+      if (assign[2] === "+=" || conditional) merge(scope.tainted, name, kinds);
+      else if (kinds.size) scope.tainted.set(name, kinds);
+      else scope.tainted.delete(name);
     });
   }
   return findings;
