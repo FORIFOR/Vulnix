@@ -331,7 +331,7 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
           言語 {report.languages.join("・") || "不明"} ／ フレームワーク {report.frameworks.join("・") || "不明"} ／ ロック形式 {report.lockKinds}種 ／ 照合対象の固定依存関係 {report.packageCount}件。
         </p>}
         {report && <ul className="list-inside list-disc space-y-1 text-sm" aria-label="検査の内訳">
-          <li>データフローを解析したJavaScript・TypeScript {report.coverage.source}件。共通検査のみのソース {report.coverage.noSourceRules}件。</li>
+          <li>データフローを解析したJavaScript・TypeScript {report.coverage.source - (report.coverage.pythonFlow ?? 0)}件、Python（同じ関数内） {report.coverage.pythonFlow ?? 0}件。共通検査のみのソース {report.coverage.noSourceRules}件。</li>
           <li>固定版を照合した依存資料 {report.coverage.packageFiles}件。固定版不明のPython依存指定 {report.coverage.unresolvedDependencies}行。構文・記法で読むことができなかった設定 {report.coverage.parseFailed}件。</li>
           <li>今回の照合候補はOSV {report.coverage.osvAdvisories}件、NVD {report.coverage.nvdAdvisories}件。カタログ全体の収録件数は上の取得状況で確認できます。</li>
         </ul>}
