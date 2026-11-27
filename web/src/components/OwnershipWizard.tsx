@@ -2,11 +2,12 @@
 
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ApiHttpError, getJSON, postJSON } from "@/lib/api";
 import type { Asset, OwnershipChallenge, Snapshot } from "@/lib/types";
 import { assetProject, projectHref } from "./ProjectOverview";
 import { canApprove, useSession } from "@/lib/useSession";
+import { needsOwnershipRefresh as needsRefresh } from "@/lib/polling";
 
 interface Props {
   open: boolean;
@@ -33,6 +34,7 @@ interface OwnershipTraffic {
   available_methods?: Method[];
   managed?: boolean;
   can_request?: boolean;
+  self_service?: boolean;
   can_revoke?: boolean;
 }
 
@@ -131,6 +133,8 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
   const recommendedMethod: Method = googleOwnership ? "google_search_console" : supportsFileProof(url) ? "well_known" : "dns_txt";
   const [method, setMethod] = useState<Method>(recommendedMethod);
   const [proofTraffic, setProofTraffic] = useState<{ key: string; value: OwnershipTraffic } | null>(null);
+  const pendingRef = useRef(true);
+  const [trafficTick, setTrafficTick] = useState(0);
   const [copiedDns, setCopiedDns] = useState(false);
   const [registeredAsset, setRegisteredAsset] = useState<Asset | null | undefined>(initialAsset);
   const [verifyDetail, setVerifyDetail] = useState<string | null>(null);
@@ -174,6 +178,7 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
       try {
         const value = await postJSON<OwnershipTraffic>("/api/assets/ownership-traffic", { action: "status", url: proofUrl, method: proofMethod });
         if (active) {
+          pendingRef.current = needsRefresh(value);
           setProofTraffic({ key: proofKey, value });
           if (preapproved && value.available_methods && !value.managed) {
             const allowed = METHOD_CARDS.map(({ id }) => id).filter(
@@ -187,9 +192,10 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
       }
     };
     void read();
-    const timer = window.setInterval(read, 5000);
+    // Re-read only while another person's decision or an expiring grant can change the state.
+    const timer = window.setInterval(() => { if (pendingRef.current) void read(); }, 5000);
     return () => { active = false; window.clearInterval(timer); };
-  }, [open, step, checkTraffic, preapproved, googleOwnership, proofUrl, proofMethod, proofKey, canRegister]);
+  }, [open, step, checkTraffic, preapproved, googleOwnership, proofUrl, proofMethod, proofKey, canRegister, trafficTick]);
 
   useEffect(() => {
     if (!open || !cloudAdmin || !cloudHost || !cloudOpen || step !== 1) return;
@@ -285,16 +291,21 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
   const verify = () =>
     run(async () => {
       setVerifyDetail(null);
-      const res = await postJSON<VerifyResponse>("/api/assets/verify-ownership", { url: url.trim(), method });
-      onAssetsChanged(res.assets);
-      setVerifyDetail(res.verification.detail);
-      if (res.verified) setStep(2);
+      try {
+        const res = await postJSON<VerifyResponse>("/api/assets/verify-ownership", { url: url.trim(), method });
+        onAssetsChanged(res.assets);
+        setVerifyDetail(res.verification.detail);
+        if (res.verified) setStep(2);
+      } finally {
+        setTrafficTick((tick) => tick + 1);   // the attempt budget changed
+      }
     });
 
   const changeTraffic = (action: "request" | "approve" | "reject" | "revoke") => run(async () => {
     const value = await postJSON<OwnershipTraffic>("/api/assets/ownership-traffic", {
       url: proofUrl, method: proofMethod, action, ...(action !== "request" ? { id: permission?.id } : {}),
     });
+    pendingRef.current = needsRefresh(value);
     setProofTraffic({ key: proofKey, value });
   });
 
@@ -455,9 +466,10 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
                 : recommended ? "選んだ方法は現在利用できません。「おすすめ」の方法で続けてください。"
                 : permission?.status === "expired" ? "事前許可の期限が切れました。運営者に対象URLと確認方法を伝えてください。"
                 : permission?.status === "scheduled" ? "事前許可の開始時刻を過ぎてから、もう一度お試しください。"
+                : permission?.status === "unavailable" && permission.self_service ? "この方法の本日の試行上限に達しました。日本時間9時以降に再試行するか、別の方法を選んでください。"
                 : permission?.status === "unavailable" ? "試行上限に達したか、許可を確認できません。運営者に確認してください。"
                 : "事前許可のある方法を利用できません。運営者に対象URLと確認方法を伝えるか、ソースコード・SBOM診断に進んでください。"}
-              {permission?.can_verify && expires ? <p>有効期限 {new Date(expires * 1000).toLocaleString("ja-JP")}</p> : null}
+              {permission?.can_verify && expires && !permission.self_service ? <p>有効期限 {new Date(expires * 1000).toLocaleString("ja-JP")}</p> : null}
             </div>}
             {(approvalRequired || managed) && <div className="space-y-2 rounded-xl border border-zinc-200 p-3 dark:border-zinc-700">
               <p className="font-semibold" role="status">

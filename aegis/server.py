@@ -499,12 +499,11 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 key, epoch, stopped = self._ownership_target(service, str(body["url"]), body["method"])
                 now = time.time()
                 if mode == "preapproved":
-                    policies = ownership_policy.load()
+                    policies = ownership_policy.for_target(key[0], key[2], now)
                     available = [policy.method for policy in policies.values()
-                                 if (policy.org, policy.url) == (key[0], key[2])
-                                 and policy.not_before <= now < policy.expires_at
+                                 if policy.not_before <= now < policy.expires_at
                                  and not stopped and ownership_policy.has_budget(service.data_dir, policy)]
-                    policy = policies.get((key[0], key[2], key[3]))
+                    policy = policies.get(key[3])
                     if policy or not managed:
                         if action != "status":
                             return self._json(409, {"error": "この対象と方法の通信許可は運営者設定で管理します"})
@@ -519,7 +518,8 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                             status = "approved" if can_verify else "unavailable"
                         result = {"status": status, "stopped": stopped, "can_decide": False,
                                   "can_verify": can_verify, "available_methods": available, "managed": managed,
-                                  "expires_at": policy.expires_at if policy else None}
+                                  "expires_at": policy.expires_at if policy else None,
+                                  "self_service": bool(policy and policy.id.startswith("self-"))}
                         previous_timeout = self.connection.gettimeout()
                         self.connection.settimeout(2.0)
                         try:
@@ -598,7 +598,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             key, epoch, stopped = self._ownership_target(service, value, method)
             if mode == "preapproved":
                 claim = "所有確認は運営者が事前に許可した対象・方法・期間に限られます"
-                policy = ownership_policy.load().get((key[0], key[2], method))
+                policy = ownership_policy.for_target(key[0], key[2], time.time()).get(method)
                 if policy or saved_method == "preapproved" or not managed:
                     if stopped or not policy or not policy.not_before <= time.time() < policy.expires_at:
                         raise ApproverRequired(claim)

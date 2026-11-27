@@ -349,6 +349,53 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
             self.assertEqual(check.call_count, 2)
             self.assertFalse(self.req(alice, endpoint, {**request, "action": "status"}, org)[1]["can_verify"])
 
+    def test_personal_self_service_ownership_needs_no_operator_file_or_second_person(self):
+        owner = self.signup("selfserveowner")
+        outsider = self.signup("selfserveoutsider")
+        personal = owner["orgs"][0]["id"]
+        corporate = self.reg.store.create_org("Corporate self-serve", "selfserveowner")
+        url = "https://selfserve.example.test/"
+        proof = {"url": url, "method": "dns_txt"}
+        endpoint = "/assets/ownership-traffic"
+        env = {"VULNIX_OWNERSHIP_TRAFFIC": "hybrid", "VULNIX_PERSONAL_OWNERSHIP_ORGS": personal,
+               "VULNIX_OWNERSHIP_SELF_SERVICE": "1"}
+        with patch.dict(os.environ, env), patch.multiple(
+                "aegis.server", REAL_SERVICE_DIAGNOSIS=False, REAL_SITE_L1_ONLY=False), patch(
+                "aegis.assessment.verify_ownership_challenge", return_value={
+                    "verified": False, "method": "dns_txt", "verified_at": time.time(), "detail": "fixture",
+                }) as check:
+            for org in (personal, corporate):
+                self.assertEqual(self.req(owner, "/assets/challenge", {"url": url}, org)[0], 200)
+            # enterprise orgs keep the separate-person approval
+            self.assertEqual(self.req(owner, "/assets/verify-ownership", proof, corporate)[0], 403)
+            self.assertEqual(self.req(outsider, endpoint, {**proof, "action": "status"}, personal)[0], 403)
+            check.assert_not_called()
+            _, status = self.req(owner, endpoint, {**proof, "action": "status"}, personal)
+            self.assertTrue(status["can_verify"], status)
+            self.assertEqual(set(status["available_methods"]),
+                             {"dns_txt", "well_known", "google_search_console"})
+            # bounded per target, method and UTC day; failures count
+            for _ in range(5):
+                self.assertEqual(self.req(owner, "/assets/verify-ownership", proof, personal)[0], 200)
+            self.assertEqual(self.req(owner, "/assets/verify-ownership", proof, personal)[0], 403)
+            self.assertEqual(check.call_count, 5)
+            self.assertFalse(self.req(owner, endpoint, {**proof, "action": "status"}, personal)[1]["can_verify"])
+            events = [json.loads(line) for line in
+                      (self.reg.service(personal).data_dir / "audit.jsonl").read_text().splitlines()]
+            used = [e for e in events if e.get("event") == "asset.ownership_traffic_preapproved"]
+            self.assertEqual(len(used), 5)
+            self.assertTrue(all(str(e["fields"].get("policy_id", "")).startswith("self-") for e in used))
+            with patch("aegis.server.time.time", return_value=time.time() + 86400):
+                self.assertEqual(self.req(owner, "/assets/verify-ownership", proof, personal)[0], 200)
+            self.reg.service(personal).emergency_stop("selfserveowner")
+            with patch("aegis.server.time.time", return_value=time.time() + 2 * 86400):
+                self.assertEqual(self.req(owner, "/assets/verify-ownership", proof, personal)[0], 403)
+            self.assertEqual(check.call_count, 6)
+        # without the operator switch nothing is preapproved
+        with patch.dict(os.environ, {**env, "VULNIX_OWNERSHIP_SELF_SERVICE": "0"}), patch.multiple(
+                "aegis.server", REAL_SERVICE_DIAGNOSIS=False, REAL_SITE_L1_ONLY=False):
+            self.assertFalse(self.req(owner, endpoint, {**proof, "action": "status"}, personal)[1]["can_verify"])
+
     def test_personal_google_ownership_rechecks_approval_between_requests(self):
         from aegis import google_ownership
 
