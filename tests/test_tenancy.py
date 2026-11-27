@@ -396,6 +396,31 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
                 "aegis.server", REAL_SERVICE_DIAGNOSIS=False, REAL_SITE_L1_ONLY=False):
             self.assertFalse(self.req(owner, endpoint, {**proof, "action": "status"}, personal)[1]["can_verify"])
 
+    def test_self_service_limits_targets_per_org_and_attempts_per_account_across_orgs(self):
+        owner = self.signup("selflimitowner")
+        first = owner["orgs"][0]["id"]
+        second = self.reg.store.create_org("Second personal", "selflimitowner")
+        env = {"VULNIX_OWNERSHIP_TRAFFIC": "preapproved", "VULNIX_OWNERSHIP_SELF_SERVICE": "1"}
+        with patch.dict(os.environ, env), patch.multiple(
+                "aegis.server", REAL_SERVICE_DIAGNOSIS=False, REAL_SITE_L1_ONLY=False,
+                OWNERSHIP_CHECKS_PER_ORG_PER_HOUR=100), patch(
+                "aegis.assessment.verify_ownership_challenge", return_value={
+                    "verified": False, "method": "dns_txt", "verified_at": time.time(), "detail": "fixture",
+                }) as check:
+            for i in range(6):
+                url = f"https://t{i}.selflimit.example.test/"
+                self.assertEqual(self.req(owner, "/assets/challenge", {"url": url}, first)[0], 200)
+                code, body = self.req(owner, "/assets/verify-ownership", {"url": url, "method": "dns_txt"}, first)
+                self.assertEqual(code, 200 if i < 5 else 429, body)
+            self.assertEqual(check.call_count, 5)
+            # the account's hourly limit spans its organizations
+            url = "https://t0.selflimit.example.test/"
+            self.assertEqual(self.req(owner, "/assets/challenge", {"url": url}, second)[0], 200)
+            codes = [self.req(owner, "/assets/verify-ownership", {"url": url, "method": method}, second)[0]
+                     for method in ("dns_txt", "dns_txt", "dns_txt", "dns_txt", "dns_txt", "well_known")]
+            self.assertEqual(codes, [200] * 5 + [429])
+            self.assertEqual(check.call_count, 10)
+
     def test_personal_google_ownership_rechecks_approval_between_requests(self):
         from aegis import google_ownership
 

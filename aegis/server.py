@@ -295,6 +295,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
     run_times: dict[str, list[float]] = {}
     run_all: list[float] = []
     verify_times: dict[str, list[float]] = {}
+    self_service_slots = ownership_policy.SelfServiceSlots()
     google_states: dict[str, dict] = {}     # OAuth state -> {at, account, org, host, verifier}
     verify_all: list[float] = []
     real_run_times: dict[str, list[float]] = {}
@@ -478,6 +479,10 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 return "expired"
             return record["status"]
 
+        def _self_service_mode(self):
+            return (_ownership_traffic_mode(getattr(self, "_bound_org", None)) == "preapproved"
+                    and os.environ.get("VULNIX_OWNERSHIP_SELF_SERVICE") == "1")
+
         @staticmethod
         def _managed_ownership(mode, method):
             return (mode == "preapproved" and method in ownership_policy.METHODS
@@ -605,6 +610,13 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     current = ("preapproved", key, epoch, policy)
                     if expected is not None and expected != current:
                         raise ApproverRequired(claim)
+                    if consume and policy.id.startswith("self-"):
+                        if not ownership_policy.has_budget(service.data_dir, policy):
+                            raise ApproverRequired("所有確認の試行上限に達したか、許可の状態を確認できません")
+                        # account, organization-count and platform limits (raises LimitReached: 429)
+                        ownership_policy.consume_self_service(
+                            Path(default_svc.data_dir), account=sess.operator, org=key[0], origin=key[2],
+                            method=method, now=time.time())
                     if (consume or expected is None) and not ownership_policy.has_budget(service.data_dir, policy, consume=consume):
                         raise ApproverRequired("所有確認の試行上限に達したか、許可の状態を確認できません")
                     if consume:
@@ -1976,7 +1988,10 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     g_host = st["host"]
                     if svc.real_service_has_authority(g_host) and "approver" not in sess.roles:
                         return self._json(403, {"error": "所有確認済みの対象の再確認には承認責任者の権限が必要です"})
-                    with live_grant_roles(sess, bound_org or DEFAULT_ORG), svc._lock:
+                    google_slot = contextlib.ExitStack()
+                    if self._self_service_mode():
+                        google_slot.enter_context(self_service_slots.hold(actor))
+                    with google_slot, live_grant_roles(sess, bound_org or DEFAULT_ORG), svc._lock:
                         grant = self._require_ownership_traffic(
                             svc, sess, st["target_url"], google_ownership.METHOD, st["grant"], consume=True)
 
@@ -1985,10 +2000,11 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                             self._require_ownership_traffic(svc, sess, st["target_url"], google_ownership.METHOD, grant)
 
                     try:
-                        sites = google_ownership.owned_sites(
-                            cfg, str(body.get("code") or ""), st["verifier"],
-                            **({"before_request": guard_google_request} if isinstance(grant, tuple) else {}),
-                        )
+                        with (self_service_slots.hold(actor) if self._self_service_mode() else contextlib.nullcontext()):
+                            sites = google_ownership.owned_sites(
+                                cfg, str(body.get("code") or ""), st["verifier"],
+                                **({"before_request": guard_google_request} if isinstance(grant, tuple) else {}),
+                            )
                     except google_ownership.GoogleOwnershipError as e:
                         return self._json(502, {"error": str(e), "host": g_host})
                     # checked against the scheme / port registered when the check started;
@@ -2020,22 +2036,26 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     if v_host and svc.real_service_has_authority(v_host) and "approver" not in sess.roles:
                         # a failed re-check revokes scope and stored test accounts
                         return self._json(403, {"error": "所有確認済みの対象の再確認には承認責任者の権限が必要です"})
-                    with live_grant_roles(sess, getattr(self, "_bound_org", DEFAULT_ORG)), svc._lock:
-                        grant = self._require_ownership_traffic(svc, sess, ownership_value, method, consume=True)
+                    slot = contextlib.ExitStack()
+                    if self._self_service_mode():
+                        slot.enter_context(self_service_slots.hold(actor))
+                    with slot:     # held until the lookup has finished
+                        with live_grant_roles(sess, getattr(self, "_bound_org", DEFAULT_ORG)), svc._lock:
+                            grant = self._require_ownership_traffic(svc, sess, ownership_value, method, consume=True)
 
-                    @contextlib.contextmanager
-                    def proof_guard():
-                        with live_grant_roles(sess, getattr(self, "_bound_org", DEFAULT_ORG)) as roles, svc._lock:
-                            self._require_ownership_traffic(svc, sess, ownership_value, method, grant)
-                            yield roles
+                        @contextlib.contextmanager
+                        def proof_guard():
+                            with live_grant_roles(sess, getattr(self, "_bound_org", DEFAULT_ORG)) as roles, svc._lock:
+                                self._require_ownership_traffic(svc, sess, ownership_value, method, grant)
+                                yield roles
 
-                    res = svc.verify_asset_ownership(
-                        url_or_host=ownership_value,
-                        method=method,
-                        actor=actor,
-                        roles=tuple(sess.roles),     # re-checked inside, when the result is applied
-                        grant_guard=proof_guard,
-                    )
+                        res = svc.verify_asset_ownership(
+                            url_or_host=ownership_value,
+                            method=method,
+                            actor=actor,
+                            roles=tuple(sess.roles),     # re-checked inside, when the result is applied
+                            grant_guard=proof_guard,
+                        )
                     payload = {**res, "assets": svc.assets()}
                     return self._authorized_org_read(
                         sess, getattr(self, "_bound_org", DEFAULT_ORG),
@@ -2289,6 +2309,8 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     return self._json(404, {"error": "not found"})
             except AuthError as e:
                 return self._json(401, {"error": str(e)})
+            except ownership_policy.LimitReached as e:
+                return self._json(429, {"error": str(e)}, [("Retry-After", "600")])
             except ApproverRequired as e:
                 return self._json(403, {"error": str(e)})
             except StopNotConfirmed as e:
