@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 import contextlib
 import atexit
+import functools
 import hashlib
 import hmac
 import ipaddress
@@ -311,6 +312,16 @@ def _claim_data_dir(data_dir: Path) -> None:
 
 
 # Findings whose single-item verification is a bundled-lab check (fixed lab paths).
+def _planner_timeout() -> float:
+    """Wall-clock limit of one ARTEX planner process (and its CPU-seconds cap): 120 s by
+    default; a slower local model may be given up to 600 s via VULNIX_ARTEX_PLANNER_TIMEOUT_S."""
+    try:
+        value = float(os.environ.get("VULNIX_ARTEX_PLANNER_TIMEOUT_S", "120"))
+    except ValueError:
+        return 120.0
+    return value if 30 <= value <= 600 else 120.0
+
+
 def _lab_verdict(result, check: str) -> str:
     """The frozen evidence judge, plus the separately kept open-redirect check."""
     if check == "open_redirect":
@@ -2530,6 +2541,7 @@ class AssessmentService:
                 self._reset_artex_db()
             run = run_artex_planner(self._artex_real_cmd, request, llm_url=llm_url, llm_key=llm_key,
                                     llm_model=self._artex_llm_model, pg_dsn=self._artex_pg_dsn,
+                                    timeout_s=_planner_timeout(),
                                     expected_sha256=self._artex_expected_sha256,
                                     confinement=confinement, forbidden_paths=protected,
                                     on_leftover=self._note_leftover_session,
@@ -2749,9 +2761,17 @@ class AssessmentService:
         bound = None
         if real:
             bound = self._take_preview_approval(actor, approval, roles)
+        local_transport = None
+        if not real:
+            # A local model on this machine can take longer than a hosted one for the first,
+            # largest prompt. The wait is bounded by the same 1-120 s rule as every model call
+            # (default 30 s) and happens after the send lease is released (stop stays prompt).
+            from .router import _http_transport, _model_timeout
+            local_transport = functools.partial(
+                _http_transport, timeout_s=_model_timeout(os.environ.get("VULNIX_PLANNER_LLM_TIMEOUT_S", 30)))
         return PlannerLLMGateway(mode="forward", upstream_url=upstream,
                                  api_key=os.environ.get("VULNIX_ABLITERATION_KEY", "") if real else "",
-                                 approval=bound, **common)
+                                 approval=bound, transport=local_transport, **common)
 
     def _previews_path(self) -> Path:
         return self.data_dir / "planner_llm_previews.json"

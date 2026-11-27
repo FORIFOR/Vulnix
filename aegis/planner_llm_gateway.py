@@ -528,6 +528,10 @@ class PlannerLLMGateway:
             # Only the first request of the run (the one an approval's fingerprint covers),
             # never a later fresh or compacted conversation, and never over ARTEX's own choice.
             out["tool_choice"] = {"type": "function", "function": {"name": self.first_turn_tool}}
+            # Some local servers (Ollama) ignore tool_choice; offering only that tool on this one
+            # request has the same meaning and holds there too. The run's tool fingerprint above
+            # was taken from ARTEX's full list, so later turns are unaffected.
+            out["tools"] = [t for t in tools if t["function"]["name"] == self.first_turn_tool]
         mt = body.get("max_tokens")
         out["max_tokens"] = mt if isinstance(mt, int) and 0 < mt <= MAX_COMPLETION_TOKENS else MAX_COMPLETION_TOKENS
 
@@ -612,8 +616,9 @@ class PlannerLLMGateway:
             # Unicode or punctuation. Charge at least one input token per UTF-8
             # byte for the cost gate. The provider's usage can still differ.
             worst_cost = self.budget.estimate(max(prompt_tokens, len(payload)), clean["max_tokens"])
-            tools_sha = hashlib.sha256(json.dumps(clean.get("tools") or [], sort_keys=True,
-                                                  ensure_ascii=False).encode()).hexdigest()
+            # fingerprint of ARTEX's offered schemas (the forced first turn may send fewer)
+            tools_sha = hashlib.sha256(json.dumps(self._tools(body.get("tools")) if clean.get("tools") else [],
+                                                  sort_keys=True, ensure_ascii=False).encode()).hexdigest()
             # asked OUTSIDE the gateway lock (it takes the service lock; an emergency stop
             # holds the service lock and closes gateways - opposite order would deadlock)
             if self._failed.is_set():

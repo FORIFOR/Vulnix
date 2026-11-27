@@ -674,6 +674,21 @@ class TestFirstTurnTool(unittest.TestCase):
         self.assertNotIn("tool_choice", g.inspect(chat(tools=("graph_overview",))))
         self.assertNotIn("tool_choice", self.gw().inspect(chat(tools=("add_intent",))))
 
+    def test_the_forced_turn_offers_only_that_tool_for_servers_that_ignore_tool_choice(self):
+        g = self.gw("add_intent")
+        first = g.inspect(chat(tools=("graph_overview", "add_intent", "prove_goal")))
+        self.assertEqual([t["function"]["name"] for t in first["tools"]], ["add_intent"])
+        later = chat(tools=("graph_overview", "add_intent", "prove_goal"))
+        later["messages"] += [{"role": "assistant", "content": "x"}, {"role": "user", "content": "y"}]
+        self.assertEqual(len(g.inspect(later)["tools"]), 3)          # later turns: ARTEX's full list
+        self.assertEqual(len(self.gw().inspect(chat(tools=("add_intent", "prove_goal")))["tools"]), 2)
+        # the run's tool fingerprint is ARTEX's full list: the next turn is not "tools changed"
+        with self.gw("add_intent") as g:
+            self.assertEqual(post(g, chat(tools=("graph_overview", "add_intent", "prove_goal")))[0], 200)
+            nxt = chat(tools=("graph_overview", "add_intent", "prove_goal"))
+            nxt["messages"] += [{"role": "assistant", "content": "x"}, {"role": "user", "content": "y"}]
+            self.assertEqual(post(g, nxt)[0], 200)
+
     def test_only_the_runs_first_request_and_never_over_artex_choice(self):
         forced = {"type": "function", "function": {"name": "add_intent"}}
         with self.gw("add_intent") as g:
