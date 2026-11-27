@@ -59,7 +59,10 @@ FORCEABLE_FIRST_TOOLS = frozenset({"add_intent"})
 MAX_REQUEST_BYTES = 256 * 1024
 MAX_RESPONSE_BYTES = 1 << 20
 MAX_COMPLETION_TOKENS = 2048
-LOCAL_REASONING_EFFORTS = {"abliterated-model": frozenset({"none", "low"})}
+LOCAL_REASONING_EFFORTS = {"abliterated-model": frozenset({"none", "low"}),
+                           # local Ollama models on loopback (never forwarded to a real upstream)
+                           "qwen3:8b": frozenset({"none"}), "qwen3:14b": frozenset({"none"})}
+MAX_SCHEMA_BYTES = 16384
 LOCAL_REASONING_TOKEN_CAP = {"abliterated-model": 256}
 
 # Unmistakable key formats: checked in EVERY message (also the model's own turns).
@@ -465,6 +468,16 @@ class PlannerLLMGateway:
             out.append({"type": "function", "function": clean})
         return out
 
+    def _local_json_schema(self, rf) -> bool:
+        if self.real or self.mode != "forward" or type(rf) is not dict or set(rf) != {"type", "json_schema"}:
+            return False
+        js = rf.get("json_schema")
+        if rf.get("type") != "json_schema" or type(js) is not dict or not set(js) <= {"name", "strict", "schema"} \
+                or type(js.get("name")) is not str or type(js.get("schema")) is not dict:
+            return False
+        raw = json.dumps(js["schema"], ensure_ascii=False)
+        return len(raw.encode()) <= MAX_SCHEMA_BYTES and "$ref" not in raw and "$id" not in raw
+
     def inspect(self, body: dict) -> dict:
         if not isinstance(body, dict) or not isinstance(body.get("messages"), list):
             raise GatewayRefused("not_chat", "not a chat completions request")
@@ -476,9 +489,14 @@ class PlannerLLMGateway:
                 out[k] = body[k]
         if "response_format" in body:
             response_format = body["response_format"]
-            if type(response_format) is not dict or response_format != {"type": "json_object"}:
+            if response_format == {"type": "json_object"}:
+                out["response_format"] = {"type": "json_object"}
+            elif self._local_json_schema(response_format):
+                # A self-contained JSON Schema (Vulnix's own enums) for a model on loopback only:
+                # it constrains the shape of the answer; the answer is still only data.
+                out["response_format"] = response_format
+            else:
                 raise GatewayRefused("response_format", "only plain JSON object output is allowed")
-            out["response_format"] = {"type": "json_object"}
         # Official docs (docs.abliteration.ai/capabilities/thinking & compatibility-matrix)
         # confirm `reasoning_effort` ("none", "low") on Chat Completions for
         # `abliterated-model`. Forward it to a real upstream only when the run's

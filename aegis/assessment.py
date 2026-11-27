@@ -312,6 +312,12 @@ def _claim_data_dir(data_dir: Path) -> None:
 
 
 # Findings whose single-item verification is a bundled-lab check (fixed lab paths).
+def _model_timeout_for_planner() -> float:
+    """One planner-model request: the same 1-120 s rule as the gateway's local transport."""
+    from .router import _model_timeout
+    return _model_timeout(os.environ.get("VULNIX_PLANNER_LLM_TIMEOUT_S", 30))
+
+
 def _planner_timeout() -> float:
     """Wall-clock limit of one ARTEX planner process (and its CPU-seconds cap): 120 s by
     default; a slower local model may be given up to 600 s via VULNIX_ARTEX_PLANNER_TIMEOUT_S."""
@@ -2539,17 +2545,29 @@ class AssessmentService:
                 # the same starting state for every run: a preview and the approved forward
                 # then send the same first request (anything left over would change it)
                 self._reset_artex_db()
-            run = run_artex_planner(self._artex_real_cmd, request, llm_url=llm_url, llm_key=llm_key,
-                                    llm_model=self._artex_llm_model, pg_dsn=self._artex_pg_dsn,
-                                    timeout_s=_planner_timeout(),
-                                    expected_sha256=self._artex_expected_sha256,
-                                    confinement=confinement, forbidden_paths=protected,
-                                    on_leftover=self._note_leftover_session,
-                                    on_started=lambda sess: self._artex_session_started(sess, gen),
-                                    on_finished=self._artex_session_finished,
-                                    may_start=lambda: self._artex_may_start(gen) and
-                                    (request_authorized is None or request_authorized()),
-                                    data_dirs=(str(self.data_dir),))
+            engine = os.environ.get("VULNIX_PLANNER_ENGINE", "artex")
+            if engine in ("structured", "hybrid") and diagnosis is not None:
+                # no ARTEX process: the model (through the same gateway) only fills Vulnix's
+                # step schema; the contract, Gateway, approvals and judge below are unchanged
+                from .structured_planner import run_structured_planner
+                run = run_structured_planner(diagnosis[0].planner_view(), diagnosis[0], targets,
+                                             frozenset(diagnosis[1]), llm_url=llm_url, llm_key=llm_key,
+                                             llm_model=gateway.model if gateway is not None else self._artex_llm_model,
+                                             hybrid=engine == "hybrid",
+                                             no_think=os.environ.get("VULNIX_PLANNER_NO_THINK") == "1",
+                                             timeout_s=_model_timeout_for_planner())
+            else:
+                run = run_artex_planner(self._artex_real_cmd, request, llm_url=llm_url, llm_key=llm_key,
+                                      llm_model=self._artex_llm_model, pg_dsn=self._artex_pg_dsn,
+                                      timeout_s=_planner_timeout(),
+                                      expected_sha256=self._artex_expected_sha256,
+                                      confinement=confinement, forbidden_paths=protected,
+                                      on_leftover=self._note_leftover_session,
+                                      on_started=lambda sess: self._artex_session_started(sess, gen),
+                                      on_finished=self._artex_session_finished,
+                                      may_start=lambda: self._artex_may_start(gen) and
+                                      (request_authorized is None or request_authorized()),
+                                      data_dirs=(str(self.data_dir),))
         except ArtexBridgeError as e:
             self.audit.record("artex.plan_failed", actor=actor, reason=str(e)[:200])
             raise ValueError(artex_failure_message(str(e))) from None
@@ -2635,7 +2653,9 @@ class AssessmentService:
                 self._artex_items[item.id] = {"item": item, "task_id": tk.id if tk else None,
                                               "gen": gen, "run_id": run_id, "requested_by": actor}
             kind = prov.get("kind")
-            label = ("ARTEX 本体（overlay ビルド・ハッシュ固定）" if kind == "artex-binary" and prov.get("pinned")
+            label = ("固定ルール優先＋構造化出力モデル（ARTEX不使用）" if kind == "vulnix-hybrid"
+                     else "構造化出力モデル（ARTEX不使用）" if kind == "vulnix-structured"
+                     else "ARTEX 本体（overlay ビルド・ハッシュ固定）" if kind == "artex-binary" and prov.get("pinned")
                      else "ARTEX ビルド（ハッシュ未固定のため本体と未確認）" if kind == "artex-binary"
                      else "ARTEX 互換プロセス（本体と未確認）")
             self._artex_plan = {
