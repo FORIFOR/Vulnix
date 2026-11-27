@@ -148,7 +148,7 @@ def main():
                 (folder / "database").mkdir()
                 (folder / "database" / "dataAccess.ts").write_text(
                     "function display(request, target) { const value = request.body.title; target.innerHTML = value; }")
-                (folder / "too-large.ts").write_text(" " * (256 * 1024 + 1))
+                (folder / "too-large.ts").write_text(" " * (1024 * 1024 + 1))   # over the 1 MiB source limit
                 template = folder / "cloudformation.json"
                 def cloud(endpoint, token):
                     template.write_text(json.dumps({"Resources": {"Launch": {"Type": "AWS::EC2::LaunchTemplate",
