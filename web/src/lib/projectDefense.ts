@@ -1,6 +1,7 @@
 import ts from "typescript";
 import { parseAllDocuments } from "yaml";
 import { inspectRuntimeFile, type PlannedCheck } from "./runtimePlan";
+import { pythonFlow, type PythonFlowKind } from "./pythonFlow";
 import { affects, collectPackages, compareVersions, propertyLine, sbomComponents, type Package, type Location } from "./projectPackages";
 import { advisorySeverity, checkCloudFormation, checkControls, checkLockfile, record, type ResultLocation } from "./quickDefense";
 
@@ -25,6 +26,17 @@ export function classifyPath(path: string) {
   if (source.test(name)) return { name, priority: /auth|access|db|sql|xml|render|route|handler|webhook|session|middleware/i.test(name) ? 1 : 2 };
   return null;
 }
+
+const PYTHON_FLOW: Record<PythonFlowKind, [string, string]> = {
+  sql: ["外部入力からSQL実行", "値はプレースホルダーとパラメーターで渡し、SQL文字列に連結しない。"],
+  command: ["外部入力からOSコマンド実行", "シェルを使わず引数の配列で実行し、許可した値だけを受け付ける。"],
+  code: ["外部入力からコード評価", "eval・execを使わず、必要な値だけを型を決めて解釈する。"],
+  template: ["外部入力からテンプレート・HTML生成", "利用者の値は自動エスケープされるテンプレート変数として渡す。"],
+  path: ["外部入力からファイルパス", "許可したディレクトリ内の固定名だけを解決し、パスの正規化後に範囲を確認する。"],
+  ssrf: ["外部入力から外部通信先", "通信先は許可したホストの一覧から選び、内部アドレスへの接続を拒否する。"],
+  deserialize: ["外部入力からデシリアライズ", "pickle等を使わずJSONなどの安全な形式で読み、yamlはSafeLoaderを使う。"],
+  redirect: ["外部入力からリダイレクト先", "リダイレクト先は相対パスか許可したホストに限定する。"],
+};
 
 function item(category: Result["category"], title: string, status: Result["status"], evidence: string, fix: string): Result {
   return {
@@ -489,7 +501,7 @@ export async function scanProject(files: ProjectFile[], feed: unknown, onProgres
   let packageCount = 0;
   let unsupported = 0;
   const coverage = { source: 0, noSourceRules: 0, parseFailed: 0, packageFiles: 0,
-    unresolvedDependencies: 0, sbomWithoutPackages: 0, osvAdvisories: 0, nvdAdvisories: 0 };
+    unresolvedDependencies: 0, sbomWithoutPackages: 0, osvAdvisories: 0, nvdAdvisories: 0, pythonFlow: 0 };
   let skippedRules = 0;
   let unreadable = 0;
   let read = 0;
@@ -601,6 +613,17 @@ export async function scanProject(files: ProjectFile[], feed: unknown, onProgres
         packageCount++;
       }
       if (Object.keys(record(record(parsed).packages)).length > 10000) skippedRules++;
+    } else if (priority > 0 && ext === "py") {
+      coverage.source++;
+      coverage.pythonFlow++;
+      const flows = pythonFlow(content);
+      if (flows.length === 20) skippedRules++;
+      addRows(...flows.map((flow) => ({
+        ...item("Claude Code", PYTHON_FLOW[flow.kind][0], "action",
+          `ソースの${flow.line}行目。関数 ${flow.func} の中で、要求データが ${flow.sink} に渡る経路を静的に確認しました（同じ関数内の追跡。実行時の到達性・入力検証は未確認）。`,
+          PYTHON_FLOW[flow.kind][1]),
+        location: { path, line: flow.line },
+      })));
     } else if (priority > 0 && !/^[cm]?[jt]sx?$/i.test(ext)) {
       coverage.noSourceRules++;
       notParsed("この言語にはデータフロー検査がない（共通検査のみ）");

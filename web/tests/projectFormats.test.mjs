@@ -18,7 +18,7 @@ const packages = source("projectPackages", {
   "@renovatebot/pep440": import.meta.resolve("@renovatebot/pep440"),
 });
 const { scanProject, limits } = await import(source("projectDefense", {
-  "./quickDefense": quick, "./projectPackages": packages, "./runtimePlan": source("runtimePlan", {}), typescript: import.meta.resolve("typescript"),
+  "./quickDefense": quick, "./projectPackages": packages, "./runtimePlan": source("runtimePlan", {}), "./pythonFlow": source("pythonFlow", {}), typescript: import.meta.resolve("typescript"),
   yaml: import.meta.resolve("yaml"),
 }));
 const fixture = (path, contents) => ({ path: `project/${path}`, file: new File([contents], path.split("/").at(-1)) });
@@ -184,9 +184,10 @@ test("folder inventory checks named SPDX and CycloneDX files and reports partial
   const affected = await scanProject(inputs("1.0"), feed);
   assert.deepEqual(affected.rows.find((row) => row.title === cve)?.locations?.map(({ path }) => path),
     ["api/requirements-prod.txt", "deploy/api-sbom.json", "deploy/web.spdx.json"]);
-  assert.equal(affected.coverage.source, 0);
+  assert.equal(affected.coverage.source, 1);          // src/service.py: single-function Python flow rules
+  assert.equal(affected.coverage.pythonFlow, 1);
   assert.equal(affected.coverage.packageFiles, 3);
-  assert.equal(affected.coverage.noSourceRules, 1);
+  assert.equal(affected.coverage.noSourceRules, 0);
   assert.equal(affected.coverage.parseFailed, 1);
   assert.equal(affected.coverage.unresolvedDependencies, 1);
   assert.equal(affected.coverage.osvAdvisories, 1);
@@ -202,4 +203,19 @@ test("a large hand-written source file is read instead of omitted, and size limi
   assert.equal(report.scanProgress.read, 1);
   assert.equal(report.omitted, 1);
   assert.deepEqual(report.incomplete.filter((entry) => entry.reason === "ファイル上限").map((entry) => entry.path), ["app/generated.py"]);
+});
+
+test("Python sources get the single-function flow check instead of being listed as unanalysed", async () => {
+  const report = await scanProject([
+    fixture("app/routes.py", "def search(db):\n    q = request.args['q']\n    db.execute(f\"SELECT * FROM t WHERE a = '{q}'\")\n"),
+    fixture("app/util.py", "def add(a, b):\n    return a + b\n"),
+  ], {});
+  const flow = report.rows.filter((row) => row.title === "外部入力からSQL実行");
+  assert.equal(flow.length, 1);
+  assert.deepEqual(flow[0].location, { path: "app/routes.py", line: 3 });
+  assert.equal(flow[0].status, "action");
+  assert.equal(report.coverage.pythonFlow, 2);
+  assert.equal(report.incomplete.filter((entry) => /データフロー検査がない/.test(entry.reason)).length, 0);
+  // no finding is not a pass
+  assert.equal(report.rows.filter((row) => row.location?.path === "app/util.py" && row.status === "confirmed").length, 0);
 });
