@@ -24,6 +24,7 @@ import hashlib
 import json
 import os
 import secrets
+import stat
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -49,11 +50,40 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+def client_from_file(redirect: str) -> tuple[str, str] | None:
+    """(client id, secret) from the web-client JSON downloaded from Google Auth Platform.
+
+    VULNIX_GOOGLE_CLIENT_FILE names it (absolute path, a regular file of this user,
+    not a link, readable by nobody else). The secret then never has to be typed,
+    pasted or put in an environment variable. The redirect must be one the client lists.
+    """
+    name = (os.environ.get("VULNIX_GOOGLE_CLIENT_FILE") or "").strip()
+    if not name or not os.path.isabs(name):
+        return None
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077
+                    or not 0 < info.st_size <= 16384):
+                return None
+            web = json.loads(stream.read(16385)).get("web")
+        cid, secret, uris = web.get("client_id"), web.get("client_secret"), web.get("redirect_uris")
+        if (isinstance(cid, str) and cid and isinstance(secret, str) and secret
+                and isinstance(uris, list) and redirect in uris):
+            return cid, secret
+    except (OSError, ValueError, AttributeError, TypeError):
+        pass
+    return None
+
+
 def config() -> dict | None:
     """The OAuth client, from the environment; None when not configured."""
     cid = (os.environ.get("VULNIX_GOOGLE_CLIENT_ID") or "").strip()
     secret = (os.environ.get("VULNIX_GOOGLE_CLIENT_SECRET") or "").strip()
     redirect = (os.environ.get("VULNIX_GOOGLE_REDIRECT_URI") or "").strip()
+    if not (cid and secret) and (from_file := client_from_file(redirect)):
+        cid, secret = from_file
     try:
         url = urlsplit(redirect)
         if (not cid or not secret or url.scheme != "https" or not url.hostname

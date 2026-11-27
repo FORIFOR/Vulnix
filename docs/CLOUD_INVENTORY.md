@@ -80,4 +80,6 @@ Cloud Run コンソールの対象サービスから YAML 表示をコピーす�
 
 運営者が Google Auth Platform で HTTPS を使うウェブクライアントを用意する。戻り先は Vulnix の公開オリジンまたは信頼済みの受入オリジンの `/verify/google`。サーバーの保護された設定に `VULNIX_GOOGLE_CLIENT_ID`、`VULNIX_GOOGLE_CLIENT_SECRET`、`VULNIX_GOOGLE_REDIRECT_URI` を設定し、読み取り専用の Search Console スコープを用意する。利用者は画面で自分の Google アカウントを選ぶ。Google Cloud のプロジェクト閲覧は独立した連携で、戻り先は `/verify/cloud`。
 
+秘密値を環境変数に入れない構成として、Google Auth Platform でダウンロードしたウェブクライアントのJSONを `VULNIX_GOOGLE_CLIENT_FILE`（絶対パス、サーバー実行ユーザー所有、モード0600、シンボリックリンク不可）で指定できる。1つのクライアントに `/verify/google` と `/verify/cloud` の両方を登録すれば、Search Console とプロジェクト一覧の両方に使える。使う戻り先はクライアントの `redirect_uris` に含まれている必要がある。`VULNIX_GOOGLE_CLIENT_ID` などの変数が設定されている場合はそちらを優先する。
+
 ローカル受入はこのMacの管理下にある信頼済み証明書を使う。証明書警告が出る場合は、運営者が受入オリジンと証明書の設定を確認してから利用者に渡す。
