@@ -209,7 +209,7 @@ class TestPhaseOneIsMockOnly(unittest.TestCase):
         advisor = adv.ExternalAbliterationAdvisor(
             "https://api.abliteration.ai/v1/chat/completions", api_key="test-only-key",
             transport=lambda url, headers, body: seen.append((url, headers, body)) or json.dumps(
-                {"choices": [{"message": {"content": '{"advice": []}'}}]}).encode(),
+                {"choices": [{"finish_reason": "stop", "message": {"content": '{"advice": []}'}}]}).encode(),
         )
         advisor.advise([_leaky_finding()])
         self.assertEqual(seen[0][1]["Authorization"], "Bearer test-only-key")
@@ -218,7 +218,7 @@ class TestPhaseOneIsMockOnly(unittest.TestCase):
         self.assertLessEqual(request["max_tokens"], 2048)
         self.assertEqual(request["response_format"], {"type": "json_object"})
         self.assertEqual(request["reasoning_effort"], "none")
-        for bad_finish in ("length", "content_filter"):
+        for bad_finish in ("length", "content_filter", "tool_calls", "function_call"):
             bad_advisor = adv.ExternalAbliterationAdvisor(
                 "https://api.abliteration.ai/v1/chat/completions", api_key="test-only-key",
                 transport=lambda _u, _h, _b, fr=bad_finish: json.dumps(
@@ -227,6 +227,24 @@ class TestPhaseOneIsMockOnly(unittest.TestCase):
             )
             with self.assertRaises(adv.AdvisorError):
                 bad_advisor.advise([_leaky_finding()])
+
+    def test_external_advisor_requires_a_single_unambiguous_json_object(self):
+        def advisor_for(content):
+            def transport(_url, _headers, _body):
+                return json.dumps({"choices": [{"finish_reason": "stop",
+                                                "message": {"content": content}}]}).encode()
+
+            return adv.ExternalAbliterationAdvisor(
+                "https://api.abliteration.ai/v1/chat/completions",
+                api_key="test-only-key", transport=transport)
+
+        for response in ('{"advice": [], "advice": []}', 'prefix {"advice": []}',
+                         '{"advice": [], "number": NaN}'):
+            with self.subTest(response=response), self.assertRaises(adv.AdvisorError):
+                advisor_for(response).advise([_leaky_finding()])
+        result = advisor_for('{"advice": []}').advise([_leaky_finding()])
+        self.assertEqual(result.rejected, ())
+        self.assertEqual(result.missing_refs, result.sent_refs)
 
     def test_external_transport_holds_send_scope_only_while_request_is_written(self):
         events = []
