@@ -234,7 +234,9 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
         ? "ログインが切れました。ログインし直してから操作してください。"
         : e instanceof ApiHttpError && e.status === 403
           ? `${message} 現在の組織と、この対象を操作できる権限を確認してください。`
-          : message);
+          : e instanceof ApiHttpError && e.status === 429
+            ? `${message}（対象には何も送信していません）`
+            : message);
     } finally {
       setBusy(false);
     }
@@ -506,7 +508,8 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
                 || (method !== "dns_txt" && method !== "google_search_console" && !fileAvailable)}
                 onClick={method === "google_search_console" ? viaGoogle : verify}
                 className="rounded-lg bg-zinc-900 px-4 py-2 font-semibold text-white disabled:opacity-50 dark:bg-white dark:text-zinc-900">
-                {busy ? "確認中…" : method === "google_search_console" ? "Google で確認する" : "確認する"}
+                {busy ? <span className="inline-flex items-center gap-2"><Spinner />確認中…</span>
+                  : method === "google_search_console" ? "Google で確認する" : "確認する"}
               </button>
             </div>}
             {method === "well_known" && fileAvailable && canRegister && ownershipTrafficMode !== "off" && (
@@ -635,4 +638,8 @@ export function OwnershipWizard({ open, onClose, onAssetsChanged, initialAsset, 
       </div>
     </div>
   );
+}
+
+function Spinner() {
+  return <span aria-hidden="true" className="h-3 w-3 animate-spin rounded-full border-2 border-current border-r-transparent motion-reduce:animate-none" />;
 }

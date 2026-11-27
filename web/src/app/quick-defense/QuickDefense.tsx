@@ -50,6 +50,7 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
   const [results, setResults] = useState<ReturnType<typeof checkControls> | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [statusFilter, setStatusFilter] = useState<keyof typeof labels | null>(null);
   const [progress, setProgress] = useState<ScanProgress | null>(null);
   const [ended, setEnded] = useState<"timeout" | "cancelled" | null>(null);
   const running = useRef<(() => void) | null>(null);
@@ -189,6 +190,8 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
   const statusLabel = (status: keyof typeof labels) => mode === "local" && status === "confirmed" ? "設定・コードを確認" : labels[status];
   const visible = useMemo(() => results && sortByAdvisorySeverity(results.filter((row) => selected.has(row.category))),
     [results, selected]);
+  const shown = useMemo(() => visible && statusFilter ? visible.filter((row) => row.status === statusFilter) : visible ?? [],
+    [visible, statusFilter]);
   const dependencyGroups = useMemo(() => visible ? groupDependencyFindings(visible) : [], [visible]);
 
   return (
@@ -324,6 +327,8 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
         </div>
         <p role="status" className="text-sm">{Object.keys(labels).map((key) =>
           `${statusLabel(key as keyof typeof labels)} ${visible.filter((row) => row.status === key).length}件`).join(" ・ ")}</p>
+        <StatusBar rows={visible} label={statusLabel} active={statusFilter}
+          onSelect={(key) => { setStatusFilter(key === statusFilter ? null : key); setDisplay(100); }} />
         {report && <p className="text-sm">
           {report.scanProgress.batches}バッチで処理。
           {report.read}ファイルの読取を試行。対象外 {report.skipped}件 ／ ファイル上限 {report.omitted}件 ／
@@ -365,7 +370,7 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
           </ul>
         </details>}
         <p className="text-sm">個別結果は勧告の重大度順です（Critical → High → Medium → Low → 重大度不明）。対象サービスでの実際の影響は未確認です。</p>
-        {visible.slice(0, display).map((row, index) => <details key={index} className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
+        {shown.slice(0, display).map((row, index) => <details key={index} className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
           <summary className="cursor-pointer font-medium">{row.category} ／ {row.title} ／ {statusLabel(row.status)}{row.severity && ` ／ 勧告の重大度 ${advisorySeverityLabels[row.severity]}`}</summary>
           <dl className="mt-2 space-y-1 break-words text-sm">
             {(row.locations?.length || row.location) && <><dt className="font-semibold">修正箇所</dt>
@@ -383,8 +388,8 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
             <dt className="font-semibold">再検証方法</dt><dd>{row.retest}</dd>
           </dl>
         </details>)}
-        {Math.max(visible.length, dependencyGroups.length) > display && <button type="button" className={button} onClick={() => setDisplay(display + 100)}>
-          さらに表示（{Math.max(visible.length, dependencyGroups.length) - display}件）
+        {Math.max(shown.length, dependencyGroups.length) > display && <button type="button" className={button} onClick={() => setDisplay(display + 100)}>
+          さらに表示（{Math.max(shown.length, dependencyGroups.length) - display}件）
         </button>}
         {mode === "local" && <>
           <RuntimeDefense plan={report?.runtimePlan ?? []} staticResults={visible} project={files[0]?.webkitRelativePath.split("/")[0] || "選択したフォルダ"} />
@@ -394,4 +399,34 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
       <Link href="/assets" prefetch={false} className="text-sm underline">所有確認済みWebサイト・APIと隔離ラボへ</Link>
     </main>
   );
+}
+
+const SEGMENT: Record<keyof typeof labels, string> = {
+  action: "bg-red-500", unknown: "bg-amber-400", confirmed: "bg-emerald-500", na: "bg-zinc-300 dark:bg-zinc-600",
+};
+
+/** The result counts as one bar; a segment or its legend filters the list below to that status. */
+function StatusBar({ rows, label, active, onSelect }: {
+  rows: { status: keyof typeof labels }[]; label: (key: keyof typeof labels) => string;
+  active: keyof typeof labels | null; onSelect: (key: keyof typeof labels) => void;
+}) {
+  const keys = (["action", "unknown", "confirmed", "na"] as const).filter((key) => rows.some((row) => row.status === key));
+  if (!rows.length) return null;
+  const count = (key: keyof typeof labels) => rows.filter((row) => row.status === key).length;
+  return <div className="space-y-2">
+    <div className="flex h-2.5 w-full overflow-hidden rounded-full bg-zinc-100 dark:bg-zinc-800" aria-hidden="true">
+      {keys.map((key) => <button key={key} type="button" tabIndex={-1} onClick={() => onSelect(key)}
+        style={{ width: `${(100 * count(key)) / rows.length}%` }}
+        className={`${SEGMENT[key]} h-full transition-[width,opacity] duration-300 ease-out ${active && active !== key ? "opacity-30" : ""}`} />)}
+    </div>
+    <div className="flex flex-wrap gap-2" role="group" aria-label="状態で絞り込む">
+      {keys.map((key) => <button key={key} type="button" aria-pressed={active === key} onClick={() => onSelect(key)}
+        className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs transition-colors ${active === key
+          ? "border-zinc-900 bg-zinc-900 text-white dark:border-white dark:bg-white dark:text-zinc-900"
+          : "border-zinc-200 hover:border-zinc-400 dark:border-zinc-700"}`}>
+        <span className={`h-2 w-2 rounded-full ${SEGMENT[key]}`} />{label(key)} {count(key)}件
+      </button>)}
+      {active && <button type="button" onClick={() => onSelect(active)} className="text-xs underline">すべて表示</button>}
+    </div>
+  </div>;
 }
