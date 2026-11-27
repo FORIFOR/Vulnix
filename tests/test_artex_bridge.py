@@ -255,7 +255,7 @@ class ServiceBase(unittest.TestCase):
         set_lab_mode("vulnerable")
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        env = {"VULNIX_ARTEX_REAL_CMD": shlex.join(self.command), "VULNIX_ARTEX_LLM_URL": self.llm_url,
+        env = {"VULNIX_PLANNER_ENGINE": "artex", "VULNIX_ARTEX_REAL_CMD": shlex.join(self.command), "VULNIX_ARTEX_LLM_URL": self.llm_url,
                "VULNIX_ARTEX_PG_DSN": os.environ.get("VULNIX_ARTEX_PG_DSN", ""),
                "VULNIX_ARTEX_EXPECTED_SHA256": self.expected_sha256}
         self._env = patch.dict(os.environ, {"AEGIS_ENV": self.aegis_env})

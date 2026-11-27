@@ -149,6 +149,7 @@ def run_case(case_id: str, case: dict, method: str, harness: Harness, *, truth: 
         tmp = workdir.name
         with harness.mock_llm(lambda msgs: harness.scripted_intents(json.dumps(msgs, ensure_ascii=False))) as llm:
             env = {"AEGIS_ENV": "production" if real_bin else "development",
+                   "VULNIX_PLANNER_ENGINE": "artex",       # the evaluation compares model planners via ARTEX
                    "VULNIX_ARTEX_REAL_CMD": shlex.join(command),
                    "VULNIX_ARTEX_EXPECTED_SHA256": (os.environ.get("VULNIX_ARTEX_CI_BINARY_SHA256", "")
                                                      if real_bin else ""),

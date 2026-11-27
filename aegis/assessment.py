@@ -41,6 +41,7 @@ from .report_diagnosis import diagnosis_lines as diagnosis_report_lines
 from .report_diagnosis import undecided_lines as undecided_report_lines
 from .evidence import (EVIDENCE_LABELS, enforce_verdict, evidence_status,
                        evidence_summary, reproduction_note, reproduction_verdict)
+from .cve_evidence import impact_chain, with_reproduction
 from .gateway import (LAB_REPRODUCTION_CHECKS, Gateway, State, http_probe_tool,
                       reproduction_probe_tool, status_marker_tool)
 from .lab import get_lab_mode, set_lab_mode
@@ -312,6 +313,12 @@ def _claim_data_dir(data_dir: Path) -> None:
 
 
 # Findings whose single-item verification is a bundled-lab check (fixed lab paths).
+def _planner_engine() -> str:
+    """fixed (default) | hybrid | structured | artex - the diagnosis loop's planner."""
+    value = os.environ.get("VULNIX_PLANNER_ENGINE", "").strip().lower()
+    return value if value in ("fixed", "hybrid", "structured", "artex") else "fixed"
+
+
 def _model_timeout_for_planner() -> float:
     """One planner-model request: the same 1-120 s rule as the gateway's local transport."""
     from .router import _model_timeout
@@ -2430,7 +2437,10 @@ class AssessmentService:
         `llm_approval` ({"max_calls": N, "first_request_sha256": <from the preview>}) is
         needed when the planner's model is a real (non-loopback) endpoint behind the
         Planner LLM Gateway; only an approver can give it."""
-        if not self._artex_real_cmd:
+        # The diagnosis loop's default engine is the fixed rule: no ARTEX process, database,
+        # model or planner gateway is started. ARTEX / structured / hybrid stay selectable.
+        fixed = diagnosis is not None and _planner_engine() == "fixed"
+        if not self._artex_real_cmd and not fixed:
             raise ValueError("ARTEX プランナーが設定されていません（VULNIX_ARTEX_REAL_CMD）")
         with self._lock:
             self._refuse_after_stop_locked()
@@ -2499,7 +2509,7 @@ class AssessmentService:
         # VULNIX_ARTEX_EXPECTED_SHA256 before it runs (a mismatch, or anything that is not
         # the ARTEX overlay build, is refused by the bridge).
         dev = os.environ.get("AEGIS_ENV", "").strip().lower() in ("development", "dev")
-        if not dev and not re.fullmatch(r"[0-9a-fA-F]{64}", self._artex_expected_sha256.strip()):
+        if not fixed and not dev and not re.fullmatch(r"[0-9a-fA-F]{64}", self._artex_expected_sha256.strip()):
             self.audit.record("artex.plan_refused", actor=actor, reason="binary sha256 not pinned")
             raise ValueError("本番環境では ARTEX バイナリの SHA-256（VULNIX_ARTEX_EXPECTED_SHA256）の指定が必須です")
         for url, default in ((self._artex_llm_url, None), (self._artex_pg_dsn, 5432)):
@@ -2510,8 +2520,10 @@ class AssessmentService:
             if port == self.lab_port:
                 # a pinned port gives the planner whatever listens there
                 raise ValueError("ARTEX の LLM / DB の接続先に検証ラボのポートは使用できません")
-        st = dict(self._l2_confinement.status())
-        if st.get("ok"):
+        st = {} if fixed else dict(self._l2_confinement.status())
+        if fixed:
+            confinement, protected = None, ()          # nothing is launched for the plan itself
+        elif st.get("ok"):
             confinement = self._l2_confinement
             protected = sorted(str(p) for p in self.data_dir.iterdir() if p.is_file())
         elif (not real_site and os.environ.get("VULNIX_ARTEX_ALLOW_UNCONFINED") == "1"
@@ -2524,9 +2536,10 @@ class AssessmentService:
                              f"（{str(st.get('reason', ''))[:200]}）")
         if request_authorized is not None and not request_authorized():
             raise ValueError("要求者の権限が失効したため、ARTEX 計画を開始しません")
-        self.audit.record("artex.plan_requested", actor=actor, targets=len(targets), confined=confinement is not None)
-        gateway = self._planner_gateway(actor, llm_approval, roles, gen, llm_mode,
-                                        real_site=real_site, request_authorized=request_authorized)
+        self.audit.record("artex.plan_requested", actor=actor, targets=len(targets), confined=confinement is not None,
+                          engine="fixed" if fixed else _planner_engine())
+        gateway = None if fixed else self._planner_gateway(actor, llm_approval, roles, gen, llm_mode,
+                                                           real_site=real_site, request_authorized=request_authorized)
         llm_url, llm_key = self._artex_llm_url, ""
         if gateway is not None:
             try:
@@ -2537,7 +2550,7 @@ class AssessmentService:
             with self._lock:
                 self._artex_gateways.add(gateway)
             llm_url, llm_key = gateway.url, gateway.token
-        fresh = os.environ.get("VULNIX_ARTEX_RESET_DB") == "1" and bool(self._artex_pg_dsn)
+        fresh = os.environ.get("VULNIX_ARTEX_RESET_DB") == "1" and bool(self._artex_pg_dsn) and not fixed
         if fresh:
             _ARTEX_DB_LOCK.acquire()
         try:
@@ -2545,8 +2558,11 @@ class AssessmentService:
                 # the same starting state for every run: a preview and the approved forward
                 # then send the same first request (anything left over would change it)
                 self._reset_artex_db()
-            engine = os.environ.get("VULNIX_PLANNER_ENGINE", "artex")
-            if engine in ("structured", "hybrid") and diagnosis is not None:
+            engine = _planner_engine()
+            if fixed:
+                from .structured_planner import run_fixed_planner
+                run = run_fixed_planner(diagnosis[0].planner_view(), diagnosis[0], targets, frozenset(diagnosis[1]))
+            elif engine in ("structured", "hybrid") and diagnosis is not None:
                 # no ARTEX process: the model (through the same gateway) only fills Vulnix's
                 # step schema; the contract, Gateway, approvals and judge below are unchanged
                 from .structured_planner import run_structured_planner
@@ -2653,7 +2669,8 @@ class AssessmentService:
                 self._artex_items[item.id] = {"item": item, "task_id": tk.id if tk else None,
                                               "gen": gen, "run_id": run_id, "requested_by": actor}
             kind = prov.get("kind")
-            label = ("固定ルール優先＋構造化出力モデル（ARTEX不使用）" if kind == "vulnix-hybrid"
+            label = ("固定ルール（AI・ARTEX不使用）" if kind == "vulnix-fixed"
+                     else "固定ルール優先＋構造化出力モデル（ARTEX不使用）" if kind == "vulnix-hybrid"
                      else "構造化出力モデル（ARTEX不使用）" if kind == "vulnix-structured"
                      else "ARTEX 本体（overlay ビルド・ハッシュ固定）" if kind == "artex-binary" and prov.get("pinned")
                      else "ARTEX ビルド（ハッシュ未固定のため本体と未確認）" if kind == "artex-binary"
@@ -2664,7 +2681,7 @@ class AssessmentService:
                            "artex_module": prov.get("artex_module"), "artex_commit": prov.get("artex_commit"),
                            "go_version": prov.get("go_version"), "norma_version": prov.get("norma_version"),
                            "label": label},
-                "llm_model": gateway.model if gateway is not None else self._artex_llm_model,
+                "llm_model": None if fixed else gateway.model if gateway is not None else self._artex_llm_model,
                 "llm_gateway": ({k: v for k, v in (self._artex_llm_last or {}).get("report", {}).items()
                                  if k not in ("records", "failed_upstream")} if gateway is not None else None),
                 "isolation": {**_artex_isolation_view(prov.get("isolation") or {}),
@@ -2883,8 +2900,11 @@ class AssessmentService:
     def artex_plan_view(self) -> dict | None:
         with self._lock:
             real_site = self._in_ownership_flow(self.a.asset.get("name"))
-            configured = bool(self._artex_real_cmd) and (
-                not real_site or (self._real_site_local_artex and self._is_external_service_asset()))
+            # a fixed-rule plan (the default diagnosis-loop engine) exists without ARTEX on the lab
+            configured = (bool(self._artex_real_cmd) and (
+                not real_site or (self._real_site_local_artex and self._is_external_service_asset()))) or (
+                not real_site and self._artex_plan is not None
+                and (self._artex_plan.get("engine") or {}).get("kind") == "vulnix-fixed")
             if not configured:
                 return {"configured": False, "plan": None}
             if self._artex_plan is None:
@@ -5860,6 +5880,10 @@ class AssessmentService:
                 "severity": "high", "verdict": "detected", "category": "既知の脆弱性（CVE）",
                 "cve": cve_ids, "risk_level": "L2",
                 "help_term": "cve",
+                # one chain per CVE: version match -> conditions -> reachability -> lab proof
+                "cve_evidence": [impact_chain(c.cve, product=c.product, version=c.version,
+                                              version_source="Server ヘッダー", in_kev=c.in_kev)
+                                 for c in sorted(candidates, key=lambda c: c.cve.id)],
                 "summary": f"Server ヘッダーが「{banner}」を示しています。このバージョンはパス・トラバーサル等の既知脆弱性{kev_note}の影響範囲です。",
                 "why_detected": "応答ヘッダーのバージョン文字列が、NVD / CISA KEV フィードの影響バージョンと一致したためです。",
                 "caveat": "バナー段階では「検出（未実証）」です。L2再現試験を承認すると、隔離ラボで実際に到達可能か検証します。",
@@ -6216,6 +6240,10 @@ class AssessmentService:
 
     def _upsert_finding(self, f):
         f = enforce_verdict(f)          # "proven" only with a recorded L2 reproduction
+        if isinstance(f.get("cve_evidence"), list):
+            # the chain follows the finding's own evidence status, never a looser one
+            status = evidence_status(f)
+            f = {**f, "cve_evidence": [with_reproduction(e, status) for e in f["cve_evidence"]]}
         with self._lock:
             if self._stale_runner():
                 raise _Stopped()

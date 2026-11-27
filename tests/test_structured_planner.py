@@ -99,3 +99,52 @@ class TestStructuredPlanner(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestFixedEngineIsTheDefault(unittest.TestCase):
+    """With nothing configured, the diagnosis loop plans with the fixed rule: no ARTEX process,
+    no database, no model, no planner gateway - and the same contract, Gateway and judge."""
+
+    def test_the_loop_decides_an_idor_lab_without_artex_or_a_model(self):
+        import os
+        import tempfile
+        import threading
+        from pathlib import Path
+        from aegis import assessment as A
+        from aegis.adaptive_plan_runner import AdaptivePlanRunner
+        from aegis.adaptive_plan_state import PlanLimits
+        from aegis.diagnosis_loop import observe_lab_root, record_owner_spec
+        from aegis.diagnosis_state import DiagnosisState
+        from tests import TEST_CONFINEMENT
+        from tests.fixtures.access_control_lab import AccessControlLab
+        lab = AccessControlLab("idor_vulnerable")
+        threading.Thread(target=lab.serve_forever, daemon=True).start()
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("VULNIX_ARTEX_", "VULNIX_PLANNER_"))}
+        try:
+            with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, env, clear=True), \
+                    patch.object(A, "run_artex_planner", side_effect=AssertionError("ARTEX must not start")), \
+                    patch.object(A.AssessmentService, "_planner_gateway",
+                                 side_effect=AssertionError("no planner gateway for the fixed rule")):
+                svc = A.AssessmentService(Path(tmp), lab.server_port, l2_confinement=TEST_CONFINEMENT,
+                                          verify_seconds=0.1)
+                try:
+                    state = DiagnosisState()
+                    observe_lab_root(svc, state)
+                    record_owner_spec(state, "T2", "authentication_required")
+                    plan = AdaptivePlanRunner(svc, actor="requester",
+                                              approve=lambda item: ("approver-human", ("operator", "approver")),
+                                              limits=PlanLimits(max_steps=3, max_planner_rounds=5, max_seconds=60),
+                                              diagnosis=state).run()
+                    claims = {h["claim"]: h["state"] for h in state.hypotheses() if h["purpose"] == "diagnose"}
+                    view = svc.artex_plan_view() or {}
+                finally:
+                    svc.close()
+        finally:
+            lab.shutdown()
+            lab.server_close()
+        self.assertEqual(claims.get("other_account_read"), "supported")
+        self.assertTrue(plan.executed)
+        engine = (view.get("plan") or {}).get("engine") or {}
+        self.assertEqual(engine.get("kind"), "vulnix-fixed")
+        self.assertIn("ARTEX不使用", engine.get("label", ""))
+        self.assertIsNone((view.get("plan") or {}).get("llm_model"))

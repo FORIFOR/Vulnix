@@ -158,3 +158,13 @@ def run_structured_planner(view: dict, state, targets: list[dict], executed, *, 
     return ArtexRun(intents=_intents(steps, targets), goal_met=False, allowed_tools=[], tool_calls=[],
                     denied_tool_calls=[], elapsed_ms=round((time.monotonic() - start) * 1000, 1),
                     provenance={"kind": kind, "pinned": False, "step_source": source, "model": llm_model, **meta})
+
+
+def run_fixed_planner(view: dict, state, targets: list[dict], executed) -> ArtexRun:
+    """The default engine: the fixed rule only. No model, no ARTEX process, no database."""
+    start = time.monotonic()
+    steps = [s for s in fixed_rule_steps(view) if not _is_repeat(s, state, executed)]
+    return ArtexRun(intents=_intents(steps, targets), goal_met=False, allowed_tools=[], tool_calls=[],
+                    denied_tool_calls=[], elapsed_ms=round((time.monotonic() - start) * 1000, 1),
+                    provenance={"kind": "vulnix-fixed", "pinned": False,
+                                "step_source": "fixed_rule" if steps else "none", "model_calls": 0})
