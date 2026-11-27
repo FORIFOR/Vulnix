@@ -2,7 +2,7 @@ import ts from "typescript";
 import { parseAllDocuments } from "yaml";
 import { inspectRuntimeFile, type PlannedCheck } from "./runtimePlan";
 import { pythonFlow, type PythonFlowKind } from "./pythonFlow";
-import { redirectFixes } from "./fixPatch";
+import { generateFixes } from "./fixPatch";
 import { affects, collectPackages, compareVersions, propertyLine, sbomComponents, type Package, type Location } from "./projectPackages";
 import { advisorySeverity, checkCloudFormation, checkControls, checkLockfile, record, type ResultLocation } from "./quickDefense";
 
@@ -627,10 +627,10 @@ export async function scanProject(files: ProjectFile[], feed: unknown, onProgres
       const flows = pythonFlow(content);
       if (flows.length === 20) skippedRules++;
       // minimal fix candidates (a diff to review; the project itself is never written)
-      const fixes = flows.some((f) => f.kind === "redirect") ? redirectFixes(path, content) : [];
+      const fixes = flows.length ? generateFixes(path, content) : [];
       addRows(...flows.map((flow) => ({
         ...(() => {
-          const fix = fixes.find((f) => f.ok && f.finding.line === flow.line && flow.kind === "redirect");
+          const fix = fixes.find((f) => f.ok && f.finding.line === flow.line && f.finding.kind === flow.kind);
           return fix && fix.ok ? { patch: { file: path, diff: fix.diff, patched: fix.patched, changedLines: fix.changedLines } } : {};
         })(),
         ...item("Claude Code", PYTHON_FLOW[flow.kind][0], "action",

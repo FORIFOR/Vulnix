@@ -1,0 +1,17 @@
+{
+ "kind": "command",
+ "split": "holdout",
+ "normal": [
+  [
+   "/archive?label=daily",
+   200,
+   "archived daily"
+  ]
+ ],
+ "exploit": [
+  [
+   "/archive?label=x%3B%20printf%20%27VULN%25sCMD%27%20_EXEC_",
+   "VULN_EXEC_CMD"
+  ]
+ ]
+}

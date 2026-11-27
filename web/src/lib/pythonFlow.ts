@@ -24,7 +24,7 @@ const ANY_KIND = String.raw`int|float|bool|len|UUID|uuid\.UUID`;
 const SANITIZERS: Partial<Record<PythonFlowKind, string>> = {
   template: String.raw`(?:\w+\.)*escape\w*|(?:bleach\.)?clean`,
   xss: String.raw`(?:\w+\.)*escape\w*|(?:bleach\.)?clean`,
-  path: String.raw`(?:werkzeug\.utils\.)?secure_filename|(?:os\.path\.)?basename`,
+  path: String.raw`(?:werkzeug\.utils\.)?secure_filename|(?:os\.path\.)?basename|[\w.]*safe_join\w*`,
   command: String.raw`(?:shlex\.)?quote`,
   // the helper a Vulnix fix adds (fixPatch.ts) and similarly named same-site checks
   redirect: String.raw`[\w.]*safe_redirect\w*`,

@@ -9,6 +9,6 @@ const load = (name) => ts.transpileModule(readFileSync(fileURLToPath(new URL(`..
   { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } }).outputText;
 const url = (code) => `data:text/javascript;base64,${Buffer.from(code).toString("base64")}`;
 const flowUrl = url(load("pythonFlow"));
-const { redirectFixes } = await import(url(load("fixPatch").replace('"./pythonFlow"', JSON.stringify(flowUrl))));
+const { generateFixes } = await import(url(load("fixPatch").replace('"./pythonFlow"', JSON.stringify(flowUrl))));
 const file = process.argv[2];
-console.log(JSON.stringify(redirectFixes(process.argv[3] || file, readFileSync(file, "utf8"))));
+console.log(JSON.stringify(generateFixes(process.argv[3] || file, readFileSync(file, "utf8"))));
