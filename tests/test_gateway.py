@@ -45,13 +45,15 @@ def sleeper_tool():
 
 
 class Base(unittest.TestCase):
+    extra_ports: tuple[int, ...] = ()
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.clock = Clock()
         self.dns = {"lab.test": ["127.0.0.1"], "mixed.lab.test": ["127.0.0.1", "10.9.9.9"],
                     "v6.lab.test": ["::ffff:169.254.169.254"]}
         self.target = Target("t1", hosts=("lab.test", "mixed.lab.test", "v6.lab.test"),
-                             cidrs=("127.0.0.1/32",), ports=(80, 8080, 18080))
+                             cidrs=("127.0.0.1/32",), ports=(80, 8080, *self.extra_ports))
         self.eng = Engagement("eng1", True, "SOW-2026-001", self.clock.t - 10,
                               self.clock.t + 3600, {"t1": self.target},
                               frozenset({"read_only_probe"}))
@@ -152,6 +154,14 @@ class TestAIEscalation(Base):
 
 
 class TestDnsAndRedirect(Base):
+    def setUp(self):
+        # an OS-assigned loopback port: a fixed one collides with local services
+        self.srv = http.server.HTTPServer(("127.0.0.1", 0), _Redirect)
+        self.port = self.srv.server_address[1]
+        self.extra_ports = (self.port,)
+        self.addCleanup(self.srv.server_close)
+        super().setUp()
+
     def test_dns_rebinding_worker_uses_pinned_ip(self):
         calls = []
 
@@ -160,10 +170,10 @@ class TestDnsAndRedirect(Base):
             return ["127.0.0.1"] if len(calls) == 1 else ["10.0.0.5"]
 
         self.gw.egress = EgressGuard(rebinding)
-        srv = http.server.HTTPServer(("127.0.0.1", 18080), _Redirect)
+        srv = self.srv
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         try:
-            d = self.gw.execute(self.prop("http://lab.test:18080/"), self.token())
+            d = self.gw.execute(self.prop(f"http://lab.test:{self.port}/"), self.token())
         finally:
             srv.shutdown()
             srv.server_close()
@@ -172,10 +182,10 @@ class TestDnsAndRedirect(Base):
         self.assertIn('"connected_ip": "127.0.0.1"', d.result.stdout)
 
     def test_redirect_reported_not_followed_and_recheck_denies(self):
-        srv = http.server.HTTPServer(("127.0.0.1", 18080), _Redirect)
+        srv = self.srv
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         try:
-            d = self.gw.execute(self.prop("http://lab.test:18080/"), self.token())
+            d = self.gw.execute(self.prop(f"http://lab.test:{self.port}/"), self.token())
         finally:
             srv.shutdown()
             srv.server_close()

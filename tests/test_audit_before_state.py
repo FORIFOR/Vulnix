@@ -32,7 +32,14 @@ from aegis.server import make_handler
 from aegis.tenancy import OrgStore, TenantRegistry, default_members_from
 from tests import test_real_service as rs
 
-LAB_PORT = 18097
+def _free_port() -> int:
+    import socket
+    with socket.socket() as sock:      # OS-assigned: a fixed port collides with local services
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+LAB_PORT = _free_port()
 MFA_SECRET = generate_totp_secret()
 
 

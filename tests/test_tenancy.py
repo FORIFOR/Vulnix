@@ -26,7 +26,14 @@ from aegis.tenancy import (DEFAULT_ORG, MAX_ORGS_PER_ACCOUNT, OrgStore, TenancyE
                            default_members_from, service_roles)
 from tests.test_local_defense import synthetic_bundle
 
-LAB_PORT = 18097
+def _free_port() -> int:
+    import socket
+    with socket.socket() as sock:      # OS-assigned: a fixed port collides with local services
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+LAB_PORT = _free_port()
 
 
 class TestOrgStore(unittest.TestCase):

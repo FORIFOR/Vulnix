@@ -30,7 +30,14 @@ from aegis.remotion_export import build_remotion_export
 from aegis.secrets_store import EncryptedSecretStore
 from aegis.service_diag import analyze_l1_service_response
 
-LAB_PORT = 18097
+def _free_port() -> int:
+    import socket
+    with socket.socket() as sock:      # OS-assigned: a fixed port collides with local services
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+LAB_PORT = _free_port()
 HOST = "svc.example.test"                 # bound to tests/fixtures/l2_profiles/example.json
 FIXTURE_PROFILE_DIR = Path(__file__).parent / "fixtures" / "l2_profiles"
 PROFILE_DIRS = [BUILTIN_PROFILE_DIR, FIXTURE_PROFILE_DIR]
