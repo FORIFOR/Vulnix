@@ -52,6 +52,15 @@ class TestIntentsAreRebuiltFromVulnixOnly(unittest.TestCase):
         self.assertEqual(items["l2_sqli"].status, "awaiting_approval")
         self.assertEqual(items["l1_http_probe"].status, "planned")
 
+    def test_open_redirect_intent_selects_the_lab_check_and_never_the_planner_url(self):
+        rec = self.rec([{"summary": "Verify open redirect via return_to=https://evil.example/ after OAuth"},
+                        {"summary": "验证 redirect_uri 任意跳转"}])
+        items = by_catalog(rec)
+        self.assertEqual(set(items), {"l2_open_redirect"})
+        self.assertEqual(items["l2_open_redirect"].proposal["args"],
+                         {"url": TARGETS[0]["url"], "check": "open_redirect"})
+        self.assertEqual(items["l2_open_redirect"].status, "awaiting_approval")
+
     def test_mod_status_intent_uses_only_the_fixed_catalog_path(self):
         rec = self.rec([{"summary": "Check Apache mod_status at http://evil.example/private"}])
         items = by_catalog(rec)

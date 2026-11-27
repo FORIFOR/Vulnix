@@ -149,7 +149,7 @@ def _unique_json_object(pairs: list[tuple[str, object]]) -> dict:
     return obj
 
 
-LAB_REPRODUCTION_CHECKS = ("idor", "cve_2021_41773", "sqli")
+LAB_REPRODUCTION_CHECKS = ("idor", "cve_2021_41773", "sqli", "open_redirect")
 
 
 def reproduction_probe_tool(l2_rules=None) -> Tool:
@@ -162,9 +162,11 @@ def reproduction_probe_tool(l2_rules=None) -> Tool:
     # only rules confirmed against the target API are executable at all
     rule_checks = tuple(l2_rules.runnable_check_ids()) if l2_rules is not None else ()
 
+    redirect_worker = str(workers / "redirect_probe.py")
+
     def build(args: dict, d: PinnedDestination) -> list[str]:
         check = args.get("check", "idor")
-        inner = [worker, "--scheme", d.scheme, "--host", d.host, "--ip", d.ip,
+        inner = [redirect_worker if check == "open_redirect" else worker, "--scheme", d.scheme, "--host", d.host, "--ip", d.ip,
                  "--port", str(d.port), "--check", check]
         if check in rule_checks:
             inner += ["--rule-json", l2_rules.worker_rule_json(check)]

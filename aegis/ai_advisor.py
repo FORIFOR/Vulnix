@@ -49,7 +49,8 @@ PROMPT_MARKER = "vulnix-advisor/v2"
 _PROMPT_BEFORE_CATALOG = (
     f"[{PROMPT_MARKER}] あなたは Vulnix のセキュリティ診断アドバイザーです。"
     "与えられた所見（参照ID、規則、分類、深刻度、判定）だけを根拠に答えてください。"
-    "claim_level は判定に合うものを選び、cites には根拠にした入力の項目名を入れてください。"
+    "claim_level は判定に合うものを選び、cites には根拠にした入力の項目名（値ではなく、rule・category・severity・"
+    "verdict・verdict_basis・cve・risk_score・kev のいずれか）を入れてください。"
     "remediation の fix と next_checks の operation は、次の一覧の id だけを使えます。"
     "それ以外の操作は提案できません。実行は Vulnix の承認ゲートを通ります。"
     "URL、ホスト名、コマンド、攻撃手順は書かないでください。"
@@ -66,7 +67,7 @@ SYSTEM_ADVISOR_PROMPT = _PROMPT_BEFORE_CATALOG + catalog.catalog_for_prompt() + 
 
 KNOWN_RULES = frozenset({
     "f_l1_tls", "f_l1_no_tls", "f_headers", "f_l1_cookies", "f_l1_cors", "f_powered",
-    "f_l1_unauth_api", "f_l1_apache_mod_status", "f_banner", "f_idor", "f_sqli",
+    "f_l1_unauth_api", "f_l1_apache_mod_status", "f_banner", "f_idor", "f_sqli", "f_open_redirect",
 })
 KNOWN_CATEGORIES = frozenset({
     "暗号・TLS設定", "設定不備", "セッション・Cookie設定", "CORS・オリジン境界", "既知の脆弱性（CVE）",
@@ -348,6 +349,13 @@ def validate_advice(raw: object, ref_map: dict[str, dict]) -> tuple[list[Advice]
             reject("claim_level", p)
             continue
         cites = item.get("cites")
+        if isinstance(cites, list):
+            # A model that cites a value ("f_sqli") instead of its field ("rule") is still citing
+            # the input: map a value to the field only when it equals what was sent in that field.
+            by_value = {str(v): k for k, v in sent.items()
+                        if k in catalog.CITABLE_FIELDS and isinstance(v, (str, int)) and not isinstance(v, bool)}
+            cites = [c if not isinstance(c, str) or c in catalog.CITABLE_FIELDS else by_value.get(c, c)
+                     for c in cites]
         if (not isinstance(cites, list) or not cites or len(cites) > len(catalog.CITABLE_FIELDS)
                 or not all(isinstance(c, str) for c in cites)):
             reject("cites", "schema: cites must be a non-empty list of field names")
@@ -521,7 +529,8 @@ class AbliterationAdvisor:
         content = choice["message"]["content"]
         return _extract_json_from_text(content) if isinstance(content, str) else None
 
-    def advise(self, findings: list[dict], *, before_send=None, send_scope=None) -> AdviceResult:
+    def advise(self, findings: list[dict], *, before_send=None, send_scope=None,
+               _retried: bool = False) -> AdviceResult:
         body, ref_map = self.build_request(findings)
         if not ref_map:
             return AdviceResult((), (), (), (), self.name, self.endpoint_kind)
@@ -542,6 +551,11 @@ class AbliterationAdvisor:
             advice, rejected = validate_advice(parsed, ref_map)
         except Exception as e:  # noqa: BLE001 - a reply the validator cannot even walk is one error, audited
             raise AdvisorError(f"reply could not be validated: {type(e).__name__}") from None
+        if (not advice and any(r.get("where") == "root" for r in rejected)
+                and self.endpoint_kind != "external" and not _retried):
+            # Local models sometimes break the outer JSON shape; ask once more. Never for a paid
+            # external endpoint (each request is billed), and the retry is validated the same way.
+            return self.advise(findings, before_send=before_send, send_scope=send_scope, _retried=True)
         answered = {a.ref for a in advice}
         return AdviceResult(
             advice=tuple(advice), rejected=tuple(rejected), sent_refs=tuple(ref_map),

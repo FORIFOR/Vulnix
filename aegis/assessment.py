@@ -311,7 +311,23 @@ def _claim_data_dir(data_dir: Path) -> None:
 
 
 # Findings whose single-item verification is a bundled-lab check (fixed lab paths).
-LAB_ONLY_FINDING_IDS = frozenset({"f_banner", "f_idor", "f_sqli", "fx_idor", "fx_sqli", "fx_banner"})
+def _lab_verdict(result, check: str) -> str:
+    """The frozen evidence judge, plus the separately kept open-redirect check."""
+    if check == "open_redirect":
+        from .redirect_evidence import open_redirect_verdict
+        return open_redirect_verdict(result)
+    return reproduction_verdict(result, check)
+
+
+def _lab_note(result, check: str) -> str:
+    if check == "open_redirect":
+        from .redirect_evidence import open_redirect_note
+        return open_redirect_note(result)
+    return reproduction_note(result, check)
+
+
+LAB_ONLY_FINDING_IDS = frozenset({"f_banner", "f_idor", "f_sqli", "f_open_redirect",
+                                  "fx_idor", "fx_sqli", "fx_banner"})
 
 # Under separation of duties, a request for an L2 run can be approved for this long.
 L2_REQUEST_MAX_AGE_S = 24 * 3600
@@ -2447,7 +2463,7 @@ class AssessmentService:
                 observations = [{"title": clean_target_text(f["title"], 200),
                                  "detail": clean_target_text(f.get("summary", ""), 400)}
                                 for f in self.a.findings.values()
-                                if f.get("id") in ("f_banner", "f_idor", "f_sqli")
+                                if f.get("id") in ("f_banner", "f_idor", "f_sqli", "f_open_redirect")
                                 and evidence_status(f) in ("detected", "proven")]
                 if getattr(self, "_lab_account_resource_observed", None) is not None:
                     surface = "present" if self._lab_account_resource_observed else "absent"
@@ -4607,6 +4623,23 @@ class AssessmentService:
             return (self.l2.has_check(f.get("reproduce_check"))
                     or self._l2_check_for_finding(finding_id) is not None)
 
+    def _record_lab_reproduction(self, fid: str, check: str, res: dict, ev: dict | None, title: str) -> None:
+        """Store one lab reproduction result on its finding (verdict from evidence.py only)."""
+        if not ev or fid not in self.a.findings:
+            return
+        self._think(title, _lab_note(res, check) + f" [証拠 {ev['evidence_id']}]",
+                    phase="verification", tool="reproduction_probe", level="L2")
+        verdict = _lab_verdict(res, check)
+        with self._lock:
+            f = self.a.findings[fid]
+            self._upsert_finding({
+                **f, "demo_fixture": False, "verdict": verdict, "_in_verification": False,
+                "what_was_established": _lab_note(res, check) if verdict == "proven" else None,
+                "verdict_note": _lab_note(res, check),
+                "executor": {**EXECUTOR, "tool": "reproduction_probe"},
+                "evidence": [e for e in f.get("evidence", []) if e.get("audit_hash")] + [ev],
+            })
+
     def verify_finding(self, finding_id: str, actor: str, *, roles=None,
                        request_authorized=None, approver_class: str | None = None) -> dict:
         """Execute a real Gateway + Worker probe for a specific finding on demand
@@ -4677,7 +4710,7 @@ class AssessmentService:
                     phase="verification", tool="Gateway", level="L1",
                 )
             else:
-                for fid in ("f_banner", "f_idor", "f_sqli"):
+                for fid in ("f_banner", "f_idor", "f_sqli", "f_open_redirect"):
                     if fid in self.a.findings:
                         self.verify_finding(fid, actor=actor)
                         if self.a.state == "failed":
@@ -4903,6 +4936,21 @@ class AssessmentService:
                         "executor": {**EXECUTOR, "tool": "reproduction_probe"},
                         "evidence": prev_ev + [ev],
                     })
+        elif finding_id == "f_open_redirect":
+            self._think(
+                "オープンリダイレクトの仮説検証",
+                "戻り先パラメータに外部URLと // で始まるURLを渡し、Locationヘッダーの移動先だけを判定します（リダイレクトは追跡しません）。",
+                phase="verification", tool="reproduction_probe", level="L2",
+            )
+            # audit first: the approval reference exists only once it is recorded
+            self.audit.record("approval.approved", request="req_f_open_redirect", actor=actor,
+                              action="safe_reproduction", risk_level="L2")
+            apr = self.approval_store.approve(actor, "eng_demo", "lab", "safe_reproduction")
+            res, ev = self._exec("reproduction_probe", "safe_reproduction",
+                                 {"url": url, "check": "open_redirect"}, approval_id=apr)
+            if res and ev:
+                self._record_lab_reproduction("f_open_redirect", "open_redirect", res, ev,
+                                              "オープンリダイレクト 実機応答の判定")
         elif finding_id == "f_banner":
             self._think(
                 "CVE-2021-41773 パス正規化バイパスの仮説検証",
@@ -5117,22 +5165,29 @@ class AssessmentService:
             res_sqli, ev_sqli = self._exec("reproduction_probe", "safe_reproduction",
                                            {"url": url, "check": "sqli"},
                                            approval_id=apr_ref3)
+            res_redirect = ev_redirect = None
+            if "f_open_redirect" in self.a.findings:
+                apr_ref4 = self.approval_store.approve(actor, "eng_demo", "lab", "safe_reproduction")
+                res_redirect, ev_redirect = self._exec("reproduction_probe", "safe_reproduction",
+                                                       {"url": url, "check": "open_redirect"},
+                                                       approval_id=apr_ref4)
 
             with self._lock:
                 for fid, check, result, evidence in (
                     ("f_banner", "cve_2021_41773", res_cve, ev_cve),
                     ("f_idor", "idor", res_idor, ev_idor),
                     ("f_sqli", "sqli", res_sqli, ev_sqli),
+                    ("f_open_redirect", "open_redirect", res_redirect, ev_redirect),
                 ):
                     if fid not in self.a.findings:
                         continue
                     finding = self.a.findings[fid]
-                    verdict = reproduction_verdict(result, check)
+                    verdict = _lab_verdict(result, check)
                     latest_ids[fid] = evidence["evidence_id"] if evidence else None
                     self._upsert_finding({
                         **finding, "verdict": verdict, "_in_verification": False,
-                        "what_was_established": reproduction_note(result, check) if verdict == "proven" else None,
-                        "verdict_note": reproduction_note(result, check),
+                        "what_was_established": _lab_note(result, check) if verdict == "proven" else None,
+                        "verdict_note": _lab_note(result, check),
                         "evidence": finding["evidence"] + ([evidence] if evidence else []),
                     })
 
@@ -5474,6 +5529,8 @@ class AssessmentService:
                 self._mark_verifying(banner_id, True)
                 self._mark_verifying("f_idor", True)
                 self._mark_verifying("f_sqli", True)
+                if "f_open_redirect" in self.a.findings:
+                    self._mark_verifying("f_open_redirect", True)
 
                 # 1. Run demo_verify window first so emergency-stop tests during active verification
                 #    can deterministically observe and SIGKILL the worker.
@@ -5576,10 +5633,21 @@ class AssessmentService:
                         "evidence": [e for e in fs["evidence"] if e.get("audit_hash")] + [sqli_ev],
                     })
 
+                if "f_open_redirect" in self.a.findings:
+                    apr_redirect = self.approval_store.approve(actor, "eng_demo", "lab", "safe_reproduction")
+                    redirect_res, redirect_ev = self._exec("reproduction_probe", "safe_reproduction",
+                                                           {"url": url, "check": "open_redirect"},
+                                                           approval_id=apr_redirect)
+                    if redirect_res is None:
+                        return
+                    self._record_lab_reproduction("f_open_redirect", "open_redirect", redirect_res, redirect_ev,
+                                                  "オープンリダイレクト 実証結果の確認")
+
                 for tk in tasks_l2:
                     if tk.status != "unsupported":
                         tk.status = "completed"
-                verdicts = [evidence_status(self.a.findings[fid]) for fid in (banner_id, "f_idor", "f_sqli")
+                verdicts = [evidence_status(self.a.findings[fid])
+                            for fid in (banner_id, "f_idor", "f_sqli", "f_open_redirect")
                             if fid in self.a.findings]
                 proven_count = verdicts.count("proven")
                 not_reproduced_count = verdicts.count("not_reproduced")
@@ -5786,6 +5854,22 @@ class AssessmentService:
             "evidence": [],
             "remediation": {"steps": ["プリペアドステートメント（プレースホルダー付きクエリ）を使用し文字列連結を廃止する"],
                             "how_to_verify": "修正後に同じ試験を実行し、SQLエラー差分が発生しないことを確認します。"},
+            "executor": {**EXECUTOR, "tool": "http_probe"}, "demo_fixture": False})
+
+        # The OAuth "return to" redirect: a candidate until its own approved probe measures it.
+        self._upsert_finding({
+            "id": "f_open_redirect", "title": "ログイン後の戻り先URLのオープンリダイレクト確認（/auth/callback）",
+            "severity": "medium", "verdict": "candidate", "category": "入力検証", "cve": [],
+            "risk_level": "L2", "help_term": "open_redirect",
+            "summary": "模擬ラボの /auth/callback?return_to= は、承認後に外部サイトへの移動を許すか確認する候補です。現時点では未計測です。",
+            "why_detected": "模擬ラボに用意された確認対象です。OAuth連携の戻り先をそのまま移動先に使う実装でよく起きます。",
+            "caveat": "承認済みの再現試験で移動先（Locationヘッダー）を測るまで、脆弱性として検出したとは扱いません。",
+            "evidence": [],
+            "remediation": {"steps": [
+                "戻り先は「/」で始まり「//」「/\\」で始まらない同一サイト内の相対パス、または許可した自社オリジンの完全一致だけを受け付け、それ以外は既定の「/」にする",
+                "開始時（stateに保存する前）とコールバック時（リダイレクトする直前）の両方で同じ検証を行う",
+                "例（Python）: if not (t.startswith('/') and not t.startswith(('//', '/\\')) and not urlsplit(t).netloc): t = '/'",
+            ], "how_to_verify": "修正後に同じ試験を実行し、絶対URLと // で始まるURLの両方で移動先が同じサイト内に留まることを確認します。"},
             "executor": {**EXECUTOR, "tool": "http_probe"}, "demo_fixture": False})
 
         missing = [x for x in ("content-security-policy", "x-content-type-options",

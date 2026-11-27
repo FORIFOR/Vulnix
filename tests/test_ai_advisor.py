@@ -179,6 +179,34 @@ class TestPayloadIsAnAllowList(unittest.TestCase):
                 self.assertFalse(accepted)
                 self.assertEqual(rejected[0]["where"], field)
 
+    def test_a_cited_input_value_counts_as_its_field_but_a_value_not_sent_does_not(self):
+        # real local models cite the value ("f_sqli") instead of the field name ("rule")
+        finding = _leaky_finding()
+        sent = adv.finding_to_payload_item("F1", finding)
+        by_value = _ok_item(cites=[sent["rule"], sent["verdict"]])
+        accepted, rejected = adv.validate_advice({"advice": [by_value]}, {"F1": finding})
+        self.assertEqual(len(accepted), 1, rejected)
+        self.assertEqual(accepted[0].cites, ("rule", "verdict"))
+        for bad in (["f_idor"], ["proven"] if sent["verdict"] != "proven" else ["candidate"], ["anything"]):
+            with self.subTest(bad=bad):
+                accepted, rejected = adv.validate_advice({"advice": [_ok_item(cites=bad)]}, {"F1": finding})
+                self.assertFalse(accepted)
+                self.assertEqual(rejected[0]["where"], "cites")
+
+    def test_a_broken_outer_shape_is_retried_once_on_loopback_only(self):
+        good = json.dumps({"choices": [{"finish_reason": "stop", "message": {"content": json.dumps(
+            {"advice": [_ok_item()]}, ensure_ascii=False)}}]}).encode()
+        bad = json.dumps({"choices": [{"finish_reason": "stop", "message": {"content": "[1, 2]"}}]}).encode()
+        replies = [bad, good]
+        a = adv.AbliterationAdvisor("http://127.0.0.1:9/v1/chat/completions",
+                                    transport=lambda *x: replies.pop(0))
+        self.assertEqual(len(a.advise([_leaky_finding()]).advice), 1)
+        calls = []
+        a = adv.AbliterationAdvisor("http://127.0.0.1:9/v1/chat/completions",
+                                    transport=lambda *x: calls.append(1) or bad)
+        self.assertFalse(a.advise([_leaky_finding()]).advice)
+        self.assertEqual(len(calls), 2)          # one retry, not a loop
+
     def test_a_payload_that_still_leaks_is_refused_before_sending(self):
         calls = []
         a = adv.AbliterationAdvisor("http://127.0.0.1:9/v1/chat/completions",
