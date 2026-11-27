@@ -35,12 +35,28 @@ class TestSelfServiceLedger(unittest.TestCase):
         while used < limits["account_day"]:
             hour += 1
             for _ in range(min(limits["account_hour"], limits["account_day"] - used)):
-                self.use(at=self.now + hour * 3601)
+                self.use(origin=f"https://b{used % 3}.example/", at=self.now + hour * 3601)  # per-origin cap
                 used += 1
         with self.assertRaises(op.LimitReached):
             self.use(at=self.now + (hour + 1) * 3601)
-        self.use(account="bob", at=self.now + (hour + 1) * 3601)       # other accounts unaffected
+        self.use(account="bob", origin="https://bob.example/", at=self.now + (hour + 1) * 3601)  # others unaffected
         self.use(at=self.now + 86400 + 1)                              # rolling day, not UTC midnight
+
+    def test_one_origin_is_capped_across_organizations_and_accounts(self):
+        limits = op.SELF_SERVICE_LIMITS
+        victim = "https://victim.example/"
+        for i in range(limits["origin_orgs_day"]):
+            self.use(account=f"u{i}", org=f"org_{i:012x}", origin=victim)
+        with self.assertRaises(op.LimitReached):     # a new org cannot join this origin today
+            self.use(account="sybil", org="org_ffffffffffff", origin=victim)
+        n = limits["origin_orgs_day"]
+        while n < limits["origin_day"]:              # orgs already on it share one attempt budget
+            self.use(account=f"m{n}", org="org_000000000000", origin=victim)
+            n += 1
+        with self.assertRaises(op.LimitReached):
+            self.use(account="late", org="org_000000000001", origin=victim)
+        self.use(account="late", org="org_000000000001", origin="https://other.example/")
+        self.use(account="sybil", org="org_ffffffffffff", origin=victim, at=self.now + 86401)
 
     def test_distinct_targets_per_org_and_account(self):
         limits = op.SELF_SERVICE_LIMITS

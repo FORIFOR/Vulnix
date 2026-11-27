@@ -144,6 +144,8 @@ SELF_SERVICE_LIMITS = {
     "account_day": 30,
     "org_origins_day": 5,        # distinct origins one organization may contact
     "account_origins_day": 10,   # distinct origins one account may contact
+    "origin_orgs_day": 3,        # organizations that may contact one origin (stops many sign-ups
+    "origin_day": 15,            #   aiming at one third-party site) and attempts to it in total
     "platform_day": 2000,        # every self-service attempt on this platform
 }
 
@@ -183,6 +185,12 @@ def consume_self_service(directory: Path, *, account: str, org: str, origin: str
                 problem = None
                 if one("SELECT COUNT(*) FROM attempts") >= limits["platform_day"]:
                     problem = "現在、所有確認が混み合っています。時間をおいてお試しください"
+                elif not one("SELECT COUNT(*) FROM attempts WHERE origin = ? AND org = ?", origin, org) and (
+                        one("SELECT COUNT(DISTINCT org) FROM attempts WHERE origin = ?", origin)
+                        >= limits["origin_orgs_day"]):
+                    problem = "この対象には24時間以内に複数の組織から所有確認が行われているため、実行しませんでした"
+                elif one("SELECT COUNT(*) FROM attempts WHERE origin = ?", origin) >= limits["origin_day"]:
+                    problem = f"1つの対象への所有確認は24時間あたり{limits['origin_day']}回までです"
                 elif one("SELECT COUNT(*) FROM attempts WHERE account = ? AND ts >= ?",
                          account, now - 3600) >= limits["account_hour"]:
                     problem = f"所有確認は1アカウントにつき1時間あたり{limits['account_hour']}回までです"
@@ -225,7 +233,9 @@ class SelfServiceSlots:
         with self._lock:
             if (self._busy.get(account, 0) >= self._per_account
                     or sum(self._busy.values()) >= self._total):
-                raise LimitReached("別の所有確認を実行中です。完了してからお試しください")
+                busy = LimitReached("別の所有確認を実行中です。完了してからお試しください")
+                busy.account = account
+                raise busy
             self._busy[account] = self._busy.get(account, 0) + 1
         try:
             yield

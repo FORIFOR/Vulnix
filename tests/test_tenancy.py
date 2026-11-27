@@ -427,6 +427,13 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
                      for method in ("dns_txt", "dns_txt", "dns_txt", "dns_txt", "dns_txt", "well_known")]
             self.assertEqual(codes, [200] * 5 + [429])
             self.assertEqual(check.call_count, 10)
+            # refused attempts are audited in the organization that tried (nothing was sent)
+            for org_id in (first, second):
+                events = [json.loads(line) for line in
+                          (self.reg.service(org_id).data_dir / "audit.jsonl").read_text().splitlines()]
+                refused = [e for e in events if e.get("event") == "asset.ownership_traffic_refused"]
+                self.assertEqual(len(refused), 1, org_id)
+                self.assertEqual(refused[0]["fields"]["actor"], "selflimitowner")
 
     def test_personal_google_ownership_rechecks_approval_between_requests(self):
         from aegis import google_ownership

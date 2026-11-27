@@ -585,6 +585,16 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     result.update(id=record["id"], expires_at=record["expires_at"])
             return self._authorized_org_read(sess, org, lambda _: self._json(200, result), reader=False)
 
+        @staticmethod
+        def _audit_self_service_refusal(service, actor, asset_id, method, reason):
+            """Refused self-service attempts are recorded too (nothing was sent); best effort,
+            because a refusal must not turn into an error when the audit disk is unavailable."""
+            try:
+                service.audit.record("asset.ownership_traffic_refused", actor=actor, asset_id=asset_id,
+                                     method=method, reason=reason[:200])
+            except Exception:  # noqa: BLE001
+                pass
+
         def _require_ownership_traffic(self, service, sess, value, method, expected=None, *, consume=False):
             mode = _ownership_traffic_mode(getattr(self, "_bound_org", None))
             managed = self._managed_ownership(mode, method)
@@ -612,11 +622,17 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         raise ApproverRequired(claim)
                     if consume and policy.id.startswith("self-"):
                         if not ownership_policy.has_budget(service.data_dir, policy):
+                            self._audit_self_service_refusal(service, sess.operator, key[1], method, "target_budget")
                             raise ApproverRequired("所有確認の試行上限に達したか、許可の状態を確認できません")
-                        # account, organization-count and platform limits (raises LimitReached: 429)
-                        ownership_policy.consume_self_service(
-                            Path(default_svc.data_dir), account=sess.operator, org=key[0], origin=key[2],
-                            method=method, now=time.time())
+                        # account, organization, origin and platform limits (raises LimitReached: 429)
+                        try:
+                            ownership_policy.consume_self_service(
+                                Path(default_svc.data_dir), account=sess.operator, org=key[0], origin=key[2],
+                                method=method, now=time.time())
+                        except ownership_policy.LimitReached as e:
+                            self._audit_self_service_refusal(service, sess.operator, key[1], method, str(e))
+                            e.audited = True
+                            raise
                     if (consume or expected is None) and not ownership_policy.has_budget(service.data_dir, policy, consume=consume):
                         raise ApproverRequired("所有確認の試行上限に達したか、許可の状態を確認できません")
                     if consume:
@@ -1991,16 +2007,20 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     google_slot = contextlib.ExitStack()
                     if self._self_service_mode():
                         google_slot.enter_context(self_service_slots.hold(actor))
-                    with google_slot, live_grant_roles(sess, bound_org or DEFAULT_ORG), svc._lock:
-                        grant = self._require_ownership_traffic(
-                            svc, sess, st["target_url"], google_ownership.METHOD, st["grant"], consume=True)
+                    try:
+                        with live_grant_roles(sess, bound_org or DEFAULT_ORG), svc._lock:
+                            grant = self._require_ownership_traffic(
+                                svc, sess, st["target_url"], google_ownership.METHOD, st["grant"], consume=True)
+                    except BaseException:
+                        google_slot.close()
+                        raise
 
                     def guard_google_request():
                         with live_grant_roles(sess, bound_org or DEFAULT_ORG), svc._lock:
                             self._require_ownership_traffic(svc, sess, st["target_url"], google_ownership.METHOD, grant)
 
                     try:
-                        with (self_service_slots.hold(actor) if self._self_service_mode() else contextlib.nullcontext()):
+                        with google_slot:    # the same slot, released after the Google call
                             sites = google_ownership.owned_sites(
                                 cfg, str(body.get("code") or ""), st["verifier"],
                                 **({"before_request": guard_google_request} if isinstance(grant, tuple) else {}),
@@ -2310,6 +2330,9 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             except AuthError as e:
                 return self._json(401, {"error": str(e)})
             except ownership_policy.LimitReached as e:
+                if not getattr(e, "audited", False):     # e.g. a concurrency slot refusal
+                    self._audit_self_service_refusal(
+                        default_svc, getattr(e, "account", "-"), "-", p, str(e))
                 return self._json(429, {"error": str(e)}, [("Retry-After", "600")])
             except ApproverRequired as e:
                 return self._json(403, {"error": str(e)})
