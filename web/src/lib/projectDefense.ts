@@ -4,7 +4,7 @@ import { inspectRuntimeFile, type PlannedCheck } from "./runtimePlan";
 import { affects, collectPackages, compareVersions, propertyLine, sbomComponents, type Package, type Location } from "./projectPackages";
 import { advisorySeverity, checkCloudFormation, checkControls, checkLockfile, record, type ResultLocation } from "./quickDefense";
 
-export const limits = { entries: 12000, files: 180, timeMs: 30000, findings: 5000, fileBytes: 256 * 1024, dependencyBytes: 4 * 1024 * 1024, bytes: 12 * 1024 * 1024 };
+export const limits = { entries: 12000, files: 180, timeMs: 30000, findings: 5000, fileBytes: 1024 * 1024, dependencyBytes: 4 * 1024 * 1024, bytes: 12 * 1024 * 1024 };
 export type ProjectFile = { file: File; path: string };
 type Result = ReturnType<typeof checkControls>[number];
 type Component = { location?: Location; part: string; vendor: string; product: string; version: string };

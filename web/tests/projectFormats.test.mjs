@@ -17,7 +17,7 @@ const packages = source("projectPackages", {
   "./quickDefense": quick, semver: import.meta.resolve("semver"),
   "@renovatebot/pep440": import.meta.resolve("@renovatebot/pep440"),
 });
-const { scanProject } = await import(source("projectDefense", {
+const { scanProject, limits } = await import(source("projectDefense", {
   "./quickDefense": quick, "./projectPackages": packages, "./runtimePlan": source("runtimePlan", {}), typescript: import.meta.resolve("typescript"),
   yaml: import.meta.resolve("yaml"),
 }));
@@ -88,13 +88,14 @@ test("automatically scans later batches and reads a repeated path once", async (
 
 test("rolls the read budget into another batch without lifting a single-file cap", async () => {
   const inputs = Array.from({ length: 50 }, (_, i) => ({ path: `project/src/sized-${i}.ts`, file: {
-    name: `sized-${i}.ts`, size: 256 * 1024, text: async () => "const ready = true;",
+    name: `sized-${i}.ts`, size: limits.fileBytes, text: async () => "const ready = true;",
   } }));
   const unreadable = { path: "project/src/large.ts", file: {
-    name: "large.ts", size: 256 * 1024 + 1, text: async () => assert.fail("file exceeded its read limit"),
+    name: "large.ts", size: limits.fileBytes + 1, text: async () => assert.fail("file exceeded its read limit"),
   } };
   const report = await scanProject([...inputs, unreadable], {});
-  assert.equal(report.scanProgress.batches, 2);
+  assert.ok(report.scanProgress.batches >= 2);
+  assert.equal(report.scanProgress.batches, Math.ceil(50 / Math.floor(limits.bytes / limits.fileBytes)));
   assert.equal(report.read, 50);
   assert.equal(report.omitted, 1);
   assert.equal(report.pending, 0);
@@ -192,4 +193,13 @@ test("folder inventory checks named SPDX and CycloneDX files and reports partial
   const repaired = await scanProject(inputs("2.0"), feed);
   assert.ok(!repaired.rows.some((row) => row.title === cve));
   assert.ok(repaired.rows.some((row) => row.status === "unknown"));
+});
+
+test("a large hand-written source file is read instead of omitted, and size limits still apply", async () => {
+  const big = "x = 1\n".repeat(70_000);          // ~420 KB of Python
+  const huge = "x = 1\n".repeat(200_000);        // ~1.2 MB stays outside the source limit
+  const report = await scanProject([fixture("app/service.py", big), fixture("app/generated.py", huge)], {});
+  assert.equal(report.scanProgress.read, 1);
+  assert.equal(report.omitted, 1);
+  assert.deepEqual(report.incomplete.filter((entry) => entry.reason === "ファイル上限").map((entry) => entry.path), ["app/generated.py"]);
 });
