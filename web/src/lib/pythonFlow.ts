@@ -99,7 +99,9 @@ export function logicalLines(input: string): Logical[] {
           exprs.push(body.slice(k + 1, j - 1).split(/[!:](?![=])/)[0]);
           k = j - 1;
         }
-        cur += `F(${exprs.join(",")})`;
+        // a literal start that is more than slashes ("https://host/...") fixes the destination host
+        const lead = body.split("{")[0];
+        cur += `${/[^/\\]/.test(lead) ? "FP" : "F"}(${exprs.join(",")})`;
       } else cur += /^(?:[./\\]{1,4}|[\w.-]{1,40})$/.test(body) ? `"${body}"` : "\"\"";
       continue;
     }
@@ -164,6 +166,15 @@ type Taint = Map<string, Set<PythonFlowKind>>;
 const KEY_READ = /(?<![\w.])([A-Za-z_]\w*)\s*(?:\[\s*"([^"]*)"\s*\]|\.get\(\s*(?:"[^"]*"\s*,\s*)?"([^"]*)"[^()]*\))/g;
 
 function taintedFor(expr: string, kind: PythonFlowKind, tainted: Taint): boolean {
+  // Request data after a fixed scheme and host only reaches the path or query, not the destination.
+  if (kind === "redirect" || kind === "ssrf") {
+    const e = expr.trim();
+    // a literal or a module constant (AUTH_URL, client.AUTH_URL) as the start fixes the host
+    if (/^(?:FP\(|""\s*(?:\+|%)|(?:F\()?(?:[\w.]*\.)?[A-Z][A-Z0-9_]+\s*(?:[+,)]|$))/.test(e)) return false;
+    // helpers that only add query parameters keep the destination given as their first argument
+    const helper = /^[\w.]*(?:append|add|set|with|update)_?(?:query|params?)\w*\s*\(/i.exec(e);
+    if (helper) return taintedFor(callArgs(e, helper[0].length - 1)[0] ?? "", kind, tainted);
+  }
   let text = withoutSanitized(expr, kind);
   if (SOURCE.test(text)) return true;
   // A container that only holds request data under some literal keys is tainted only
@@ -273,6 +284,15 @@ export function pythonFlow(input: string): PythonFlowFinding[] {
       // `if '..' in name:` (or '/', '\\') rejects path traversal for that name.
       const guard = /^if\s+"(?:\.\.?[/\\]?|[/\\])"\s+in\s+([A-Za-z_]\w*)\s*:/.exec(code);
       if (guard) scope.tainted.get(guard[1])?.delete("path");
+      // `if not is_allowed_redirect(x):` (any allow/safe/valid/trusted check) whose block replaces x or exits
+      const allow = /^if\s+not\s+[\w.]*(?:allow|safe|valid|trust)\w*\s*\(\s*([A-Za-z_]\w*)\b/i.exec(code);
+      const next = lines[index + 1];
+      if (allow && next && next.indent > indent
+        && (/^(?:return|raise|abort)\b/.test(next.code) || new RegExp(`^${allow[1]}\\s*=\\s*(?:""|"[^"]*")\\s*$`).test(next.code)
+          || new RegExp(`^${allow[1]}\\s*=`).test(next.code) && !taintKinds(next.code.split("=").slice(1).join("="), scope.tainted).size)) {
+        for (const k of ["redirect", "ssrf", "path"] as const) scope.tainted.get(allow[1])?.delete(k);
+        index++;    // the replacement inside the guard does not re-taint
+      }
       // a containment check after resolving: p.is_relative_to(base), base in p.parents, commonpath
       for (const m of code.matchAll(/(?<![\w.])([A-Za-z_]\w*)\.(?:is_relative_to\s*\(|parents\b)|commonpath\s*\(\s*\[[^\]]*?(?<![\w.])([A-Za-z_]\w*)\s*\]/g))
         scope.tainted.get(m[1] ?? m[2])?.delete("path");

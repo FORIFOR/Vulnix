@@ -157,3 +157,22 @@ test("a resolved path checked against its base directory is not reported", () =>
   ].join("\n");
   assert.deepEqual(kinds(code), ["path@12"]);
 });
+
+test("an allowlist guard and a fixed destination host are not open redirects", () => {
+  const code = [
+    "@router.get('/cb')",
+    "async def cb(state: str = Query(None), err: str = Query(None)):",
+    "    url = state or 'x'",
+    "    if not _is_allowed_redirect(url):",
+    "        url = 'https://app.example/login'",
+    "    return RedirectResponse(_append_query(url, 'e', err))",
+    "",
+    "@router.get('/start')",
+    "async def start(redirect: str):",
+    "    auth = f'{AUTH_URL}?{urlencode({\"state\": redirect})}'",
+    "    go = f'https://idp.example/auth?state={redirect}'",
+    "    RedirectResponse(go)",
+    "    return RedirectResponse(redirect)",
+  ].join("\n");
+  assert.deepEqual(kinds(code), ["redirect@13"]);
+});
