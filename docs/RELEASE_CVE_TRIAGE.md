@@ -1,3 +1,67 @@
+# 残存 CVE の全件評価（2026-11-29）
+
+最終候補の Debian 13 イメージ（`deploy/debian13`）と配布物について、照合で残った CVE を**すべて**分類した。1 件ずつの分類と理由は [`release-cve-residual-2026-11-29.json`](release-cve-residual-2026-11-29.json)。未分類は 0 件（分類スクリプトは未分類があると失敗する）。
+
+- **入力:** CVE キャッシュ（2026-11-28 取得。OSV・Debian セキュリティトラッカー・CISA KEV）。外部への送信なし。
+- **対象:** カーネル `6.12.118+deb13-cloud-arm64`（arm64）、イメージの Debian パッケージ、Web の SBOM（npm）、バックエンド同梱の Python パッケージ。
+- **根拠（イメージ上で収集）:** カーネル設定とモジュール（同梱・読み込み済み）、sysctl、実行中プロセスが読み込むファイル（`/proc/*/maps` → パッケージ）、待ち受けポート、setuid ファイル、`sshd -T`、Worker の seccomp。バックエンドが使う標準ライブラリと外部コマンドはソースで確認した。
+- **再現:** `scripts/release_cve/`（`collect_facts.py` をイメージ上で root 実行 → `match_debian.py` → `VULNIX_CVE_CACHE=<cache> classify_kernel.py <work>` / `classify_os.py <work>`）。
+
+## この評価で行ったイメージの変更
+
+- 使わないパッケージを削除: curl（libcurl）、wget、tcpdump、screen、vim、polkit、iptables、ping、man-db、bind9-host と依存ライブラリ（libxml2・lmdb など）。OS の残存 CVE は 364 件 → 251 件。
+- 一般ユーザーが socket() だけで読み込めるプロトコルモジュール（sctp、dccp、tipc、rds、smc、l2tp、af_key、kcm、AF_ALG）の自動読み込みを禁止（`90-vulnix-modules.conf`。イメージ上で socket() が失敗することを確認）。
+- MPTCP を無効化（`net.mptcp.enabled=0`）。sshd の圧縮を無効化（`Compression no`）。
+
+## 分類の件数
+
+| 区分 | 件数 | 内訳 |
+|---|---|---|
+| カーネル | 339 | NA_NOT_BUILT 99、NR_PRIVILEGED 76、NR_FS_UNUSED 44、NR_NO_DEVICE 40、NA_ARCH 29、MITIGATED 20、REACHABLE_LOCAL 13、NR_DISABLED 11、REACHABLE_REMOTE 4、NR_PROTO_BLOCKED 2、NA_USERSPACE 1 |
+| OS パッケージ | 251 | NOT_USED 115、MITIGATED 57、BOOT_ONLY 33、CONFIG_OFF 19、NR_PRIVILEGED 15、UNCONFIRMED 7、REACHABLE_REMOTE 3、REACHABLE_LOCAL 2 |
+| Web（npm） | 16 | NOT_REACHABLE 10、MITIGATED 4、NOT_USED 2 |
+| バックエンド（PyPI、同梱 11 パッケージ） | 0 | OSV 照合で該当なし（certifi、cffi、charset-normalizer、cryptography 50.0.2、google-auth、idna、pyasn1、pyasn1_modules、pycparser、requests 2.34.2、urllib3 2.8.0）。照合器が古い版（requests 2.31.0・cryptography 41.0.0）で 26 件を検出することも確認 |
+
+分類の意味: `NA_*` 該当コードがない（別アーキテクチャ・未ビルド・未使用）、`NR_*` このイメージでは届かない（root 権限が必要・機器がない・機能が無効・未マウント・自動読み込み禁止）、`CONFIG_OFF` 設定で無効、`NOT_USED` 使われていない、`BOOT_ONLY` 起動時の cloud-init だけ、`MITIGATED` 届きうるがこの構成では影響が成立しない（理由を記載）、`REACHABLE_*` 届く（残存リスク）、`UNCONFIRMED` 届くかどうか確認できていない（**未確認**）。
+
+## 届く・未確認のもの（残存リスク）
+
+| 区分 | CVE | パッケージ | 分類 | 理由 |
+|---|---|---|---|---|
+| カーネル | CVE-2004-0230 | linux | REACHABLE_REMOTE | TCP blind RST injection (protocol-level, all TCP stacks); RFC 5961 challenge ACKs in Linux make it impractical; availability of an SSH session at most |
+| カーネル | CVE-2008-4609 | linux | REACHABLE_REMOTE | TCP connection-queue exhaustion (sockstress), generic to TCP; SSH is the only external listener; SYN cookies on by default; availability only |
+| カーネル | CVE-2021-3864 | linux | REACHABLE_LOCAL | needs a setuid program that sets ruid=euid and runs attacker-chosen code; workers and the web server run with no_new_privs (setuid ignored); the backend user can run setuid sudo (only the broker allowed) |
+| カーネル | CVE-2024-2193 | linux | REACHABLE_LOCAL | GhostRace (speculative race, Spectre-v1 class): local code on the same CPU; mitigation depends on the kernel/CPU vendor; Debian has no fix yet |
+| カーネル | CVE-2025-40217 | linux | REACHABLE_LOCAL | pidfs ioctls on a process's own pidfds: hardening of argument validation; no known exploit |
+| カーネル | CVE-2026-46017 | linux | REACHABLE_LOCAL | mm: deferred-split queue race during page migration; reachable by local code that triggers migration of its own pages (single NUMA node; no compaction triggers from workers beyond normal allocation) |
+| カーネル | CVE-2026-52994 | linux | REACHABLE_LOCAL | vsock MSG_ZEROCOPY accounting: AF_VSOCK exists for Lima's guest agent; workers cannot create it (seccomp: AF_INET/AF_INET6 only); service users can. Production hosts without vsock: not present |
+| カーネル | CVE-2026-98284 | linux | REACHABLE_LOCAL | netlink multicast-group realloc race: an unprivileged netlink socket can join groups; sandboxed workers cannot create netlink sockets (seccomp, verified by the probe); service users can |
+| カーネル | CVE-2026-98289 | linux | REACHABLE_LOCAL | af_unix garbage collector: workers cannot create AF_UNIX sockets (seccomp); service users can |
+| カーネル | CVE-2026-98393 | linux | REACHABLE_LOCAL | UDP length overflow with PMTU discovery and a 64 KiB MTU (lo): triggers a kernel WARN only (panic_on_warn=0) |
+| カーネル | CVE-2026-98427 | linux | REACHABLE_REMOTE | CoDel drop loop per dequeue: the CoDel control law is shared by fq_codel, the default qdisc on eth0; traffic can lengthen the loop (CPU, availability only) |
+| カーネル | CVE-2026-99643 | linux | REACHABLE_LOCAL | khugepaged lock inversion with file readahead (deadlock, DoS); anonymous THP is enabled ('always') |
+| カーネル | CVE-2026-99646 | linux | REACHABLE_LOCAL | MAP_GROWSDOWN stack-growth commit-charge leak (accounting DoS) by local code |
+| カーネル | CVE-2026-99652 | linux | REACHABLE_LOCAL | userfaultfd UFFDIO_MOVE vs mremap deadlock: workers cannot call userfaultfd (seccomp), /dev/userfaultfd is root-only; service users may use the syscall (user-mode faults only, vm.unprivileged_userfaultfd=0) |
+| カーネル | CVE-2026-99660 | linux | REACHABLE_LOCAL | userfaultfd unregister race: same reachability as CVE-2026-99652 |
+| カーネル | CVE-2026-99669 | linux | REACHABLE_LOCAL | truncate racing with PMD zap on THP: anonymous THP enabled; local data-integrity race |
+| カーネル | CVE-2026-99709 | linux | REACHABLE_REMOTE | IP fragment reassembly memory is bounded only by ipfrag_high_thresh (4 MiB here) per netns: a remote sender can make the host hold that memory (DoS); fragments are reassembled before the host firewall |
+| OS | CVE-2026-128987 | dbus | REACHABLE_LOCAL | local system-bus DoS by a local account: workers cannot create AF_UNIX sockets (seccomp); the service accounts can |
+| OS | TEMP-1153844-83400A | dbus | REACHABLE_LOCAL | local system-bus DoS by a local account: workers cannot create AF_UNIX sockets (seccomp); the service accounts can |
+| OS | CVE-2026-102010 | gcc-14 | UNCONFIRMED | libstdc++ is linked by the Node.js web server; reachable only if Node calls the affected API with external input - not confirmed (impact: crash/DoS, the unit restarts) |
+| OS | CVE-2026-114690 | gcc-14 | UNCONFIRMED | libstdc++ is linked by the Node.js web server; reachable only if Node calls the affected API with external input - not confirmed (impact: crash/DoS, the unit restarts) |
+| OS | CVE-2026-114691 | gcc-14 | UNCONFIRMED | libstdc++ is linked by the Node.js web server; reachable only if Node calls the affected API with external input - not confirmed (impact: crash/DoS, the unit restarts) |
+| OS | CVE-2026-115455 | gcc-14 | UNCONFIRMED | libstdc++ is linked by the Node.js web server; reachable only if Node calls the affected API with external input - not confirmed (impact: crash/DoS, the unit restarts) |
+| OS | CVE-2026-115456 | gcc-14 | UNCONFIRMED | libstdc++ is linked by the Node.js web server; reachable only if Node calls the affected API with external input - not confirmed (impact: crash/DoS, the unit restarts) |
+| OS | CVE-2026-125709 | gcc-14 | UNCONFIRMED | libstdc++ is linked by the Node.js web server; reachable only if Node calls the affected API with external input - not confirmed (impact: crash/DoS, the unit restarts) |
+| OS | CVE-2026-95619 | gcc-14 | UNCONFIRMED | libstdc++ is linked by the Node.js web server; reachable only if Node calls the affected API with external input - not confirmed (impact: crash/DoS, the unit restarts) |
+| OS | CVE-2016-20012 | openssh | REACHABLE_REMOTE | lets a remote party confirm a guessed username+public key pair (upstream: by design); keys are not secret; information only |
+| OS | CVE-2026-103995 | python3.13 | REACHABLE_REMOTE | http.client chunk-size parsing: a hostile probed site could make a probe misread its own response body (integrity of that site's result only; probe results are untrusted data) |
+| OS | CVE-2026-15308 | python3.13 | REACHABLE_REMOTE | html.parser CPU DoS: the ownership check parses HTML fetched from the site being verified, at most 64 KiB (aegis/ownership.py); one request thread at most |
+
+KEV（悪用が確認された脆弱性）に載る 1 件（OpenSSH CVE-2026-123158）は、musl かつ PAM なしの構成だけが対象で、Debian（glibc・PAM、パスワード認証は無効）は該当しない。
+
+---
+
 <!-- Copied from the offline triage of 2026-11-28. It applies unchanged to 569ca3e: web/ is
      identical to 958b600 (git diff 958b600 569ca3e -- web is empty) and the SBOM gives the
      same OSV result. The deployment image (deploy/debian13) has since set
