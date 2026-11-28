@@ -28,10 +28,10 @@
   次の重要な記録の直前に、その時点の先頭まで照合・記録します。
 - 新しい記録の追記（サービスは記録を追加できる立場です。偽の記録を足すことは防げません）
 - 初めて有効にしたときの状態（その時点のログを正しいものとして記録を始めます）
-- **プラットフォーム全体のファイル**: `platform-audit.jsonl`（組織横断のアカウント操作の記録）と
-  `platform-advisor-spend.json`（全組織合計の有料送信額）は対象外です。後者を巻き戻すと、
+- **全組織合計の有料送信額**: `platform-advisor-spend.json` は対象外です。巻き戻すと、
   プラットフォーム全体の上限に対する使用額を少なく見せられます（組織ごとの上限は守られます）。
-  状態表示・レポートにも「対象外」と書いています。対象にするには別の変更が必要です。
+  状態表示・レポートにも「対象外」と書いています。本番イメージの初期設定では有料送信を無効にしています。
+  なお `platform-audit.jsonl`（組織横断のアカウント操作の記録）は、同じ補助プロセスに別の記録元 ID で照合します。
 - 補助プロセスが同じ OS ユーザーで動いている場合（開発・テスト）。動作はしますが「保護なし（same_user）」と表示します。
 
 ## 重要な記録（照合してから書き、書いた後に記録する）
@@ -47,6 +47,12 @@
 | `approval.approved` | L2 の承認 |
 | `artex.item_approved` | ARTEX 計画項目（L2）の承認 |
 | `diagnosis.*` | 診断ループの状態変更（`_diagnosis_journal` を通るものすべて） |
+| `auth.password_changed` ほか資格情報の変更 | `docs/PASSWORD_CHANGE_DURABILITY.md` |
+| `operator.roles_changed` | アカウントの権限の変更（記録してから適用。権限を減らす変更だけは記録できなくても適用） |
+| `tenancy.org_created` / `tenancy.member_roles_changed` / `tenancy.member_removed` | 組織の作成、メンバーの権限変更・削除 |
+
+適用した後に記録するもの（アカウントの作成 `operator.created`、自己登録 `auth.registered`、MFA の有効化 `auth.mfa_enabled`）は
+照合の対象にしていません。記録が拒否されても変更は取り消されないため、照合しても守れず、エラーになるだけだからです。
 
 所見の判定（verdict）には独自の監査イベントがなく、`result` 記録から作られるため `result` で守ります。
 
@@ -157,3 +163,24 @@ python3 -m aegis.server --data-dir /var/lib/vulnix ...
   記録ディレクトリとファイルを読み書きできないこと、2ファイル揃えた巻き戻しとシンボリックリンクによるすり替えを
   検知することを確認します。
   前提が欠けていればスキップせず失敗します。
+
+## 本番イメージでの配備（deploy/debian13）
+
+- `vulnix-anchor.service`: 専用ユーザー `vulnix-anchor` で常駐。記録は `/var/lib/vulnix-anchor`（0700）、
+  ソケットは `/run/vulnix-anchor/anchor.sock`（ディレクトリ 0750、ソケット 0660、グループ `vulnix-anchor`）。
+  ネットワークなし（`PrivateNetwork=yes`、`AF_UNIX` のみ）、書き込めるのは自分の記録ディレクトリだけです。
+  プログラムは root 所有の別コピー `/opt/vulnix-anchor/audit_anchor.py` です（サービスのユーザーは変更できません）。
+- `vulnix-backend.service`: `SupplementaryGroups=vulnix-anchor`（ソケットへの接続だけ）、
+  `EnvironmentFile=/etc/vulnix/anchor.env`（SOCKET / UID / SOURCE=prod。`provision.sh` が作成、root 所有）、
+  `Requires=vulnix-anchor.service`。
+- バックアップ（`backup.sh`）にアンカーの記録は含めません。別の信頼境界に置くためです。
+- 復元（`restore.sh`）は、展開後に `python3 -m aegis.audit_check` ですべての監査ログ
+  （`audit.jsonl`、`platform-audit.jsonl`、`orgs/*/audit.jsonl`）のチェーンとアンカーを照合します。
+  - チェーンが壊れていれば、サービスを起動せずに終了します（終了コード 1）。
+  - 古いバックアップの復元はアンカーから見ると巻き戻しです。`--accept-rollback` がなければ、
+    サービスは起動しますが、新しい診断・承認・判定・有料送信・資格情報と権限の変更をすべて拒否し、
+    既存アカウントのサインインも止めたまま（`aegis/operators.py` の資格情報の照合）、終了コード 3 で知らせます。
+    運用者が確認するまで再開しません。
+  - `--accept-rollback` を付けると、一致しない記録元だけを補助プロセスのユーザーでリセットします
+    （リセットはアンカー自身のチェーンに記録されます）。照合し直してから起動します。
+- 検証: `tests/test_audit_anchor.py` の `TestRestoreDetectsTheRollback`、本番イメージでの受入試験。

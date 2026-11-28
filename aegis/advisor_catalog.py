@@ -16,7 +16,7 @@ from collections.abc import Iterable
 from types import MappingProxyType
 
 ALL_RULES = ("f_l1_tls", "f_l1_no_tls", "f_headers", "f_l1_cookies", "f_l1_cors", "f_powered",
-             "f_l1_unauth_api", "f_l1_apache_mod_status", "f_banner", "f_idor", "f_sqli")
+             "f_l1_unauth_api", "f_l1_apache_mod_status", "f_banner", "f_idor", "f_sqli", "f_open_redirect")
 
 # What the explanation claims about the finding. The verdict decides which are honest.
 CLAIM_LEVELS = MappingProxyType({
@@ -51,6 +51,7 @@ OPERATIONS = MappingProxyType({
     "l1_recheck_apache_status": ("L1", "Apacheの状態情報が公開されていないか再確認する", {"f_l1_apache_mod_status"}),
     "l2_authz_boundary_check": ("L2", "テスト用アカウント間の認可境界を確認する", {"f_idor", "f_l1_unauth_api"}),
     "l2_input_boundary_check": ("L2", "模擬データ環境で入力の境界を確認する", {"f_sqli"}),
+    "l2_redirect_target_check": ("L2", "隔離ラボで戻り先URLの移動先を確認する", {"f_open_redirect"}),
     "manual_config_review": ("manual", "設定を人が見直す", set(ALL_RULES)),
     "vendor_advisory_review": ("manual", "製品の公開情報（勧告・修正版）を人が確認する", {"f_powered", "f_banner"}),
 })
@@ -81,6 +82,8 @@ REMEDIATION_ACTIONS = MappingProxyType({
     "use_unguessable_ids": ("推測しにくい識別子を使う", {"f_idor"}),
     "parameterize_queries": ("パラメータ化クエリを徹底する", {"f_sqli"}),
     "validate_input_server_side": ("入力の型と長さをサーバー側で検証する", {"f_sqli"}),
+    "restrict_redirect_targets": ("戻り先を同一サイトの相対パスか許可したオリジンに限る", {"f_open_redirect"}),
+    "validate_redirect_on_both_ends": ("開始時とリダイレクト直前の両方で戻り先を検証する", {"f_open_redirect"}),
     "keep_regression_check": ("再発を防ぐ確認を定期的に続ける", set(ALL_RULES)),
 })
 
@@ -108,7 +111,7 @@ def action_allowed(action: str, rule: str) -> bool:
 
 # Rules whose issue only an L2 reproduction can show: an L1 observation of them is a hint,
 # so "observed" would overstate it.
-L2_ONLY_RULES = frozenset({"f_idor", "f_sqli"})
+L2_ONLY_RULES = frozenset({"f_idor", "f_sqli", "f_open_redirect"})
 
 
 def claim_problem(claim: str, rule: str, verdict: str, basis: str) -> str | None:

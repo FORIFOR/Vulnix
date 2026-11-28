@@ -1,0 +1,47 @@
+[Unit]
+Description=Vulnix local audit anchor (remembers audit chain heads; separate user)
+Before=vulnix-backend.service
+
+[Service]
+User=vulnix-anchor
+Group=vulnix-anchor
+UMask=0077
+# its own copy, standard library only, root-owned (the service cannot change it)
+ExecStart=/usr/bin/python3 -I -B /opt/vulnix-anchor/audit_anchor.py serve \
+    --dir /var/lib/vulnix-anchor --socket /run/vulnix-anchor/anchor.sock \
+    --socket-mode 660 --socket-group vulnix-anchor --allow-source prod
+StateDirectory=vulnix-anchor
+StateDirectoryMode=0700
+RuntimeDirectory=vulnix-anchor
+RuntimeDirectoryMode=0750
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+IPAddressDeny=any
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+# no capabilities at all (bounding set empty); chown of its own socket to its group stays allowed
+SystemCallFilter=~@setuid @mount @resources
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

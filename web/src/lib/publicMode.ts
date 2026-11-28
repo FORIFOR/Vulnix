@@ -29,3 +29,9 @@ export function publicDecision(rawPath: string): PublicDecision {
 export function isPublicPage(path: string): boolean {
   return path === "/" || path === "/welcome" || path === "/login" || path === "/invite";
 }
+
+/** Pages a signed-out visitor may use inside the app: the local folder scan runs entirely in
+ * the browser, so it needs no account. Anything that reaches the control plane stays behind login. */
+export function isGuestPage(path: string): boolean {
+  return path === "/quick-defense" || path === "/api-check";
+}

@@ -1,0 +1,47 @@
+[Unit]
+Description=Vulnix web (Next.js standalone, loopback only)
+After=vulnix-backend.service
+Wants=vulnix-backend.service
+
+[Service]
+User=vulnix-web
+Group=vulnix-web
+UMask=0077
+WorkingDirectory=/opt/vulnix/web
+Environment=NODE_ENV=production
+Environment=HOSTNAME=127.0.0.1
+Environment=PORT=3200
+Environment=AEGIS_API=http://127.0.0.1:8788
+# add the public host name here when a TLS proxy is put in front
+Environment=AEGIS_UI_ALLOWED_HOSTS=127.0.0.1:3200
+Environment=VULNIX_APP_LANDING=1
+ExecStart=/opt/vulnix/node/bin/node /opt/vulnix/web/server.js
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=8192
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+IPAddressDeny=any
+IPAddressAllow=localhost
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+
+[Install]
+WantedBy=multi-user.target

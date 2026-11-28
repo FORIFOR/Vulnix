@@ -6,6 +6,7 @@ import { postJSON } from "@/lib/api";
 import { VERDICT } from "@/lib/labels";
 import { findingReason } from "@/lib/findingReason";
 import type { Finding, Snapshot } from "@/lib/types";
+import CveChainView from "./CveChainView";
 import { canApprove, useSession } from "@/lib/useSession";
 import { HelpPopover } from "../learning/HelpPopover";
 import { CookieCheckList } from "./CookieCheckList";
@@ -91,7 +92,8 @@ export function FindingCard({
             {f.verdict_note}
           </p>
         )}
-        {f.cve.length > 0 && <p className="mt-1 font-mono text-xs text-zinc-500">{f.cve.join(" / ")}</p>}
+        {f.cve_evidence?.length ? <CveChainView chain={f.cve_evidence} />
+          : f.cve.length > 0 && <p className="mt-1 font-mono text-xs text-zinc-500">{f.cve.join(" / ")}</p>}
         {err && <p className="mt-1 text-xs text-red-600 dark:text-red-400">{err}</p>}
 
         {(busy || latestEv) && (

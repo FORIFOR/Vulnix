@@ -1,15 +1,33 @@
 type Category = "ARTEX" | "CVE" | "Claude Code";
 type Status = "confirmed" | "action" | "unknown" | "na";
-export type ResultLocation = { path: string; line?: number; dependency?: string; ecosystem?: string; version?: string; fixed?: string[] };
+export type ResultLocation = { path: string; line?: number; dependency?: string; ecosystem?: string; version?: string; fixed?: string[];
+  /** whether scanned source imports the package by name (absent: not determined) */
+  reachable?: "imported" | "not_imported_directly" };
 export type Severity = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
 export function advisorySeverity(value: unknown): Severity | undefined {
   if (value === "MODERATE") return "MEDIUM";
   if (value === "LOW" || value === "MEDIUM" || value === "HIGH" || value === "CRITICAL") return value;
 }
-type Result = { severity?: Severity; location?: ResultLocation; locations?: ResultLocation[]; category: Category; title: string; status: Status; evidence: string; risk: string; fix: string; retest: string };
+export type FixCandidate = {
+  file: string; line: number; kind: string; reason: string; diff: string; patched: string; changedLines: number;
+  /** The fix method passes the attack and normal-request checks on the sample apps (real Flask, CI). */
+  sampleVerified: boolean;
+  /** This project: the patched file was analysed again; "cleared" = the same flow is no longer found.
+   *  Static only: nothing was run against the user's project. */
+  projectRecheck: "cleared" | "still_found";
+};
+type Result = { severity?: Severity; location?: ResultLocation; locations?: ResultLocation[]; category: Category; title: string; status: Status; evidence: string; risk: string; fix: string; retest: string; patch?: FixCandidate;
+  /** every place it was found is test code (tests/, fixtures/, *.test.ts ...): still checked and shown, kept apart */
+  testCode?: boolean };
 type RecordValue = Record<string, unknown>;
 
 export const categories = ["ARTEX", "CVE", "Claude Code"] as const;
+/** What a user sees for each category (the keys stay internal). */
+export const categoryLabels: Record<Category, string> = {
+  ARTEX: "攻撃経路になりうる設定",
+  CVE: "既知の脆弱性（CVE）",
+  "Claude Code": "AIコーディング支援ツールの権限",
+};
 export const labels: Record<Status, string> = {
   confirmed: "防御確認済み", action: "対策が必要", unknown: "未確認", na: "対象外",
 };

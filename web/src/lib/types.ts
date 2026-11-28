@@ -53,6 +53,27 @@ export interface Finding {
   executor: { agent: string; model: string; tool: string };
   demo_fixture: boolean;
   _in_verification?: boolean;
+  cve_evidence?: CveChain[];
+}
+
+/** One CVE's impact chain, as `aegis/cve_evidence.py` records it: each link only as far as its evidence. */
+export interface CveChain {
+  cve: string;
+  product: string;
+  version: string;
+  version_source: string;
+  affected_ranges: Record<string, string>[];
+  fixed_in: string[];
+  kev: boolean;
+  configuration: { required: string; observed: boolean | null };
+  reachability: { path: string | null; observed: boolean | null };
+  lab_check: string | null;
+  reproduction: "proven" | "not_reproduced" | null;
+  status: "not_affected" | "version_match" | "conditions_unmet" | "conditions_met" | "reproduced" | "not_reproduced";
+  status_label: string;
+  confirmed_impact: boolean;
+  lab_history?: ("proven" | "not_reproduced")[];
+  fixed_after_reproduction?: boolean;
 }
 
 export interface Approval {

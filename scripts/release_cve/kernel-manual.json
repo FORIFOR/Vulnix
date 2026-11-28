@@ -1,0 +1,646 @@
+{
+ "CVE-2004-0230": {
+  "class": "REACHABLE_REMOTE",
+  "reason": "TCP blind RST injection (protocol-level, all TCP stacks); RFC 5961 challenge ACKs in Linux make it impractical; availability of an SSH session at most"
+ },
+ "CVE-2005-3660": {
+  "class": "MITIGATED",
+  "reason": "local memory DoS via many connected sockets: workers cannot create AF_UNIX/socketpair (seccomp) and run under cgroup memory.max/pids.max"
+ },
+ "CVE-2007-3719": {
+  "class": "MITIGATED",
+  "reason": "local CPU monopolisation: workers have RLIMIT_CPU and a deadline kill (cgroup.kill)"
+ },
+ "CVE-2008-2544": {
+  "class": "NR_PRIVILEGED",
+  "reason": "mounting /proc needs root/CAP_SYS_ADMIN (no unprivileged user namespaces; workers have no capabilities)"
+ },
+ "CVE-2008-4609": {
+  "class": "REACHABLE_REMOTE",
+  "reason": "TCP connection-queue exhaustion (sockstress), generic to TCP; SSH is the only external listener; SYN cookies on by default; availability only"
+ },
+ "CVE-2010-4563": {
+  "class": "MITIGATED",
+  "reason": "only reveals whether an interface is in promiscuous mode; none is"
+ },
+ "CVE-2010-5321": {
+  "class": "NR_NO_DEVICE",
+  "reason": "videobuf: no /dev/video device (CONFIG_MEDIA_SUPPORT not set)"
+ },
+ "CVE-2011-4915": {
+  "class": "MITIGATED",
+  "reason": "keystroke timing via /proc/interrupts: no interactive console users; workers see a private /proc (subset=pid, hidepid)"
+ },
+ "CVE-2011-4916": {
+  "class": "MITIGATED",
+  "reason": "keystroke timing via /dev/pts: workers have no terminal; no interactive users on the server"
+ },
+ "CVE-2011-4917": {
+  "class": "MITIGATED",
+  "reason": "timing info via /proc/stat: workers see a private /proc (subset=pid) without /proc/stat"
+ },
+ "CVE-2012-4542": {
+  "class": "NR_PRIVILEGED",
+  "reason": "SG_IO needs access to a SCSI device node (root-only); the disk is virtio_blk"
+ },
+ "CVE-2013-7445": {
+  "class": "NA_NOT_BUILT",
+  "reason": "DRM GEM: CONFIG_DRM not set"
+ },
+ "CVE-2014-9892": {
+  "class": "NA_NOT_BUILT",
+  "reason": "sound: CONFIG_SND not set"
+ },
+ "CVE-2014-9900": {
+  "class": "MITIGATED",
+  "reason": "ethtool WoL info leak (Android); workers' network namespace has only lo, which has no WoL operation"
+ },
+ "CVE-2015-2877": {
+  "class": "MITIGATED",
+  "reason": "KSM cross-VM side channel concerns a hypervisor host; KSM is off here (/sys/kernel/mm/ksm/run=0)"
+ },
+ "CVE-2016-10723": {
+  "class": "MITIGATED",
+  "reason": "OOM-lock CPU starvation: workers run under cgroup memory.max (OOM stays inside the run's cgroup) and RLIMIT_CPU"
+ },
+ "CVE-2016-8660": {
+  "class": "NR_FS_UNUSED",
+  "reason": "XFS: not mounted, module not loaded"
+ },
+ "CVE-2017-0630": {
+  "class": "NR_PRIVILEGED",
+  "reason": "tracefs is root-only"
+ },
+ "CVE-2017-13693": {
+  "class": "NR_PRIVILEGED",
+  "reason": "ACPI tables come from firmware; loading custom tables needs root"
+ },
+ "CVE-2017-13694": {
+  "class": "NR_PRIVILEGED",
+  "reason": "ACPI tables come from firmware; loading custom tables needs root"
+ },
+ "CVE-2018-1121": {
+  "class": "MITIGATED",
+  "reason": "procps process hiding affects interactive monitoring only; Vulnix tracks workers by cgroup, not by ps"
+ },
+ "CVE-2018-12928": {
+  "class": "NA_NOT_BUILT",
+  "reason": "HFS: CONFIG_HFS_FS not set"
+ },
+ "CVE-2018-17977": {
+  "class": "NR_PRIVILEGED",
+  "reason": "XFRM netlink needs CAP_NET_ADMIN"
+ },
+ "CVE-2019-11191": {
+  "class": "NA_ARCH",
+  "reason": "ia32 a.out loader (x86)"
+ },
+ "CVE-2019-12378": {
+  "class": "NR_PRIVILEGED",
+  "reason": "IPV6_ROUTER_ALERT needs a raw socket (CAP_NET_RAW); disputed"
+ },
+ "CVE-2019-12379": {
+  "class": "NR_PRIVILEGED",
+  "reason": "VT console ioctl: no console access for services or workers; disputed"
+ },
+ "CVE-2019-12380": {
+  "class": "NA_ARCH",
+  "reason": "x86 EFI"
+ },
+ "CVE-2019-12381": {
+  "class": "NR_PRIVILEGED",
+  "reason": "IP_ROUTER_ALERT needs a raw socket (CAP_NET_RAW); disputed"
+ },
+ "CVE-2019-12382": {
+  "class": "NA_NOT_BUILT",
+  "reason": "DRM: CONFIG_DRM not set"
+ },
+ "CVE-2019-12455": {
+  "class": "NR_NO_DEVICE",
+  "reason": "sunxi (Allwinner) clock driver: no such hardware"
+ },
+ "CVE-2019-12456": {
+  "class": "NR_NO_DEVICE",
+  "reason": "mpt3sas: no such controller"
+ },
+ "CVE-2019-15213": {
+  "class": "NA_NOT_BUILT",
+  "reason": "USB/DVB: CONFIG_USB and CONFIG_MEDIA_SUPPORT not set"
+ },
+ "CVE-2019-16089": {
+  "class": "NR_PRIVILEGED",
+  "reason": "nbd netlink administration needs CAP_SYS_ADMIN; nbd not loaded"
+ },
+ "CVE-2019-16229": {
+  "class": "NA_NOT_BUILT",
+  "reason": "amdkfd: CONFIG_DRM not set"
+ },
+ "CVE-2019-16230": {
+  "class": "NA_NOT_BUILT",
+  "reason": "radeon: CONFIG_DRM not set"
+ },
+ "CVE-2019-16231": {
+  "class": "NR_NO_DEVICE",
+  "reason": "fjes (Fujitsu x86 ACPI): no such device"
+ },
+ "CVE-2019-16232": {
+  "class": "NA_NOT_BUILT",
+  "reason": "libertas wifi: CONFIG_CFG80211 not set"
+ },
+ "CVE-2019-16233": {
+  "class": "NR_NO_DEVICE",
+  "reason": "qla2xxx: no such controller"
+ },
+ "CVE-2019-16234": {
+  "class": "NA_NOT_BUILT",
+  "reason": "iwlwifi: CONFIG_CFG80211 not set"
+ },
+ "CVE-2019-19070": {
+  "class": "NR_NO_DEVICE",
+  "reason": "spi-gpio: no such device"
+ },
+ "CVE-2019-19378": {
+  "class": "NR_FS_UNUSED",
+  "reason": "btrfs: not mounted; mounting needs root/CAP_SYS_ADMIN (no unprivileged user namespaces; workers have no capabilities)"
+ },
+ "CVE-2019-19449": {
+  "class": "NR_FS_UNUSED",
+  "reason": "f2fs: not mounted; mounting needs root/CAP_SYS_ADMIN (no unprivileged user namespaces; workers have no capabilities)"
+ },
+ "CVE-2019-19814": {
+  "class": "NR_FS_UNUSED",
+  "reason": "f2fs: not mounted; mounting needs root/CAP_SYS_ADMIN (no unprivileged user namespaces; workers have no capabilities)"
+ },
+ "CVE-2019-20794": {
+  "class": "NR_PRIVILEGED",
+  "reason": "needs unprivileged user namespaces (kernel.unprivileged_userns_clone=0)"
+ },
+ "CVE-2020-0347": {
+  "class": "NR_PRIVILEGED",
+  "reason": "iptables (Android) needs CAP_NET_ADMIN"
+ },
+ "CVE-2020-11725": {
+  "class": "NA_NOT_BUILT",
+  "reason": "sound: CONFIG_SND not set"
+ },
+ "CVE-2020-14304": {
+  "class": "NR_PRIVILEGED",
+  "reason": "ethtool EEPROM read needs CAP_NET_ADMIN; workers' namespace has only lo"
+ },
+ "CVE-2020-35501": {
+  "class": "MITIGATED",
+  "reason": "kernel audit rules: Vulnix's audit trail is its own hash-chained log (aegis/audit.py), not kernel audit"
+ },
+ "CVE-2020-36694": {
+  "class": "NR_PRIVILEGED",
+  "reason": "iptables rule replacement needs CAP_NET_ADMIN"
+ },
+ "CVE-2021-26934": {
+  "class": "NA_NOT_BUILT",
+  "reason": "Xen front-end DRM: not built"
+ },
+ "CVE-2021-3714": {
+  "class": "NR_DISABLED",
+  "reason": "KSM off (/sys/kernel/mm/ksm/run=0)"
+ },
+ "CVE-2021-3847": {
+  "class": "NR_PRIVILEGED",
+  "reason": "overlayfs mount needs root/CAP_SYS_ADMIN (no unprivileged user namespaces; workers have no capabilities)"
+ },
+ "CVE-2021-3864": {
+  "class": "REACHABLE_LOCAL",
+  "reason": "needs a setuid program that sets ruid=euid and runs attacker-chosen code; workers and the web server run with no_new_privs (setuid ignored); the backend user can run setuid sudo (only the broker allowed)"
+ },
+ "CVE-2022-0400": {
+  "class": "NR_PROTO_BLOCKED",
+  "reason": "SMC: module autoload refused (install smc /bin/false); not loaded"
+ },
+ "CVE-2022-1247": {
+  "class": "NA_NOT_BUILT",
+  "reason": "ROSE: CONFIG_ROSE not set"
+ },
+ "CVE-2022-25265": {
+  "class": "MITIGATED",
+  "reason": "only binaries built ~2003 with GCC 3.2; none on the image"
+ },
+ "CVE-2022-2961": {
+  "class": "NA_NOT_BUILT",
+  "reason": "ROSE: CONFIG_ROSE not set"
+ },
+ "CVE-2022-3238": {
+  "class": "NR_FS_UNUSED",
+  "reason": "NTFS3: not mounted; mounting needs root/CAP_SYS_ADMIN (no unprivileged user namespaces; workers have no capabilities)"
+ },
+ "CVE-2022-41848": {
+  "class": "NA_NOT_BUILT",
+  "reason": "PCMCIA: not built"
+ },
+ "CVE-2022-44032": {
+  "class": "NA_NOT_BUILT",
+  "reason": "PCMCIA: not built"
+ },
+ "CVE-2022-44033": {
+  "class": "NA_NOT_BUILT",
+  "reason": "PCMCIA: not built"
+ },
+ "CVE-2022-4543": {
+  "class": "NA_ARCH",
+  "reason": "Intel KPTI side channel (x86)"
+ },
+ "CVE-2022-45884": {
+  "class": "NA_NOT_BUILT",
+  "reason": "DVB: CONFIG_MEDIA_SUPPORT not set"
+ },
+ "CVE-2022-45885": {
+  "class": "NA_NOT_BUILT",
+  "reason": "DVB: CONFIG_MEDIA_SUPPORT not set"
+ },
+ "CVE-2023-23039": {
+  "class": "NA_ARCH",
+  "reason": "sparc vcc"
+ },
+ "CVE-2023-26242": {
+  "class": "NA_NOT_BUILT",
+  "reason": "FPGA DFL: not built"
+ },
+ "CVE-2023-31081": {
+  "class": "NA_NOT_BUILT",
+  "reason": "vidtv: CONFIG_MEDIA_SUPPORT not set"
+ },
+ "CVE-2023-31082": {
+  "class": "NA_NOT_BUILT",
+  "reason": "n_gsm: CONFIG_N_GSM not set"
+ },
+ "CVE-2023-31085": {
+  "class": "NA_NOT_BUILT",
+  "reason": "MTD/UBI: CONFIG_MTD not set"
+ },
+ "CVE-2023-3397": {
+  "class": "NA_NOT_BUILT",
+  "reason": "JFS: CONFIG_JFS_FS not set"
+ },
+ "CVE-2023-3640": {
+  "class": "NA_ARCH",
+  "reason": "x86 cpu_entry_area"
+ },
+ "CVE-2023-37454": {
+  "class": "NR_FS_UNUSED",
+  "reason": "UDF: not mounted; mounting needs root/CAP_SYS_ADMIN (no unprivileged user namespaces; workers have no capabilities)"
+ },
+ "CVE-2023-6238": {
+  "class": "NR_PRIVILEGED",
+  "reason": "NVMe passthrough needs root; disk is virtio_blk"
+ },
+ "CVE-2023-6240": {
+  "class": "MITIGATED",
+  "reason": "kernel RSA (keyctl asymmetric keys): keyctl denied by the worker seccomp profile; TLS of the services uses userspace OpenSSL"
+ },
+ "CVE-2024-0564": {
+  "class": "NR_DISABLED",
+  "reason": "KSM off (/sys/kernel/mm/ksm/run=0)"
+ },
+ "CVE-2024-21803": {
+  "class": "NA_NOT_BUILT",
+  "reason": "Bluetooth: CONFIG_BT not set"
+ },
+ "CVE-2024-2193": {
+  "class": "REACHABLE_LOCAL",
+  "reason": "GhostRace (speculative race, Spectre-v1 class): local code on the same CPU; mitigation depends on the kernel/CPU vendor; Debian has no fix yet"
+ },
+ "CVE-2024-21963": {
+  "class": "NA_ARCH",
+  "reason": "AMD IOMMU, hypervisor side"
+ },
+ "CVE-2024-24864": {
+  "class": "NA_NOT_BUILT",
+  "reason": "DVB: CONFIG_MEDIA_SUPPORT not set"
+ },
+ "CVE-2024-25740": {
+  "class": "NA_NOT_BUILT",
+  "reason": "UBI: CONFIG_MTD not set"
+ },
+ "CVE-2025-40146": {
+  "class": "NR_PRIVILEGED",
+  "reason": "writing queue/nr_requests in sysfs is root-only"
+ },
+ "CVE-2025-40217": {
+  "class": "REACHABLE_LOCAL",
+  "reason": "pidfs ioctls on a process's own pidfds: hardening of argument validation; no known exploit"
+ },
+ "CVE-2025-71117": {
+  "class": "NR_PRIVILEGED",
+  "reason": "block-queue sysfs stores are root-only"
+ },
+ "CVE-2026-0004": {
+  "class": "NA_ARCH",
+  "reason": "AMD processors (x86)"
+ },
+ "CVE-2026-23348": {
+  "class": "NR_NO_DEVICE",
+  "reason": "CXL: no CXL device"
+ },
+ "CVE-2026-43029": {
+  "class": "NR_DISABLED",
+  "reason": "MPTCP off (net.mptcp.enabled=0: socket(IPPROTO_MPTCP) refused, verified)"
+ },
+ "CVE-2026-43115": {
+  "class": "NA_NOT_BUILT",
+  "reason": "tiny SRCU is for uniprocessor builds; CONFIG_TINY_SRCU not set"
+ },
+ "CVE-2026-46017": {
+  "class": "REACHABLE_LOCAL",
+  "reason": "mm: deferred-split queue race during page migration; reachable by local code that triggers migration of its own pages (single NUMA node; no compaction triggers from workers beyond normal allocation)"
+ },
+ "CVE-2026-46096": {
+  "class": "NR_NO_DEVICE",
+  "reason": "TPM: no TPM device (/dev/tpm* absent)"
+ },
+ "CVE-2026-46279": {
+  "class": "NA_NOT_BUILT",
+  "reason": "memory allocation profiling: CONFIG_MEM_ALLOC_PROFILING not set"
+ },
+ "CVE-2026-52994": {
+  "class": "REACHABLE_LOCAL",
+  "reason": "vsock MSG_ZEROCOPY accounting: AF_VSOCK exists for Lima's guest agent; workers cannot create it (seccomp: AF_INET/AF_INET6 only); service users can. Production hosts without vsock: not present"
+ },
+ "CVE-2026-53246": {
+  "class": "NR_PROTO_BLOCKED",
+  "reason": "SCTP: module autoload refused (install sctp /bin/false); no SCTP listener"
+ },
+ "CVE-2026-63805": {
+  "class": "NA_ARCH",
+  "reason": "crypto nx (powerpc)"
+ },
+ "CVE-2026-64520": {
+  "class": "NA_NOT_BUILT",
+  "reason": "Arm FF-A transport: CONFIG_ARM_FFA_TRANSPORT not set"
+ },
+ "CVE-2026-68086": {
+  "class": "NA_NOT_BUILT",
+  "reason": "read-only file THP: CONFIG_READ_ONLY_THP_FOR_FS not set"
+ },
+ "CVE-2026-74342": {
+  "class": "NR_PRIVILEGED",
+  "reason": "kernfs xattr writes need ownership of a cgroup/sysfs node or CAP_SYS_ADMIN; run cgroups are root-owned"
+ },
+ "CVE-2026-80579": {
+  "class": "NR_NO_DEVICE",
+  "reason": "fbdev: no framebuffer device (/dev/fb* absent)"
+ },
+ "CVE-2026-80580": {
+  "class": "NR_NO_DEVICE",
+  "reason": "fbdev: no framebuffer device (/dev/fb* absent)"
+ },
+ "CVE-2026-80785": {
+  "class": "NR_NO_DEVICE",
+  "reason": "fbdev: no framebuffer device (/dev/fb* absent)"
+ },
+ "CVE-2026-90098": {
+  "class": "NR_NO_DEVICE",
+  "reason": "sparx5 switch: no such hardware"
+ },
+ "CVE-2026-92500": {
+  "class": "MITIGATED",
+  "reason": "ext4 inline data: the root filesystem does not have the inline_data feature (tune2fs -l)"
+ },
+ "CVE-2026-93276": {
+  "class": "NR_NO_DEVICE",
+  "reason": "Renesas USB PHY: no such hardware"
+ },
+ "CVE-2026-98087": {
+  "class": "NR_PRIVILEGED",
+  "reason": "RT scheduling needs CAP_SYS_NICE or RLIMIT_RTPRIO (0 by default)"
+ },
+ "CVE-2026-98277": {
+  "class": "NR_NO_DEVICE",
+  "reason": "fbnic NIC: no such hardware"
+ },
+ "CVE-2026-98285": {
+  "class": "NR_PRIVILEGED",
+  "reason": "bridge VLAN configuration needs CAP_NET_ADMIN"
+ },
+ "CVE-2026-98288": {
+  "class": "NR_NO_DEVICE",
+  "reason": "stmmac NIC: no such hardware"
+ },
+ "CVE-2026-98289": {
+  "class": "REACHABLE_LOCAL",
+  "reason": "af_unix garbage collector: workers cannot create AF_UNIX sockets (seccomp); service users can"
+ },
+ "CVE-2026-98304": {
+  "class": "NR_NO_DEVICE",
+  "reason": "bcmgenet NIC: no such hardware"
+ },
+ "CVE-2026-98393": {
+  "class": "REACHABLE_LOCAL",
+  "reason": "UDP length overflow with PMTU discovery and a 64 KiB MTU (lo): triggers a kernel WARN only (panic_on_warn=0)"
+ },
+ "CVE-2026-98558": {
+  "class": "NR_PRIVILEGED",
+  "reason": "CPU hot-unplug is root-only"
+ },
+ "CVE-2026-98570": {
+  "class": "NR_PRIVILEGED",
+  "reason": "seg6/ioam6/rpl lightweight tunnels are configured by root"
+ },
+ "CVE-2026-98598": {
+  "class": "MITIGATED",
+  "reason": "needs a route deleted (root) while a PMTU exception is inserted"
+ },
+ "CVE-2026-98616": {
+  "class": "NR_NO_DEVICE",
+  "reason": "fbnic NIC: no such hardware"
+ },
+ "CVE-2026-98747": {
+  "class": "NR_PRIVILEGED",
+  "reason": "serial port registration/unregistration is driver/root controlled"
+ },
+ "CVE-2026-98795": {
+  "class": "NR_NO_DEVICE",
+  "reason": "sparx5 switch: no such hardware"
+ },
+ "CVE-2026-98803": {
+  "class": "NR_NO_DEVICE",
+  "reason": "stmmac NIC: no such hardware"
+ },
+ "CVE-2026-98814": {
+  "class": "NR_NO_DEVICE",
+  "reason": "NVMe multipath: no NVMe device (virtio_blk)"
+ },
+ "CVE-2026-98815": {
+  "class": "NR_NO_DEVICE",
+  "reason": "NVMe: no NVMe device (virtio_blk)"
+ },
+ "CVE-2026-98820": {
+  "class": "NR_PRIVILEGED",
+  "reason": "passthrough commands need root/CAP_SYS_RAWIO"
+ },
+ "CVE-2026-98839": {
+  "class": "NR_PRIVILEGED",
+  "reason": "selection paste (TIOCLINUX) needs a virtual console; services and workers have none"
+ },
+ "CVE-2026-98883": {
+  "class": "NR_NO_DEVICE",
+  "reason": "MIPS Alchemy serial"
+ },
+ "CVE-2026-98924": {
+  "class": "NR_PRIVILEGED",
+  "reason": "unmounting after a device removal: root/physical"
+ },
+ "CVE-2026-98954": {
+  "class": "MITIGATED",
+  "reason": "virtio_net headers come from the hypervisor or a CAP_NET_RAW packet socket, never from a remote sender"
+ },
+ "CVE-2026-98972": {
+  "class": "NR_PRIVILEGED",
+  "reason": "cpuset writes through cgroupfs are root-only here"
+ },
+ "CVE-2026-98983": {
+  "class": "NR_PRIVILEGED",
+  "reason": "creating namespaces needs root/CAP_SYS_ADMIN (no unprivileged user namespaces; workers have no capabilities)"
+ },
+ "CVE-2026-99189": {
+  "class": "NR_NO_DEVICE",
+  "reason": "i.MX GPIO: no such hardware"
+ },
+ "CVE-2026-99215": {
+  "class": "NR_NO_DEVICE",
+  "reason": "power-supply class: no such device"
+ },
+ "CVE-2026-99369": {
+  "class": "NR_FS_UNUSED",
+  "reason": "NFS server not running, module not loaded"
+ },
+ "CVE-2026-99447": {
+  "class": "NR_NO_DEVICE",
+  "reason": "Microchip PCI SPI: no such hardware"
+ },
+ "CVE-2026-99571": {
+  "class": "NR_PRIVILEGED",
+  "reason": "nvme-tcp is configured by root; not loaded"
+ },
+ "CVE-2026-99586": {
+  "class": "NR_NO_DEVICE",
+  "reason": "Arm SMMU MMU-700 erratum with SVA: no such IOMMU in this VM"
+ },
+ "CVE-2026-99637": {
+  "class": "NR_PRIVILEGED",
+  "reason": "overlay mount and fanotify permission events need CAP_SYS_ADMIN"
+ },
+ "CVE-2026-99643": {
+  "class": "REACHABLE_LOCAL",
+  "reason": "khugepaged lock inversion with file readahead (deadlock, DoS); anonymous THP is enabled ('always')"
+ },
+ "CVE-2026-99644": {
+  "class": "NR_PRIVILEGED",
+  "reason": "memory hot-unplug is root-only"
+ },
+ "CVE-2026-99646": {
+  "class": "REACHABLE_LOCAL",
+  "reason": "MAP_GROWSDOWN stack-growth commit-charge leak (accounting DoS) by local code"
+ },
+ "CVE-2026-99650": {
+  "class": "NR_DISABLED",
+  "reason": "KSM off (run=0) and no swap"
+ },
+ "CVE-2026-99652": {
+  "class": "REACHABLE_LOCAL",
+  "reason": "userfaultfd UFFDIO_MOVE vs mremap deadlock: workers cannot call userfaultfd (seccomp), /dev/userfaultfd is root-only; service users may use the syscall (user-mode faults only, vm.unprivileged_userfaultfd=0)"
+ },
+ "CVE-2026-99660": {
+  "class": "REACHABLE_LOCAL",
+  "reason": "userfaultfd unregister race: same reachability as CVE-2026-99652"
+ },
+ "CVE-2026-99664": {
+  "class": "NR_DISABLED",
+  "reason": "PUD-size (1 GiB) huge pages: none reserved (HugePages_Total=0), no DAX"
+ },
+ "CVE-2026-99665": {
+  "class": "NR_DISABLED",
+  "reason": "shmem THP is off (shmem_enabled=never)"
+ },
+ "CVE-2026-99669": {
+  "class": "REACHABLE_LOCAL",
+  "reason": "truncate racing with PMD zap on THP: anonymous THP enabled; local data-integrity race"
+ },
+ "CVE-2026-99674": {
+  "class": "NA_NOT_BUILT",
+  "reason": "CAN: CONFIG_CAN not set"
+ },
+ "CVE-2026-99675": {
+  "class": "NR_PRIVILEGED",
+  "reason": "NVMe target (nvmet) is configured by root; not loaded"
+ },
+ "CVE-2026-99682": {
+  "class": "NR_PRIVILEGED",
+  "reason": "virtio_blk freeze happens on suspend (root)"
+ },
+ "CVE-2026-99687": {
+  "class": "NR_NO_DEVICE",
+  "reason": "vhost-scsi is a hypervisor-side driver; not loaded, /dev/vhost-scsi absent"
+ },
+ "CVE-2026-99698": {
+  "class": "MITIGATED",
+  "reason": "CMA areas at a fixed address in confidential-computing guests (memory acceptance); boot time only"
+ },
+ "CVE-2026-99701": {
+  "class": "NR_DISABLED",
+  "reason": "KSM off (run=0)"
+ },
+ "CVE-2026-99703": {
+  "class": "NR_DISABLED",
+  "reason": "hugetlb pages: none reserved (HugePages_Total=0)"
+ },
+ "CVE-2026-99706": {
+  "class": "MITIGATED",
+  "reason": "needs NUMA balancing on a multi-node system or swap-in of large folios: single NUMA node and no swap"
+ },
+ "CVE-2026-99709": {
+  "class": "REACHABLE_REMOTE",
+  "reason": "IP fragment reassembly memory is bounded only by ipfrag_high_thresh (4 MiB here) per netns: a remote sender can make the host hold that memory (DoS); fragments are reassembled before the host firewall"
+ },
+ "CVE-2026-99729": {
+  "class": "NR_NO_DEVICE",
+  "reason": "device-exclusive entries come from device drivers (HMM); none present"
+ },
+ "CVE-2026-99732": {
+  "class": "NR_PRIVILEGED",
+  "reason": "memory_failure() is triggered by hardware memory errors or root (madvise MADV_HWPOISON needs CAP_SYS_ADMIN)"
+ },
+ "CVE-2026-99734": {
+  "class": "NA_NOT_BUILT",
+  "reason": "Coda: CONFIG_CODA_FS not set"
+ },
+ "CVE-2026-99736": {
+  "class": "NR_DISABLED",
+  "reason": "swap-in errors need swap: none configured"
+ },
+ "CVE-2026-99809": {
+  "class": "NR_NO_DEVICE",
+  "reason": "vfio-platform: no VFIO device assigned (/dev/vfio has no groups)"
+ },
+ "CVE-2026-99810": {
+  "class": "NR_NO_DEVICE",
+  "reason": "vfio fsl-mc: no such bus"
+ },
+ "CVE-2026-99811": {
+  "class": "NR_NO_DEVICE",
+  "reason": "vfio cdx: no such bus"
+ },
+ "TEMP-0000000-F7A20F": {
+  "class": "MITIGATED",
+  "reason": "Debian placeholder entry without a CVE or description (urgency unimportant); nothing to assess beyond Debian's own rating"
+ },
+ "CVE-2026-98284": {
+  "class": "REACHABLE_LOCAL",
+  "reason": "netlink multicast-group realloc race: an unprivileged netlink socket can join groups; sandboxed workers cannot create netlink sockets (seccomp, verified by the probe); service users can"
+ },
+ "CVE-2026-98427": {
+  "class": "REACHABLE_REMOTE",
+  "reason": "CoDel drop loop per dequeue: the CoDel control law is shared by fq_codel, the default qdisc on eth0; traffic can lengthen the loop (CPU, availability only)"
+ },
+ "CVE-2026-98802": {
+  "class": "MITIGATED",
+  "reason": "SRv6 header processing on received packets only when seg6_enabled=1; it is 0 on all interfaces (sysctl)"
+ }
+}

@@ -10,10 +10,16 @@ budget. The fixed judge (aegis.diagnosis_judge) decides every hypothesis for eve
 method. When a method ends with a supported hypothesis, the lab is switched to its
 fixed behaviour (denied_403) and the same method re-checks it (confirm_fix).
 
-The model is a LOCAL scripted stand-in (tests/diagnosis_planner.py) that reads only the
-facts Vulnix sent. Without VULNIX_ARTEX_REAL_BIN the ARTEX process is the Python
-stand-in as well. Nothing here measures the quality of a real model, and nothing here
-sends anything outside 127.0.0.1.
+By default the model is a LOCAL scripted stand-in (tests/diagnosis_planner.py) that reads
+only the facts Vulnix sent. Without VULNIX_ARTEX_REAL_BIN the ARTEX process is the Python
+stand-in as well, and nothing measures the quality of a real model.
+
+Real local model (needs VULNIX_ARTEX_REAL_BIN): set VULNIX_BENCH_REAL_LLM_UPSTREAM to a
+loopback OpenAI-compatible endpoint (e.g. http://127.0.0.1:11434/v1/chat/completions) and
+VULNIX_BENCH_REAL_LLM_MODEL (e.g. qwen3:8b). A recording relay on 127.0.0.1 sits between
+Vulnix's planner gateway and that endpoint; VULNIX_BENCH_NO_THINK=1 turns off the thinking
+setting (Ollama's reasoning_effort "none"). Set VULNIX_PLANNER_LLM_TIMEOUT_S and
+VULNIX_ARTEX_PLANNER_TIMEOUT_S for a slower local model. Nothing is sent outside 127.0.0.1 either way.
 
 Usage: VULNIX_NO_ENV_LOCAL=1 python3 -m scripts.bench_diagnosis_loop [--out FILE] [--modes a,b]
 """
@@ -52,6 +58,21 @@ TRUTH = json.loads((ROOT / "tests/fixtures/access_control_loop_truth.json").read
 OWNER_SPECS = {**json.loads((ROOT / "tests/fixtures/access_control_owner_specs.json").read_text()),
                **json.loads((ROOT / "tests/fixtures/access_control_loop_owner_specs.json").read_text())}
 METHODS = ("fixed_l1", "fixed_rule", "artex_planner")
+# structured / hybrid: the Vulnix step schema answered by a real local model (no ARTEX process)
+ALL_METHODS = METHODS + ("structured", "hybrid")
+# Independent labs (never used to tune the planners). Their own labels are used unchanged:
+# cross_account_access -> other_account_read, unauth_exposure -> unauthenticated_exposure;
+# true must come out "supported"; false is correct as "contradicted" or "not_applicable",
+# "supported" is a false positive and anything else is undecided (rule fixed before running).
+HOLDOUTS = {
+    "holdout": ("tests.fixtures.access_holdout_lab", "AccessHoldoutLab", "access_holdout_truth.json",
+                "access_holdout_owner_specs.json"),
+    "link": ("tests.fixtures.access_link_holdout_lab", "AccessLinkHoldoutLab", "access_link_holdout_truth.json",
+             "access_link_holdout_owner_specs.json"),
+    "fresh": ("tests.fixtures.access_fresh_holdout_lab", "AccessFreshHoldoutLab", "access_fresh_truth.json",
+              "access_fresh_owner_specs.json"),
+}
+_LAB = {"cls": AccessControlLab, "truth": None, "specs": None}
 LIMITS = PlanLimits(max_steps=3, max_planner_rounds=5, max_seconds=300, max_planner_cost_usd=0.10)
 APPROVER = ("approver-human", ("operator", "approver"))
 FIXED_MODE = "denied_403"
@@ -71,25 +92,92 @@ def _outcome(state: DiagnosisState, claim: str) -> str:
     return "untested" if hs[-1]["state"] == "open" else hs[-1]["state"]
 
 
+class RecordingRelay:
+    """Loopback relay to a real local OpenAI-compatible model; records what it was sent."""
+
+    def __init__(self, upstream: str, no_think: bool):
+        import http.server
+        import urllib.parse
+        import urllib.request
+        parts = urllib.parse.urlsplit(upstream)
+        if parts.scheme != "http" or parts.hostname not in ("127.0.0.1", "localhost", "::1"):
+            raise SystemExit("VULNIX_BENCH_REAL_LLM_UPSTREAM must be an http loopback URL")
+        self.requests: list = []
+        self.latencies: list[float] = []
+        self.responses: list = []          # status and the first bytes of each model reply
+        self.tokens = 0                    # total_tokens reported by the model server
+        relay = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+                if no_think:
+                    body["reasoning_effort"] = "none"      # Ollama: answer without a thinking phase
+                relay.requests.append(body)
+                t = time.monotonic()
+                req = urllib.request.Request(upstream, data=json.dumps(body).encode(),
+                                             headers={"Content-Type": "application/json"}, method="POST")
+                try:
+                    with urllib.request.urlopen(req, timeout=120) as r:
+                        data, status = r.read(), r.status
+                except Exception as e:  # noqa: BLE001
+                    data, status = json.dumps({"error": {"message": type(e).__name__}}).encode(), 502
+                relay.latencies.append(round(time.monotonic() - t, 2))
+                relay.responses.append({"status": status, "head": data[:1500].decode("utf-8", "replace")})
+                try:
+                    relay.tokens += int((json.loads(data).get("usage") or {}).get("total_tokens") or 0)
+                except (ValueError, AttributeError, TypeError):
+                    pass
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self.server.server_port}/v1"
+
+    def __enter__(self):
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        return self
+
+    def __exit__(self, *a):
+        self.server.shutdown()
+        self.server.server_close()
+
+
+def _model_for(method: str, real_bin):
+    upstream = os.environ.get("VULNIX_BENCH_REAL_LLM_UPSTREAM")
+    if upstream and (real_bin and method == "artex_planner" or method in ("structured", "hybrid")):
+        return RecordingRelay(upstream, os.environ.get("VULNIX_BENCH_NO_THINK") == "1")
+    return MockLLM(intent_selector=lambda msgs: intents_from_facts(json.dumps(msgs, ensure_ascii=False)))
+
+
 def run_case(mode: str, method: str) -> dict:
-    lab = AccessControlLab(mode)
+    lab = _LAB["cls"](mode)
     thread = threading.Thread(target=lab.serve_forever, daemon=True)
     thread.start()
     real_bin = os.environ.get("VULNIX_ARTEX_REAL_BIN") if method == "artex_planner" else None
     command = [real_bin] if real_bin else FAKE
-    spec = OWNER_SPECS[mode]["account_resource_requirement"]
+    spec = (_LAB["specs"] or OWNER_SPECS)[mode]["account_resource_requirement"]
     closing: list = []
     try:
-        with tempfile.TemporaryDirectory() as tmp, \
-                MockLLM(intent_selector=lambda msgs: intents_from_facts(json.dumps(msgs, ensure_ascii=False))) as model:
+        with tempfile.TemporaryDirectory() as tmp, _model_for(method, real_bin) as model:
             env = {"AEGIS_ENV": "production" if real_bin else "development",
                    "VULNIX_ARTEX_REAL_CMD": shlex.join(command),
                    "VULNIX_ARTEX_EXPECTED_SHA256": (os.environ.get("VULNIX_ARTEX_CI_BINARY_SHA256", "")
                                                      if real_bin else ""),
                    "VULNIX_ARTEX_LLM_URL": model.url,
-                   "VULNIX_ARTEX_LLM_MODE": "gateway-forward" if real_bin else "direct",
+                   "VULNIX_ARTEX_LLM_MODE": "gateway-forward" if real_bin or method in ("structured", "hybrid") else "direct",
+                   "VULNIX_PLANNER_ENGINE": method if method in ("structured", "hybrid") else "artex",
+                   "VULNIX_PLANNER_NO_THINK": "1" if os.environ.get("VULNIX_BENCH_NO_THINK") == "1" else "",
                    "VULNIX_ARTEX_LLM_UPSTREAM_URL": model.url + "/chat/completions",
-                   "VULNIX_ARTEX_PG_DSN": os.environ.get("VULNIX_ARTEX_PG_DSN", "") if real_bin else ""}
+                   "VULNIX_ARTEX_PG_DSN": os.environ.get("VULNIX_ARTEX_PG_DSN", "") if real_bin else "",
+                   **({"VULNIX_ARTEX_LLM_MODEL": os.environ["VULNIX_BENCH_REAL_LLM_MODEL"]}
+                      if isinstance(model, RecordingRelay) else {})}
             with patch.dict(os.environ, env):
                 svc = AssessmentService(Path(tmp), lab.server_port, l2_confinement=TEST_CONFINEMENT,
                                         verify_seconds=0.1)
@@ -117,7 +205,7 @@ def run_case(mode: str, method: str) -> dict:
                     if "T2" in targets:
                         record_owner_spec(state, "T2", spec)
                     plans, fix = [], None
-                    if method != "fixed_l1":
+                    if method != "fixed_l1":                 # every planner method, same runner
                         runner = AdaptivePlanRunner(svc, actor="requester", approve=lambda item: APPROVER,
                                                     limits=LIMITS, diagnosis=state)
                         plans.append(runner.run())
@@ -126,7 +214,8 @@ def run_case(mode: str, method: str) -> dict:
                         propose_hypotheses(state)
                     outcome = _outcome(state, "other_account_read")
                     diag_gets = len(lab.seen)
-                    if method != "fixed_l1" and outcome == "supported":
+                    # the fixed mode exists only in the loop lab (holdout labs are not switched)
+                    if method != "fixed_l1" and outcome == "supported" and _LAB["truth"] is None:
                         lab.mode = FIXED_MODE
                         made = begin_fix_check(svc, state, {"T2": spec})
                         fixer = AdaptivePlanRunner(svc, actor="requester", approve=lambda item: APPROVER,
@@ -145,7 +234,7 @@ def run_case(mode: str, method: str) -> dict:
                 payload = json.dumps(requests, ensure_ascii=False) + json.dumps(model.requests, ensure_ascii=False)
                 view = (svc.artex_plan_view() or {}).get("plan") or {}
                 return {
-                    "mode": mode, "method": method, "truth": TRUTH[mode],
+                    "mode": mode, "method": method, "truth": (_LAB["truth"] or TRUTH)[mode],
                     "other_account_read": outcome,
                     "unauthenticated_exposure": _outcome(state, "unauthenticated_exposure"),
                     "steps": [{k: s.get(k) for k in ("step_id", "catalog_id", "target_ref", "reason",
@@ -172,6 +261,14 @@ def run_case(mode: str, method: str) -> dict:
                     "model_saw_facts": sorted({m.group(0)[:160] for m in _FACT_TEXT.finditer(
                         json.dumps(model.requests, ensure_ascii=False))})[:12],
                     "plan_failures": [p.reason for p in plans if p.state.value == "FAILED"],
+                    "model_latencies_s": list(getattr(model, "latencies", [])),
+                    "model_responses": list(getattr(model, "responses", [])),
+                    "model_tokens": getattr(model, "tokens", 0),
+                    "plan_engines": [p.engine for p in plans] if plans and hasattr(plans[0], "engine") else [],
+                    "planner_llm_events": [{"event": e["event"], **{k: e["fields"].get(k) for k in (
+                        "reason", "decision", "error_type", "http_status", "finish_reason")
+                        if e["fields"].get(k) is not None}}
+                        for e in svc.audit.entries() if e["event"].startswith(("planner_llm.", "artex."))][:30],
                 }
     finally:
         for svc in closing:
@@ -182,6 +279,27 @@ def run_case(mode: str, method: str) -> dict:
         lab.shutdown()
         lab.server_close()
         thread.join(timeout=2)
+
+
+def _holdout_outcome(want: bool, got: str) -> str:
+    if want:
+        return "correct" if got == "supported" else "missed"
+    return ("correct" if got in ("contradicted", "not_applicable") else
+            "false_positive" if got == "supported" else "undecided")
+
+
+def score_holdout(rows: list[dict]) -> dict:
+    s = {"cases": len(rows), "claims": 0, "correct": 0, "false_positive": 0, "missed": 0, "undecided": 0,
+         "target_gets": 0, "worker_launches": 0, "model_tokens": 0, "elapsed_s": 0.0}
+    for r in rows:
+        for label, got in (("cross_account_access", r["other_account_read"]),
+                           ("unauth_exposure", r["unauthenticated_exposure"])):
+            s["claims"] += 1
+            s[_holdout_outcome(bool(r["truth"][label]), got)] += 1
+        for k in ("target_gets", "worker_launches", "model_tokens"):
+            s[k] += r.get(k) or 0
+        s["elapsed_s"] = round(s["elapsed_s"] + r["elapsed_s"], 3)
+    return s
 
 
 def score(rows: list[dict]) -> dict:
@@ -217,21 +335,36 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out")
     ap.add_argument("--modes", default="")
+    ap.add_argument("--methods", default=",".join(METHODS))
+    ap.add_argument("--lab", default="loop", choices=["loop", *HOLDOUTS])
     args = ap.parse_args(argv)
-    modes = [m for m in args.modes.split(",") if m] or sorted(MODES | LOOP_MODES)
-    assert set(TRUTH) == MODES | LOOP_MODES
-    rows = {m: [run_case(mode, m) for mode in modes] for m in METHODS}
+    methods = [m for m in args.methods.split(",") if m in ALL_METHODS]
+    if args.lab != "loop":
+        import importlib
+        mod, cls, truth, specs = HOLDOUTS[args.lab]
+        fx = ROOT / "tests/fixtures"
+        _LAB.update(cls=getattr(importlib.import_module(mod), cls),
+                    truth=json.loads((fx / truth).read_text()), specs=json.loads((fx / specs).read_text()))
+        modes = [m for m in args.modes.split(",") if m] or sorted(_LAB["truth"])
+    else:
+        modes = [m for m in args.modes.split(",") if m] or sorted(MODES | LOOP_MODES)
+        assert set(TRUTH) == MODES | LOOP_MODES
+    rows = {m: [run_case(mode, m) for mode in modes] for m in methods}
+    scorer = score if args.lab == "loop" else score_holdout
     out = {"about": __doc__.strip().splitlines()[0],
-           "model": "local scripted stand-in (tests/diagnosis_planner.py); not a real model",
+           "model": (f"real local model {os.environ.get('VULNIX_BENCH_REAL_LLM_MODEL')} via loopback "
+                     f"(no_think={os.environ.get('VULNIX_BENCH_NO_THINK') == '1'})"
+                     if os.environ.get("VULNIX_BENCH_REAL_LLM_UPSTREAM") and os.environ.get("VULNIX_ARTEX_REAL_BIN")
+                     else "local scripted stand-in (tests/diagnosis_planner.py); not a real model"),
            "artex": "real overlay binary" if os.environ.get("VULNIX_ARTEX_REAL_BIN") else "Python stand-in",
            "limits": LIMITS.__dict__, "modes": modes,
-           "summary": {m: score(rows[m]) for m in METHODS}, "cases": rows}
+           "lab": args.lab, "summary": {m: scorer(rows[m]) for m in methods}, "cases": rows}
     text = json.dumps(out, ensure_ascii=False, indent=2, default=str)
     if args.out:
         Path(args.out).write_text(text + "\n")
     print(text)
     bad = []
-    for m in ("fixed_rule", "artex_planner"):
+    for m in [m for m in ("fixed_rule", "artex_planner") if m in methods and args.lab == "loop"]:
         s = out["summary"][m]
         if s["false_positive"]:
             bad.append(f"{m}: false positive")
@@ -247,7 +380,7 @@ def main(argv=None) -> int:
                 if r["engine_kind"] != "artex-binary":
                     bad.append(f"{m}/{r['mode']}: not the real ARTEX binary")
     if "idor_spec_missing" in modes:
-        for m in ("fixed_rule", "artex_planner"):
+        for m in [m for m in ("fixed_rule", "artex_planner") if m in methods]:
             r = next(r for r in rows[m] if r["mode"] == "idor_spec_missing")
             if r["other_account_read"] != "needs_spec":
                 bad.append(f"{m}: missing spec was not reported as needs_spec")

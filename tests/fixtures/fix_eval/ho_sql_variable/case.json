@@ -1,0 +1,17 @@
+{
+ "kind": "sql",
+ "split": "holdout",
+ "normal": [
+  [
+   "/items?owner=alice",
+   200,
+   "pen"
+  ]
+ ],
+ "exploit": [
+  [
+   "/items?owner=x%27%20OR%20%271%27%3D%271",
+   "HIDDEN_ITEM_MARKER"
+  ]
+ ]
+}

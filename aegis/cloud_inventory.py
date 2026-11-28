@@ -30,6 +30,10 @@ def config() -> dict | None:
     client = os.environ.get("VULNIX_CLOUD_CLIENT_ID", "").strip()
     secret = os.environ.get("VULNIX_CLOUD_CLIENT_SECRET", "").strip()
     redirect = os.environ.get("VULNIX_CLOUD_REDIRECT_URI", "").strip()
+    if not (client and secret):
+        from .google_ownership import client_from_file
+        if from_file := client_from_file(redirect):
+            client, secret = from_file
     try:
         url = urllib.parse.urlsplit(redirect)
         if (not client or not secret or url.scheme != "https" or not url.hostname

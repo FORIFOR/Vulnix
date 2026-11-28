@@ -1,0 +1,17 @@
+{
+ "kind": "xss",
+ "split": "holdout",
+ "normal": [
+  [
+   "/search?q=shoes",
+   200,
+   "Results for shoes"
+  ]
+ ],
+ "exploit": [
+  [
+   "/search?q=%3Cimg%20src%3Dx%20onerror%3Dalert(1)%3E",
+   "<img src=x onerror=alert(1)>"
+  ]
+ ]
+}

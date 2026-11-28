@@ -1,11 +1,29 @@
 import ts from "typescript";
 import { parseAllDocuments } from "yaml";
 import { inspectRuntimeFile, type PlannedCheck } from "./runtimePlan";
+import { pythonFlow, type PythonFlowKind } from "./pythonFlow";
+import { generateFixes } from "./fixPatch";
+
+// fix methods checked on the sample apps with real Flask (tests/fixtures/fix_eval, CI web job)
+const SAMPLE_VERIFIED = new Set(["redirect", "path", "sql", "command", "xss"]);
+const FIX_REASON: Record<string, string> = {
+  redirect: "外部から渡された戻り先を、同じサイト内の相対パスだけに限定する",
+  path: "結合したパスを実体パスに直し、許可したフォルダの外なら拒否する",
+  sql: "要求データを SQL 文に連結せず、プレースホルダーとパラメーターで渡す",
+  command: "要求データをシェルの1つの引数として引用し、コマンドとして解釈させない",
+  xss: "要求データを HTML として出力する前にエスケープする",
+};
 import { affects, collectPackages, compareVersions, propertyLine, sbomComponents, type Package, type Location } from "./projectPackages";
 import { advisorySeverity, checkCloudFormation, checkControls, checkLockfile, record, type ResultLocation } from "./quickDefense";
 
-export const limits = { entries: 12000, files: 180, timeMs: 30000, findings: 5000, fileBytes: 256 * 1024, dependencyBytes: 4 * 1024 * 1024, bytes: 12 * 1024 * 1024 };
+export const limits = { entries: 12000, allEntries: 200000, files: 180, timeMs: 30000, findings: 5000, fileBytes: 1024 * 1024, dependencyBytes: 4 * 1024 * 1024, bytes: 12 * 1024 * 1024 };
 export type ProjectFile = { file: File; path: string };
+
+/** Test code by its usual place or name. Deliberately vulnerable samples live here; a finding in
+ * them is not dropped, only told apart from findings in the product's own code. */
+export const isTestPath = (path: string) =>
+  /(^|\/)(tests?|__tests__|testdata|test_data|e2e|cypress|playwright)\//i.test(path)
+  || /(^|\/)(test_[^/]*\.py|[^/]*_test\.(py|go)|conftest\.py|[^/]*\.(test|spec)\.[cm]?[jt]sx?)$/i.test(path);
 type Result = ReturnType<typeof checkControls>[number];
 type Component = { location?: Location; part: string; vendor: string; product: string; version: string };
 const excluded = /^(?:\.|node_modules$|vendor$|dist$|build$|coverage$|target$|__pycache__$|secrets?$)/i;
@@ -25,6 +43,18 @@ export function classifyPath(path: string) {
   if (source.test(name)) return { name, priority: /auth|access|db|sql|xml|render|route|handler|webhook|session|middleware/i.test(name) ? 1 : 2 };
   return null;
 }
+
+const PYTHON_FLOW: Record<PythonFlowKind, [string, string]> = {
+  sql: ["外部入力からSQL実行", "値はプレースホルダーとパラメーターで渡し、SQL文字列に連結しない。"],
+  command: ["外部入力からOSコマンド実行", "シェルを使わず引数の配列で実行し、許可した値だけを受け付ける。"],
+  code: ["外部入力からコード評価", "eval・execを使わず、必要な値だけを型を決めて解釈する。"],
+  template: ["外部入力からテンプレート・HTML生成", "利用者の値は自動エスケープされるテンプレート変数として渡す。"],
+  xss: ["外部入力をそのままHTML応答", "応答はテンプレートの自動エスケープを通すか、html.escapeしてから返す。"],
+  path: ["外部入力からファイルパス", "許可したディレクトリ内の固定名だけを解決し、パスの正規化後に範囲を確認する。"],
+  ssrf: ["外部入力から外部通信先", "通信先は許可したホストの一覧から選び、内部アドレスへの接続を拒否する。"],
+  deserialize: ["外部入力からデシリアライズ", "pickle等を使わずJSONなどの安全な形式で読み、yamlはSafeLoaderを使う。"],
+  redirect: ["外部入力からリダイレクト先", "リダイレクト先は相対パスか許可したホストに限定する。"],
+};
 
 function item(category: Result["category"], title: string, status: Result["status"], evidence: string, fix: string): Result {
   return {
@@ -218,10 +248,13 @@ function deploymentChecks(name: string, body: string, input: unknown, path: stri
       if (match) user = { value: match[1].split(":")[0], line: i + 1 };
     }
     const root = user && /^(root|0+)$/i.test(user.value);
-    const nodeWithoutUser = !user && finalBase && /^(?:(?:docker\.io\/)?library\/)?node:[A-Za-z0-9_.-]+$/.test(finalBase.image);
+    // official images whose default user is root (Docker Hub library images)
+    const official = finalBase?.image.match(/^(?:(?:docker\.io\/)?library\/)?(node|python|ruby|golang|debian|ubuntu|alpine|php|eclipse-temurin|openjdk|rust):[A-Za-z0-9_.-]+$/);
+    const nodeWithoutUser = !user && !!official;
     add("コンテナの既定ユーザー", root || nodeWithoutUser ? "action" : "unknown",
       root ? "最終ステージでrootユーザーを明示しています。" :
-      nodeWithoutUser ? "最終ステージのNode公式イメージに対し非rootユーザーの指定がありません。配備側の上書きは未確認です。" :
+      nodeWithoutUser ? `最終ステージの公式イメージ（${official![1]}）は既定でrootで動きますが、非rootユーザーの指定がありません。配備側の上書きは未確認です。` :
+      user ? `非rootユーザー（${user.value}）を指定済みです。配備側での上書きと書き込み可能な領域は未確認です。` :
         "実行時のユーザーと書き込み権限が未確認です。",
       "必要な権限だけを持つ実行ユーザーを設定し、実行時の上書きと書き込み可能な領域を確認する。",
       user?.line ?? finalBase?.line);
@@ -451,7 +484,9 @@ export type ScanProgress = {
 
 export async function scanProject(files: ProjectFile[], feed: unknown, onProgress?: (value: ScanProgress) => void, lookupCatalog?: CatalogLookup) {
   const deadline = performance.now() + limits.timeMs;
-  if (files.length > limits.entries) throw new Error("entry-limit");
+  // The limit applies to the files the scan reads. Generated images, reports and other files it
+  // never reads (a real project had 16,000 of them under docs/) only need their name classified.
+  if (files.length > limits.allEntries) throw new Error("entry-limit");
   const seenPaths = new Set<string>();
   const candidates = files.flatMap(({ file, path }) => {
     if (seenPaths.has(path)) return [];
@@ -459,7 +494,11 @@ export async function scanProject(files: ProjectFile[], feed: unknown, onProgres
     const kind = classifyPath(path);
     return kind ? [{ file, path: path.split("/").slice(1).join("/") || file.name, ...kind }] : [];
   }).sort((a, b) => a.priority - b.priority);
+  if (candidates.length > limits.entries) throw new Error("entry-limit");
   const rows: Result[] = [];
+  // package names the scanned source imports (reachability of a dependency CVE, by name only)
+  const imported = { npm: new Set<string>(), PyPI: new Set<string>() };
+  const sourcesSeen = { npm: 0, PyPI: 0 };
   const findings = new Set<string>();
   const retained = { action: 0, other: 0 };
   let unretained = 0;
@@ -489,7 +528,7 @@ export async function scanProject(files: ProjectFile[], feed: unknown, onProgres
   let packageCount = 0;
   let unsupported = 0;
   const coverage = { source: 0, noSourceRules: 0, parseFailed: 0, packageFiles: 0,
-    unresolvedDependencies: 0, sbomWithoutPackages: 0, osvAdvisories: 0, nvdAdvisories: 0 };
+    unresolvedDependencies: 0, sbomWithoutPackages: 0, osvAdvisories: 0, nvdAdvisories: 0, pythonFlow: 0 };
   let skippedRules = 0;
   let unreadable = 0;
   let read = 0;
@@ -601,6 +640,32 @@ export async function scanProject(files: ProjectFile[], feed: unknown, onProgres
         packageCount++;
       }
       if (Object.keys(record(record(parsed).packages)).length > 10000) skippedRules++;
+    } else if (priority > 0 && ext === "py") {
+      sourcesSeen.PyPI++;
+      for (const m of content.matchAll(/^\s*(?:from\s+([A-Za-z_][\w]*)[\w.]*\s+import|import\s+([A-Za-z_][\w]*))/gm))
+        imported.PyPI.add((m[1] ?? m[2]).toLowerCase());
+      coverage.source++;
+      coverage.pythonFlow++;
+      const flows = pythonFlow(content);
+      if (flows.length === 20) skippedRules++;
+      // minimal fix candidates (a diff to review; the project itself is never written)
+      const fixes = flows.length ? generateFixes(path, content) : [];
+      addRows(...flows.map((flow) => ({
+        ...(() => {
+          const fix = fixes.find((f) => f.ok && f.finding.line === flow.line && f.finding.kind === flow.kind);
+          if (!fix || !fix.ok) return {};
+          const again = pythonFlow(fix.patched).some((f) => f.kind === flow.kind && f.func === flow.func && f.sink === flow.sink);
+          return { patch: { file: path, line: flow.line, kind: flow.kind, reason: FIX_REASON[flow.kind] ?? "",
+            diff: fix.diff, patched: fix.patched, changedLines: fix.changedLines,
+            sampleVerified: SAMPLE_VERIFIED.has(flow.kind), projectRecheck: (again ? "still_found" : "cleared") as "still_found" | "cleared" } };
+        })(),
+        ...item("Claude Code", PYTHON_FLOW[flow.kind][0], flow.via ? "unknown" : "action",
+          flow.via
+            ? `ソースの${flow.line}行目。関数 ${flow.func} の中で、要求データがプロジェクト内の関数 ${flow.via}() を経由して ${flow.sink} に渡ります。${flow.via}() の中での検証（許可リスト・パスの確認など）は追っていないため、判定は未確認です。`
+            : `ソースの${flow.line}行目。関数 ${flow.func} の中で、要求データが ${flow.sink} に渡る経路を静的に確認しました（同じ関数内の追跡。実行時の到達性・入力検証は未確認）。`,
+          PYTHON_FLOW[flow.kind][1]),
+        location: { path, line: flow.line },
+      })));
     } else if (priority > 0 && !/^[cm]?[jt]sx?$/i.test(ext)) {
       coverage.noSourceRules++;
       notParsed("この言語にはデータフロー検査がない（共通検査のみ）");
@@ -631,6 +696,9 @@ export async function scanProject(files: ProjectFile[], feed: unknown, onProgres
       }
     } else if (componentsFrom(name, content, parsed, path).length) skippedRules++;
     if (/^[cm]?[jt]sx?$/i.test(ext)) {
+      sourcesSeen.npm++;
+      for (const m of content.matchAll(/(?:require\(\s*|import\(\s*|\bfrom\s+|\bimport\s+)["']((?:@[\w.-]+\/)?[\w.-]+)/g))
+        if (!m[1].startsWith(".")) imported.npm.add(m[1].toLowerCase());
       coverage.source++;
       const findings = jsFlow(name, content, path);
       if (findings.length === 10) skippedRules++;
@@ -672,7 +740,22 @@ export async function scanProject(files: ProjectFile[], feed: unknown, onProgres
       locations: [...merged.values()] });
   }
   let retainedCveLocations = 0;
+  const reach = (eco?: string, name?: string): ResultLocation["reachable"] => {
+    if (!name || (eco !== "npm" && eco !== "PyPI") || !sourcesSeen[eco]) return undefined;
+    const key = eco === "PyPI" ? name.toLowerCase().replace(/-/g, "_") : name.toLowerCase();
+    if (imported[eco].has(key)) return "imported";
+    // a PyPI distribution can be imported under another name: no match is "not determined"
+    return eco === "npm" ? "not_imported_directly" : undefined;
+  };
   for (const row of matched.values()) {
+    row.locations = row.locations?.map((l) => {
+      const r = reach(l.ecosystem, l.dependency);
+      return r ? { ...l, reachable: r } : l;
+    });
+    if (row.location) {
+      const r = reach(row.location.ecosystem, row.location.dependency);
+      if (r) row.location = { ...row.location, reachable: r };
+    }
     const available = Math.max(0, 12000 - retainedCveLocations);
     if (row.locations && row.locations.length > available) {
       catalogIncomplete = true;
@@ -685,7 +768,12 @@ export async function scanProject(files: ProjectFile[], feed: unknown, onProgres
   // Preserve evidence of an unmatched catalog even when the other catalog matched.
   if (!Array.isArray(feed)) addRows(...nvdRows.filter((row) => !row.title.startsWith("CVE-")));
   addRows(...osvRows.filter((row) => !row.title.startsWith("CVE-")));
-  rows.sort((a, b) => Number(b.status === "action") - Number(a.status === "action"));
+  for (const row of rows) {
+    const where = row.locations?.length ? row.locations : row.location ? [row.location] : [];
+    if (where.length && where.every((l) => isTestPath(l.path))) row.testCode = true;
+  }
+  // product code first; test code is still checked and listed, after it
+  rows.sort((a, b) => Number(!!a.testCode) - Number(!!b.testCode) || Number(b.status === "action") - Number(a.status === "action"));
   const scanProgress = progress();
   onProgress?.(scanProgress);
   for (const { path } of candidates.slice(processed, processed + 100 - incomplete.length)) {

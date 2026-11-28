@@ -1,0 +1,11 @@
+# The control plane (user vulnix) may run exactly ONE program as root: the privilege
+# broker (aegis/privbroker.py through the root-owned wrapper below). The broker
+# performs a fixed set of operations (cgroup / nftables table / network namespace of
+# one run, handing an empty directory to the run's uid, starting a program in the
+# cgroup AS the run's uid) and validates every argument itself. No shell, no free
+# command, no SETENV: the caller's environment is reset except VXENV_* (the worker's
+# variables, handed on by the broker under their own names; nothing as root reads them).
+# The web server account (vulnix-web) has no sudo at all.
+Defaults:vulnix !requiretty, !lecture, logfile=/var/log/sudo-vulnix.log
+Defaults!/usr/local/libexec/vulnix-priv env_reset, env_keep = "VXENV_*"
+vulnix ALL=(root) NOPASSWD: /usr/local/libexec/vulnix-priv

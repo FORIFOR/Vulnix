@@ -9,14 +9,29 @@
   The real confinement is tested in tests/test_fail_closed.py.
 * `VULNIX_NO_ENV_LOCAL=1`: the project's .env.local is never read during tests.
 """
+import functools
 import ipaddress
 import os
+import socketserver
 import tempfile
 
 os.environ.setdefault("VULNIX_REVOCATION_MARKER_DIR", tempfile.mkdtemp(prefix="vulnix-test-markers-"))
 # Never load the developer's git-ignored .env.local (it may hold a real API key) into a
 # test run or into a server a test starts.
 os.environ.setdefault("VULNIX_NO_ENV_LOCAL", "1")
+
+# In-process loopback servers: shutdown() waits for the serve_forever() poll, 0.5 s by
+# default, and the suite starts and stops hundreds of them. A short poll changes only
+# how quickly a stopped test server notices; request handling is unaffected.
+_serve_forever = socketserver.BaseServer.serve_forever
+
+
+@functools.wraps(_serve_forever)
+def _serve_forever_fast(self, poll_interval=0.02):
+    return _serve_forever(self, poll_interval)
+
+
+socketserver.BaseServer.serve_forever = _serve_forever_fast
 
 
 class _LoopbackSession:

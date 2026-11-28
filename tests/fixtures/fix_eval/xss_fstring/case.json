@@ -1,0 +1,17 @@
+{
+ "kind": "xss",
+ "split": "dev",
+ "normal": [
+  [
+   "/hello?name=Bob",
+   200,
+   "Hello, Bob!"
+  ]
+ ],
+ "exploit": [
+  [
+   "/hello?name=%3Cscript%3Ealert(1)%3C%2Fscript%3E",
+   "<script>alert(1)</script>"
+  ]
+ ]
+}

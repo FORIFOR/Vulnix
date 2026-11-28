@@ -18,6 +18,7 @@ import http.cookies
 import hashlib
 import json
 import os
+import sys
 import re
 import secrets
 import signal
@@ -124,9 +125,11 @@ ARTEX_LLM_PLANS_PLATFORM_PER_HOUR = int(os.environ.get("VULNIX_ARTEX_LLM_PLANS_P
 # Platform-wide POST routes: they act on this machine or on configuration shared by
 # every organization, so they are decided by the account's own (global) roles.
 PLATFORM_POST_ROUTES = frozenset({"/api/l2-profiles/accept", "/api/router/verify", "/api/cve/sync",
-                                  "/api/system/verify-controls", "/api/cve/real-software-verify"})
+                                  "/api/system/verify-controls", "/api/cve/real-software-verify",
+                                  "/api/agent-defense/evaluate", "/api/a2b/approve", "/api/a2b/revoke"})
 # Routes that start a verification job (spawn workers / probes on this machine).
-JOB_ROUTES = frozenset({"/api/system/verify-controls", "/api/cve/real-software-verify"})
+JOB_ROUTES = frozenset({"/api/system/verify-controls", "/api/cve/real-software-verify",
+                        "/api/agent-defense/evaluate"})
 
 # Audit before state (docs/AUDIT_BEFORE_STATE.md): a grant is recorded first and is not
 # made without its record; a removal is made whatever the audit log does, then recorded.
@@ -295,6 +298,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
     run_times: dict[str, list[float]] = {}
     run_all: list[float] = []
     verify_times: dict[str, list[float]] = {}
+    self_service_slots = ownership_policy.SelfServiceSlots()
     google_states: dict[str, dict] = {}     # OAuth state -> {at, account, org, host, verifier}
     verify_all: list[float] = []
     real_run_times: dict[str, list[float]] = {}
@@ -393,6 +397,39 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
         except Exception:  # noqa: BLE001 - cannot confirm live authority: refuse
             return False
 
+    def authority_for(org_id: str):
+        """What an approval needs to stay valid, checked NOW (A2B: the approving platform
+        admin, the requesting and saving members)."""
+        def check(account: str, kind: str) -> bool:
+            if not account:
+                return False
+            if kind == "platform_admin":
+                return "admin" in ops.roles_of(account)
+            roles = (service_roles(tenancy.store.roles_in(org_id, account)) if tenancy is not None
+                     else ops.roles_of(account))
+            return bool({"operator", "approver", "admin"} & set(roles))
+        return check
+
+    def enforce_authority(services) -> None:
+        for s in services:
+            try:
+                s.enforce_a2b_authority()
+            except AuditWriteFailed:     # applied; the gap is noted by the service
+                pass
+            except Exception as e:   # noqa: BLE001 - one organization never blocks the others;
+                # the launch guard still refuses a run of that approval
+                print(f"vulnix: approval authority check failed: {type(e).__name__}", file=sys.stderr)
+
+    def all_services():
+        return tenancy.loaded() if tenancy is not None else [svc]
+
+    svc._authority = authority_for(DEFAULT_ORG)
+    if tenancy is not None:
+        tenancy.authority_for = authority_for
+        for loaded in tenancy.loaded():
+            loaded._authority = authority_for(getattr(loaded, "_intelligence_org_id", DEFAULT_ORG))
+    enforce_authority(all_services())       # what changed while the server was down
+
     def live_request_authority(sess, org_id: str, *, approver: bool = False):
         """A short check plus a launch lease for foreground Worker requests."""
         def allowed() -> bool:
@@ -447,6 +484,13 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     token = auth_hdr[7:].strip()
             return ops.resolve(token)
 
+        def _loopback_client(self) -> bool:
+            """The agent check runs only for a browser on this machine talking to this machine."""
+            host = (self.headers.get("Host") or "").rsplit(":", 1)[0].strip("[]").lower()
+            return (self.client_address[0] in ("127.0.0.1", "::1", "::ffff:127.0.0.1")
+                    and host in ("127.0.0.1", "localhost", "::1")
+                    and not self.headers.get("X-Forwarded-For"))
+
         def _public_session(self, sess):
             return {"operator": sess.operator, "roles": list(sess.roles),
                     "expires": sess.expires,
@@ -478,6 +522,10 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 return "expired"
             return record["status"]
 
+        def _self_service_mode(self):
+            return (_ownership_traffic_mode(getattr(self, "_bound_org", None)) == "preapproved"
+                    and os.environ.get("VULNIX_OWNERSHIP_SELF_SERVICE") == "1")
+
         @staticmethod
         def _managed_ownership(mode, method):
             return (mode == "preapproved" and method in ownership_policy.METHODS
@@ -499,12 +547,11 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 key, epoch, stopped = self._ownership_target(service, str(body["url"]), body["method"])
                 now = time.time()
                 if mode == "preapproved":
-                    policies = ownership_policy.load()
+                    policies = ownership_policy.for_target(key[0], key[2], now)
                     available = [policy.method for policy in policies.values()
-                                 if (policy.org, policy.url) == (key[0], key[2])
-                                 and policy.not_before <= now < policy.expires_at
+                                 if policy.not_before <= now < policy.expires_at
                                  and not stopped and ownership_policy.has_budget(service.data_dir, policy)]
-                    policy = policies.get((key[0], key[2], key[3]))
+                    policy = policies.get(key[3])
                     if policy or not managed:
                         if action != "status":
                             return self._json(409, {"error": "この対象と方法の通信許可は運営者設定で管理します"})
@@ -519,7 +566,8 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                             status = "approved" if can_verify else "unavailable"
                         result = {"status": status, "stopped": stopped, "can_decide": False,
                                   "can_verify": can_verify, "available_methods": available, "managed": managed,
-                                  "expires_at": policy.expires_at if policy else None}
+                                  "expires_at": policy.expires_at if policy else None,
+                                  "self_service": bool(policy and policy.id.startswith("self-"))}
                         previous_timeout = self.connection.gettimeout()
                         self.connection.settimeout(2.0)
                         try:
@@ -580,6 +628,16 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     result.update(id=record["id"], expires_at=record["expires_at"])
             return self._authorized_org_read(sess, org, lambda _: self._json(200, result), reader=False)
 
+        @staticmethod
+        def _audit_self_service_refusal(service, actor, asset_id, method, reason):
+            """Refused self-service attempts are recorded too (nothing was sent); best effort,
+            because a refusal must not turn into an error when the audit disk is unavailable."""
+            try:
+                service.audit.record("asset.ownership_traffic_refused", actor=actor, asset_id=asset_id,
+                                     method=method, reason=reason[:200])
+            except Exception:  # noqa: BLE001
+                pass
+
         def _require_ownership_traffic(self, service, sess, value, method, expected=None, *, consume=False):
             mode = _ownership_traffic_mode(getattr(self, "_bound_org", None))
             managed = self._managed_ownership(mode, method)
@@ -598,13 +656,26 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             key, epoch, stopped = self._ownership_target(service, value, method)
             if mode == "preapproved":
                 claim = "所有確認は運営者が事前に許可した対象・方法・期間に限られます"
-                policy = ownership_policy.load().get((key[0], key[2], method))
+                policy = ownership_policy.for_target(key[0], key[2], time.time()).get(method)
                 if policy or saved_method == "preapproved" or not managed:
                     if stopped or not policy or not policy.not_before <= time.time() < policy.expires_at:
                         raise ApproverRequired(claim)
                     current = ("preapproved", key, epoch, policy)
                     if expected is not None and expected != current:
                         raise ApproverRequired(claim)
+                    if consume and policy.id.startswith("self-"):
+                        if not ownership_policy.has_budget(service.data_dir, policy):
+                            self._audit_self_service_refusal(service, sess.operator, key[1], method, "target_budget")
+                            raise ApproverRequired("所有確認の試行上限に達したか、許可の状態を確認できません")
+                        # account, organization, origin and platform limits (raises LimitReached: 429)
+                        try:
+                            ownership_policy.consume_self_service(
+                                Path(default_svc.data_dir), account=sess.operator, org=key[0], origin=key[2],
+                                method=method, now=time.time())
+                        except ownership_policy.LimitReached as e:
+                            self._audit_self_service_refusal(service, sess.operator, key[1], method, str(e))
+                            e.audited = True
+                            raise
                     if (consume or expected is None) and not ownership_policy.has_budget(service.data_dir, policy, consume=consume):
                         raise ApproverRequired("所有確認の試行上限に達したか、許可の状態を確認できません")
                     if consume:
@@ -968,9 +1039,29 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         return self._json(200, profiles)
                     finally:
                         self.connection.settimeout(previous_timeout)
+            if p == "/api/a2b/review":
+                # a platform admin reviews drafts of every organization (an org owner is not one)
+                if not sess or "admin" not in ops.roles_of(sess.operator):
+                    return self._json(403, {"error": "プラットフォーム管理者の権限が必要です"})
+                orgs = tenancy.store.org_ids() if tenancy is not None else [DEFAULT_ORG]
+                items = []
+                for oid in dict.fromkeys(([DEFAULT_ORG] if tenancy is not None else []) + orgs):
+                    try:
+                        osvc = tenancy.service(oid) if tenancy is not None else svc
+                    except TenancyError:
+                        continue
+                    items += [{**d, "org": oid} for d in osvc.a2b_review()]
+                return self._authorized_platform_read(sess, lambda: self._json(200, {"drafts": items}), admin=True)
             if p in JOB_ROUTES:
                 # these START a verification job: POST only (CSRF-checked, role-checked, audited)
                 return self._json(405, {"error": "この操作は POST で実行してください"}, [("Allow", "POST")])
+            if p == "/api/agent-defense/status":
+                from . import agent_defense
+                state = agent_defense.availability()
+                if state["available"] and not self._loopback_client():
+                    state = {"available": False, "reason": "この端末以外からの接続では実行しません"}
+                return self._authorized_platform_read(sess, lambda: self._json(
+                    200, {**state, "scope": agent_defense.SCOPE_NOTE}))
             if p == "/api/cve/status":
                 status_payload = svc.cve_monitor.status()
                 if enforce_read_auth:
@@ -1001,6 +1092,10 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                                         and _approver_class(sess.operator) == "registered"})
             if p == "/api/assets":
                 return self._json(200, svc.assets())
+            if p == "/api/assets/a2b-drafts":
+                # this organization's drafts only; approval is a platform admin's, shown as such
+                return self._json(200, {"drafts": svc.a2b_drafts(), "org": getattr(self, "_bound_org", DEFAULT_ORG),
+                                        "may_approve": bool(sess) and "admin" in ops.roles_of(sess.operator)})
             if p == "/api/assets/intelligence":
                 if not sess:
                     return self._json(401, {"error": "ログインが必要です"})
@@ -1554,9 +1649,11 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             except AuditWriteFailed as e:
                 return self._json(503, {"error": str(e), "applied": False, "audit_failed": True})
             except AuthError as e:
+                enforce_authority(all_services())   # a removal kept in memory although it could not be saved
                 paudit.record("operator.roles_change_failed", actor=sess.operator, target=target[:64],
                                  requested=roles[:8], error=str(e)[:200])
                 return self._admin_failure(sess, e, 409)
+            enforce_authority(all_services())      # approvals given by an admin who lost the role
             if unrecorded:
                 # noted after the store's lock is released
                 default_svc._note_audit_gap("operator.roles_changed", unrecorded[0], log="platform")
@@ -1697,6 +1794,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                                 return
                             raise AuditWriteFailed(AUDIT_REFUSED) from e
                     st.set_roles(org_id, sess.operator, target, body.get("roles"), journal=journal)
+                    enforce_authority([tenancy.service(org_id)])
                     if unrecorded:
                         osvc_gap = tenancy.service(org_id)
                         osvc_gap._note_audit_gap("tenancy.member_roles_changed", unrecorded[0])
@@ -1706,6 +1804,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 if p == "/api/orgs/members/remove":
                     target = str(body.get("name", "")).strip()
                     st.remove_member(org_id, sess.operator, target)
+                    enforce_authority([tenancy.service(org_id)])
                     # a removal: applied whatever the audit log does, then recorded
                     if not audit_after(audit, "tenancy.member_removed", gap_svc=tenancy.service(org_id),
                                        actor=sess.operator, target=target):
@@ -1834,6 +1933,21 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         return self._json(400, {"error": "対応していないローカル防御検証操作です"})
                     return self._authorized_org_read(
                         sess, org, lambda _: self._json(200, local_defense.view()), reader=False)
+                if p in ("/api/assets/a2b-drafts", "/api/assets/a2b-drafts/request", "/api/assets/a2b-drafts/withdraw"):
+                    # a draft has no execution power; any member who may operate saves one
+                    try:
+                        if p == "/api/assets/a2b-drafts":
+                            draft = body.get("draft")
+                            result = svc.save_a2b_draft(draft if isinstance(draft, dict) else {}, actor,
+                                                        str(body.get("id") or "") or None)
+                        elif p.endswith("/request"):
+                            result = svc.request_a2b_approval(str(body.get("id", "")), str(body.get("sha256", "")), actor)
+                        else:      # reducing power: the organization may always withdraw its own
+                            result = svc.revoke_a2b_draft(str(body.get("id", "")), actor)
+                    except ValueError as exc:
+                        return self._json(400, {"error": str(exc)[:300]})
+                    return self._authorized_org_read(
+                        sess, getattr(self, "_bound_org", DEFAULT_ORG), lambda _: self._json(200, result), reader=False)
                 if p == "/api/assets":
                     asset = svc.register_asset(
                         name=str(body.get("name", "")),
@@ -1976,19 +2090,27 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     g_host = st["host"]
                     if svc.real_service_has_authority(g_host) and "approver" not in sess.roles:
                         return self._json(403, {"error": "所有確認済みの対象の再確認には承認責任者の権限が必要です"})
-                    with live_grant_roles(sess, bound_org or DEFAULT_ORG), svc._lock:
-                        grant = self._require_ownership_traffic(
-                            svc, sess, st["target_url"], google_ownership.METHOD, st["grant"], consume=True)
+                    google_slot = contextlib.ExitStack()
+                    if self._self_service_mode():
+                        google_slot.enter_context(self_service_slots.hold(actor))
+                    try:
+                        with live_grant_roles(sess, bound_org or DEFAULT_ORG), svc._lock:
+                            grant = self._require_ownership_traffic(
+                                svc, sess, st["target_url"], google_ownership.METHOD, st["grant"], consume=True)
+                    except BaseException:
+                        google_slot.close()
+                        raise
 
                     def guard_google_request():
                         with live_grant_roles(sess, bound_org or DEFAULT_ORG), svc._lock:
                             self._require_ownership_traffic(svc, sess, st["target_url"], google_ownership.METHOD, grant)
 
                     try:
-                        sites = google_ownership.owned_sites(
-                            cfg, str(body.get("code") or ""), st["verifier"],
-                            **({"before_request": guard_google_request} if isinstance(grant, tuple) else {}),
-                        )
+                        with google_slot:    # the same slot, released after the Google call
+                            sites = google_ownership.owned_sites(
+                                cfg, str(body.get("code") or ""), st["verifier"],
+                                **({"before_request": guard_google_request} if isinstance(grant, tuple) else {}),
+                            )
                     except google_ownership.GoogleOwnershipError as e:
                         return self._json(502, {"error": str(e), "host": g_host})
                     # checked against the scheme / port registered when the check started;
@@ -2020,22 +2142,26 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     if v_host and svc.real_service_has_authority(v_host) and "approver" not in sess.roles:
                         # a failed re-check revokes scope and stored test accounts
                         return self._json(403, {"error": "所有確認済みの対象の再確認には承認責任者の権限が必要です"})
-                    with live_grant_roles(sess, getattr(self, "_bound_org", DEFAULT_ORG)), svc._lock:
-                        grant = self._require_ownership_traffic(svc, sess, ownership_value, method, consume=True)
+                    slot = contextlib.ExitStack()
+                    if self._self_service_mode():
+                        slot.enter_context(self_service_slots.hold(actor))
+                    with slot:     # held until the lookup has finished
+                        with live_grant_roles(sess, getattr(self, "_bound_org", DEFAULT_ORG)), svc._lock:
+                            grant = self._require_ownership_traffic(svc, sess, ownership_value, method, consume=True)
 
-                    @contextlib.contextmanager
-                    def proof_guard():
-                        with live_grant_roles(sess, getattr(self, "_bound_org", DEFAULT_ORG)) as roles, svc._lock:
-                            self._require_ownership_traffic(svc, sess, ownership_value, method, grant)
-                            yield roles
+                        @contextlib.contextmanager
+                        def proof_guard():
+                            with live_grant_roles(sess, getattr(self, "_bound_org", DEFAULT_ORG)) as roles, svc._lock:
+                                self._require_ownership_traffic(svc, sess, ownership_value, method, grant)
+                                yield roles
 
-                    res = svc.verify_asset_ownership(
-                        url_or_host=ownership_value,
-                        method=method,
-                        actor=actor,
-                        roles=tuple(sess.roles),     # re-checked inside, when the result is applied
-                        grant_guard=proof_guard,
-                    )
+                        res = svc.verify_asset_ownership(
+                            url_or_host=ownership_value,
+                            method=method,
+                            actor=actor,
+                            roles=tuple(sess.roles),     # re-checked inside, when the result is applied
+                            grant_guard=proof_guard,
+                        )
                     payload = {**res, "assets": svc.assets()}
                     return self._authorized_org_read(
                         sess, getattr(self, "_bound_org", DEFAULT_ORG),
@@ -2102,6 +2228,42 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         return self._json(403, {"error": "プロファイルの承認には管理者の権限が必要です"})
                     result = svc.accept_l2_profile(str(body.get("id", "")), str(body.get("sha256", "")), actor)
                     return self._authorized_platform_read(sess, lambda: self._json(200, result), admin=True)
+                elif p in ("/api/a2b/approve", "/api/a2b/revoke"):
+                    # approving makes a profile runnable: a PLATFORM admin only (an organization
+                    # owner is not one). The draft is looked up in the named organization's store.
+                    if "admin" not in sess.roles:
+                        paudit.record("a2b.approval_denied", actor=actor, op=p, org=str(body.get("org", ""))[:64])
+                        return self._json(403, {"error": "検証内容の承認・取り消しにはプラットフォーム管理者の権限が必要です"})
+                    org = str(body.get("org", "") or DEFAULT_ORG)
+                    try:
+                        if tenancy is not None:
+                            osvc = tenancy.service(org)
+                        elif org == DEFAULT_ORG:
+                            osvc = svc
+                        else:
+                            raise TenancyError("組織が見つかりません")
+                        if p == "/api/a2b/approve":
+                            # the admin role is checked again, live, while the grant is made
+                            with ops.locked_session(sess.token) as current:
+                                if current is None or current.operator != sess.operator or "admin" not in current.roles:
+                                    paudit.record("a2b.approval_denied", actor=actor, op=p, org=org[:64], reason="role_lost")
+                                    return self._json(403, {"error": "管理者の権限が失効しました"})
+                                result = osvc.approve_a2b_draft(str(body.get("id", "")), str(body.get("sha256", "")), actor)
+                            paudit.record("a2b.approved", actor=actor, org=org[:64], draft=str(body.get("id", ""))[:32],
+                                          sha256=str(body.get("sha256", ""))[:64])
+                        else:
+                            result = osvc.revoke_a2b_draft(str(body.get("id", "")), actor)
+                            paudit.record("a2b.revoked", actor=actor, org=org[:64], draft=str(body.get("id", ""))[:32])
+                    except AuditWriteFailed:
+                        raise
+                    except (ValueError, TenancyError) as exc:
+                        try:
+                            paudit.record("a2b.approval_refused", actor=actor, op=p, org=org[:64],
+                                          draft=str(body.get("id", ""))[:32], reason=str(exc)[:200])
+                        except Exception:   # noqa: BLE001 - the refusal stands either way
+                            pass
+                        return self._json(400, {"error": str(exc)[:300]})
+                    return self._authorized_platform_read(sess, lambda: self._json(200, result), admin=True)
                 elif p in ("/api/router/verify", "/api/cve/sync") and not ({"approver", "admin"} & set(sess.roles)):
                     # one spawns the planner CLI and an outbound model call, the other replaces feed data
                     paudit.record("system.job_denied", actor=actor, job=p)
@@ -2117,6 +2279,28 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     if p == "/api/system/verify-controls":
                         rep = run_live_control_verification()
                         paudit.record("system.controls_verified", actor=actor, all_passed=rep["all_passed"])
+                    elif p == "/api/agent-defense/evaluate":
+                        # the AI coding agent's own rules, run offline (loopback stand-in model,
+                        # network sandbox, scratch copy); only the selected settings text is sent
+                        from . import agent_defense
+                        text = body.get("settings_json")
+                        if not self._loopback_client():
+                            rep = {"status": "unsupported", "scope": agent_defense.SCOPE_NOTE,
+                                   "reason": "この端末以外からの接続では実行しません"}
+                        else:
+                            def still_allowed():
+                                # re-checked during the run: a logout, expiry or lost role stops it
+                                cur = self._session()
+                                if not cur or cur.operator != sess.operator:
+                                    return "ログインが失効したため中断しました"
+                                if not ({"approver", "admin"} & set(cur.roles)):
+                                    return "権限が変更されたため中断しました"
+                                return None
+                            rep = agent_defense.evaluate_settings(text if isinstance(text, str) else None,
+                                                                  still_allowed=still_allowed)
+                        rep["settings_path"] = str(body.get("settings_path") or "")[:256] or None
+                        paudit.record("agent_defense.evaluated", actor=actor, status=rep.get("status"),
+                                      summary=rep.get("summary"))
                     else:
                         rep = run_real_software_cve_comparison()
                         paudit.record("cve.real_software_verified", actor=actor, all_passed=rep["all_passed"])
@@ -2169,6 +2353,8 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     with live_grant_roles(sess, getattr(self, "_bound_org", DEFAULT_ORG)):
                         svc.resume(actor)
                 elif p == base + "/emergency-stop":
+                    from . import agent_defense
+                    agent_defense.stop_all()            # a running agent check dies with it
                     stop_report = svc.emergency_stop(actor)
                     if not ops.trusted():
                         return self._json(200, {"stopped": True, "details_unavailable": True})
@@ -2289,6 +2475,11 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                     return self._json(404, {"error": "not found"})
             except AuthError as e:
                 return self._json(401, {"error": str(e)})
+            except ownership_policy.LimitReached as e:
+                if not getattr(e, "audited", False):     # e.g. a concurrency slot refusal
+                    self._audit_self_service_refusal(
+                        default_svc, getattr(e, "account", "-"), "-", p, str(e))
+                return self._json(429, {"error": str(e)}, [("Retry-After", "600")])
             except ApproverRequired as e:
                 return self._json(403, {"error": str(e)})
             except StopNotConfirmed as e:

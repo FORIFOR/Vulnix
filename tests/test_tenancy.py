@@ -26,7 +26,14 @@ from aegis.tenancy import (DEFAULT_ORG, MAX_ORGS_PER_ACCOUNT, OrgStore, TenancyE
                            default_members_from, service_roles)
 from tests.test_local_defense import synthetic_bundle
 
-LAB_PORT = 18097
+def _free_port() -> int:
+    import socket
+    with socket.socket() as sock:      # OS-assigned: a fixed port collides with local services
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+LAB_PORT = _free_port()
 
 
 class TestOrgStore(unittest.TestCase):
@@ -348,6 +355,85 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
             self.assertEqual(self.req(alice, proof, request, org)[0], 403)
             self.assertEqual(check.call_count, 2)
             self.assertFalse(self.req(alice, endpoint, {**request, "action": "status"}, org)[1]["can_verify"])
+
+    def test_personal_self_service_ownership_needs_no_operator_file_or_second_person(self):
+        owner = self.signup("selfserveowner")
+        outsider = self.signup("selfserveoutsider")
+        personal = owner["orgs"][0]["id"]
+        corporate = self.reg.store.create_org("Corporate self-serve", "selfserveowner")
+        url = "https://selfserve.example.test/"
+        proof = {"url": url, "method": "dns_txt"}
+        endpoint = "/assets/ownership-traffic"
+        env = {"VULNIX_OWNERSHIP_TRAFFIC": "hybrid", "VULNIX_PERSONAL_OWNERSHIP_ORGS": personal,
+               "VULNIX_OWNERSHIP_SELF_SERVICE": "1"}
+        with patch.dict(os.environ, env), patch.multiple(
+                "aegis.server", REAL_SERVICE_DIAGNOSIS=False, REAL_SITE_L1_ONLY=False), patch(
+                "aegis.assessment.verify_ownership_challenge", return_value={
+                    "verified": False, "method": "dns_txt", "verified_at": time.time(), "detail": "fixture",
+                }) as check:
+            for org in (personal, corporate):
+                self.assertEqual(self.req(owner, "/assets/challenge", {"url": url}, org)[0], 200)
+            # enterprise orgs keep the separate-person approval
+            self.assertEqual(self.req(owner, "/assets/verify-ownership", proof, corporate)[0], 403)
+            self.assertEqual(self.req(outsider, endpoint, {**proof, "action": "status"}, personal)[0], 403)
+            check.assert_not_called()
+            _, status = self.req(owner, endpoint, {**proof, "action": "status"}, personal)
+            self.assertTrue(status["can_verify"], status)
+            self.assertEqual(set(status["available_methods"]),
+                             {"dns_txt", "well_known", "google_search_console"})
+            # bounded per target, method and UTC day; failures count
+            for _ in range(5):
+                self.assertEqual(self.req(owner, "/assets/verify-ownership", proof, personal)[0], 200)
+            self.assertEqual(self.req(owner, "/assets/verify-ownership", proof, personal)[0], 403)
+            self.assertEqual(check.call_count, 5)
+            self.assertFalse(self.req(owner, endpoint, {**proof, "action": "status"}, personal)[1]["can_verify"])
+            events = [json.loads(line) for line in
+                      (self.reg.service(personal).data_dir / "audit.jsonl").read_text().splitlines()]
+            used = [e for e in events if e.get("event") == "asset.ownership_traffic_preapproved"]
+            self.assertEqual(len(used), 5)
+            self.assertTrue(all(str(e["fields"].get("policy_id", "")).startswith("self-") for e in used))
+            with patch("aegis.server.time.time", return_value=time.time() + 86400):
+                self.assertEqual(self.req(owner, "/assets/verify-ownership", proof, personal)[0], 200)
+            self.reg.service(personal).emergency_stop("selfserveowner")
+            with patch("aegis.server.time.time", return_value=time.time() + 2 * 86400):
+                self.assertEqual(self.req(owner, "/assets/verify-ownership", proof, personal)[0], 403)
+            self.assertEqual(check.call_count, 6)
+        # without the operator switch nothing is preapproved
+        with patch.dict(os.environ, {**env, "VULNIX_OWNERSHIP_SELF_SERVICE": "0"}), patch.multiple(
+                "aegis.server", REAL_SERVICE_DIAGNOSIS=False, REAL_SITE_L1_ONLY=False):
+            self.assertFalse(self.req(owner, endpoint, {**proof, "action": "status"}, personal)[1]["can_verify"])
+
+    def test_self_service_limits_targets_per_org_and_attempts_per_account_across_orgs(self):
+        owner = self.signup("selflimitowner")
+        first = owner["orgs"][0]["id"]
+        second = self.reg.store.create_org("Second personal", "selflimitowner")
+        env = {"VULNIX_OWNERSHIP_TRAFFIC": "preapproved", "VULNIX_OWNERSHIP_SELF_SERVICE": "1"}
+        with patch.dict(os.environ, env), patch.multiple(
+                "aegis.server", REAL_SERVICE_DIAGNOSIS=False, REAL_SITE_L1_ONLY=False,
+                OWNERSHIP_CHECKS_PER_ORG_PER_HOUR=100), patch(
+                "aegis.assessment.verify_ownership_challenge", return_value={
+                    "verified": False, "method": "dns_txt", "verified_at": time.time(), "detail": "fixture",
+                }) as check:
+            for i in range(6):
+                url = f"https://t{i}.selflimit.example.test/"
+                self.assertEqual(self.req(owner, "/assets/challenge", {"url": url}, first)[0], 200)
+                code, body = self.req(owner, "/assets/verify-ownership", {"url": url, "method": "dns_txt"}, first)
+                self.assertEqual(code, 200 if i < 5 else 429, body)
+            self.assertEqual(check.call_count, 5)
+            # the account's hourly limit spans its organizations
+            url = "https://t0.selflimit.example.test/"
+            self.assertEqual(self.req(owner, "/assets/challenge", {"url": url}, second)[0], 200)
+            codes = [self.req(owner, "/assets/verify-ownership", {"url": url, "method": method}, second)[0]
+                     for method in ("dns_txt", "dns_txt", "dns_txt", "dns_txt", "dns_txt", "well_known")]
+            self.assertEqual(codes, [200] * 5 + [429])
+            self.assertEqual(check.call_count, 10)
+            # refused attempts are audited in the organization that tried (nothing was sent)
+            for org_id in (first, second):
+                events = [json.loads(line) for line in
+                          (self.reg.service(org_id).data_dir / "audit.jsonl").read_text().splitlines()]
+                refused = [e for e in events if e.get("event") == "asset.ownership_traffic_refused"]
+                self.assertEqual(len(refused), 1, org_id)
+                self.assertEqual(refused[0]["fields"]["actor"], "selflimitowner")
 
     def test_personal_google_ownership_rechecks_approval_between_requests(self):
         from aegis import google_ownership
@@ -716,6 +802,7 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
             ("/cve/sync", self.svc.cve_monitor, "ingest_payloads"),
             ("/system/verify-controls", "aegis.server.run_live_control_verification", None),
             ("/cve/real-software-verify", "aegis.server.run_real_software_cve_comparison", None),
+            ("/agent-defense/evaluate", "aegis.agent_defense.evaluate_settings", None),
         )
         for path, target, method in cases:
             with self.subTest(path=path):
@@ -1952,9 +2039,251 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
         self.assertEqual(self.req(a, "/operators")[0], 403)
         self.assertEqual(self.req(a, "/l2-profiles")[0], 403)
         self.assertEqual(self.req(a, "/system/verify-controls", {})[0], 403)
+        # the AI-agent defense check runs a program on this machine: platform roles only
+        self.assertEqual(self.req(a, "/agent-defense/evaluate", {"settings_json": None})[0], 403)
+        self.assertEqual(self.req({}, "/agent-defense/status")[0], 401)
         self.assertEqual(self.req(a, "/operators/roles", {"name": "alice", "roles": ["admin"]})[0], 403)
         p = self.login("padmin", "padmin-pw-1")
         self.assertEqual(self.req(p, "/operators")[0], 200)
+        with patch.dict(os.environ, {"VULNIX_AGENT_DEFENSE_LOCAL": ""}):
+            code, rep = self.req(p, "/agent-defense/evaluate", {"settings_json": None})
+            self.assertEqual((code, rep["status"]), (200, "unsupported"))     # never runs unless enabled here
+            self.assertIn("VULNIX_AGENT_DEFENSE_LOCAL", rep["reason"])
+            self.assertEqual(self.req(p, "/agent-defense/status")[1]["available"], False)
+
+    def test_agent_check_runs_only_for_this_machine_and_stops_when_the_role_is_lost(self):
+        from aegis import agent_defense
+        p = self.login("padmin", "padmin-pw-1")
+        avail = {"available": True, "reason": None}
+
+        def call(path, body=None, host=None):
+            h = {"Content-Type": "application/json", "Cookie": p["cookie"]}
+            if body is not None:
+                h["X-Aegis-Request"] = "1"
+            if host:
+                h["Host"] = host
+            r = urllib.request.Request(self.root + path, json.dumps(body).encode() if body is not None else None, h)
+            with urllib.request.urlopen(r) as resp:
+                return json.load(resp)
+        with patch.object(agent_defense, "availability", return_value=avail), \
+                patch.object(agent_defense, "evaluate_settings") as run:
+            for path, body in (("/agent-defense/status", None), ("/agent-defense/evaluate", {"settings_json": None})):
+                with self.assertRaises(urllib.error.HTTPError) as err:   # a foreign Host never reaches the route
+                    call(path, body, host="vulnix.example")
+                err.exception.close()
+                self.assertEqual(err.exception.code, 421)
+            run.assert_not_called()
+            self.assertTrue(call("/agent-defense/status")["available"])
+            seen = {}
+
+            def fake(text, *, still_allowed):
+                seen["before"] = still_allowed()
+                self.req(p, "/auth/logout", {})          # the session ends during the run
+                seen["after"] = still_allowed()
+                return {"status": "stopped", "reason": seen["after"]}
+            run.return_value = {"status": "done", "results": []}
+            rep = call("/agent-defense/evaluate", {"settings_json": None, "settings_path": "app/.claude/settings.json"})
+            self.assertEqual(rep["settings_path"], "app/.claude/settings.json")   # result names its target
+            run.side_effect = fake
+            with self.assertRaises(urllib.error.HTTPError) as err:     # nor is the result handed to a lost session
+                call("/agent-defense/evaluate", {"settings_json": None})
+            err.exception.close()
+            self.assertEqual(err.exception.code, 401)
+            self.assertIsNone(seen["before"])
+            self.assertIn("失効", seen["after"])
+
+    def test_a2b_drafts_are_per_org_and_only_a_platform_admin_makes_one_runnable(self):
+        from tests.test_a2b_profile import DRAFT
+        a, b = self.signup("alice"), self.signup("bob")       # each owns an org, no platform role
+        oa, ob = a["orgs"][0]["id"], b["orgs"][0]["id"]
+        code, d1 = self.req(a, "/assets/a2b-drafts", {"draft": DRAFT}, org=oa)
+        self.assertEqual((code, d1["approval"]["status"]), (200, "draft"), d1)
+        _, d2 = self.req(b, "/assets/a2b-drafts", {"draft": DRAFT}, org=ob)     # same API name, other org
+        _, d3 = self.req(a, "/assets/a2b-drafts", {"draft": DRAFT}, org=oa)     # same name twice in one org
+        self.assertEqual(len({d1["profile_id"], d2["profile_id"], d3["profile_id"]}), 3)   # nothing overwritten
+        self.assertEqual(self.req(b, "/assets/a2b-drafts", {"draft": DRAFT, "id": d1["id"]}, org=ob)[0], 400)
+        self.assertEqual(self.req(b, "/assets/a2b-drafts", org=oa)[0], 403)
+        self.assertEqual({d["id"] for d in self.req(b, "/assets/a2b-drafts", org=ob)[1]["drafts"]}, {d2["id"]})
+        self.assertEqual(self.req(b, "/assets/a2b-drafts/request", {"id": d1["id"], "sha256": d1["sha256"]}, org=ob)[0], 400)
+        approve = {"org": oa, "id": d1["id"], "sha256": d1["sha256"]}
+        self.assertEqual(self.req(a, "/a2b/approve", approve)[0], 403)     # an org owner is not a platform admin
+        p = self.login("padmin", "padmin-pw-1")
+        self.assertEqual(self.req(p, "/a2b/approve", approve)[0], 400)     # not requested yet
+        self.assertEqual(self.req(a, "/assets/a2b-drafts/request", {"id": d1["id"], "sha256": "0" * 64}, org=oa)[0], 400)
+        code, r = self.req(a, "/assets/a2b-drafts/request", {"id": d1["id"], "sha256": d1["sha256"]}, org=oa)
+        self.assertEqual((code, r["approval"]["status"]), (200, "requested"))
+        self.assertEqual(self.req(p, "/a2b/approve", {**approve, "org": ob})[0], 400)        # id is per org
+        self.assertEqual(self.req(p, "/a2b/approve", {**approve, "sha256": "0" * 64})[0], 400)
+        osvc = self.reg.service(oa)
+        self.assertEqual(list(osvc.l2.runnable_check_ids()), [])             # nothing runnable before approval
+        self.assertFalse(list((osvc.data_dir / "l2_profiles").glob("a2b_*.json")) if (osvc.data_dir / "l2_profiles").is_dir() else [])
+        self.assertEqual(self.req(a, "/a2b/review")[0], 403)
+        review = self.req(p, "/a2b/review")[1]["drafts"]
+        mine = next(x for x in review if x["id"] == d1["id"])
+        self.assertEqual((mine["org"], len(mine["rules"])), (oa, 3))           # the admin sees what the hash covers
+        self.assertIn("/api/orgs/org-a/notes/note-b1", json.dumps(mine["rules"]))
+        code, r = self.req(p, "/a2b/approve", approve)
+        self.assertEqual((code, r["approval"]["status"], r["approved_profile_loaded"]), (200, "approved", True), r)
+        runnable = [c for c in osvc.l2.runnable_check_ids() if c.startswith(d1["profile_id"])]
+        self.assertEqual(len(runnable), 3)
+        self.assertFalse([c for c in self.reg.service(ob).l2.runnable_check_ids() if c.startswith("a2b_")])
+        # a change after approval voids it: nothing of the old content stays runnable
+        changed = {**DRAFT, "own_marker": "VULNIX_A2B_OWNER_A_DATA_V2"}
+        code, r = self.req(a, "/assets/a2b-drafts", {"draft": changed, "id": d1["id"]}, org=oa)
+        self.assertEqual((r["approval"]["status"], r["approval"].get("voided")), ("draft", "approved"))
+        self.assertFalse([c for c in osvc.l2.runnable_check_ids() if c.startswith(d1["profile_id"])])
+        # approve again, then the organization withdraws it (reducing power needs no admin)
+        self.assertEqual(self.req(a, "/assets/a2b-drafts/request", {"id": d1["id"], "sha256": r["sha256"]}, org=oa)[0], 200)
+        self.assertEqual(self.req(p, "/a2b/approve", {**approve, "sha256": r["sha256"]})[0], 200)
+        # a second draft for the same host cannot be made runnable beside it; nothing is left behind
+        self.assertEqual(self.req(a, "/assets/a2b-drafts/request", {"id": d3["id"], "sha256": d3["sha256"]}, org=oa)[0], 200)
+        code, r = self.req(p, "/a2b/approve", {"org": oa, "id": d3["id"], "sha256": d3["sha256"]})
+        self.assertEqual(code, 400)
+        self.assertIn("同じホスト", r["error"])
+        self.assertFalse(list((osvc.data_dir / "l2_profiles").glob(f"{d3['profile_id']}.json")))
+        self.assertEqual(len([c for c in osvc.l2.runnable_check_ids() if c.startswith(d1["profile_id"])]), 3)
+        code, r = self.req(a, "/assets/a2b-drafts/withdraw", {"id": d1["id"]}, org=oa)
+        self.assertEqual((code, r["approval"]["status"]), (200, "revoked"))
+        self.assertFalse(list((osvc.data_dir / "l2_profiles").glob(f"{d1['profile_id']}.json")))
+        self.assertFalse([c for c in osvc.l2.runnable_check_ids() if c.startswith(d1["profile_id"])])
+        # a platform admin can revoke; grants and refusals are in the platform audit
+        self.assertEqual(self.req(a, "/assets/a2b-drafts/request", {"id": d1["id"], "sha256": r["sha256"]}, org=oa)[0], 200)
+        self.assertEqual(self.req(p, "/a2b/approve", {**approve, "sha256": r["sha256"]})[0], 200)
+        code, r = self.req(p, "/a2b/revoke", {"org": oa, "id": d1["id"]})
+        self.assertEqual((code, r["approval"]["status"]), (200, "revoked"))
+        events = {e["event"] for e in self.reg.platform_audit.entries()}
+        self.assertTrue({"a2b.approved", "a2b.approval_refused", "a2b.revoked", "a2b.approval_denied"} <= events, events)
+        # withdrawing works even when the audit log cannot be written (a removal is never held back)
+        self.assertEqual(self.req(a, "/assets/a2b-drafts/request", {"id": d1["id"], "sha256": r["sha256"]}, org=oa)[0], 200)
+        self.assertEqual(self.req(p, "/a2b/approve", {**approve, "sha256": r["sha256"]})[0], 200)
+        self.assertTrue([c for c in osvc.l2.runnable_check_ids() if c.startswith(d1["profile_id"])])
+        from unittest.mock import patch as _patch
+        from aegis.audit import AuditWriteFailed
+        with _patch.object(osvc.audit, "record", side_effect=OSError("disk full")):
+            with self.assertRaises(AuditWriteFailed) as caught:
+                osvc.revoke_a2b_draft(d1["id"], "alice")
+        self.assertTrue(caught.exception.applied)
+        self.assertFalse([c for c in osvc.l2.runnable_check_ids() if c.startswith(d1["profile_id"])])
+        self.assertNotIn(d1["profile_id"], osvc._accepted_profiles)
+        # nobody approves a draft they requested or saved
+        dd = self.svc.save_a2b_draft(DRAFT, "padmin")
+        self.svc.request_a2b_approval(dd["id"], dd["sha256"], "padmin")
+        self.assertEqual(self.req(p, "/a2b/approve", {"org": DEFAULT_ORG, "id": dd["id"], "sha256": dd["sha256"]})[0], 400)
+        # nothing is changed under a running check
+        osvc.a.state = "running"
+        try:
+            self.assertEqual(self.req(a, "/assets/a2b-drafts", {"draft": DRAFT, "id": d1["id"]}, org=oa)[0], 400)
+        finally:
+            osvc.a.state = "idle"
+        # a member who lost the role cannot save
+        self.reg.store._data["orgs"][oa]["members"]["alice"] = ["viewer"]
+        self.assertEqual(self.req(a, "/assets/a2b-drafts", {"draft": DRAFT}, org=oa)[0], 403)
+
+    def test_a2b_approval_stops_when_the_approver_or_the_requester_loses_authority(self):
+        from tests.test_a2b_profile import DRAFT
+        from aegis.policy import PolicyError
+        a = self.signup("alice")
+        oa = a["orgs"][0]["id"]
+        p = self.login("padmin", "padmin-pw-1")
+        osvc = self.reg.service(oa)
+
+        def approved(user, by, draft=DRAFT):
+            _, d = self.req(user, "/assets/a2b-drafts", {"draft": draft}, org=oa)
+            self.assertEqual(self.req(user, "/assets/a2b-drafts/request", {"id": d["id"], "sha256": d["sha256"]}, org=oa)[0], 200)
+            code, r = self.req(by, "/a2b/approve", {"org": oa, "id": d["id"], "sha256": d["sha256"]})
+            self.assertEqual(code, 200, r)
+            return d
+
+        def runnable(d):
+            return [c for c in osvc.l2.runnable_check_ids() if c.startswith(d["profile_id"])]
+
+        def view(user, d):
+            return next(x for x in self.req(user, "/assets/a2b-drafts", org=oa)[1]["drafts"] if x["id"] == d["id"])
+
+        # 1. the approving platform admin loses the admin role: suspended, re-approval needed
+        self.ops.create_account("padmin2", "padmin2-Passw0rd!", actor="padmin")
+        self.ops.set_roles("padmin2", ["approver", "admin"], actor="padmin")
+        q = self.login("padmin2", "padmin2-Passw0rd!")
+        d1 = approved(a, p)
+        self.assertTrue(runnable(d1))
+        self.assertEqual(self.req(q, "/operators/roles", {"name": "padmin", "roles": ["operator"]})[0], 200)
+        self.assertFalse(runnable(d1))
+        v = view(a, d1)
+        self.assertEqual(v["approval"]["status"], "suspended")
+        self.assertIn("承認した管理者", v["approval"]["reason"])
+        self.assertEqual(v["draft"], DRAFT)                                   # the draft itself is kept
+        self.assertEqual(self.req(p, "/a2b/approve", {"org": oa, "id": d1["id"], "sha256": d1["sha256"]})[0], 403)
+        self.assertEqual(self.req(a, "/assets/a2b-drafts/request", {"id": d1["id"], "sha256": d1["sha256"]}, org=oa)[0], 200)
+        self.assertEqual(self.req(q, "/a2b/approve", {"org": oa, "id": d1["id"], "sha256": d1["sha256"]})[0], 200)
+        self.assertTrue(runnable(d1))
+        self.assertEqual(self.req(a, "/assets/a2b-drafts/withdraw", {"id": d1["id"]}, org=oa)[0], 200)
+        # 2. the requester leaves the organization: approved and requested drafts are suspended
+        token = self.req(a, "/orgs/invites", {"roles": ["runner"]}, org=oa)[1]["token"]
+        b = self.signup("bobby")
+        self.assertEqual(self.req(b, "/invites/accept", {"token": token})[0], 200)
+        d2 = approved(b, q)
+        _, d3 = self.req(b, "/assets/a2b-drafts", {"draft": DRAFT}, org=oa)
+        self.assertEqual(self.req(b, "/assets/a2b-drafts/request", {"id": d3["id"], "sha256": d3["sha256"]}, org=oa)[0], 200)
+        self.assertTrue(runnable(d2))
+        self.assertEqual(self.req(a, "/orgs/members/remove", {"name": "bobby"}, org=oa)[0], 200)
+        self.assertFalse(runnable(d2))
+        self.assertEqual(view(a, d2)["approval"]["status"], "suspended")
+        self.assertIn("依頼", view(a, d2)["approval"]["reason"])
+        self.assertEqual(view(a, d3)["approval"]["status"], "suspended")
+        # signing in again gives the removed member nothing back
+        b2 = self.login("bobby", "bobby-Passw0rd!")
+        self.assertEqual(self.req(b2, "/assets/a2b-drafts", org=oa)[0], 403)
+        self.assertEqual(self.req(b2, "/assets/a2b-drafts/request", {"id": d2["id"], "sha256": d2["sha256"]}, org=oa)[0], 403)
+        self.assertEqual(view(a, d2)["approval"]["status"], "suspended")
+        self.assertEqual(self.req(q, "/a2b/approve", {"org": oa, "id": d3["id"], "sha256": d3["sha256"]})[0], 400)
+        # a member who holds the role saves the same content again: it becomes theirs and can be approved
+        code, r = self.req(a, "/assets/a2b-drafts", {"draft": DRAFT, "id": d3["id"]}, org=oa)
+        self.assertEqual((code, r["approval"]["status"], r["saved_by"]), (200, "draft", "alice"))
+        self.assertEqual(self.req(a, "/assets/a2b-drafts/request", {"id": d3["id"], "sha256": r["sha256"]}, org=oa)[0], 200)
+        self.assertEqual(self.req(q, "/a2b/approve", {"org": oa, "id": d3["id"], "sha256": r["sha256"]})[0], 200)
+        self.assertEqual(self.req(a, "/assets/a2b-drafts/withdraw", {"id": d3["id"]}, org=oa)[0], 200)
+        events = [e["event"] for e in osvc.audit.entries()]
+        self.assertGreaterEqual(events.count("a2b.approval_suspended"), 3)
+        # 3. a change made while the server was down: the next start suspends it,
+        #    and the launch guard refuses even before that
+        d4 = approved(a, q)
+        self.assertTrue(runnable(d4))
+        self.reg.store._data["orgs"][oa]["members"]["alice"] = ["viewer"]     # out of band
+        h = d4["host"]
+        with osvc._lock, self.assertRaises(PolicyError):
+            osvc._a2b_guard_locked(h)
+        self.assertFalse(runnable(d4))
+        self.reg.store._data["orgs"][oa]["members"]["alice"] = ["owner"]
+        self.assertEqual(self.req(a, "/assets/a2b-drafts/request", {"id": d4["id"], "sha256": d4["sha256"]}, org=oa)[0], 200)
+        self.assertEqual(self.req(q, "/a2b/approve", {"org": oa, "id": d4["id"], "sha256": d4["sha256"]})[0], 200)
+        self.reg.store._data["orgs"][oa]["members"]["alice"] = ["viewer"]
+        make_handler(self.svc, self.ops, tenancy=self.reg, public_signup=True)   # a restart
+        self.assertFalse(runnable(d4))
+        self.assertEqual(osvc._a2b_read(d4["id"])["approval"]["status"], "suspended")
+        # 4. a run of that host in progress is stopped
+        self.reg.store._data["orgs"][oa]["members"]["alice"] = ["owner"]
+        self.assertEqual(self.req(a, "/assets/a2b-drafts/request", {"id": d4["id"], "sha256": d4["sha256"]}, org=oa)[0], 200)
+        self.assertEqual(self.req(q, "/a2b/approve", {"org": oa, "id": d4["id"], "sha256": d4["sha256"]})[0], 200)
+        with osvc._lock:
+            osvc.a.asset["name"] = h
+            osvc._set_state("running")
+        self.assertEqual(self.req(q, "/operators/roles", {"name": "padmin2", "roles": ["operator"]})[0] in (403, 409), True)  # not on oneself
+        self.assertEqual(self.req(p, "/operators/roles", {"name": "padmin2", "roles": ["operator"]})[0], 403)  # p is no admin now
+        self.ops.set_roles("padmin", ["approver", "admin"], actor="padmin2")
+        p = self.login("padmin", "padmin-pw-1")
+        self.assertEqual(self.req(p, "/operators/roles", {"name": "padmin2", "roles": ["operator"]})[0], 200)
+        self.assertEqual(osvc.a.state, "stopped")
+        self.assertFalse(runnable(d4))
+        self.assertTrue(list(osvc._a2b_dir().glob(f"{d4['id']}.json")))        # records stay
+        # 5. a pending L2 run request of someone who lost the role is void
+        from unittest.mock import patch as _patch
+        osvc._l2_requests["f1"] = {"requested_by": "alice", "requested_at": time.time(), "check": "c1", "host": h}
+        self.reg.store._data["orgs"][oa]["members"]["alice"] = ["viewer"]
+        with _patch.object(type(osvc), "_separation_required", return_value=True):
+            with self.assertRaises(ValueError) as e:
+                osvc._take_l2_request("f1", "c1", "padmin")
+        self.assertIn("権限を失った", str(e.exception))
+        self.assertNotIn("f1", osvc._l2_requests)
 
     def test_pre_existing_accounts_keep_the_existing_workspace(self):
         p = self.login("padmin", "padmin-pw-1")

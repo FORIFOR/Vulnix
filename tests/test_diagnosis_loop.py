@@ -143,7 +143,7 @@ class LoopBase(unittest.TestCase):
         self.addCleanup(stop_lab)
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        env = patch.dict(os.environ, {"AEGIS_ENV": "development", "VULNIX_ARTEX_REAL_CMD": shlex.join(FAKE),
+        env = patch.dict(os.environ, {"AEGIS_ENV": "development", "VULNIX_PLANNER_ENGINE": "artex", "VULNIX_ARTEX_REAL_CMD": shlex.join(FAKE),
                                       "VULNIX_ARTEX_LLM_URL": "http://127.0.0.1:9/v1",
                                       "VULNIX_ARTEX_EXPECTED_SHA256": "", "VULNIX_ARTEX_PG_DSN": ""})
         env.start()

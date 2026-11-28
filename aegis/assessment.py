@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 import contextlib
 import atexit
+import functools
 import hashlib
 import hmac
 import ipaddress
@@ -40,6 +41,7 @@ from .report_diagnosis import diagnosis_lines as diagnosis_report_lines
 from .report_diagnosis import undecided_lines as undecided_report_lines
 from .evidence import (EVIDENCE_LABELS, enforce_verdict, evidence_status,
                        evidence_summary, reproduction_note, reproduction_verdict)
+from .cve_evidence import impact_chain, with_reproduction
 from .gateway import (LAB_REPRODUCTION_CHECKS, Gateway, State, http_probe_tool,
                       reproduction_probe_tool, status_marker_tool)
 from .lab import get_lab_mode, set_lab_mode
@@ -262,16 +264,18 @@ def separate_l2_approver_from_env(environ=None) -> bool:
     return False
 
 
-_DATA_DIR_LOCKS: dict[str, object] = {}
+# data directory -> [lock file handle (None without flock), service objects holding it]
+_DATA_DIR_LOCKS: dict[str, list] = {}
+_DATA_DIR_LOCKS_GUARD = threading.Lock()
 
 
 def _close_data_dir_locks_at_exit() -> None:
-    # The claims stay held for the entire process lifetime. Closing explicitly at
-    # interpreter shutdown avoids leaking file handles in long test processes.
-    for handle in _DATA_DIR_LOCKS.values():
-        if handle is not None:
-            handle.close()
-    _DATA_DIR_LOCKS.clear()
+    # Closing explicitly at interpreter shutdown avoids leaking file handles.
+    with _DATA_DIR_LOCKS_GUARD:
+        for handle, _count in _DATA_DIR_LOCKS.values():
+            if handle is not None:
+                handle.close()
+        _DATA_DIR_LOCKS.clear()
 
 
 atexit.register(_close_data_dir_locks_at_exit)
@@ -292,26 +296,82 @@ def _claim_data_dir(data_dir: Path) -> None:
     could be written over by the other. (Several service objects inside one
     process - as tests do when they 'restart' - share the claim.)"""
     key = str(Path(data_dir).resolve())
-    if key in _DATA_DIR_LOCKS:
-        return
-    try:
-        import fcntl
-    except ImportError:          # no flock on this platform: nothing to enforce
-        _DATA_DIR_LOCKS[key] = None
-        return
-    fh = open(Path(data_dir) / ".lock", "a+")
-    try:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        fh.close()
-        raise RuntimeError(
-            f"データディレクトリ {data_dir} は別のコントロールプレーンのプロセスが使用中です。"
-            "同じデータディレクトリで2つ起動することはできません") from None
-    _DATA_DIR_LOCKS[key] = fh      # held for the life of the process
+    with _DATA_DIR_LOCKS_GUARD:
+        held = _DATA_DIR_LOCKS.get(key)
+        if held is not None:
+            held[1] += 1
+            return
+        try:
+            import fcntl
+        except ImportError:          # no flock on this platform: nothing to enforce
+            _DATA_DIR_LOCKS[key] = [None, 1]
+            return
+        fh = open(Path(data_dir) / ".lock", "a+")
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            fh.close()
+            raise RuntimeError(
+                f"データディレクトリ {data_dir} は別のコントロールプレーンのプロセスが使用中です。"
+                "同じデータディレクトリで2つ起動することはできません") from None
+        _DATA_DIR_LOCKS[key] = [fh, 1]   # held while any service object of this process uses it
+
+
+def _release_data_dir(data_dir: Path) -> None:
+    """A service object closed: the last one releases the claim (and its file handle).
+    Without this, every organization ever loaded kept one descriptor until exit."""
+    key = str(Path(data_dir).resolve())
+    with _DATA_DIR_LOCKS_GUARD:
+        held = _DATA_DIR_LOCKS.get(key)
+        if held is None:
+            return
+        held[1] -= 1
+        if held[1] <= 0:
+            del _DATA_DIR_LOCKS[key]
+            if held[0] is not None:
+                held[0].close()
 
 
 # Findings whose single-item verification is a bundled-lab check (fixed lab paths).
-LAB_ONLY_FINDING_IDS = frozenset({"f_banner", "f_idor", "f_sqli", "fx_idor", "fx_sqli", "fx_banner"})
+def _planner_engine() -> str:
+    """fixed (default) | hybrid | structured | artex - the diagnosis loop's planner."""
+    value = os.environ.get("VULNIX_PLANNER_ENGINE", "").strip().lower()
+    return value if value in ("fixed", "hybrid", "structured", "artex") else "fixed"
+
+
+def _model_timeout_for_planner() -> float:
+    """One planner-model request: the same 1-120 s rule as the gateway's local transport."""
+    from .router import _model_timeout
+    return _model_timeout(os.environ.get("VULNIX_PLANNER_LLM_TIMEOUT_S", 30))
+
+
+def _planner_timeout() -> float:
+    """Wall-clock limit of one ARTEX planner process (and its CPU-seconds cap): 120 s by
+    default; a slower local model may be given up to 600 s via VULNIX_ARTEX_PLANNER_TIMEOUT_S."""
+    try:
+        value = float(os.environ.get("VULNIX_ARTEX_PLANNER_TIMEOUT_S", "120"))
+    except ValueError:
+        return 120.0
+    return value if 30 <= value <= 600 else 120.0
+
+
+def _lab_verdict(result, check: str) -> str:
+    """The frozen evidence judge, plus the separately kept open-redirect check."""
+    if check == "open_redirect":
+        from .redirect_evidence import open_redirect_verdict
+        return open_redirect_verdict(result)
+    return reproduction_verdict(result, check)
+
+
+def _lab_note(result, check: str) -> str:
+    if check == "open_redirect":
+        from .redirect_evidence import open_redirect_note
+        return open_redirect_note(result)
+    return reproduction_note(result, check)
+
+
+LAB_ONLY_FINDING_IDS = frozenset({"f_banner", "f_idor", "f_sqli", "f_open_redirect",
+                                  "fx_idor", "fx_sqli", "fx_banner"})
 
 # Under separation of duties, a request for an L2 run can be approved for this long.
 L2_REQUEST_MAX_AGE_S = 24 * 3600
@@ -751,6 +811,9 @@ class AssessmentService:
                 self.audit.record("control_plane.closed", clean=clean)
             except Exception:
                 pass
+            if not getattr(self, "_claim_released", False):
+                self._claim_released = True
+                _release_data_dir(self.data_dir)
             return clean
 
     @staticmethod
@@ -1480,6 +1543,7 @@ class AssessmentService:
                 raise PolicyError("この要求を出したワークスペースは停止または切り替え済みです")
             if self._unstopped_now_locked() or self.workers.busy_sessions():
                 raise PolicyError("停止を確認できていないWorkerが残っているため、新しいWorkerは起動しません")
+            self._a2b_guard_locked(host)
             if not self._in_ownership_flow(host):
                 return
             ext = self._external_entry(host)
@@ -1705,7 +1769,7 @@ class AssessmentService:
             meta = profile["paths"][node["path"]]
             return {"account": profile["tokens"][node["token"]]["label"], "token_key": node["token"],
                     "path": meta["default"], "path_override_pattern": meta.get("override_pattern"),
-                    "headers": dict(node["headers"])}
+                    "headers": dict(node.get("headers") or {})}
         return {
             "id": c["id"], "label": c["label"],
             "request": req(c["subject"]),
@@ -1713,6 +1777,288 @@ class AssessmentService:
             "denied": c["denied"], "exposed": c["exposed"],
             "spec_evidence": c["spec_evidence"],
         }
+
+    # ---- A2B drafts: four separate steps -------------------------------------
+    # 1. the user reads the API definition and confirms test data (in the browser);
+    # 2. a draft is saved in THIS organization's store - never in a profile directory, so
+    #    nothing can run from it;
+    # 3. a platform admin approves the exact profile built from it (SHA-256), which writes it
+    #    into this organization's profile directory and accepts it;
+    # 4. each run still needs a verified asset, stored test accounts and the per-item L2
+    #    approval by someone other than the requester (unchanged).
+    # Editing an approved draft, or revoking it, removes the profile and its acceptance.
+    def _a2b_dir(self) -> Path:
+        d = self.data_dir / "a2b_drafts"
+        d.mkdir(mode=0o700, exist_ok=True)
+        os.chmod(d, 0o700)
+        return d
+
+    def _a2b_read(self, draft_id: str) -> dict:
+        from .a2b_profile import DRAFT_ID_RE
+        if not isinstance(draft_id, str) or not DRAFT_ID_RE.fullmatch(draft_id):
+            raise ValueError("下書きが見つかりません")
+        f = self._a2b_dir() / f"{draft_id}.json"
+        if not f.is_file():
+            raise ValueError("下書きが見つかりません")
+        return json.loads(f.read_text(encoding="utf-8"))
+
+    def _a2b_write(self, rec: dict) -> None:
+        d = self._a2b_dir()
+        fd, tmp = tempfile.mkstemp(dir=d, prefix=".d-", suffix=".json")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(rec, fh, ensure_ascii=False, indent=2)
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, d / f"{rec['id']}.json")
+        except BaseException:
+            Path(tmp).unlink(missing_ok=True)
+            raise
+
+    def _a2b_view(self, rec: dict) -> dict:
+        pid = rec["profile_id"]
+        src = self.l2.sources.get(pid)
+        runnable = bool(src and src["site"] and self._accepted_profiles.get(pid) == rec["approval"].get("sha256")
+                        and src["sha256"] == rec["approval"].get("sha256"))
+        status = rec["approval"]["status"]
+        if status == "approved" and not runnable:
+            status = "changed"          # the file or the acceptance no longer matches what was approved
+        profile = rec["profile"]
+        return {"id": rec["id"], "name": rec["name"], "host": profile["applies_to"]["hosts"][0],
+                "profile_id": pid, "sha256": rec["sha256"], "revision": rec["revision"],
+                "saved_by": rec["saved_by"], "saved_at": rec["saved_at"],
+                "checks": [{"kind": c["id"][len(pid) + 1:], "label": c["label"], "confirmed": c["spec_status"] == "confirmed"}
+                           for c in profile["checks"]],
+                "approval": {**rec["approval"], "status": status}, "approved_profile_loaded": runnable,
+                "draft": rec["draft"]}
+
+    def a2b_drafts(self) -> list[dict]:
+        with self._lock:
+            out = []
+            for f in sorted(self._a2b_dir().glob("d*.json")):
+                try:
+                    rec = json.loads(f.read_text(encoding="utf-8"))
+                    if isinstance(rec, dict) and isinstance(rec.get("approval"), dict):
+                        out.append(self._a2b_view(rec))
+                except Exception:   # noqa: BLE001 - one unreadable record never hides the others
+                    continue
+            return sorted(out, key=lambda r: r["saved_at"], reverse=True)
+
+    def a2b_review(self) -> list[dict]:
+        """For a platform admin: the drafts waiting for approval or approved, with the exact
+        profile content (paths, markers, denial statuses) the SHA-256 covers."""
+        out = []
+        for d in self.a2b_drafts():
+            if d["approval"]["status"] in ("requested", "approved", "changed"):
+                rec = self._a2b_read(d["id"])
+                out.append({**d, "rules": [self._describe_rule(rec["profile"], c) for c in rec["profile"]["checks"]
+                                           if c["spec_status"] == "confirmed"]})
+        return out
+
+    def save_a2b_draft(self, draft: dict, actor: str, draft_id: str | None = None) -> dict:
+        """Save (or update) a draft of THIS organization. It has no execution power."""
+        from .a2b_profile import build_profile, profile_bytes, profile_id_for
+        with self._lock:
+            if self.a.state == "running":
+                raise ValueError("診断実行中は検証内容を変更できません。停止するか終わってから保存してください")
+            if draft_id:
+                rec = self._a2b_read(draft_id)          # only this organization's own store
+            else:
+                rec = {"id": "d" + secrets.token_hex(6), "revision": 0,
+                       "approval": {"status": "draft"}}
+                while (self._a2b_dir() / f"{rec['id']}.json").exists():
+                    rec["id"] = "d" + secrets.token_hex(6)
+            profile = build_profile(draft, profile_id_for(rec["id"]))   # DraftError for the user
+            sha = hashlib.sha256(profile_bytes(profile)).hexdigest()
+            if draft_id and sha == rec.get("sha256") and rec["approval"].get("status") != "suspended":
+                return self._a2b_view(rec)
+            was = rec["approval"].get("status")
+            self._audit_first("a2b.draft_saved", actor=actor, draft=rec["id"], profile=profile["id"],
+                              sha256=sha, revision=rec["revision"] + 1,
+                              checks={c["id"]: c["spec_status"] for c in profile["checks"]})
+            if was in ("approved", "requested"):
+                self._a2b_unload_locked(rec, actor, "a2b.approval_voided_by_change")
+            rec.update({"name": str(draft.get("name") or "").strip()[:80], "draft": draft, "profile": profile,
+                        "profile_id": profile["id"], "sha256": sha, "revision": rec["revision"] + 1,
+                        "saved_by": actor, "saved_at": time.time(),
+                        "approval": {"status": "draft", **({"voided": was} if was in ("approved", "requested") else {})}})
+            self._a2b_write(rec)
+            return self._a2b_view(rec)
+
+    def request_a2b_approval(self, draft_id: str, sha256: str, actor: str) -> dict:
+        with self._lock:
+            rec = self._a2b_read(draft_id)
+            if sha256 != rec["sha256"]:
+                raise ValueError("下書きの内容が表示時から変わっています。確認し直してください")
+            if not any(c["spec_status"] == "confirmed" for c in rec["profile"]["checks"]):
+                raise ValueError("仕様と試験データを確認した項目がありません。未確認の候補は承認を依頼できません")
+            view = self._a2b_view(rec)
+            if view["approval"]["status"] == "approved":     # still loaded as approved: nothing to ask
+                return view
+            if rec["approval"]["status"] == "approved":     # approved, but no longer loaded: start over
+                self._a2b_unload_locked(rec, actor, "a2b.approval_voided_by_change")
+            self._audit_first("a2b.approval_requested", actor=actor, draft=rec["id"], sha256=rec["sha256"])
+            rec["approval"] = {"status": "requested", "sha256": rec["sha256"], "requested_by": actor,
+                               "requested_at": time.time()}
+            self._a2b_write(rec)
+            return self._a2b_view(rec)
+
+    def approve_a2b_draft(self, draft_id: str, sha256: str, actor: str) -> dict:
+        """A PLATFORM admin (checked by the caller) approves the exact profile of a requested
+        draft. The profile is written into this organization's profile directory and accepted."""
+        from .a2b_profile import save_site_profile
+        with self._lock:
+            if self.a.state == "running":
+                raise ValueError("診断実行中は承認できません")
+            rec = self._a2b_read(draft_id)
+            if rec["approval"]["status"] != "requested":
+                raise ValueError("承認を依頼された下書きではありません")
+            if not sha256 or sha256 != rec["sha256"] or sha256 != rec["approval"].get("sha256"):
+                raise ValueError("下書きの内容が表示時から変わっています。内容を確認し直してください")
+            if actor in (rec["approval"].get("requested_by"), rec.get("saved_by")):
+                raise ValueError("承認を依頼した本人・下書きを保存した本人は承認できません。別の管理者が承認してください")
+            gone = self._a2b_authority_failure({**rec, "approval": {**rec["approval"], "approved_by": None,
+                                                                    "status": "requested"}})
+            if gone:
+                raise ValueError(gone)
+            hosts = set(rec["profile"]["applies_to"]["hosts"])
+            taken = sorted(pid for pid, prof in self.l2.profiles.items()
+                           if pid != rec["profile_id"] and hosts & set(prof.get("hosts") or []))
+            if taken:      # checked BEFORE writing: which of two same-host files loads must never be decided by name
+                raise ValueError(f"この検証内容を有効にできません（同じホストの検証内容が既にあります: {', '.join(taken)[:120]}）。"
+                                 "同じホストの検証内容が既にある場合は、先にそちらを取り下げてください")
+            save_site_profile(self.data_dir, rec["profile"])
+            fresh = self._read_l2_profiles()
+            if rec["profile_id"] not in fresh.sources:      # e.g. another profile already covers this host
+                from .a2b_profile import remove_site_profile
+                remove_site_profile(self.data_dir, rec["profile_id"])
+                why = next((r["reason"] for r in fresh.rejected if rec["profile_id"] in str(r.get("file", ""))),
+                           "読み込めませんでした")
+                raise ValueError(f"この検証内容を有効にできません（{str(why)[:200]}）。"
+                                 "同じホストの検証内容が既にある場合は、先にそちらを取り下げてください")
+            try:
+                self.accept_l2_profile(rec["profile_id"], sha256, actor)   # reads the file again, audits, commits
+                rec["approval"] = {**rec["approval"], "status": "approved", "approved_by": actor,
+                                   "approved_at": time.time()}
+                self._a2b_write(rec)
+            except Exception:
+                # nothing half-done stays: no file, no acceptance (audited like a revocation)
+                self._a2b_unload_locked(rec, actor, "a2b.approval_rolled_back")
+                raise
+            return self._a2b_view(rec)
+
+    def revoke_a2b_draft(self, draft_id: str, actor: str) -> dict:
+        with self._lock:
+            if self.a.state == "running":
+                raise ValueError("診断実行中は取り消せません")
+            rec = self._a2b_read(draft_id)
+            err = self._a2b_unload_locked(rec, actor, "a2b.approval_revoked")
+            rec["approval"] = {"status": "revoked", "revoked_by": actor, "revoked_at": time.time()}
+            self._a2b_write(rec)
+            if err:
+                raise err
+            return self._a2b_view(rec)
+
+    # Set by the server: (account, "platform_admin" | "org_operator") -> whether the account
+    # holds that authority NOW. None (no server, e.g. a library caller) checks nothing.
+    _authority = None
+
+    def _a2b_authority_failure(self, rec: dict) -> str | None:
+        """Why an approved or requested draft has lost the authority it was given with."""
+        check = self._authority
+        if check is None:
+            return None
+        ap = rec.get("approval") or {}
+        if ap.get("status") == "approved" and not check(ap.get("approved_by") or "", "platform_admin"):
+            return "承認した管理者がプラットフォーム管理者の権限を失いました。権限のある管理者の再承認が必要です"
+        for who in dict.fromkeys(x for x in (ap.get("requested_by"), rec.get("saved_by")) if x):
+            if not check(who, "org_operator"):
+                return ("承認を依頼した人（または下書きを保存した人）がこの組織での操作権限を失いました。"
+                        "権限のある人が下書きを保存し直し、承認を依頼し直してください")
+        return None
+
+    def _a2b_suspend_locked(self, rec: dict, reason: str, actor: str) -> AuditWriteFailed | None:
+        """Take the approval away (a removal of authority: applied first, recorded after).
+        The draft, its history and the audit records stay."""
+        err = self._a2b_unload_locked(rec, actor, "a2b.approval_suspended", reason=reason,
+                                      approved_by=rec["approval"].get("approved_by"),
+                                      requested_by=rec["approval"].get("requested_by"))
+        rec["approval"] = {"status": "suspended", "reason": reason, "suspended_at": time.time(),
+                           "was": rec["approval"].get("status"),
+                           "approved_by": rec["approval"].get("approved_by"),
+                           "requested_by": rec["approval"].get("requested_by")}
+        self._a2b_write(rec)
+        return err
+
+    def enforce_a2b_authority(self, actor: str = "system:authority") -> list[str]:
+        """Suspend every approved or requested draft whose approver, requester or saver no
+        longer holds the authority it was given with. A run of the same host in progress is
+        stopped first. Called after role and membership changes, at start and before launch."""
+        if self._authority is None:
+            return []
+        suspended, errors = [], []
+        with self._lock:
+            for f in sorted(self._a2b_dir().glob("d*.json")):
+                try:
+                    rec = json.loads(f.read_text(encoding="utf-8"))
+                    if rec.get("approval", {}).get("status") not in ("approved", "requested"):
+                        continue
+                    reason = self._a2b_authority_failure(rec)
+                except Exception:   # noqa: BLE001 - one unreadable record never stops the others
+                    continue
+                if not reason:
+                    continue
+                try:
+                    hosts = {h.lower() for h in rec["profile"]["applies_to"]["hosts"]}
+                    # whatever relies on this approval now ends: a diagnosis, or a re-verification of a
+                    # finished one whose worker is still out (the state stays "completed" then)
+                    in_flight = (self.a.state in ("running", "paused") or self._inflight > 0
+                                 or bool(self.workers.busy_sessions()) or bool(self.workers.active_pids()))
+                    if (rec["approval"]["status"] == "approved" and in_flight
+                            and (self.a.asset.get("name") or "").lower() in hosts):
+                        self.emergency_stop(actor)
+                    err = self._a2b_suspend_locked(rec, reason, actor)
+                except Exception as e:   # noqa: BLE001 - the others are still suspended; the launch guard refuses this one
+                    errors.append(e)
+                    continue
+                if err:
+                    errors.append(err)
+                suspended.append(rec["id"])
+        if errors:
+            raise errors[0]
+        return suspended
+
+    def _a2b_guard_locked(self, host: str) -> None:
+        """At a worker launch: an approved draft for this host whose authority is gone is
+        suspended now, and the launch is refused (whatever the server has noticed so far)."""
+        if self._authority is None or not host:
+            return
+        for f in sorted(self._a2b_dir().glob("d*.json")):
+            try:
+                rec = json.loads(f.read_text(encoding="utf-8"))
+                hosts = {h.lower() for h in rec["profile"]["applies_to"]["hosts"]}
+            except Exception:   # noqa: BLE001 - an unreadable record has no loaded profile of its own
+                continue
+            if rec.get("approval", {}).get("status") == "approved" and host.lower() in hosts:
+                reason = self._a2b_authority_failure(rec)
+                if reason:
+                    self._a2b_suspend_locked(rec, reason, "system:authority")
+                    raise PolicyError(f"{host} の検証内容の承認は停止されました: {reason}")
+
+    def _a2b_unload_locked(self, rec: dict, actor: str, event: str, **extra) -> AuditWriteFailed | None:
+        """Remove the profile file and its acceptance: nothing of this draft stays runnable.
+        A removal of authority: applied first, whatever the audit log does, then recorded;
+        a failed record is returned for the caller to report after finishing."""
+        from .a2b_profile import remove_site_profile
+        pid = rec["profile_id"]
+        removed = remove_site_profile(self.data_dir, pid)
+        if pid in self._accepted_profiles:
+            self._accepted_profiles.pop(pid, None)
+            self.ledger.commit()        # a removal: kept in memory even if the file cannot be replaced
+        if removed or pid in self.l2.sources:
+            self.l2 = self._read_l2_profiles()
+            self._apply_profile_acceptance_locked()
+        self._save_state_locked()
+        return self._audit_reduction(event, actor=actor, draft=rec["id"], profile=pid, **extra)
 
     def accept_l2_profile(self, profile_id: str, sha256: str, actor: str) -> dict:
         """An admin accepts the exact content of a site profile. The file is read
@@ -2397,7 +2743,10 @@ class AssessmentService:
         `llm_approval` ({"max_calls": N, "first_request_sha256": <from the preview>}) is
         needed when the planner's model is a real (non-loopback) endpoint behind the
         Planner LLM Gateway; only an approver can give it."""
-        if not self._artex_real_cmd:
+        # The diagnosis loop's default engine is the fixed rule: no ARTEX process, database,
+        # model or planner gateway is started. ARTEX / structured / hybrid stay selectable.
+        fixed = diagnosis is not None and _planner_engine() == "fixed"
+        if not self._artex_real_cmd and not fixed:
             raise ValueError("ARTEX プランナーが設定されていません（VULNIX_ARTEX_REAL_CMD）")
         with self._lock:
             self._refuse_after_stop_locked()
@@ -2447,7 +2796,7 @@ class AssessmentService:
                 observations = [{"title": clean_target_text(f["title"], 200),
                                  "detail": clean_target_text(f.get("summary", ""), 400)}
                                 for f in self.a.findings.values()
-                                if f.get("id") in ("f_banner", "f_idor", "f_sqli")
+                                if f.get("id") in ("f_banner", "f_idor", "f_sqli", "f_open_redirect")
                                 and evidence_status(f) in ("detected", "proven")]
                 if getattr(self, "_lab_account_resource_observed", None) is not None:
                     surface = "present" if self._lab_account_resource_observed else "absent"
@@ -2466,7 +2815,7 @@ class AssessmentService:
         # VULNIX_ARTEX_EXPECTED_SHA256 before it runs (a mismatch, or anything that is not
         # the ARTEX overlay build, is refused by the bridge).
         dev = os.environ.get("AEGIS_ENV", "").strip().lower() in ("development", "dev")
-        if not dev and not re.fullmatch(r"[0-9a-fA-F]{64}", self._artex_expected_sha256.strip()):
+        if not fixed and not dev and not re.fullmatch(r"[0-9a-fA-F]{64}", self._artex_expected_sha256.strip()):
             self.audit.record("artex.plan_refused", actor=actor, reason="binary sha256 not pinned")
             raise ValueError("本番環境では ARTEX バイナリの SHA-256（VULNIX_ARTEX_EXPECTED_SHA256）の指定が必須です")
         for url, default in ((self._artex_llm_url, None), (self._artex_pg_dsn, 5432)):
@@ -2477,8 +2826,10 @@ class AssessmentService:
             if port == self.lab_port:
                 # a pinned port gives the planner whatever listens there
                 raise ValueError("ARTEX の LLM / DB の接続先に検証ラボのポートは使用できません")
-        st = dict(self._l2_confinement.status())
-        if st.get("ok"):
+        st = {} if fixed else dict(self._l2_confinement.status())
+        if fixed:
+            confinement, protected = None, ()          # nothing is launched for the plan itself
+        elif st.get("ok"):
             confinement = self._l2_confinement
             protected = sorted(str(p) for p in self.data_dir.iterdir() if p.is_file())
         elif (not real_site and os.environ.get("VULNIX_ARTEX_ALLOW_UNCONFINED") == "1"
@@ -2491,9 +2842,10 @@ class AssessmentService:
                              f"（{str(st.get('reason', ''))[:200]}）")
         if request_authorized is not None and not request_authorized():
             raise ValueError("要求者の権限が失効したため、ARTEX 計画を開始しません")
-        self.audit.record("artex.plan_requested", actor=actor, targets=len(targets), confined=confinement is not None)
-        gateway = self._planner_gateway(actor, llm_approval, roles, gen, llm_mode,
-                                        real_site=real_site, request_authorized=request_authorized)
+        self.audit.record("artex.plan_requested", actor=actor, targets=len(targets), confined=confinement is not None,
+                          engine="fixed" if fixed else _planner_engine())
+        gateway = None if fixed else self._planner_gateway(actor, llm_approval, roles, gen, llm_mode,
+                                                           real_site=real_site, request_authorized=request_authorized)
         llm_url, llm_key = self._artex_llm_url, ""
         if gateway is not None:
             try:
@@ -2504,7 +2856,7 @@ class AssessmentService:
             with self._lock:
                 self._artex_gateways.add(gateway)
             llm_url, llm_key = gateway.url, gateway.token
-        fresh = os.environ.get("VULNIX_ARTEX_RESET_DB") == "1" and bool(self._artex_pg_dsn)
+        fresh = os.environ.get("VULNIX_ARTEX_RESET_DB") == "1" and bool(self._artex_pg_dsn) and not fixed
         if fresh:
             _ARTEX_DB_LOCK.acquire()
         try:
@@ -2512,16 +2864,32 @@ class AssessmentService:
                 # the same starting state for every run: a preview and the approved forward
                 # then send the same first request (anything left over would change it)
                 self._reset_artex_db()
-            run = run_artex_planner(self._artex_real_cmd, request, llm_url=llm_url, llm_key=llm_key,
-                                    llm_model=self._artex_llm_model, pg_dsn=self._artex_pg_dsn,
-                                    expected_sha256=self._artex_expected_sha256,
-                                    confinement=confinement, forbidden_paths=protected,
-                                    on_leftover=self._note_leftover_session,
-                                    on_started=lambda sess: self._artex_session_started(sess, gen),
-                                    on_finished=self._artex_session_finished,
-                                    may_start=lambda: self._artex_may_start(gen) and
-                                    (request_authorized is None or request_authorized()),
-                                    data_dirs=(str(self.data_dir),))
+            engine = _planner_engine()
+            if fixed:
+                from .structured_planner import run_fixed_planner
+                run = run_fixed_planner(diagnosis[0].planner_view(), diagnosis[0], targets, frozenset(diagnosis[1]))
+            elif engine in ("structured", "hybrid") and diagnosis is not None:
+                # no ARTEX process: the model (through the same gateway) only fills Vulnix's
+                # step schema; the contract, Gateway, approvals and judge below are unchanged
+                from .structured_planner import run_structured_planner
+                run = run_structured_planner(diagnosis[0].planner_view(), diagnosis[0], targets,
+                                             frozenset(diagnosis[1]), llm_url=llm_url, llm_key=llm_key,
+                                             llm_model=gateway.model if gateway is not None else self._artex_llm_model,
+                                             hybrid=engine == "hybrid",
+                                             no_think=os.environ.get("VULNIX_PLANNER_NO_THINK") == "1",
+                                             timeout_s=_model_timeout_for_planner())
+            else:
+                run = run_artex_planner(self._artex_real_cmd, request, llm_url=llm_url, llm_key=llm_key,
+                                      llm_model=self._artex_llm_model, pg_dsn=self._artex_pg_dsn,
+                                      timeout_s=_planner_timeout(),
+                                      expected_sha256=self._artex_expected_sha256,
+                                      confinement=confinement, forbidden_paths=protected,
+                                      on_leftover=self._note_leftover_session,
+                                      on_started=lambda sess: self._artex_session_started(sess, gen),
+                                      on_finished=self._artex_session_finished,
+                                      may_start=lambda: self._artex_may_start(gen) and
+                                      (request_authorized is None or request_authorized()),
+                                      data_dirs=(str(self.data_dir),))
         except ArtexBridgeError as e:
             self.audit.record("artex.plan_failed", actor=actor, reason=str(e)[:200])
             raise ValueError(artex_failure_message(str(e))) from None
@@ -2607,7 +2975,10 @@ class AssessmentService:
                 self._artex_items[item.id] = {"item": item, "task_id": tk.id if tk else None,
                                               "gen": gen, "run_id": run_id, "requested_by": actor}
             kind = prov.get("kind")
-            label = ("ARTEX 本体（overlay ビルド・ハッシュ固定）" if kind == "artex-binary" and prov.get("pinned")
+            label = ("固定ルール（AI・ARTEX不使用）" if kind == "vulnix-fixed"
+                     else "固定ルール優先＋構造化出力モデル（ARTEX不使用）" if kind == "vulnix-hybrid"
+                     else "構造化出力モデル（ARTEX不使用）" if kind == "vulnix-structured"
+                     else "ARTEX 本体（overlay ビルド・ハッシュ固定）" if kind == "artex-binary" and prov.get("pinned")
                      else "ARTEX ビルド（ハッシュ未固定のため本体と未確認）" if kind == "artex-binary"
                      else "ARTEX 互換プロセス（本体と未確認）")
             self._artex_plan = {
@@ -2616,7 +2987,7 @@ class AssessmentService:
                            "artex_module": prov.get("artex_module"), "artex_commit": prov.get("artex_commit"),
                            "go_version": prov.get("go_version"), "norma_version": prov.get("norma_version"),
                            "label": label},
-                "llm_model": gateway.model if gateway is not None else self._artex_llm_model,
+                "llm_model": None if fixed else gateway.model if gateway is not None else self._artex_llm_model,
                 "llm_gateway": ({k: v for k, v in (self._artex_llm_last or {}).get("report", {}).items()
                                  if k not in ("records", "failed_upstream")} if gateway is not None else None),
                 "isolation": {**_artex_isolation_view(prov.get("isolation") or {}),
@@ -2733,9 +3104,17 @@ class AssessmentService:
         bound = None
         if real:
             bound = self._take_preview_approval(actor, approval, roles)
+        local_transport = None
+        if not real:
+            # A local model on this machine can take longer than a hosted one for the first,
+            # largest prompt. The wait is bounded by the same 1-120 s rule as every model call
+            # (default 30 s) and happens after the send lease is released (stop stays prompt).
+            from .router import _http_transport, _model_timeout
+            local_transport = functools.partial(
+                _http_transport, timeout_s=_model_timeout(os.environ.get("VULNIX_PLANNER_LLM_TIMEOUT_S", 30)))
         return PlannerLLMGateway(mode="forward", upstream_url=upstream,
                                  api_key=os.environ.get("VULNIX_ABLITERATION_KEY", "") if real else "",
-                                 approval=bound, **common)
+                                 approval=bound, transport=local_transport, **common)
 
     def _previews_path(self) -> Path:
         return self.data_dir / "planner_llm_previews.json"
@@ -2827,8 +3206,11 @@ class AssessmentService:
     def artex_plan_view(self) -> dict | None:
         with self._lock:
             real_site = self._in_ownership_flow(self.a.asset.get("name"))
-            configured = bool(self._artex_real_cmd) and (
-                not real_site or (self._real_site_local_artex and self._is_external_service_asset()))
+            # a fixed-rule plan (the default diagnosis-loop engine) exists without ARTEX on the lab
+            configured = (bool(self._artex_real_cmd) and (
+                not real_site or (self._real_site_local_artex and self._is_external_service_asset()))) or (
+                not real_site and self._artex_plan is not None
+                and (self._artex_plan.get("engine") or {}).get("kind") == "vulnix-fixed")
             if not configured:
                 return {"configured": False, "plan": None}
             if self._artex_plan is None:
@@ -4384,7 +4766,24 @@ class AssessmentService:
                 raise ValueError("停止を確認できていないWorkerが残っているため、新しい診断は開始できません")
             # a run that may not start (scope expired, revoked, held) is refused
             # BEFORE the previous results are cleared
-            self._ensure_active_window_locked()
+            try:
+                self._ensure_active_window_locked()
+            except ValueError:
+                if not self._stopped_without_scope_locked():
+                    raise
+                # Stopped AND the scope is gone (expired, revoked, or not restored after a
+                # restore): no run may start, and ownership verification is refused while
+                # stopped - without this there would be no way out. The stop is ended (all
+                # workers confirmed stopped, recorded first; refused like any diagnosis change
+                # while the audit anchor reports a rollback) and nothing is started.
+                self._audit_first("diagnosis.stop_ended", actor=actor, target=self.a.asset["name"],
+                                  reason="scope_inactive")
+                self._reset_workspace_locked(end_stop=True)
+                self._save_state_locked()
+                if self.a.state == "stopped" or self.gateway.state is State.STOPPED:
+                    raise ValueError("前の診断のWorkerの停止を確認できなかったため、停止を解除できません") from None
+                raise ValueError("緊急停止を解除しました（診断は開始していません）。診断範囲の確認が失効または取り消されているため、"
+                                 "所有確認と範囲確認をやり直してから、再診断を実行してください") from None
             # audit first: a run that cannot be recorded does not start (nothing is cleared)
             self._audit_first("assessment.restarted", actor=actor, target=self.a.asset["name"])
             try:
@@ -4406,6 +4805,13 @@ class AssessmentService:
                 self._grant_not_committed("assessment.restarted", "refused_after_record")
                 raise
         return self.snapshot()
+
+    def _stopped_without_scope_locked(self) -> bool:
+        """An emergency stop is in force and the active real service has no valid scope."""
+        name = self.a.asset.get("name")
+        return ((self.a.state == "stopped" or self.gateway.state is State.STOPPED)
+                and self._in_ownership_flow(name) and self._external_entry(name) is None
+                and not self._persist_error)
 
     def pause(self, actor: str) -> None:
         with self._lock:
@@ -4584,6 +4990,10 @@ class AssessmentService:
             raise ValueError("このL2検証には、別の担当者による実行依頼が必要です（依頼が無いか、期限切れです）")
         if req.get("requested_by") == approver:
             raise ValueError("依頼した本人は承認できません。別の承認責任者が承認してください")
+        if self._authority is not None and not self._authority(req.get("requested_by") or "", "org_operator"):
+            self._l2_requests.pop(finding_id, None)
+            raise ValueError("このL2検証を依頼した人がこの組織での操作権限を失ったため、依頼は無効になりました。"
+                             "権限のある人が依頼し直してください")
         return req
 
     def _take_rerun_request(self, finding_id: str, check_id: str, approver: str) -> dict | None:
@@ -4606,6 +5016,23 @@ class AssessmentService:
             f = self.a.findings.get(finding_id) or {}
             return (self.l2.has_check(f.get("reproduce_check"))
                     or self._l2_check_for_finding(finding_id) is not None)
+
+    def _record_lab_reproduction(self, fid: str, check: str, res: dict, ev: dict | None, title: str) -> None:
+        """Store one lab reproduction result on its finding (verdict from evidence.py only)."""
+        if not ev or fid not in self.a.findings:
+            return
+        self._think(title, _lab_note(res, check) + f" [証拠 {ev['evidence_id']}]",
+                    phase="verification", tool="reproduction_probe", level="L2")
+        verdict = _lab_verdict(res, check)
+        with self._lock:
+            f = self.a.findings[fid]
+            self._upsert_finding({
+                **f, "demo_fixture": False, "verdict": verdict, "_in_verification": False,
+                "what_was_established": _lab_note(res, check) if verdict == "proven" else None,
+                "verdict_note": _lab_note(res, check),
+                "executor": {**EXECUTOR, "tool": "reproduction_probe"},
+                "evidence": [e for e in f.get("evidence", []) if e.get("audit_hash")] + [ev],
+            })
 
     def verify_finding(self, finding_id: str, actor: str, *, roles=None,
                        request_authorized=None, approver_class: str | None = None) -> dict:
@@ -4677,7 +5104,7 @@ class AssessmentService:
                     phase="verification", tool="Gateway", level="L1",
                 )
             else:
-                for fid in ("f_banner", "f_idor", "f_sqli"):
+                for fid in ("f_banner", "f_idor", "f_sqli", "f_open_redirect"):
                     if fid in self.a.findings:
                         self.verify_finding(fid, actor=actor)
                         if self.a.state == "failed":
@@ -4903,6 +5330,21 @@ class AssessmentService:
                         "executor": {**EXECUTOR, "tool": "reproduction_probe"},
                         "evidence": prev_ev + [ev],
                     })
+        elif finding_id == "f_open_redirect":
+            self._think(
+                "オープンリダイレクトの仮説検証",
+                "戻り先パラメータに外部URLと // で始まるURLを渡し、Locationヘッダーの移動先だけを判定します（リダイレクトは追跡しません）。",
+                phase="verification", tool="reproduction_probe", level="L2",
+            )
+            # audit first: the approval reference exists only once it is recorded
+            self.audit.record("approval.approved", request="req_f_open_redirect", actor=actor,
+                              action="safe_reproduction", risk_level="L2")
+            apr = self.approval_store.approve(actor, "eng_demo", "lab", "safe_reproduction")
+            res, ev = self._exec("reproduction_probe", "safe_reproduction",
+                                 {"url": url, "check": "open_redirect"}, approval_id=apr)
+            if res and ev:
+                self._record_lab_reproduction("f_open_redirect", "open_redirect", res, ev,
+                                              "オープンリダイレクト 実機応答の判定")
         elif finding_id == "f_banner":
             self._think(
                 "CVE-2021-41773 パス正規化バイパスの仮説検証",
@@ -5117,22 +5559,29 @@ class AssessmentService:
             res_sqli, ev_sqli = self._exec("reproduction_probe", "safe_reproduction",
                                            {"url": url, "check": "sqli"},
                                            approval_id=apr_ref3)
+            res_redirect = ev_redirect = None
+            if "f_open_redirect" in self.a.findings:
+                apr_ref4 = self.approval_store.approve(actor, "eng_demo", "lab", "safe_reproduction")
+                res_redirect, ev_redirect = self._exec("reproduction_probe", "safe_reproduction",
+                                                       {"url": url, "check": "open_redirect"},
+                                                       approval_id=apr_ref4)
 
             with self._lock:
                 for fid, check, result, evidence in (
                     ("f_banner", "cve_2021_41773", res_cve, ev_cve),
                     ("f_idor", "idor", res_idor, ev_idor),
                     ("f_sqli", "sqli", res_sqli, ev_sqli),
+                    ("f_open_redirect", "open_redirect", res_redirect, ev_redirect),
                 ):
                     if fid not in self.a.findings:
                         continue
                     finding = self.a.findings[fid]
-                    verdict = reproduction_verdict(result, check)
+                    verdict = _lab_verdict(result, check)
                     latest_ids[fid] = evidence["evidence_id"] if evidence else None
                     self._upsert_finding({
                         **finding, "verdict": verdict, "_in_verification": False,
-                        "what_was_established": reproduction_note(result, check) if verdict == "proven" else None,
-                        "verdict_note": reproduction_note(result, check),
+                        "what_was_established": _lab_note(result, check) if verdict == "proven" else None,
+                        "verdict_note": _lab_note(result, check),
                         "evidence": finding["evidence"] + ([evidence] if evidence else []),
                     })
 
@@ -5474,6 +5923,8 @@ class AssessmentService:
                 self._mark_verifying(banner_id, True)
                 self._mark_verifying("f_idor", True)
                 self._mark_verifying("f_sqli", True)
+                if "f_open_redirect" in self.a.findings:
+                    self._mark_verifying("f_open_redirect", True)
 
                 # 1. Run demo_verify window first so emergency-stop tests during active verification
                 #    can deterministically observe and SIGKILL the worker.
@@ -5576,10 +6027,21 @@ class AssessmentService:
                         "evidence": [e for e in fs["evidence"] if e.get("audit_hash")] + [sqli_ev],
                     })
 
+                if "f_open_redirect" in self.a.findings:
+                    apr_redirect = self.approval_store.approve(actor, "eng_demo", "lab", "safe_reproduction")
+                    redirect_res, redirect_ev = self._exec("reproduction_probe", "safe_reproduction",
+                                                           {"url": url, "check": "open_redirect"},
+                                                           approval_id=apr_redirect)
+                    if redirect_res is None:
+                        return
+                    self._record_lab_reproduction("f_open_redirect", "open_redirect", redirect_res, redirect_ev,
+                                                  "オープンリダイレクト 実証結果の確認")
+
                 for tk in tasks_l2:
                     if tk.status != "unsupported":
                         tk.status = "completed"
-                verdicts = [evidence_status(self.a.findings[fid]) for fid in (banner_id, "f_idor", "f_sqli")
+                verdicts = [evidence_status(self.a.findings[fid])
+                            for fid in (banner_id, "f_idor", "f_sqli", "f_open_redirect")
                             if fid in self.a.findings]
                 proven_count = verdicts.count("proven")
                 not_reproduced_count = verdicts.count("not_reproduced")
@@ -5752,6 +6214,10 @@ class AssessmentService:
                 "severity": "high", "verdict": "detected", "category": "既知の脆弱性（CVE）",
                 "cve": cve_ids, "risk_level": "L2",
                 "help_term": "cve",
+                # one chain per CVE: version match -> conditions -> reachability -> lab proof
+                "cve_evidence": [impact_chain(c.cve, product=c.product, version=c.version,
+                                              version_source="Server ヘッダー", in_kev=c.in_kev)
+                                 for c in sorted(candidates, key=lambda c: c.cve.id)],
                 "summary": f"Server ヘッダーが「{banner}」を示しています。このバージョンはパス・トラバーサル等の既知脆弱性{kev_note}の影響範囲です。",
                 "why_detected": "応答ヘッダーのバージョン文字列が、NVD / CISA KEV フィードの影響バージョンと一致したためです。",
                 "caveat": "バナー段階では「検出（未実証）」です。L2再現試験を承認すると、隔離ラボで実際に到達可能か検証します。",
@@ -5786,6 +6252,22 @@ class AssessmentService:
             "evidence": [],
             "remediation": {"steps": ["プリペアドステートメント（プレースホルダー付きクエリ）を使用し文字列連結を廃止する"],
                             "how_to_verify": "修正後に同じ試験を実行し、SQLエラー差分が発生しないことを確認します。"},
+            "executor": {**EXECUTOR, "tool": "http_probe"}, "demo_fixture": False})
+
+        # The OAuth "return to" redirect: a candidate until its own approved probe measures it.
+        self._upsert_finding({
+            "id": "f_open_redirect", "title": "ログイン後の戻り先URLのオープンリダイレクト確認（/auth/callback）",
+            "severity": "medium", "verdict": "candidate", "category": "入力検証", "cve": [],
+            "risk_level": "L2", "help_term": "open_redirect",
+            "summary": "模擬ラボの /auth/callback?return_to= は、承認後に外部サイトへの移動を許すか確認する候補です。現時点では未計測です。",
+            "why_detected": "模擬ラボに用意された確認対象です。OAuth連携の戻り先をそのまま移動先に使う実装でよく起きます。",
+            "caveat": "承認済みの再現試験で移動先（Locationヘッダー）を測るまで、脆弱性として検出したとは扱いません。",
+            "evidence": [],
+            "remediation": {"steps": [
+                "戻り先は「/」で始まり「//」「/\\」で始まらない同一サイト内の相対パス、または許可した自社オリジンの完全一致だけを受け付け、それ以外は既定の「/」にする",
+                "開始時（stateに保存する前）とコールバック時（リダイレクトする直前）の両方で同じ検証を行う",
+                "例（Python）: if not (t.startswith('/') and not t.startswith(('//', '/\\')) and not urlsplit(t).netloc): t = '/'",
+            ], "how_to_verify": "修正後に同じ試験を実行し、絶対URLと // で始まるURLの両方で移動先が同じサイト内に留まることを確認します。"},
             "executor": {**EXECUTOR, "tool": "http_probe"}, "demo_fixture": False})
 
         missing = [x for x in ("content-security-policy", "x-content-type-options",
@@ -6092,6 +6574,10 @@ class AssessmentService:
 
     def _upsert_finding(self, f):
         f = enforce_verdict(f)          # "proven" only with a recorded L2 reproduction
+        if isinstance(f.get("cve_evidence"), list):
+            # the chain follows the finding's own evidence status, never a looser one
+            status = evidence_status(f)
+            f = {**f, "cve_evidence": [with_reproduction(e, status) for e in f["cve_evidence"]]}
         with self._lock:
             if self._stale_runner():
                 raise _Stopped()

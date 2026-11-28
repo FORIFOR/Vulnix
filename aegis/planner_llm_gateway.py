@@ -59,7 +59,10 @@ FORCEABLE_FIRST_TOOLS = frozenset({"add_intent"})
 MAX_REQUEST_BYTES = 256 * 1024
 MAX_RESPONSE_BYTES = 1 << 20
 MAX_COMPLETION_TOKENS = 2048
-LOCAL_REASONING_EFFORTS = {"abliterated-model": frozenset({"none", "low"})}
+LOCAL_REASONING_EFFORTS = {"abliterated-model": frozenset({"none", "low"}),
+                           # local Ollama models on loopback (never forwarded to a real upstream)
+                           "qwen3:8b": frozenset({"none"}), "qwen3:14b": frozenset({"none"})}
+MAX_SCHEMA_BYTES = 16384
 LOCAL_REASONING_TOKEN_CAP = {"abliterated-model": 256}
 
 # Unmistakable key formats: checked in EVERY message (also the model's own turns).
@@ -465,6 +468,16 @@ class PlannerLLMGateway:
             out.append({"type": "function", "function": clean})
         return out
 
+    def _local_json_schema(self, rf) -> bool:
+        if self.real or self.mode != "forward" or type(rf) is not dict or set(rf) != {"type", "json_schema"}:
+            return False
+        js = rf.get("json_schema")
+        if rf.get("type") != "json_schema" or type(js) is not dict or not set(js) <= {"name", "strict", "schema"} \
+                or type(js.get("name")) is not str or type(js.get("schema")) is not dict:
+            return False
+        raw = json.dumps(js["schema"], ensure_ascii=False)
+        return len(raw.encode()) <= MAX_SCHEMA_BYTES and "$ref" not in raw and "$id" not in raw
+
     def inspect(self, body: dict) -> dict:
         if not isinstance(body, dict) or not isinstance(body.get("messages"), list):
             raise GatewayRefused("not_chat", "not a chat completions request")
@@ -476,9 +489,14 @@ class PlannerLLMGateway:
                 out[k] = body[k]
         if "response_format" in body:
             response_format = body["response_format"]
-            if type(response_format) is not dict or response_format != {"type": "json_object"}:
+            if response_format == {"type": "json_object"}:
+                out["response_format"] = {"type": "json_object"}
+            elif self._local_json_schema(response_format):
+                # A self-contained JSON Schema (Vulnix's own enums) for a model on loopback only:
+                # it constrains the shape of the answer; the answer is still only data.
+                out["response_format"] = response_format
+            else:
                 raise GatewayRefused("response_format", "only plain JSON object output is allowed")
-            out["response_format"] = {"type": "json_object"}
         # Official docs (docs.abliteration.ai/capabilities/thinking & compatibility-matrix)
         # confirm `reasoning_effort` ("none", "low") on Chat Completions for
         # `abliterated-model`. Forward it to a real upstream only when the run's
@@ -528,6 +546,10 @@ class PlannerLLMGateway:
             # Only the first request of the run (the one an approval's fingerprint covers),
             # never a later fresh or compacted conversation, and never over ARTEX's own choice.
             out["tool_choice"] = {"type": "function", "function": {"name": self.first_turn_tool}}
+            # Some local servers (Ollama) ignore tool_choice; offering only that tool on this one
+            # request has the same meaning and holds there too. The run's tool fingerprint above
+            # was taken from ARTEX's full list, so later turns are unaffected.
+            out["tools"] = [t for t in tools if t["function"]["name"] == self.first_turn_tool]
         mt = body.get("max_tokens")
         out["max_tokens"] = mt if isinstance(mt, int) and 0 < mt <= MAX_COMPLETION_TOKENS else MAX_COMPLETION_TOKENS
 
@@ -612,8 +634,9 @@ class PlannerLLMGateway:
             # Unicode or punctuation. Charge at least one input token per UTF-8
             # byte for the cost gate. The provider's usage can still differ.
             worst_cost = self.budget.estimate(max(prompt_tokens, len(payload)), clean["max_tokens"])
-            tools_sha = hashlib.sha256(json.dumps(clean.get("tools") or [], sort_keys=True,
-                                                  ensure_ascii=False).encode()).hexdigest()
+            # fingerprint of ARTEX's offered schemas (the forced first turn may send fewer)
+            tools_sha = hashlib.sha256(json.dumps(self._tools(body.get("tools")) if clean.get("tools") else [],
+                                                  sort_keys=True, ensure_ascii=False).encode()).hexdigest()
             # asked OUTSIDE the gateway lock (it takes the service lock; an emergency stop
             # holds the service lock and closes gateways - opposite order would deadlock)
             if self._failed.is_set():

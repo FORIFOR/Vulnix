@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { steps } from "@/components/findings/CveChainView";
 import { useRouter } from "next/navigation";
 import type { EChartsCoreOption } from "echarts/core";
 import { fmtTime } from "@/lib/labels";
@@ -62,6 +63,7 @@ export function SecurityIntelligence({ snap, data, conn, chainValid, audit }: {
   const points = persisted.filter((r) => typeof r.score === "number" && Number.isFinite(r.score) && Number.isFinite(r.at))
     .map((r) => [r.at * 1000, r.score]);
   const allowed = snap.authorization.status === "authorized";
+  const cves = snap.findings.flatMap((f) => (f.cve_evidence ?? []).map((c) => ({ f, c })));
   const recent = audit.filter((entry) => Object.hasOwn(ACTIVITY, entry.event)).slice(-5).reverse();
 
   if (view?.denied) return <p role="alert" className="py-5 text-sm">診断データの閲覧権限を確認できません。ログイン状態と組織を確認してください。</p>;
@@ -103,6 +105,26 @@ export function SecurityIntelligence({ snap, data, conn, chainValid, audit }: {
             color: ["#343945", "#535a67", "#626976", "#717885", "#4c535e"], itemStyle: { gapWidth: 3, borderColor: "#a1a1aa" },
             data: categories.map((row, i) => ({ name: row.text, value: row.value, itemStyle: { color: evidenceColors[i % evidenceColors.length] } })), label: { color: "#fff", overflow: "truncate" } }],
         }} /><Links rows={categories} /></> : <Empty>分類できる所見がありません。</Empty>}
+      </IntelligencePanel>
+      <IntelligencePanel title="CVE の影響の確認状況" wide>
+        {cves.length ? <ul className="space-y-3 text-sm">
+          {cves.map(({ f, c }) => {
+            const st = steps(c);
+            return <li key={`${f.id}-${c.cve}`} className="border-t border-zinc-200 pt-2 first:border-0 first:pt-0 dark:border-zinc-700">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span><span className="font-mono font-semibold">{c.cve}</span> <span className="text-xs text-zinc-500">{c.product} {c.version}</span></span>
+                <span className="rounded-full bg-zinc-100 px-2 py-0.5 text-xs dark:bg-zinc-800">{c.status_label}</span>
+              </div>
+              <ol className="mt-2 grid gap-1" style={{ gridTemplateColumns: `repeat(${st.length}, minmax(0, 1fr))` }} aria-label={`${c.cve} の確認段階`}>
+                {st.map((s) => <li key={s.label} title={`${s.label}：${s.value}`}>
+                  <span className={`block h-1.5 rounded-full transition-colors ${s.state === "done" ? "bg-emerald-500" : s.state === "no" ? "bg-zinc-400" : "bg-amber-300"}`} />
+                  <span className="mt-1 block truncate text-[10px] text-zinc-500">{s.label}</span>
+                </li>)}
+              </ol>
+            </li>;
+          })}
+        </ul> : <Empty>CVE と結び付いた所見はありません。</Empty>}
+        <p className="mt-3 text-xs text-zinc-500">緑は証拠あり、黄は未確認、灰は該当しない・再現せず。隔離ラボの結果は配備環境の安全を保証しません。</p>
       </IntelligencePanel>
       <IntelligencePanel title="診断履歴・リスク">
         {archiveMessage && <p role="status" className="text-xs text-zinc-500">{archiveMessage}</p>}

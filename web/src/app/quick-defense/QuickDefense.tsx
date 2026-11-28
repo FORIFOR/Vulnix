@@ -5,12 +5,14 @@ import { useSearchParams } from "next/navigation";
 import { projectHref } from "@/components/ProjectOverview";
 import RuntimeDefense from "./RuntimeDefense";
 import ReviewedDefense from "./ReviewedDefense";
+import DefenseOverview from "./DefenseOverview";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { useSession } from "@/lib/useSession";
 import { catalogSources, osvSources, type CatalogSource } from "@/lib/catalogUpdate";
 import type { ScanProgress } from "@/lib/projectDefense";
 import { readCatalogCache, type CatalogFailure } from "@/lib/catalogCache";
 import { advisorySeverityLabels, groupDependencyFindings, sortByAdvisorySeverity } from "@/lib/resultPresentation";
-import { categories, checkControls, checkCves, demoEvidence, labels, record } from "@/lib/quickDefense";
+import { categories, categoryLabels, checkControls, checkCves, demoEvidence, labels, record, type FixCandidate } from "@/lib/quickDefense";
 
 const button = "rounded-lg border border-zinc-300 px-3 py-2 text-sm font-medium dark:border-zinc-700";
 const primary = "rounded-lg bg-zinc-900 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50 dark:bg-white dark:text-zinc-900";
@@ -50,6 +52,9 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
   const [results, setResults] = useState<ReturnType<typeof checkControls> | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const { session } = useSession();
+  const signedIn = !!session;
+  const [statusFilter, setStatusFilter] = useState<keyof typeof labels | null>(null);
   const [progress, setProgress] = useState<ScanProgress | null>(null);
   const [ended, setEnded] = useState<"timeout" | "cancelled" | null>(null);
   const running = useRef<(() => void) | null>(null);
@@ -146,7 +151,7 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
         setEnded("timeout");
       }, 35000);
       running.current = finish;
-      worker.onmessage = ({ data }: MessageEvent<{ result?: ProjectReport; progress?: ScanProgress }>) => {
+      worker.onmessage = ({ data }: MessageEvent<{ result?: ProjectReport; progress?: ScanProgress; error?: true | "entry-limit" }>) => {
         if (data.progress) {
           setProgress(data.progress);
           return;
@@ -154,7 +159,9 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
         finish();
         setBusy(false);
         if (!data.result) {
-          setError("検証を完了できませんでした。フォルダを選び直してください。");
+          setError(data.error === "entry-limit"
+            ? "診断する設定・コードのファイルが多すぎます（上限 12,000 件）。リポジトリ全体ではなく、アプリのフォルダ（例: backend や web）を選んでください。"
+            : "検証を完了できませんでした。フォルダを選び直してください。");
           return;
         }
         setReport(data.result);
@@ -189,6 +196,8 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
   const statusLabel = (status: keyof typeof labels) => mode === "local" && status === "confirmed" ? "設定・コードを確認" : labels[status];
   const visible = useMemo(() => results && sortByAdvisorySeverity(results.filter((row) => selected.has(row.category))),
     [results, selected]);
+  const shown = useMemo(() => visible && statusFilter ? visible.filter((row) => row.status === statusFilter) : visible ?? [],
+    [visible, statusFilter]);
   const dependencyGroups = useMemo(() => visible ? groupDependencyFindings(visible) : [], [visible]);
 
   return (
@@ -204,20 +213,21 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
             if (event.target.checked) next.add(category); else next.delete(category);
             setSelected(next);
             setResults(null);
-          }} />{category}対策
+          }} />{categoryLabels[category]}
         </label>)}
       </fieldset>
       <section className="space-y-3 rounded-xl border border-zinc-200 p-4 dark:border-zinc-800">
         <label className="block text-sm font-semibold">プロジェクトフォルダを選択
           <input ref={folderInput} type="file" {...{ webkitdirectory: "" }} multiple disabled={busy} className="mt-2 block w-full text-sm" onChange={(event) => {
             const list = event.target.files;
-            const tooMany = (list?.length ?? 0) > 12000;
+            // files the scan never reads (images, generated reports) only have their names checked
+            const tooMany = (list?.length ?? 0) > 200000;
             setFiles(!tooMany && list ? Array.from(list) : []);
             setReport(null);
             setResults(null);
             setProgress(null);
             setEnded(null);
-            setError(tooMany ? "ファイルが12,000件を超えています。さらに小さいフォルダを選んでください。" : "");
+            setError(tooMany ? "ファイルが20万件を超えています。さらに小さいフォルダを選んでください。" : "");
             event.target.value = "";
           }} />
         </label>
@@ -310,12 +320,16 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
           <p>{feedLabels.nvd}</p>
           <p>{feedLabels.osv}</p>
           <p>公式アーカイブ {official.sources.length}/{catalogSources().length}件を保存済み。
-            {missingCatalogs.length > 0 && ` 未収録 ${missingCatalogs.join("・")}。上の更新欄から取得できます。`}</p>
+            {missingCatalogs.length > 0 && ` 未取得 ${missingCatalogs.length}件（${missingCatalogs.slice(0, 3).join("・")}${missingCatalogs.length > 3 ? " ほか" : ""}）。取得するまで、依存関係のCVE照合は同梱サンプルだけで行い、結果は「未確認」になります。上の更新欄から取得できます。`}</p>
           <p>索引にない勧告や未対応の製品・版は未確認です。</p>
         </div>
         {error && <p role="alert" className="text-sm text-red-700 dark:text-red-300">{error}</p>}
       </section>
-      <ReviewedDefense files={files} />
+      {signedIn ? <ReviewedDefense files={files} />
+        : <p className="text-sm text-zinc-600 dark:text-zinc-400">
+          隔離環境でのレビュー済み防御テストと、サイト・APIの診断は<Link className="underline" href="/login">ログイン</Link>後に使えます。
+        </p>}
+      {visible && mode === "local" && <DefenseOverview rows={visible} files={files} signedIn={signedIn} />}
       {visible && <section className="space-y-3" aria-label="検証結果">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h2 className="text-lg font-semibold">{mode === "demo" ? "模擬データの結果" : "ローカル入力の結果"}</h2>
@@ -323,7 +337,10 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
             onClick={() => (files.length ? folderInput : sbomInput).current?.click()}>{files.length ? "修正後のフォルダを選ぶ" : "更新したSBOMを選ぶ"}</button>}
         </div>
         <p role="status" className="text-sm">{Object.keys(labels).map((key) =>
-          `${statusLabel(key as keyof typeof labels)} ${visible.filter((row) => row.status === key).length}件`).join(" ・ ")}</p>
+          `${statusLabel(key as keyof typeof labels)} ${visible.filter((row) => row.status === key).length}件`).join(" ・ ")}
+          {visible.some((row) => row.testCode) && `（うちテスト用コード ${visible.filter((row) => row.testCode).length}件。一覧の後ろに分けて表示）`}</p>
+        <StatusBar rows={visible} label={statusLabel} active={statusFilter}
+          onSelect={(key) => { setStatusFilter(key === statusFilter ? null : key); setDisplay(100); }} />
         {report && <p className="text-sm">
           {report.scanProgress.batches}バッチで処理。
           {report.read}ファイルの読取を試行。対象外 {report.skipped}件 ／ ファイル上限 {report.omitted}件 ／
@@ -331,7 +348,7 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
           言語 {report.languages.join("・") || "不明"} ／ フレームワーク {report.frameworks.join("・") || "不明"} ／ ロック形式 {report.lockKinds}種 ／ 照合対象の固定依存関係 {report.packageCount}件。
         </p>}
         {report && <ul className="list-inside list-disc space-y-1 text-sm" aria-label="検査の内訳">
-          <li>データフローを解析したJavaScript・TypeScript {report.coverage.source}件。共通検査のみのソース {report.coverage.noSourceRules}件。</li>
+          <li>データフローを解析したJavaScript・TypeScript {report.coverage.source - (report.coverage.pythonFlow ?? 0)}件、Python（同じ関数内） {report.coverage.pythonFlow ?? 0}件。共通検査のみのソース {report.coverage.noSourceRules}件。</li>
           <li>固定版を照合した依存資料 {report.coverage.packageFiles}件。固定版不明のPython依存指定 {report.coverage.unresolvedDependencies}行。構文・記法で読むことができなかった設定 {report.coverage.parseFailed}件。</li>
           <li>今回の照合候補はOSV {report.coverage.osvAdvisories}件、NVD {report.coverage.nvdAdvisories}件。カタログ全体の収録件数は上の取得状況で確認できます。</li>
         </ul>}
@@ -348,9 +365,12 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
           <summary className="cursor-pointer font-semibold">依存関係ごとの修正（{dependencyGroups.length}組）</summary>
           <p className="my-2 text-sm">勧告ごとの修正版候補です。すべての勧告に対応する導入可能な版を選び、ロックファイルを更新して再検証してください。</p>
           <ul className="space-y-2">
-            {dependencyGroups.slice(0, display).map(({ name, version, ecosystem, severity, advisories }) => <li key={JSON.stringify([ecosystem, name, version])}>
+            {dependencyGroups.slice(0, display).map(({ name, version, ecosystem, severity, advisories, reachable }) => <li key={JSON.stringify([ecosystem, name, version])}>
               <details className="rounded border border-zinc-200 p-2 text-sm dark:border-zinc-800">
-                <summary className="cursor-pointer break-all"><bdi>{name} {version}</bdi>{ecosystem && `（${ecosystem}）`} ／ {advisories.length}件 ／ {severity ? advisorySeverityLabels[severity] : "重大度不明"}</summary>
+                <summary className="cursor-pointer break-all"><bdi>{name} {version}</bdi>{ecosystem && `（${ecosystem}）`} ／ {advisories.length}件 ／ {severity ? advisorySeverityLabels[severity] : "重大度不明"}
+                  {" ／ "}<span className={reachable === "imported" ? "text-red-700 dark:text-red-300" : "text-zinc-500"}>
+                    {reachable === "imported" ? "コードで使用（版一致・影響は未実証）" : reachable === "not_imported_directly"
+                      ? "直接のimportなし（間接利用は未確認）" : "使用箇所は未確認"}</span></summary>
                 <ul className="mt-2 list-inside list-disc space-y-2">
                   {advisories.map((entry) => <li key={entry.id}>
                     {entry.id} ／ {entry.fixed.length ? `修正版候補 ${entry.fixed.join("・")}` : "修正版は勧告を確認"}
@@ -365,8 +385,8 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
           </ul>
         </details>}
         <p className="text-sm">個別結果は勧告の重大度順です（Critical → High → Medium → Low → 重大度不明）。対象サービスでの実際の影響は未確認です。</p>
-        {visible.slice(0, display).map((row, index) => <details key={index} className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
-          <summary className="cursor-pointer font-medium">{row.category} ／ {row.title} ／ {statusLabel(row.status)}{row.severity && ` ／ 勧告の重大度 ${advisorySeverityLabels[row.severity]}`}</summary>
+        {shown.slice(0, display).map((row, index) => <details key={index} className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
+          <summary className="cursor-pointer font-medium">{row.testCode && <span className="mr-1 rounded bg-zinc-100 px-1.5 py-0.5 text-xs font-normal text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">テスト用コード</span>}{categoryLabels[row.category as keyof typeof categoryLabels] ?? row.category} ／ {row.title} ／ {statusLabel(row.status)}{row.severity && ` ／ 勧告の重大度 ${advisorySeverityLabels[row.severity]}`}</summary>
           <dl className="mt-2 space-y-1 break-words text-sm">
             {(row.locations?.length || row.location) && <><dt className="font-semibold">修正箇所</dt>
               {(row.locations ?? (row.location ? [row.location] : [])).map((location, i) => <dd key={i} className="font-mono">
@@ -382,9 +402,10 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
             <dt className="font-semibold">修正方法</dt><dd>{row.fix}</dd>
             <dt className="font-semibold">再検証方法</dt><dd>{row.retest}</dd>
           </dl>
+          {row.patch && <PatchView patch={row.patch} />}
         </details>)}
-        {Math.max(visible.length, dependencyGroups.length) > display && <button type="button" className={button} onClick={() => setDisplay(display + 100)}>
-          さらに表示（{Math.max(visible.length, dependencyGroups.length) - display}件）
+        {Math.max(shown.length, dependencyGroups.length) > display && <button type="button" className={button} onClick={() => setDisplay(display + 100)}>
+          さらに表示（{Math.max(shown.length, dependencyGroups.length) - display}件）
         </button>}
         {mode === "local" && <>
           <RuntimeDefense plan={report?.runtimePlan ?? []} staticResults={visible} project={files[0]?.webkitRelativePath.split("/")[0] || "選択したフォルダ"} />
@@ -394,4 +415,79 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
       <Link href="/assets" prefetch={false} className="text-sm underline">所有確認済みWebサイト・APIと隔離ラボへ</Link>
     </main>
   );
+}
+
+const SEGMENT: Record<keyof typeof labels, string> = {
+  action: "bg-red-500", unknown: "bg-amber-400", confirmed: "bg-emerald-500", na: "bg-zinc-300 dark:bg-zinc-600",
+};
+
+/** The result counts as one bar; a segment or its legend filters the list below to that status. */
+function StatusBar({ rows, label, active, onSelect }: {
+  rows: { status: keyof typeof labels }[]; label: (key: keyof typeof labels) => string;
+  active: keyof typeof labels | null; onSelect: (key: keyof typeof labels) => void;
+}) {
+  const keys = (["action", "unknown", "confirmed", "na"] as const).filter((key) => rows.some((row) => row.status === key));
+  if (!rows.length) return null;
+  const count = (key: keyof typeof labels) => rows.filter((row) => row.status === key).length;
+  return <div className="space-y-2">
+    <div className="flex h-2.5 w-full overflow-hidden rounded-full bg-zinc-100 dark:bg-zinc-800" aria-hidden="true">
+      {keys.map((key) => <button key={key} type="button" tabIndex={-1} onClick={() => onSelect(key)}
+        style={{ width: `${(100 * count(key)) / rows.length}%` }}
+        className={`${SEGMENT[key]} h-full transition-[width,opacity] duration-300 ease-out ${active && active !== key ? "opacity-30" : ""}`} />)}
+    </div>
+    <div className="flex flex-wrap gap-2" role="group" aria-label="状態で絞り込む">
+      {keys.map((key) => <button key={key} type="button" aria-pressed={active === key} onClick={() => onSelect(key)}
+        className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs transition-colors ${active === key
+          ? "border-zinc-900 bg-zinc-900 text-white dark:border-white dark:bg-white dark:text-zinc-900"
+          : "border-zinc-200 hover:border-zinc-400 dark:border-zinc-700"}`}>
+        <span className={`h-2 w-2 rounded-full ${SEGMENT[key]}`} />{label(key)} {count(key)}件
+      </button>)}
+      {active && <button type="button" onClick={() => onSelect(active)} className="text-xs underline">すべて表示</button>}
+    </div>
+  </div>;
+}
+
+/** A minimal fix as a diff. Vulnix never writes the project: the user copies or saves it. */
+function PatchView({ patch }: { patch: FixCandidate }) {
+  const [copied, setCopied] = useState(false);
+  const save = () => {
+    const url = URL.createObjectURL(new Blob([patch.diff], { type: "text/x-diff" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${patch.file.split("/").pop() || "fix"}.vulnix.patch`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+  return <div className="mt-3 space-y-2 rounded-lg border border-emerald-200 bg-emerald-50/60 p-3 text-sm dark:border-emerald-900 dark:bg-emerald-950/30">
+    <div className="flex flex-wrap items-center justify-between gap-2">
+      <div>
+        <p className="font-semibold">修正案（{patch.changedLines}行の差分）</p>
+        <p className="font-mono text-xs text-zinc-600 dark:text-zinc-400">{patch.file}:{patch.line}</p>
+      </div>
+      <div className="flex gap-2">
+        <button type="button" className="rounded-md border border-zinc-300 bg-white px-2.5 py-1 text-xs transition-colors hover:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-900"
+          onClick={() => { void navigator.clipboard?.writeText(patch.diff).then(() => { setCopied(true); window.setTimeout(() => setCopied(false), 1500); }); }}>
+          {copied ? "コピーしました" : "差分をコピー"}</button>
+        <button type="button" className="rounded-md border border-zinc-300 bg-white px-2.5 py-1 text-xs transition-colors hover:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-900"
+          onClick={save}>パッチを保存</button>
+      </div>
+    </div>
+    <pre className="max-h-72 overflow-auto rounded-md bg-white p-2 font-mono text-xs leading-5 dark:bg-zinc-900">{patch.diff.split("\n").map((line, i) =>
+      <span key={i} className={line.startsWith("+") && !line.startsWith("+++") ? "block bg-emerald-100 dark:bg-emerald-900/40"
+        : line.startsWith("-") && !line.startsWith("---") ? "block bg-red-100 dark:bg-red-900/40" : "block"}>{line || " "}</span>)}</pre>
+    {patch.reason && <p className="text-xs"><span className="text-zinc-500">変更理由 </span>{patch.reason}</p>}
+    <ul className="space-y-1 text-xs" aria-label="この修正案の検証状態">
+      <li className="flex items-start gap-2"><span className={`mt-1 h-2 w-2 shrink-0 rounded-full ${patch.sampleVerified ? "bg-emerald-500" : "border border-amber-500"}`} />
+        <span><span className="text-zinc-500">サンプルアプリ </span>{patch.sampleVerified
+          ? "同じ修正方式で、本物の Flask 上で攻撃が止まり正常な動作が保たれることを確認済み"
+          : "未確認"}</span></li>
+      <li className="flex items-start gap-2"><span className={`mt-1 h-2 w-2 shrink-0 rounded-full ${patch.projectRecheck === "cleared" ? "bg-emerald-500" : "bg-red-500"}`} />
+        <span><span className="text-zinc-500">このプロジェクト（静的） </span>{patch.projectRecheck === "cleared"
+          ? "修正後のコードを再解析し、同じ経路は検出されなくなった"
+          : "修正後のコードでも同じ経路が残る。手作業での修正が必要"}</span></li>
+      <li className="flex items-start gap-2"><span className="mt-1 h-2 w-2 shrink-0 rounded-full border border-amber-500" />
+        <span><span className="text-zinc-500">このプロジェクト（実行時） </span>未確認。適用して動作を確かめてから、「修正後のフォルダを選ぶ」で再検査してください</span></li>
+    </ul>
+    <p className="text-xs text-zinc-600 dark:text-zinc-400">差分はファイル単位です（同じファイルにある他の項目の修正も含みます）。元のフォルダは変更していません。</p>
+  </div>;
 }

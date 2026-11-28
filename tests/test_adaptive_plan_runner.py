@@ -84,7 +84,7 @@ class RunnerBase(unittest.TestCase):
         set_lab_mode("vulnerable")
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        env = patch.dict(os.environ, {"AEGIS_ENV": self.aegis_env, "VULNIX_ARTEX_REAL_CMD": shlex.join(self.command),
+        env = patch.dict(os.environ, {"AEGIS_ENV": self.aegis_env, "VULNIX_PLANNER_ENGINE": "artex", "VULNIX_ARTEX_REAL_CMD": shlex.join(self.command),
                                       "VULNIX_ARTEX_LLM_URL": getattr(self, "llm_url", "http://127.0.0.1:9/v1"),
                                       "VULNIX_ARTEX_EXPECTED_SHA256": getattr(self, "expected_sha256", ""),
                                       "VULNIX_ARTEX_PG_DSN": os.environ.get("VULNIX_ARTEX_PG_DSN", "")})
