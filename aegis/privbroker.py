@@ -142,8 +142,8 @@ def _tool(name: str) -> str:
     return path
 
 
-def _run(argv: list[str], **kw) -> subprocess.CompletedProcess:
-    return subprocess.run(argv, capture_output=True, text=True, timeout=30,
+def _run(argv: list[str], *, timeout: float = 30, **kw) -> subprocess.CompletedProcess:
+    return subprocess.run(argv, capture_output=True, text=True, timeout=timeout,
                           env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin"}, **kw)
 
 

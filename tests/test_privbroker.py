@@ -191,6 +191,28 @@ class TestDirectories(unittest.TestCase):
         self.assertEqual(pb.main(["own-dir", UID, str(open_dir / "run")]), 2)
 
 
+class TestCleanupRunsAsTheRunUid(unittest.TestCase):
+    """purge-dir / purge-tmp build a real command (a TypeError here once left every run's
+    files behind: files_left in the ARTEX CI job)."""
+
+    def test_the_purges_run_find_as_the_run_uid_with_their_own_timeout(self):
+        seen = []
+
+        def fake_run(argv, **kw):
+            seen.append((argv, kw))
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        with patch.object(pb.subprocess, "run", fake_run), patch.object(pb, "_tool", lambda t: f"/usr/bin/{t}"):
+            self.assertEqual(pb.main(["purge-dir", UID, "/tmp/x"]), 0)
+            self.assertEqual(pb.main(["purge-tmp", UID]), 0)
+        self.assertEqual(len(seen), 1 + len(pb.SHARED_TMP))
+        for argv, kw in seen:
+            self.assertEqual(argv[0], "/usr/bin/setpriv")
+            self.assertIn(f"--reuid={UID}", argv)
+            self.assertIn("/usr/bin/find", argv)
+            self.assertEqual(kw["timeout"], 60)
+        self.assertEqual(seen[0][0][-5:], ["/tmp/x", "-xdev", "-mindepth", "1", "-delete"])
+
+
 class TestInstallation(unittest.TestCase):
     DEPLOY = ROOT / "deploy" / "debian13"
 
