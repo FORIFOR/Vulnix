@@ -27,8 +27,15 @@ done
 update-grub >/dev/null 2>&1 || true
 
 # 2. kernel and SSH hardening
-install -m 0644 "$here/90-vulnix-hardening.conf" /etc/sysctl.d/90-vulnix-hardening.conf
+rm -f /etc/sysctl.d/90-vulnix-hardening.conf
+install -m 0644 "$here/99-zz-vulnix-hardening.conf" /etc/sysctl.d/99-zz-vulnix-hardening.conf
 sysctl -q --system
+[ "$(sysctl -n kernel.unprivileged_userns_clone)" = 0 ] || { echo 'unprivileged user namespaces are still on' >&2; exit 1; }
+install -d -m 0755 /etc/systemd/resolved.conf.d
+install -m 0644 "$here/90-vulnix-resolved.conf" /etc/systemd/resolved.conf.d/90-vulnix.conf
+systemctl restart systemd-resolved
+# container tooling a hypervisor tool may have installed (not a Debian package, not used)
+for u in containerd buildkit; do systemctl disable --now "$u" >/dev/null 2>&1 || true; done
 install -m 0644 "$here/90-vulnix-sshd.conf" /etc/ssh/sshd_config.d/90-vulnix.conf
 sshd -t
 systemctl reload ssh
@@ -52,8 +59,10 @@ tar -xzf "$art/backend-linux-arm64.private.tar.gz" -C /opt/vulnix/backend.new --
 tar -xzf "$art/web-linux-arm64.private.tar.gz" -C /opt/vulnix/web.new
 tar -xzf "$art/node-linux-arm64.tar.gz" -C /opt/vulnix/node.new --strip-components=1
 chown -R root:root /opt/vulnix
+chmod 0755 /opt/vulnix
+chmod -R u+rwX,go+rX,go-w /opt/vulnix/backend.new /opt/vulnix/node.new
 # the web server reads its generated server keys; nobody else needs them
-chgrp -R vulnix-web /opt/vulnix/web.new && chmod -R o-rwx /opt/vulnix/web.new
+chgrp -R vulnix-web /opt/vulnix/web.new && chmod -R u+rwX,g+rX,g-w,o-rwx /opt/vulnix/web.new
 for d in backend web node; do rm -rf "/opt/vulnix/$d.old"; [ -d "/opt/vulnix/$d" ] && mv "/opt/vulnix/$d" "/opt/vulnix/$d.old"; mv "/opt/vulnix/$d.new" "/opt/vulnix/$d"; done
 install -d -m 0700 -o vulnix -g vulnix /var/lib/vulnix
 
