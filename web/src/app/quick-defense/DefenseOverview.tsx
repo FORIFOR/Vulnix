@@ -28,11 +28,11 @@ export default function DefenseOverview({ rows, files, signedIn }: { rows: Row[]
   const agentBlocked = agent?.results?.filter((r) => r.verdict === "blocked" && r.blocked_by === "rule").length ?? 0;
   const agentPending = agent?.results?.filter((r) => r.verdict !== "breached" && !(r.verdict === "blocked" && r.blocked_by === "rule")).length ?? 0;
   const cards = [
-    { key: "ARTEX", title: "ARTEX対策", sub: "AIによる攻撃に使われる設定・経路", ...area("ARTEX") },
-    { key: "Claude Code", title: "Claude Code対策", sub: "秘密情報・操作権限・通信制御",
+    { key: "ARTEX", title: "AIによる攻撃への備え", sub: "ARTEX：攻撃に使われうる設定・経路", ...area("ARTEX") },
+    { key: "Claude Code", title: "AIコーディング支援の権限", sub: "Claude Code：秘密情報・操作権限・通信制御",
       action: area("Claude Code").action + agentBreached, confirmed: area("Claude Code").confirmed + agentBlocked,
       unknown: area("Claude Code").unknown + agentPending },
-    { key: "CVE", title: "最新CVE", sub: "依存関係・影響条件・修正版", ...area("CVE") },
+    { key: "CVE", title: "既知の脆弱性（CVE）", sub: "依存関係・影響条件・修正版", ...area("CVE") },
   ];
   const total = cards.reduce((n, c) => ({ action: n.action + c.action, confirmed: n.confirmed + c.confirmed,
     unknown: n.unknown + c.unknown }), { action: 0, confirmed: 0, unknown: 0 });
@@ -55,7 +55,7 @@ export default function DefenseOverview({ rows, files, signedIn }: { rows: Row[]
             <p className="mt-2 text-xs">対策が必要 {c.action} ・ 確認済み {c.confirmed} ・ 未確認 {c.unknown}</p>
           </div>)}
         <div className="rounded-xl border border-dashed border-zinc-300 bg-white p-3 dark:border-zinc-700 dark:bg-zinc-900">
-          <p className="font-semibold">A2B対策</p>
+          <p className="font-semibold">アプリが呼ぶAPIの守り</p>
           <p className="text-xs text-zinc-500">API認証・認可・組織分離</p>
           <p className="mt-2 text-xs">API 定義やルート定義から確認項目の候補を作ります（通信なし）。実行時の確認は、
             管理者が承認した検証プロファイルと試験用アカウントで行います。<Link className="underline" href="/api-check">APIの安全性を確認へ</Link></p>
@@ -134,7 +134,9 @@ function AgentDefensePanel({ files, signedIn, report, onReport }: {
         {report.cli_version ? `（Claude Code ${report.cli_version}、隔離の自己診断に合格した環境で実行）` : ""}</p>}
       {!!report?.ignored_settings?.length && <p className="text-xs text-amber-700 dark:text-amber-300">
         実行できる設定は取り除いて試しました（未確認）：{report.ignored_settings.join("、")}</p>}
-      {(report?.scope || status?.scope) && <p className="text-xs text-zinc-500">{report?.scope ?? status?.scope}</p>}
+      {(report?.scope || status?.scope) && <details className="text-xs text-zinc-500">
+        <summary className="cursor-pointer select-none transition-colors hover:text-zinc-800 dark:hover:text-zinc-200">確認範囲と限界</summary>
+        <p className="mt-1">{report?.scope ?? status?.scope}</p></details>}
     </div>
   );
 }

@@ -114,6 +114,10 @@ function DashboardInner() {
           >
             隔離ラボを開く
           </button> : <Link href="/assets" className="text-sm underline">登録済みサイト・隔離ラボ</Link>}
+          <Link href="/quick-defense"
+            className="rounded-lg border border-zinc-900 px-3.5 py-2 text-sm font-semibold transition-all hover:-translate-y-0.5 hover:shadow-sm dark:border-white">
+            フォルダを診断する（登録不要）
+          </Link>
           <button
             type="button"
             onClick={() => {

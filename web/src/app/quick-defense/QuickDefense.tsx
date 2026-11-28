@@ -317,7 +317,7 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
           <p>{feedLabels.nvd}</p>
           <p>{feedLabels.osv}</p>
           <p>公式アーカイブ {official.sources.length}/{catalogSources().length}件を保存済み。
-            {missingCatalogs.length > 0 && ` 未収録 ${missingCatalogs.join("・")}。上の更新欄から取得できます。`}</p>
+            {missingCatalogs.length > 0 && ` 未取得 ${missingCatalogs.length}件（${missingCatalogs.slice(0, 3).join("・")}${missingCatalogs.length > 3 ? " ほか" : ""}）。取得するまで、依存関係のCVE照合は同梱サンプルだけで行い、結果は「未確認」になります。上の更新欄から取得できます。`}</p>
           <p>索引にない勧告や未対応の製品・版は未確認です。</p>
         </div>
         {error && <p role="alert" className="text-sm text-red-700 dark:text-red-300">{error}</p>}

@@ -67,7 +67,6 @@ class TestSettingsAreReducedToPermissionRules(unittest.TestCase):
         self.assertIn("permissions.defaultMode", ignored)
 
 
-@unittest.skipUnless(ad.claude_cli() and Path("/usr/bin/sandbox-exec").exists(), "claude CLI and macOS sandbox-exec")
 class TestPublicCandidatesCannotEnableTheRuntimeCheck(unittest.TestCase):
     def test_no_switch_enables_it_on_a_public_or_hosted_or_release_server(self):
         from unittest.mock import patch
@@ -84,6 +83,7 @@ class TestPublicCandidatesCannotEnableTheRuntimeCheck(unittest.TestCase):
         self.assertEqual(ad.public_candidate_reasons({"VULNIX_AGENT_DEFENSE_LOCAL": "1"}), [])
 
 
+@unittest.skipUnless(ad.claude_cli() and Path("/usr/bin/sandbox-exec").exists(), "claude CLI and macOS sandbox-exec")
 class TestConfinement(unittest.TestCase):
     def test_self_test_passes_its_sampled_rules(self):
         # a sample of the profile's rules (SELF_TEST_SCOPE), not proof of full isolation

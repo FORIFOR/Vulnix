@@ -48,7 +48,9 @@
 
 対象外：利用者単位の `~/.claude` 設定、管理者が配布するポリシー（/Library は読めない状態で実行）、MCP サーバー、フック（取り除いて試すため）。
 
-既定の状態：無効。`VULNIX_AGENT_DEFENSE_LOCAL=1` を設定した利用者自身の端末でだけ動く。上の残る制限があるため、公開版・ホスト型の Vulnix では有効にしない。
+既定の状態：無効。`VULNIX_AGENT_DEFENSE_LOCAL=1` を設定した利用者自身の端末でだけ動く。
+
+公開候補では有効にできない（2026-11-28）：`VULNIX_PUBLIC_MODE=1`・`VULNIX_PUBLIC_SIGNUP=1`・`AEGIS_ENV`（production・prod・staging・stg）・Cloud Run（`K_SERVICE`）・`VULNIX_RELEASE_BUILD=1` のどれかがあると、`VULNIX_AGENT_DEFENSE_LOCAL=1` があっても実行しない（`public_candidate_reasons`）。設定ファイルの静的な確認（フォルダ診断）は従来どおり使える。完全な隔離には専用 VM（使い捨ての Linux VM＋カーネルの通信制限）が候補だが、正式リリースの範囲外とする。
 
 ## A2B（アプリからバックエンドAPIへの呼び出し）の認可・組織分離
 
