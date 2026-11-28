@@ -446,8 +446,12 @@ def create(addr, timeout):
     f = Finalizer(); del f; gc.collect()  # ... inside a finalizer
     return s
 hp.socket.create_connection = create
+# The overall deadline is 10 s and the server never answers: the run can only end within
+# 5 s if the swallowed deadline fires again (rearm(): a fresh 5 ms timer). Where that
+# timer lands (sending, between stages, or waiting for the first byte) depends on the
+# machine's load; that it lands, quickly and without stderr noise, is what is tested.
 a = argparse.Namespace(scheme="http", host="x.test", ip="127.0.0.1", port=srv.getsockname()[1], path="/", method="GET",
-                       origin="o", connect_timeout=5, read_timeout=30, overall_timeout=0.3)
+                       origin="o", connect_timeout=5, read_timeout=30, overall_timeout=10)
 t0 = time.monotonic()
 out = hp.probe(a)
 print(out["error"]["stage"], out["error"]["kind"], round(time.monotonic() - t0, 1))
@@ -585,8 +589,9 @@ class TestSwallowedDeadline(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual(p.stderr, "")                         # was: "Exception ignored in: <function Finalizer.__del__ ..."
         stage, kind, took = p.stdout.split()
-        self.assertEqual((stage, kind), ("first_byte", "timeout"))
-        self.assertLess(float(took), 5)                        # the overall deadline still ended the run
+        self.assertEqual(kind, "timeout")
+        self.assertIn(stage, ("connect", "between_stages", "send", "first_byte"))   # wherever the 5 ms re-fire lands
+        self.assertLess(float(took), 5)        # well before the 10 s overall deadline: the swallowed one fired again
 
     def test_a_deadline_landing_in_the_previous_hook_is_not_lost(self):
         # review of ed01b9d (MEDIUM): previous_hook() was called outside any handler

@@ -4766,7 +4766,24 @@ class AssessmentService:
                 raise ValueError("停止を確認できていないWorkerが残っているため、新しい診断は開始できません")
             # a run that may not start (scope expired, revoked, held) is refused
             # BEFORE the previous results are cleared
-            self._ensure_active_window_locked()
+            try:
+                self._ensure_active_window_locked()
+            except ValueError:
+                if not self._stopped_without_scope_locked():
+                    raise
+                # Stopped AND the scope is gone (expired, revoked, or not restored after a
+                # restore): no run may start, and ownership verification is refused while
+                # stopped - without this there would be no way out. The stop is ended (all
+                # workers confirmed stopped, recorded first; refused like any diagnosis change
+                # while the audit anchor reports a rollback) and nothing is started.
+                self._audit_first("diagnosis.stop_ended", actor=actor, target=self.a.asset["name"],
+                                  reason="scope_inactive")
+                self._reset_workspace_locked(end_stop=True)
+                self._save_state_locked()
+                if self.a.state == "stopped" or self.gateway.state is State.STOPPED:
+                    raise ValueError("前の診断のWorkerの停止を確認できなかったため、停止を解除できません") from None
+                raise ValueError("緊急停止を解除しました（診断は開始していません）。診断範囲の確認が失効または取り消されているため、"
+                                 "所有確認と範囲確認をやり直してから、再診断を実行してください") from None
             # audit first: a run that cannot be recorded does not start (nothing is cleared)
             self._audit_first("assessment.restarted", actor=actor, target=self.a.asset["name"])
             try:
@@ -4788,6 +4805,13 @@ class AssessmentService:
                 self._grant_not_committed("assessment.restarted", "refused_after_record")
                 raise
         return self.snapshot()
+
+    def _stopped_without_scope_locked(self) -> bool:
+        """An emergency stop is in force and the active real service has no valid scope."""
+        name = self.a.asset.get("name")
+        return ((self.a.state == "stopped" or self.gateway.state is State.STOPPED)
+                and self._in_ownership_flow(name) and self._external_entry(name) is None
+                and not self._persist_error)
 
     def pause(self, actor: str) -> None:
         with self._lock:

@@ -17,6 +17,12 @@ grep -q '^13' /etc/debian_version || { echo 'Debian 13 only' >&2; exit 2; }
 #    of the image) depends on it; Vulnix never imports it (it uses its vendored packages).
 export DEBIAN_FRONTEND=noninteractive
 apt-get purge -y curl qemu-utils cloud-image-utils cloud-utils cloud-initramfs-growroot >/dev/null 2>&1 || true
+# tools and libraries nothing on this host uses (no installed reverse dependency; the
+# residual-CVE assessment, docs/RELEASE_CVE_TRIAGE.md): fewer packages to keep patched
+apt-get purge -y libcurl4t64 wget ssh-import-id tcpdump libpcap0.8t64 screen vim vim-runtime vim-tiny \
+    polkitd libpolkit-agent-1-0 libpolkit-gobject-1-0 libduktape207 iptables libip4tc2 libip6tc2 \
+    iputils-ping reportbug python3-reportbug man-db groff-base bind9-host >/dev/null 2>&1 || true
+apt-get autoremove --purge -y >/dev/null 2>&1 || true
 running=$(uname -r)
 for pkg in $(dpkg-query -W -f='${Package}\n' 'linux-image-[0-9]*' 2>/dev/null); do
     case "$pkg" in
@@ -31,6 +37,11 @@ rm -f /etc/sysctl.d/90-vulnix-hardening.conf
 install -m 0644 "$here/99-zz-vulnix-hardening.conf" /etc/sysctl.d/99-zz-vulnix-hardening.conf
 sysctl -q --system
 [ "$(sysctl -n kernel.unprivileged_userns_clone)" = 0 ] || { echo 'unprivileged user namespaces are still on' >&2; exit 1; }
+[ "$(sysctl -n net.mptcp.enabled)" = 0 ] || { echo 'MPTCP is still enabled' >&2; exit 1; }
+install -m 0644 "$here/90-vulnix-modules.conf" /etc/modprobe.d/90-vulnix-modules.conf
+for m in sctp dccp tipc rds smc kcm af_key algif_aead; do
+    ! modprobe -n "$m" >/dev/null 2>&1 || ! modprobe "$m" 2>/dev/null || { echo "module $m still loads" >&2; exit 1; }
+done
 install -d -m 0755 /etc/systemd/resolved.conf.d
 install -m 0644 "$here/90-vulnix-resolved.conf" /etc/systemd/resolved.conf.d/90-vulnix.conf
 systemctl restart systemd-resolved
