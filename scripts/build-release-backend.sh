@@ -39,7 +39,13 @@ PIP_CONFIG_FILE=/dev/null "$python" -m pip --isolated --disable-pip-version-chec
     --no-compile -r "$work/backend/requirements-prod.txt" >/dev/null
 find "$work/backend" -name __pycache__ -prune -exec rm -rf {} +
 printf '%s\n' "$sha" > "$work/source-sha.txt"
-(cd "$work" && COPYFILE_DISABLE=1 tar -czf "$out/backend-linux-arm64.private.tar.gz" backend source-sha.txt)
+if tar --version 2>/dev/null | grep -q bsdtar; then
+    xattrs="--no-xattrs --no-mac-metadata"         # macOS: no provenance attributes in the archive
+else
+    xattrs="--no-xattrs"
+fi
+# shellcheck disable=SC2086
+(cd "$work" && COPYFILE_DISABLE=1 tar $xattrs -czf "$out/backend-linux-arm64.private.tar.gz" backend source-sha.txt)
 "$python" - "$work/backend/vendor" "$wheels" "$sha" > "$out/backend.cdx.json" <<'PY'
 import hashlib, json, re, sys, uuid
 from pathlib import Path

@@ -9,7 +9,8 @@
 #
 # Restoring an older backup IS a rollback of the audit logs. Without --accept-rollback the
 # service starts but refuses everything the anchor protects - new diagnoses, approvals,
-# verdicts, paid sends, credential changes - until an operator decides (exit status 3).
+# verdicts, paid sends, credential and privilege changes - and blocks sign-in of every
+# existing account (aegis/operators.py), until an operator decides (exit status 3).
 # With it, the anchor forgets the mismatched heads (recorded in the anchor's own chain as
 # a reset) and anchoring resumes from the restored state.
 set -eu
@@ -48,7 +49,7 @@ sleep 3
 systemctl start vulnix-web
 echo "restored; previous data kept in $aside"
 if [ "$rc" != 0 ]; then
-    echo "ROLLBACK DETECTED against the audit anchor: diagnoses, approvals and paid sends stay refused." >&2
+    echo "ROLLBACK DETECTED against the audit anchor: diagnoses, approvals, paid sends and sign-in stay refused." >&2
     echo "If this restore is intended, run again with --accept-rollback (the anchor records the reset)." >&2
     exit 3
 fi

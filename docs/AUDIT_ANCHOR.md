@@ -48,8 +48,11 @@
 | `artex.item_approved` | ARTEX 計画項目（L2）の承認 |
 | `diagnosis.*` | 診断ループの状態変更（`_diagnosis_journal` を通るものすべて） |
 | `auth.password_changed` ほか資格情報の変更 | `docs/PASSWORD_CHANGE_DURABILITY.md` |
-| `operator.created` / `operator.roles_changed` / `auth.mfa_enabled` | アカウントの作成、権限の変更、MFA の有効化 |
+| `operator.roles_changed` | アカウントの権限の変更（記録してから適用。権限を減らす変更だけは記録できなくても適用） |
 | `tenancy.org_created` / `tenancy.member_roles_changed` / `tenancy.member_removed` | 組織の作成、メンバーの権限変更・削除 |
+
+適用した後に記録するもの（アカウントの作成 `operator.created`、自己登録 `auth.registered`、MFA の有効化 `auth.mfa_enabled`）は
+照合の対象にしていません。記録が拒否されても変更は取り消されないため、照合しても守れず、エラーになるだけだからです。
 
 所見の判定（verdict）には独自の監査イベントがなく、`result` 記録から作られるため `result` で守ります。
 
@@ -175,8 +178,9 @@ python3 -m aegis.server --data-dir /var/lib/vulnix ...
   （`audit.jsonl`、`platform-audit.jsonl`、`orgs/*/audit.jsonl`）のチェーンとアンカーを照合します。
   - チェーンが壊れていれば、サービスを起動せずに終了します（終了コード 1）。
   - 古いバックアップの復元はアンカーから見ると巻き戻しです。`--accept-rollback` がなければ、
-    サービスは起動しますが、新しい診断・承認・判定・有料送信・資格情報と権限の変更をすべて拒否したまま、
-    終了コード 3 で知らせます。運用者が確認するまで再開しません。
+    サービスは起動しますが、新しい診断・承認・判定・有料送信・資格情報と権限の変更をすべて拒否し、
+    既存アカウントのサインインも止めたまま（`aegis/operators.py` の資格情報の照合）、終了コード 3 で知らせます。
+    運用者が確認するまで再開しません。
   - `--accept-rollback` を付けると、一致しない記録元だけを補助プロセスのユーザーでリセットします
     （リセットはアンカー自身のチェーンに記録されます）。照合し直してから起動します。
 - 検証: `tests/test_audit_anchor.py` の `TestRestoreDetectsTheRollback`、本番イメージでの受入試験。

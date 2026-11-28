@@ -32,9 +32,10 @@ ANCHORED_EVENTS = frozenset({
     # a log truncated to before a password change is detected at startup
     "auth.password_changed", "operator.password_reset", "auth.account_recovered_offline",
     "auth.credential_change_aborted",
-    # who may do what: a log cut back to before a privilege change is detected
-    "operator.created", "operator.roles_changed", "auth.mfa_enabled",
-    "tenancy.org_created", "tenancy.member_roles_changed", "tenancy.member_removed",
+    # who may do what (recorded audit-first, so a refused record refuses the grant): a log
+    # cut back to before a privilege change is detected
+    "operator.roles_changed", "tenancy.org_created", "tenancy.member_roles_changed",
+    "tenancy.member_removed",
 })
 ANCHORED_PREFIXES = ("diagnosis.", "local_defense.")
 

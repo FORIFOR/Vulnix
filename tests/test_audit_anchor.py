@@ -603,9 +603,13 @@ if __name__ == "__main__":
 
 class TestPrivilegeChangesAreAnchored(unittest.TestCase):
     def test_role_membership_and_account_changes_are_critical(self):
-        for e in ("operator.created", "operator.roles_changed", "auth.mfa_enabled", "tenancy.org_created",
-                  "tenancy.member_roles_changed", "tenancy.member_removed"):
+        for e in ("operator.roles_changed", "tenancy.org_created", "tenancy.member_roles_changed",
+                  "tenancy.member_removed"):
             self.assertTrue(is_anchored_event(e), e)
+        # recorded after the change (never refused by its record): not anchored, so a refused
+        # record never turns an applied change into an error
+        for e in ("operator.created", "auth.mfa_enabled", "auth.registered"):
+            self.assertFalse(is_anchored_event(e), e)
 
 
 class TestRestoreDetectsTheRollback(AnchorBase):
@@ -626,7 +630,7 @@ class TestRestoreDetectsTheRollback(AnchorBase):
         from aegis.audit_check import check
         platform = self.root / "platform-audit.jsonl"
         org = self.root / "orgs" / "org_a" / "audit.jsonl"
-        self.write(platform, ["operator.created", "auth.login"])
+        self.write(platform, ["tenancy.org_created", "auth.login"])
         self.write(org, ["allow", "result"])
         backup = self.root.parent / (self.root.name + "-backup")
         shutil.copytree(self.root, backup, ignore=shutil.ignore_patterns("anchor", "a.sock"))

@@ -39,7 +39,9 @@ MemoryDenyWriteExecute=yes
 CapabilityBoundingSet=
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
-SystemCallFilter=~@privileged @resources
+# no capabilities at all (bounding set empty); chown of its own socket to its group stays allowed
+SystemCallFilter=~@setuid @mount @resources
+SystemCallErrorNumber=EPERM
 
 [Install]
 WantedBy=multi-user.target
