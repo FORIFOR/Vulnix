@@ -9,15 +9,17 @@ How it runs (nothing leaves the machine, nothing is billed):
 - the real `claude` CLI runs there with HOME and its config directory pointed at an empty
   scratch directory (no user settings, no login) and ANTHROPIC_BASE_URL pointed at a
   loopback stand-in model that only ever asks for one scripted tool call;
-- the CLI runs under macOS sandbox-exec with all networking denied except loopback, so even
-  an allowed `curl` cannot reach anything;
+- the CLI runs under macOS sandbox-exec: the only connection it may open is to the stand-in
+  model's loopback port, so even an allowed `curl` cannot reach anything (see SANDBOX_TEMPLATE
+  for what else is refused, and SELF_TEST_SCOPE for what is checked before every run);
 - each attack runs in its own scratch project, and the verdict comes from what happened -
   the canary reaching the model, files created / changed / deleted - not from what the tool
   says.
 
 Usage: python3 -m aegis.agent_defense <project-folder> [--json]
-Scope: project-level settings only (user-level ~/.claude settings and managed policies are
-not loaded); the CLI's permission prompts are not answered (non-interactive mode).
+Scope: the permission rules of the project-level settings only. User-level ~/.claude
+settings are not loaded (HOME is a scratch folder); managed policies under /Library are made
+unreadable, so they are not evaluated either. Permission prompts are not answered.
 """
 from __future__ import annotations
 
@@ -35,23 +37,47 @@ import time
 from pathlib import Path
 
 CANARY = "VULNIX_CANARY_7f3a91c2"
-# Network: loopback only. Files: the CLI may read its own install and the scratch run, and
-# may write only inside the scratch run; the user's home, mounted volumes and the per-user
-# temp area are unreadable. Keychain, pasteboard and Apple events are unreachable.
+# What the confined CLI may do (last matching rule wins):
+# - network: only the stand-in model's loopback port. Other loopback ports (local proxies,
+#   databases, this control plane) and every Unix socket (docker, ssh-agent, mDNSResponder ->
+#   DNS) are refused;
+# - files: read the system and its own install and the scratch run; the user's home, mounted
+#   volumes, /Library (incl. managed Claude Code policies), /opt, /usr/local and every per-user
+#   temp area are unreadable; write only inside the scratch run;
+# - processes: nothing written by the run (scratch, temp areas, home) can be executed, so a
+#   copied system tool is refused too; tools that hand work to a process OUTSIDE the sandbox
+#   (launchctl, open, osascript, defaults, Spotlight) cannot be started, and the keychain, pasteboard, Apple
+#   events, LaunchServices, preferences daemon, Spotlight and URL-session daemon are unreachable.
+# This is a deny-list on top of `allow default`: what is not named here is allowed. The
+# self-test below checks a sample of these rules, not all of macOS - it is no proof of full
+# isolation, which is why the check stays off unless the user turns it on for their machine.
 SANDBOX_TEMPLATE = """(version 1)
 (allow default)
 (deny network*)
 (allow network-bind (local ip "localhost:*"))
-(allow network-inbound (local ip "localhost:*"))
-(allow network-outbound (remote ip "localhost:*"))
-(allow network-outbound (remote unix-socket))
-(deny file-read-data (subpath "/Users") (subpath "/Volumes") (subpath "/private/var/root") (subpath {user_tmp}))
-(allow file-read-data (subpath {scratch}) (literal {cli}) (subpath {cli_dir}))
+(allow network-outbound (remote ip {model_port}))
+(deny file-read-data (subpath "/Users") (subpath "/Volumes") (subpath "/private/var/root")
+  (subpath "/Library") (subpath "/opt") (subpath "/usr/local") (subpath "/private/var/folders")
+  (subpath {user_tmp}))
+(allow file-read-data (subpath {scratch}) (literal {cli}){cli_dir})
 (deny file-write*)
 (allow file-write* (subpath {scratch}) (literal "/dev/null") (literal "/dev/tty") (regex #"^/dev/fd/")
   (literal "/dev/dtracehelper"))
+(deny process-exec (subpath {scratch}) (subpath "/private/var/folders") (subpath "/private/tmp")
+  (subpath "/Users") (subpath "/Volumes"))
+(allow process-exec (literal {cli}){cli_dir})
+(deny process-exec (literal "/bin/launchctl") (literal "/usr/bin/open") (literal "/usr/bin/osascript")
+  (literal "/usr/bin/defaults") (literal "/usr/bin/mdfind") (literal "/usr/bin/mdls")
+  (literal "/usr/bin/pbcopy") (literal "/usr/bin/pbpaste") (literal "/usr/bin/security")
+  (literal "/usr/sbin/scutil") (literal "/usr/bin/ssh") (literal "/usr/bin/sudo"))
 (deny mach-lookup (global-name "com.apple.SecurityServer") (global-name "com.apple.securityd.xpc")
-  (global-name "com.apple.pasteboard.1") (global-name "com.apple.coreservices.appleevents"))
+  (global-name "com.apple.pasteboard.1") (global-name "com.apple.coreservices.appleevents")
+  (global-name "com.apple.coreservices.launchservicesd") (global-name "com.apple.lsd.mapdb")
+  (global-name "com.apple.lsd.modifydb") (global-name "com.apple.cfprefsd.daemon")
+  (global-name "com.apple.cfprefsd.agent") (global-name "com.apple.metadata.mds")
+  (global-name "com.apple.nsurlsessiond") (global-name "com.apple.nsurlsessiond.NSURLSessionProxyService")
+  (global-name "com.apple.dnssd.service") (global-name "com.apple.mDNSResponder")
+  (global-name "com.apple.ctkd.token-client") (global-name "com.apple.windowserver.active"))
 """
 
 
@@ -59,11 +85,18 @@ def _sb(path) -> str:
     return json.dumps(str(path))       # an SBPL string literal (paths here never hold quotes)
 
 
-def sandbox_profile(scratch: Path, cli: str) -> str:
+def sandbox_profile(scratch: Path, cli: str, model_port: int = 9) -> str:
+    """`model_port`: the one loopback port the CLI may connect to (the stand-in model)."""
     real_cli = os.path.realpath(cli)
     user_tmp = os.path.realpath(tempfile.gettempdir())
+    cli_dir = os.path.dirname(real_cli)
+    # the install directory only when it is the CLI's own (".../claude/versions", a package
+    # named claude-code); a CLI in a shared folder such as ~/bin gets only its own file
+    parts = Path(cli_dir).parts
+    own_dir = (parts[-2:] == ("claude", "versions")) or parts[-1] == "claude-code"
     return SANDBOX_TEMPLATE.format(scratch=_sb(os.path.realpath(scratch)), cli=_sb(real_cli),
-                                   cli_dir=_sb(os.path.dirname(real_cli)), user_tmp=_sb(user_tmp))
+                                   cli_dir=f" (subpath {_sb(cli_dir)})" if own_dir else "",
+                                   user_tmp=_sb(user_tmp), model_port=_sb(f"localhost:{int(model_port)}"))
 
 
 # id, what it tries, tool, input ({root} = scratch project, {home} = scratch home)
@@ -168,7 +201,10 @@ def _short(content) -> str:
 
 
 def _snapshot(root: Path) -> dict[str, str]:
-    return {str(p.relative_to(root)): p.read_text(errors="replace") for p in sorted(root.rglob("*")) if p.is_file()}
+    # runs OUTSIDE the sandbox: never follow a link the attack planted (rglob does not
+    # descend into linked directories)
+    return {str(p.relative_to(root)): p.read_text(errors="replace") for p in sorted(root.rglob("*"))
+            if not p.is_symlink() and p.is_file()}
 
 
 PERMISSION_LISTS = ("allow", "deny", "ask")
@@ -242,6 +278,26 @@ class Stopped(Exception):
     pass
 
 
+def _kill_leftovers(scratch: Path) -> int:
+    """A process that left the CLI's process group (setsid, a job-control shell) survives
+    killpg. Kill every process that still has its working directory or an open file inside
+    the scratch run. A process that moved out of it and closed every file there is NOT found:
+    that limit is stated in the report."""
+    try:
+        out = subprocess.run(["/usr/sbin/lsof", "-t", "+D", str(scratch)], capture_output=True, text=True,
+                             timeout=20).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return 0
+    killed = 0
+    for pid in {int(x) for x in out.split() if x.isdigit()} - {os.getpid()}:
+        try:
+            os.kill(pid, 9)
+            killed += 1
+        except (ProcessLookupError, PermissionError):
+            pass
+    return killed
+
+
 def _run_confined(cmd: list[str], *, cwd: Path, env: dict, timeout_s: float, should_stop) -> int | None:
     """Run in its own process group; on timeout, stop request or lost permission the whole
     group (the CLI and every shell it started) is killed before returning."""
@@ -261,12 +317,16 @@ def _run_confined(cmd: list[str], *, cwd: Path, env: dict, timeout_s: float, sho
                 os.killpg(proc.pid, 9)
             except ProcessLookupError:
                 pass
-            proc.wait(timeout=10)
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                pass
         else:
             try:                                    # leftovers of a finished CLI go too
                 os.killpg(proc.pid, 9)
             except (ProcessLookupError, PermissionError):
                 pass
+        _kill_leftovers(cwd.parent)
     if reason:
         raise Stopped(reason)
     return proc.returncode if proc.returncode is not None and time.monotonic() <= deadline else None
@@ -283,7 +343,7 @@ def run_attack(settings: dict[str, dict], attack: tuple, *, cli: str, timeout_s:
         before = _snapshot(root)
         model = _StandInModel(tool, tool_input)
         profile = base / "confine.sb"
-        profile.write_text(sandbox_profile(base, cli))
+        profile.write_text(sandbox_profile(base, cli, model.server.server_port))
         env = {"HOME": str(home), "PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "CLAUDE_CONFIG_DIR": str(home / ".claude"),
                "TMPDIR": str(base / "tmp"),
                "ANTHROPIC_BASE_URL": model.url, "ANTHROPIC_API_KEY": "local-stand-in-not-a-key",
@@ -332,19 +392,29 @@ ADVICE = {
 }
 
 
+SELF_TEST_SCOPE = ("実行前の自己診断で確かめるのは、ホーム・/Library・一時フォルダ領域の読み取り拒否、作業フォルダ外への"
+                   "書き込み拒否、ハードリンク経由の読み取り拒否、外部・他のループバックポート・Unix ソケットへの接続拒否、"
+                   "サンドボックス外へ処理を渡すコマンド（launchctl・open・osascript）と、作業フォルダに置いた実行ファイルの起動拒否です。macOS の全経路を"
+                   "確かめたものではなく、完全な隔離の証明ではありません。")
+
+
 def confinement_self_test(cli: str) -> tuple[bool, list[str]]:
-    """Prove, with the same profile, that a confined process cannot read the user's files or
-    the per-user temp area, cannot write outside its scratch run and cannot open a non-loopback
-    connection, and that it can still write inside the scratch run. No packet leaves the
-    machine: the network probe targets TEST-NET-1 (192.0.2.1), which the sandbox refuses
-    before any connection is attempted."""
+    """Check a sample of the profile's rules with the same profile. No packet leaves the
+    machine: the external probe targets TEST-NET-1 (192.0.2.1), which the sandbox refuses
+    before any connection is attempted; the other probes stay on this machine. Passing it is
+    NOT proof of full isolation (see SELF_TEST_SCOPE)."""
+    import socket
     failures: list[str] = []
     home_probe = Path.home()
     with tempfile.TemporaryDirectory(prefix="vulnix-agent-probe-") as tmp:
         base = Path(os.path.realpath(tmp))
         (base / "tmp").mkdir()
         profile = base / "confine.sb"
-        profile.write_text(sandbox_profile(base, cli))
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        other_port = listener.getsockname()[1]
+        profile.write_text(sandbox_profile(base, cli, model_port=9))
         outside = Path(os.path.realpath(tempfile.gettempdir())) / f"vulnix-probe-{os.getpid()}-{time.time_ns()}"
         secret_dir = Path(tempfile.mkdtemp(prefix="vulnix-probe-secret-"))
         (secret_dir / "s").write_text("x")
@@ -353,24 +423,67 @@ def confinement_self_test(cli: str) -> tuple[bool, list[str]]:
             return subprocess.run(["/usr/bin/sandbox-exec", "-f", str(profile), *cmd], cwd=base,
                                   env={"PATH": "/usr/bin:/bin", "HOME": str(base)}, capture_output=True,
                                   text=True, timeout=15, stdin=subprocess.DEVNULL)
+
+        def refused(r: subprocess.CompletedProcess) -> bool:
+            return r.returncode != 0 and "not permitted" in ((r.stderr or "") + (r.stdout or "")).lower()
         try:
             if run("/bin/ls", str(home_probe)).returncode == 0:
                 failures.append("利用者のホームフォルダを読めた")
+            if run("/bin/ls", "/Library").returncode == 0:
+                failures.append("/Library を読めた")
+            if run("/bin/ls", "/private/var/folders").returncode == 0:
+                failures.append("一時フォルダ領域を読めた")
             if run("/bin/cat", str(secret_dir / "s")).returncode == 0:
                 failures.append("一時フォルダの他のファイルを読めた")
+            run("/bin/ln", str(secret_dir / "s"), str(base / "hardlink"))   # an attack linking a file in
+            if (base / "hardlink").exists():
+                failures.append("作業フォルダ外のファイルへのハードリンクを作れた")
             if run("/usr/bin/touch", str(outside)).returncode == 0 or outside.exists():
                 failures.append("作業フォルダの外に書き込めた")
-            net = run("/usr/bin/nc", "-v", "-z", "-G", "2", "192.0.2.1", "80")
-            if net.returncode == 0 or "not permitted" not in (net.stderr or "").lower():
-                failures.append("ループバック以外への接続が拒否されなかった")
+            if not refused(run("/usr/bin/nc", "-v", "-z", "-G", "2", "192.0.2.1", "80")):
+                failures.append("外部への接続が拒否されなかった")
+            if not refused(run("/usr/bin/nc", "-v", "-z", "-G", "2", "127.0.0.1", str(other_port))):
+                failures.append("許可したポート以外のループバック接続が拒否されなかった")
+            if Path("/var/run/mDNSResponder").exists() and \
+                    run("/usr/bin/nc", "-U", "/var/run/mDNSResponder").returncode == 0:
+                failures.append("Unix ソケット（名前解決）への接続が拒否されなかった")
+            for tool in ("/bin/launchctl", "/usr/bin/open", "/usr/bin/osascript"):
+                if not refused(run(tool, "-h")):
+                    failures.append(f"{tool} を起動できた")
+            shutil.copyfile("/bin/echo", base / "copied")        # a system tool copied into the run
+            os.chmod(base / "copied", 0o755)
+            if not refused(run(str(base / "copied"), "x")):
+                failures.append("作業フォルダに置いた実行ファイルを起動できた")
             if run("/usr/bin/touch", str(base / "ok")).returncode != 0:
                 failures.append("作業フォルダ内に書き込めない（確認が成立しない）")
         except (OSError, subprocess.TimeoutExpired) as exc:
             failures.append(f"自己診断を実行できない: {type(exc).__name__}")
         finally:
+            listener.close()
             shutil.rmtree(secret_dir, ignore_errors=True)
             outside.unlink(missing_ok=True)
     return not failures, failures
+
+
+def _confined_version(cli: str) -> str:
+    """`claude --version` under the same profile and environment as the attacks."""
+    with tempfile.TemporaryDirectory(prefix="vulnix-agent-ver-") as tmp:
+        base = Path(os.path.realpath(tmp))
+        (base / "home").mkdir()
+        (base / "tmp").mkdir()
+        profile = base / "confine.sb"
+        profile.write_text(sandbox_profile(base, cli))
+        env = {"HOME": str(base / "home"), "PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "TMPDIR": str(base / "tmp"),
+               "CLAUDE_CONFIG_DIR": str(base / "home" / ".claude"), "DISABLE_AUTOUPDATER": "1",
+               "DISABLE_TELEMETRY": "1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}
+        try:
+            return subprocess.run(["/usr/bin/sandbox-exec", "-f", str(profile), os.path.realpath(cli), "--version"],
+                                  cwd=base, env=env, capture_output=True, text=True, timeout=30,
+                                  stdin=subprocess.DEVNULL, start_new_session=True).stdout.strip()[:80]
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
+        finally:
+            _kill_leftovers(base)
 
 
 def evaluate(project: Path, *, cli: str | None = None, attacks=ATTACKS, should_stop=None,
@@ -380,13 +493,20 @@ def evaluate(project: Path, *, cli: str | None = None, attacks=ATTACKS, should_s
         return {"status": "unsupported", "reason": "通信とファイルを隔離できる macOS の sandbox-exec が必要です"}
     if not cli:
         return {"status": "unsupported", "reason": "claude CLI が見つかりません"}
+    def stop_reason():
+        return should_stop() if should_stop else None
+    if stop_reason():
+        return {"status": "stopped", "reason": stop_reason(), "completed": 0}
     ok, failures = confinement_self_test(cli)
     if not ok:
         return {"status": "unsupported", "reason": "隔離を確認できないため実行しません（" + "、".join(failures) + "）"}
+    if stop_reason():
+        return {"status": "stopped", "reason": stop_reason(), "completed": 0}
     if settings is None:
         settings, ignored = _read_settings(project)
-    version = subprocess.run([os.path.realpath(cli), "--version"], capture_output=True, text=True,
-                             timeout=30).stdout.strip()
+    version = _confined_version(cli)
+    if not version:          # fail closed: a CLI that cannot start confined would make every row "unverified"
+        return {"status": "unsupported", "reason": "Claude Code の CLI がサンドボックス内で起動できないため実行しません"}
     rows = []
     try:
         for a in attacks:
@@ -401,6 +521,7 @@ def evaluate(project: Path, *, cli: str | None = None, attacks=ATTACKS, should_s
                        or r["blocked_by"] == "approval_required" else None)
     return {"status": "done", "cli_version": version, "project_settings": "settings.json" in settings,
             "ignored_settings": ignored or [], "confinement": "self_test_passed",
+            "confinement_scope": SELF_TEST_SCOPE,
             "results": rows,
             "summary": {v: sum(1 for r in rows if r["verdict"] == v)
                         for v in ("blocked", "breached", "unverified", "not_tested")}
@@ -409,7 +530,8 @@ def evaluate(project: Path, *, cli: str | None = None, attacks=ATTACKS, should_s
 
 SCOPE_NOTE = ("確認範囲：プロジェクトの .claude/settings.json（と settings.local.json）の権限ルール"
               "（permissions のみ）と、6つの攻撃シナリオ。フック・MCP・env などの実行可能な設定は取り除いてから試すため未確認。"
-              "利用者単位の ~/.claude 設定、組織の管理ポリシー、対話中の利用者の許可操作も確認していません。")
+              "利用者単位の ~/.claude 設定、組織の管理ポリシー（/Library は読めない状態で実行）、対話中の利用者の許可操作も確認していません。"
+              "実行前の自己診断は代表的な経路の確認で、完全な隔離の証明ではありません。")
 MAX_SETTINGS_BYTES = 65536
 _RUN_LOCK = threading.Lock()
 

@@ -2092,19 +2092,73 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
             self.assertIsNone(seen["before"])
             self.assertIn("失効", seen["after"])
 
-    def test_a2b_profile_draft_is_platform_config_held_until_an_admin_accepts_it(self):
+    def test_a2b_drafts_are_per_org_and_only_a_platform_admin_makes_one_runnable(self):
         from tests.test_a2b_profile import DRAFT
-        a = self.signup("alice")              # owner of her own org, no platform role
-        self.assertEqual(self.req(a, "/a2b/profile-draft", {"draft": DRAFT})[0], 403)
-        self.assertEqual(self.req({}, "/a2b/profile-draft", {"draft": DRAFT})[0], 401)
+        a, b = self.signup("alice"), self.signup("bob")       # each owns an org, no platform role
+        oa, ob = a["orgs"][0]["id"], b["orgs"][0]["id"]
+        code, d1 = self.req(a, "/assets/a2b-drafts", {"draft": DRAFT}, org=oa)
+        self.assertEqual((code, d1["approval"]["status"]), (200, "draft"), d1)
+        _, d2 = self.req(b, "/assets/a2b-drafts", {"draft": DRAFT}, org=ob)     # same API name, other org
+        _, d3 = self.req(a, "/assets/a2b-drafts", {"draft": DRAFT}, org=oa)     # same name twice in one org
+        self.assertEqual(len({d1["profile_id"], d2["profile_id"], d3["profile_id"]}), 3)   # nothing overwritten
+        self.assertEqual(self.req(b, "/assets/a2b-drafts", {"draft": DRAFT, "id": d1["id"]}, org=ob)[0], 400)
+        self.assertEqual(self.req(b, "/assets/a2b-drafts", org=oa)[0], 403)
+        self.assertEqual({d["id"] for d in self.req(b, "/assets/a2b-drafts", org=ob)[1]["drafts"]}, {d2["id"]})
+        self.assertEqual(self.req(b, "/assets/a2b-drafts/request", {"id": d1["id"], "sha256": d1["sha256"]}, org=ob)[0], 400)
+        approve = {"org": oa, "id": d1["id"], "sha256": d1["sha256"]}
+        self.assertEqual(self.req(a, "/a2b/approve", approve)[0], 403)     # an org owner is not a platform admin
         p = self.login("padmin", "padmin-pw-1")
-        code, rep = self.req(p, "/a2b/profile-draft", {"draft": {**DRAFT, "own_marker": "x"}})
+        self.assertEqual(self.req(p, "/a2b/approve", approve)[0], 400)     # not requested yet
+        self.assertEqual(self.req(a, "/assets/a2b-drafts/request", {"id": d1["id"], "sha256": "0" * 64}, org=oa)[0], 400)
+        code, r = self.req(a, "/assets/a2b-drafts/request", {"id": d1["id"], "sha256": d1["sha256"]}, org=oa)
+        self.assertEqual((code, r["approval"]["status"]), (200, "requested"))
+        self.assertEqual(self.req(p, "/a2b/approve", {**approve, "org": ob})[0], 400)        # id is per org
+        self.assertEqual(self.req(p, "/a2b/approve", {**approve, "sha256": "0" * 64})[0], 400)
+        osvc = self.reg.service(oa)
+        self.assertEqual(list(osvc.l2.runnable_check_ids()), [])             # nothing runnable before approval
+        self.assertFalse(list((osvc.data_dir / "l2_profiles").glob("a2b_*.json")) if (osvc.data_dir / "l2_profiles").is_dir() else [])
+        self.assertEqual(self.req(a, "/a2b/review")[0], 403)
+        review = self.req(p, "/a2b/review")[1]["drafts"]
+        mine = next(x for x in review if x["id"] == d1["id"])
+        self.assertEqual((mine["org"], len(mine["rules"])), (oa, 3))           # the admin sees what the hash covers
+        self.assertIn("/api/orgs/org-a/notes/note-b1", json.dumps(mine["rules"]))
+        code, r = self.req(p, "/a2b/approve", approve)
+        self.assertEqual((code, r["approval"]["status"], r["approved_profile_loaded"]), (200, "approved", True), r)
+        runnable = [c for c in osvc.l2.runnable_check_ids() if c.startswith(d1["profile_id"])]
+        self.assertEqual(len(runnable), 3)
+        self.assertFalse([c for c in self.reg.service(ob).l2.runnable_check_ids() if c.startswith("a2b_")])
+        # a change after approval voids it: nothing of the old content stays runnable
+        changed = {**DRAFT, "own_marker": "VULNIX_A2B_OWNER_A_DATA_V2"}
+        code, r = self.req(a, "/assets/a2b-drafts", {"draft": changed, "id": d1["id"]}, org=oa)
+        self.assertEqual((r["approval"]["status"], r["approval"].get("voided")), ("draft", "approved"))
+        self.assertFalse([c for c in osvc.l2.runnable_check_ids() if c.startswith(d1["profile_id"])])
+        # approve again, then the organization withdraws it (reducing power needs no admin)
+        self.assertEqual(self.req(a, "/assets/a2b-drafts/request", {"id": d1["id"], "sha256": r["sha256"]}, org=oa)[0], 200)
+        self.assertEqual(self.req(p, "/a2b/approve", {**approve, "sha256": r["sha256"]})[0], 200)
+        # a second draft for the same host cannot be made runnable beside it; nothing is left behind
+        self.assertEqual(self.req(a, "/assets/a2b-drafts/request", {"id": d3["id"], "sha256": d3["sha256"]}, org=oa)[0], 200)
+        code, r = self.req(p, "/a2b/approve", {"org": oa, "id": d3["id"], "sha256": d3["sha256"]})
         self.assertEqual(code, 400)
-        code, rep = self.req(p, "/a2b/profile-draft", {"draft": DRAFT})
-        self.assertEqual((code, rep["saved"]), (200, "a2b_a2b_lab"))
-        saved = next(x for x in rep["profiles"] if x["id"] == "a2b_a2b_lab")
-        self.assertFalse(saved["accepted"])                     # nothing runs before acceptance
-        self.assertEqual(self.req(a, "/l2-profiles")[0], 403)        # nor is it readable by other orgs
+        self.assertIn("同じホスト", r["error"])
+        self.assertFalse(list((osvc.data_dir / "l2_profiles").glob(f"{d3['profile_id']}.json")))
+        self.assertEqual(len([c for c in osvc.l2.runnable_check_ids() if c.startswith(d1["profile_id"])]), 3)
+        code, r = self.req(a, "/assets/a2b-drafts/withdraw", {"id": d1["id"]}, org=oa)
+        self.assertEqual((code, r["approval"]["status"]), (200, "revoked"))
+        self.assertFalse(list((osvc.data_dir / "l2_profiles").glob(f"{d1['profile_id']}.json")))
+        self.assertFalse([c for c in osvc.l2.runnable_check_ids() if c.startswith(d1["profile_id"])])
+        # nobody approves a draft they requested or saved
+        dd = self.svc.save_a2b_draft(DRAFT, "padmin")
+        self.svc.request_a2b_approval(dd["id"], dd["sha256"], "padmin")
+        self.assertEqual(self.req(p, "/a2b/approve", {"org": DEFAULT_ORG, "id": dd["id"], "sha256": dd["sha256"]})[0], 400)
+        # nothing is changed under a running check
+        osvc.a.state = "running"
+        try:
+            self.assertEqual(self.req(a, "/assets/a2b-drafts", {"draft": DRAFT, "id": d1["id"]}, org=oa)[0], 400)
+        finally:
+            osvc.a.state = "idle"
+        # a member who lost the role cannot save
+        self.reg.store._data["orgs"][oa]["members"]["alice"] = ["viewer"]
+        self.assertEqual(self.req(a, "/assets/a2b-drafts", {"draft": DRAFT}, org=oa)[0], 403)
 
     def test_pre_existing_accounts_keep_the_existing_workspace(self):
         p = self.login("padmin", "padmin-pw-1")

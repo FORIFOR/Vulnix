@@ -52,7 +52,9 @@ export default function CveChainView({ chain }: { chain: CveChain[] }) {
               </li>
             ))}
           </ol>
-          {c.fixed_in.length > 0 && <p className="mt-2">推奨対応：公式勧告に基づき修正版（{c.fixed_in.join(" / ")} 以降）に更新し、同じ条件で再検証する。</p>}
+          {c.fixed_in.length > 0
+            ? <p className="mt-2">推奨対応：公式勧告に基づき修正版（{c.fixed_in.join(" / ")} 以降）に更新し、同じ条件で再検証する。</p>
+            : <p className="mt-2">修正版：取り込んだ脆弱性情報に記載がないため未確認（推測では補いません）。推奨対応：製品の公式勧告で修正版を確認して更新し、同じ条件で再検証する。</p>}
           <p className="mt-1 text-zinc-500">{c.confirmed_impact || c.fixed_after_reproduction
             ? "隔離ラボでの結果であり、実際の配備環境の安全性を保証するものではありません。"
             : "版の一致だけでは影響は確定しません。未確認の項目は推測で補っていません。"}</p>

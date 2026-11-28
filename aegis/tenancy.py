@@ -123,6 +123,10 @@ class OrgStore:
         os.replace(tmp, self.path)
 
     # ---- reads -----------------------------------------------------------------
+    def org_ids(self) -> list[str]:
+        with self._lock:
+            return sorted(self._data["orgs"])
+
     def exists(self, org_id: str) -> bool:
         return org_id in self._data["orgs"]
 

@@ -1745,7 +1745,7 @@ class AssessmentService:
             meta = profile["paths"][node["path"]]
             return {"account": profile["tokens"][node["token"]]["label"], "token_key": node["token"],
                     "path": meta["default"], "path_override_pattern": meta.get("override_pattern"),
-                    "headers": dict(node["headers"])}
+                    "headers": dict(node.get("headers") or {})}
         return {
             "id": c["id"], "label": c["label"],
             "request": req(c["subject"]),
@@ -1754,22 +1754,194 @@ class AssessmentService:
             "spec_evidence": c["spec_evidence"],
         }
 
-    def save_a2b_profile_draft(self, draft: dict, actor: str) -> dict:
-        """Write an A2B profile built from the UI draft into the site-profile directory. It is
-        held like every site profile: nothing runs until an admin accepts its exact content."""
-        from .a2b_profile import build_profile, save_site_profile
-        profile = build_profile(draft)             # DraftError (a ValueError) for the user to correct
+    # ---- A2B drafts: four separate steps -------------------------------------
+    # 1. the user reads the API definition and confirms test data (in the browser);
+    # 2. a draft is saved in THIS organization's store - never in a profile directory, so
+    #    nothing can run from it;
+    # 3. a platform admin approves the exact profile built from it (SHA-256), which writes it
+    #    into this organization's profile directory and accepts it;
+    # 4. each run still needs a verified asset, stored test accounts and the per-item L2
+    #    approval by someone other than the requester (unchanged).
+    # Editing an approved draft, or revoking it, removes the profile and its acceptance.
+    def _a2b_dir(self) -> Path:
+        d = self.data_dir / "a2b_drafts"
+        d.mkdir(mode=0o700, exist_ok=True)
+        os.chmod(d, 0o700)
+        return d
+
+    def _a2b_read(self, draft_id: str) -> dict:
+        from .a2b_profile import DRAFT_ID_RE
+        if not isinstance(draft_id, str) or not DRAFT_ID_RE.fullmatch(draft_id):
+            raise ValueError("下書きが見つかりません")
+        f = self._a2b_dir() / f"{draft_id}.json"
+        if not f.is_file():
+            raise ValueError("下書きが見つかりません")
+        return json.loads(f.read_text(encoding="utf-8"))
+
+    def _a2b_write(self, rec: dict) -> None:
+        d = self._a2b_dir()
+        fd, tmp = tempfile.mkstemp(dir=d, prefix=".d-", suffix=".json")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(rec, fh, ensure_ascii=False, indent=2)
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, d / f"{rec['id']}.json")
+        except BaseException:
+            Path(tmp).unlink(missing_ok=True)
+            raise
+
+    def _a2b_view(self, rec: dict) -> dict:
+        pid = rec["profile_id"]
+        src = self.l2.sources.get(pid)
+        runnable = bool(src and src["site"] and self._accepted_profiles.get(pid) == rec["approval"].get("sha256")
+                        and src["sha256"] == rec["approval"].get("sha256"))
+        status = rec["approval"]["status"]
+        if status == "approved" and not runnable:
+            status = "changed"          # the file or the acceptance no longer matches what was approved
+        profile = rec["profile"]
+        return {"id": rec["id"], "name": rec["name"], "host": profile["applies_to"]["hosts"][0],
+                "profile_id": pid, "sha256": rec["sha256"], "revision": rec["revision"],
+                "saved_by": rec["saved_by"], "saved_at": rec["saved_at"],
+                "checks": [{"kind": c["id"][len(pid) + 1:], "label": c["label"], "confirmed": c["spec_status"] == "confirmed"}
+                           for c in profile["checks"]],
+                "approval": {**rec["approval"], "status": status}, "approved_profile_loaded": runnable,
+                "draft": rec["draft"]}
+
+    def a2b_drafts(self) -> list[dict]:
+        with self._lock:
+            out = []
+            for f in sorted(self._a2b_dir().glob("d*.json")):
+                try:
+                    rec = json.loads(f.read_text(encoding="utf-8"))
+                    if isinstance(rec, dict) and isinstance(rec.get("approval"), dict):
+                        out.append(self._a2b_view(rec))
+                except Exception:   # noqa: BLE001 - one unreadable record never hides the others
+                    continue
+            return sorted(out, key=lambda r: r["saved_at"], reverse=True)
+
+    def a2b_review(self) -> list[dict]:
+        """For a platform admin: the drafts waiting for approval or approved, with the exact
+        profile content (paths, markers, denial statuses) the SHA-256 covers."""
+        out = []
+        for d in self.a2b_drafts():
+            if d["approval"]["status"] in ("requested", "approved", "changed"):
+                rec = self._a2b_read(d["id"])
+                out.append({**d, "rules": [self._describe_rule(rec["profile"], c) for c in rec["profile"]["checks"]
+                                           if c["spec_status"] == "confirmed"]})
+        return out
+
+    def save_a2b_draft(self, draft: dict, actor: str, draft_id: str | None = None) -> dict:
+        """Save (or update) a draft of THIS organization. It has no execution power."""
+        from .a2b_profile import build_profile, profile_bytes, profile_id_for
         with self._lock:
             if self.a.state == "running":
-                raise ValueError("診断実行中はプロファイルを保存できません")
-            self._audit_first("l2.profile_drafted", actor=actor, profile=profile["id"],
-                              hosts=profile["applies_to"]["hosts"],
+                raise ValueError("診断実行中は検証内容を変更できません。停止するか終わってから保存してください")
+            if draft_id:
+                rec = self._a2b_read(draft_id)          # only this organization's own store
+            else:
+                rec = {"id": "d" + secrets.token_hex(6), "revision": 0,
+                       "approval": {"status": "draft"}}
+                while (self._a2b_dir() / f"{rec['id']}.json").exists():
+                    rec["id"] = "d" + secrets.token_hex(6)
+            profile = build_profile(draft, profile_id_for(rec["id"]))   # DraftError for the user
+            sha = hashlib.sha256(profile_bytes(profile)).hexdigest()
+            if draft_id and sha == rec.get("sha256"):
+                return self._a2b_view(rec)
+            was = rec["approval"].get("status")
+            self._audit_first("a2b.draft_saved", actor=actor, draft=rec["id"], profile=profile["id"],
+                              sha256=sha, revision=rec["revision"] + 1,
                               checks={c["id"]: c["spec_status"] for c in profile["checks"]})
-            save_site_profile(self.data_dir, profile)
+            if was in ("approved", "requested"):
+                self._a2b_unload_locked(rec, actor, "a2b.approval_voided_by_change")
+            rec.update({"name": str(draft.get("name") or "").strip()[:80], "draft": draft, "profile": profile,
+                        "profile_id": profile["id"], "sha256": sha, "revision": rec["revision"] + 1,
+                        "saved_by": actor, "saved_at": time.time(),
+                        "approval": {"status": "draft", **({"voided": was} if was in ("approved", "requested") else {})}})
+            self._a2b_write(rec)
+            return self._a2b_view(rec)
+
+    def request_a2b_approval(self, draft_id: str, sha256: str, actor: str) -> dict:
+        with self._lock:
+            rec = self._a2b_read(draft_id)
+            if sha256 != rec["sha256"]:
+                raise ValueError("下書きの内容が表示時から変わっています。確認し直してください")
+            if not any(c["spec_status"] == "confirmed" for c in rec["profile"]["checks"]):
+                raise ValueError("仕様と試験データを確認した項目がありません。未確認の候補は承認を依頼できません")
+            view = self._a2b_view(rec)
+            if view["approval"]["status"] == "approved":     # still loaded as approved: nothing to ask
+                return view
+            if rec["approval"]["status"] == "approved":     # approved, but no longer loaded: start over
+                self._a2b_unload_locked(rec, actor, "a2b.approval_voided_by_change")
+            self._audit_first("a2b.approval_requested", actor=actor, draft=rec["id"], sha256=rec["sha256"])
+            rec["approval"] = {"status": "requested", "sha256": rec["sha256"], "requested_by": actor,
+                               "requested_at": time.time()}
+            self._a2b_write(rec)
+            return self._a2b_view(rec)
+
+    def approve_a2b_draft(self, draft_id: str, sha256: str, actor: str) -> dict:
+        """A PLATFORM admin (checked by the caller) approves the exact profile of a requested
+        draft. The profile is written into this organization's profile directory and accepted."""
+        from .a2b_profile import save_site_profile
+        with self._lock:
+            if self.a.state == "running":
+                raise ValueError("診断実行中は承認できません")
+            rec = self._a2b_read(draft_id)
+            if rec["approval"]["status"] != "requested":
+                raise ValueError("承認を依頼された下書きではありません")
+            if not sha256 or sha256 != rec["sha256"] or sha256 != rec["approval"].get("sha256"):
+                raise ValueError("下書きの内容が表示時から変わっています。内容を確認し直してください")
+            if actor in (rec["approval"].get("requested_by"), rec.get("saved_by")):
+                raise ValueError("承認を依頼した本人・下書きを保存した本人は承認できません。別の管理者が承認してください")
+            hosts = set(rec["profile"]["applies_to"]["hosts"])
+            taken = sorted(pid for pid, prof in self.l2.profiles.items()
+                           if pid != rec["profile_id"] and hosts & set(prof.get("hosts") or []))
+            if taken:      # checked BEFORE writing: which of two same-host files loads must never be decided by name
+                raise ValueError(f"この検証内容を有効にできません（同じホストの検証内容が既にあります: {', '.join(taken)[:120]}）。"
+                                 "同じホストの検証内容が既にある場合は、先にそちらを取り下げてください")
+            save_site_profile(self.data_dir, rec["profile"])
+            fresh = self._read_l2_profiles()
+            if rec["profile_id"] not in fresh.sources:      # e.g. another profile already covers this host
+                from .a2b_profile import remove_site_profile
+                remove_site_profile(self.data_dir, rec["profile_id"])
+                why = next((r["reason"] for r in fresh.rejected if rec["profile_id"] in str(r.get("file", ""))),
+                           "読み込めませんでした")
+                raise ValueError(f"この検証内容を有効にできません（{str(why)[:200]}）。"
+                                 "同じホストの検証内容が既にある場合は、先にそちらを取り下げてください")
+            try:
+                self.accept_l2_profile(rec["profile_id"], sha256, actor)   # reads the file again, audits, commits
+                rec["approval"] = {**rec["approval"], "status": "approved", "approved_by": actor,
+                                   "approved_at": time.time()}
+                self._a2b_write(rec)
+            except Exception:
+                # nothing half-done stays: no file, no acceptance (audited like a revocation)
+                self._a2b_unload_locked(rec, actor, "a2b.approval_rolled_back")
+                raise
+            return self._a2b_view(rec)
+
+    def revoke_a2b_draft(self, draft_id: str, actor: str) -> dict:
+        with self._lock:
+            if self.a.state == "running":
+                raise ValueError("診断実行中は取り消せません")
+            rec = self._a2b_read(draft_id)
+            self._a2b_unload_locked(rec, actor, "a2b.approval_revoked")
+            rec["approval"] = {"status": "revoked", "revoked_by": actor, "revoked_at": time.time()}
+            self._a2b_write(rec)
+            return self._a2b_view(rec)
+
+    def _a2b_unload_locked(self, rec: dict, actor: str, event: str) -> None:
+        """Remove the profile file and its acceptance: nothing of this draft stays runnable."""
+        from .a2b_profile import remove_site_profile
+        pid = rec["profile_id"]
+        self._audit_first(event, actor=actor, draft=rec["id"], profile=pid)
+        removed = remove_site_profile(self.data_dir, pid)
+        if pid in self._accepted_profiles:
+            before = self.ledger.snapshot()
+            self._accepted_profiles.pop(pid, None)
+            self._commit_audited_grant_locked(before, "プロファイル承認の取り消し", event)
+        if removed or pid in self.l2.sources:
             self.l2 = self._read_l2_profiles()
             self._apply_profile_acceptance_locked()
-        status = self.l2_profiles_status()
-        return {**status, "saved": profile["id"]}
+        self._save_state_locked()
 
     def accept_l2_profile(self, profile_id: str, sha256: str, actor: str) -> dict:
         """An admin accepts the exact content of a site profile. The file is read

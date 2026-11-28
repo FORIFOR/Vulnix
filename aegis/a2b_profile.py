@@ -77,7 +77,17 @@ def slug(text: str) -> str:
     return (_SLUG_RE.sub("_", (text or "").lower()).strip("_") or "api")[:40]
 
 
-def build_profile(draft: dict) -> dict:
+DRAFT_ID_RE = re.compile(r"d[0-9a-f]{12}")
+
+
+def profile_id_for(draft_id: str) -> str:
+    """The profile id is bound to the stored draft (a random id inside one organization's
+    store), never to the API name: two drafts with the same name never share a file."""
+    _need(isinstance(draft_id, str) and DRAFT_ID_RE.fullmatch(draft_id) is not None, "下書きの ID が不正です")
+    return f"a2b_{draft_id}"
+
+
+def build_profile(draft: dict, profile_id: str | None = None) -> dict:
     """The profile JSON for `draft` (as the browser sends it). Raises DraftError on anything
     the user has to correct; the result also passes `validate_profile`."""
     _need(isinstance(draft, dict), "入力が不正です")
@@ -86,7 +96,8 @@ def build_profile(draft: dict) -> dict:
     host = str(draft.get("host") or "").strip().lower()
     _need(re.fullmatch(r"[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?", host) is not None,
           "対象のホスト名（例: api.example.com）を入力してください")
-    pid = f"a2b_{slug(name)}"
+    pid = profile_id or f"a2b_{slug(name)}"
+    _need(re.fullmatch(r"a2b_[a-z0-9_]{1,40}", pid) is not None, "プロファイルの ID が不正です")
     requested = draft.get("denied_status") or [403]
     _need(isinstance(requested, list) and 401 not in requested,
           "401 は試験用トークンの失効と区別できないため、拒否としては使えません")
@@ -158,6 +169,19 @@ def build_profile(draft: dict) -> dict:
     return profile
 
 
+def profile_bytes(profile: dict) -> bytes:
+    """The exact bytes written for `profile`: what an admin's SHA-256 acceptance covers."""
+    return json.dumps(profile, ensure_ascii=False, indent=2).encode("utf-8")
+
+
+def remove_site_profile(data_dir: Path, profile_id: str) -> bool:
+    target = Path(data_dir) / "l2_profiles" / f"{profile_id}.json"
+    if target.is_file():
+        target.unlink()
+        return True
+    return False
+
+
 def save_site_profile(data_dir: Path, profile: dict) -> Path:
     """Write the profile into `<data_dir>/l2_profiles/` with owner-only permissions (what the
     site-profile loader requires). Replacing a file changes its SHA-256, so an earlier
@@ -166,10 +190,10 @@ def save_site_profile(data_dir: Path, profile: dict) -> Path:
     d.mkdir(mode=0o700, exist_ok=True)
     os.chmod(d, 0o700)
     target = d / f"{profile['id']}.json"
-    fd, tmp = tempfile.mkstemp(dir=d, prefix=".draft-", suffix=".json")
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".draft-", suffix=".tmp")
     try:
-        with os.fdopen(fd, "w") as fh:
-            json.dump(profile, fh, ensure_ascii=False, indent=2)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(profile_bytes(profile))
         os.chmod(tmp, 0o600)
         os.replace(tmp, target)
     except BaseException:
@@ -178,4 +202,5 @@ def save_site_profile(data_dir: Path, profile: dict) -> Path:
     return target
 
 
-__all__ = ["DraftError", "KINDS", "ROLES", "build_profile", "save_site_profile", "slug"]
+__all__ = ["DRAFT_ID_RE", "DraftError", "KINDS", "ROLES", "build_profile", "profile_bytes", "profile_id_for",
+           "remove_site_profile", "save_site_profile", "slug"]

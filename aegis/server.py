@@ -125,7 +125,7 @@ ARTEX_LLM_PLANS_PLATFORM_PER_HOUR = int(os.environ.get("VULNIX_ARTEX_LLM_PLANS_P
 # every organization, so they are decided by the account's own (global) roles.
 PLATFORM_POST_ROUTES = frozenset({"/api/l2-profiles/accept", "/api/router/verify", "/api/cve/sync",
                                   "/api/system/verify-controls", "/api/cve/real-software-verify",
-                                  "/api/agent-defense/evaluate", "/api/a2b/profile-draft"})
+                                  "/api/agent-defense/evaluate", "/api/a2b/approve", "/api/a2b/revoke"})
 # Routes that start a verification job (spawn workers / probes on this machine).
 JOB_ROUTES = frozenset({"/api/system/verify-controls", "/api/cve/real-software-verify",
                         "/api/agent-defense/evaluate"})
@@ -1005,6 +1005,19 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         return self._json(200, profiles)
                     finally:
                         self.connection.settimeout(previous_timeout)
+            if p == "/api/a2b/review":
+                # a platform admin reviews drafts of every organization (an org owner is not one)
+                if not sess or "admin" not in ops.roles_of(sess.operator):
+                    return self._json(403, {"error": "プラットフォーム管理者の権限が必要です"})
+                orgs = tenancy.store.org_ids() if tenancy is not None else [DEFAULT_ORG]
+                items = []
+                for oid in dict.fromkeys(([DEFAULT_ORG] if tenancy is not None else []) + orgs):
+                    try:
+                        osvc = tenancy.service(oid) if tenancy is not None else svc
+                    except TenancyError:
+                        continue
+                    items += [{**d, "org": oid} for d in osvc.a2b_review()]
+                return self._authorized_platform_read(sess, lambda: self._json(200, {"drafts": items}), admin=True)
             if p in JOB_ROUTES:
                 # these START a verification job: POST only (CSRF-checked, role-checked, audited)
                 return self._json(405, {"error": "この操作は POST で実行してください"}, [("Allow", "POST")])
@@ -1045,6 +1058,10 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                                         and _approver_class(sess.operator) == "registered"})
             if p == "/api/assets":
                 return self._json(200, svc.assets())
+            if p == "/api/assets/a2b-drafts":
+                # this organization's drafts only; approval is a platform admin's, shown as such
+                return self._json(200, {"drafts": svc.a2b_drafts(), "org": getattr(self, "_bound_org", DEFAULT_ORG),
+                                        "may_approve": bool(sess) and "admin" in ops.roles_of(sess.operator)})
             if p == "/api/assets/intelligence":
                 if not sess:
                     return self._json(401, {"error": "ログインが必要です"})
@@ -1878,6 +1895,21 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         return self._json(400, {"error": "対応していないローカル防御検証操作です"})
                     return self._authorized_org_read(
                         sess, org, lambda _: self._json(200, local_defense.view()), reader=False)
+                if p in ("/api/assets/a2b-drafts", "/api/assets/a2b-drafts/request", "/api/assets/a2b-drafts/withdraw"):
+                    # a draft has no execution power; any member who may operate saves one
+                    try:
+                        if p == "/api/assets/a2b-drafts":
+                            draft = body.get("draft")
+                            result = svc.save_a2b_draft(draft if isinstance(draft, dict) else {}, actor,
+                                                        str(body.get("id") or "") or None)
+                        elif p.endswith("/request"):
+                            result = svc.request_a2b_approval(str(body.get("id", "")), str(body.get("sha256", "")), actor)
+                        else:      # reducing power: the organization may always withdraw its own
+                            result = svc.revoke_a2b_draft(str(body.get("id", "")), actor)
+                    except ValueError as exc:
+                        return self._json(400, {"error": str(exc)[:300]})
+                    return self._authorized_org_read(
+                        sess, getattr(self, "_bound_org", DEFAULT_ORG), lambda _: self._json(200, result), reader=False)
                 if p == "/api/assets":
                     asset = svc.register_asset(
                         name=str(body.get("name", "")),
@@ -2158,16 +2190,27 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         return self._json(403, {"error": "プロファイルの承認には管理者の権限が必要です"})
                     result = svc.accept_l2_profile(str(body.get("id", "")), str(body.get("sha256", "")), actor)
                     return self._authorized_platform_read(sess, lambda: self._json(200, result), admin=True)
-                elif p == "/api/a2b/profile-draft":
-                    if not ({"approver", "admin"} & set(sess.roles)):
-                        paudit.record("l2.profile_draft_denied", actor=actor)
-                        return self._json(403, {"error": "検証プロファイルの保存には承認責任者または管理者の権限が必要です"})
-                    draft = body.get("draft")
+                elif p in ("/api/a2b/approve", "/api/a2b/revoke"):
+                    # approving makes a profile runnable: a PLATFORM admin only (an organization
+                    # owner is not one). The draft is looked up in the named organization's store.
+                    if "admin" not in sess.roles:
+                        paudit.record("a2b.approval_denied", actor=actor, op=p, org=str(body.get("org", ""))[:64])
+                        return self._json(403, {"error": "検証内容の承認・取り消しにはプラットフォーム管理者の権限が必要です"})
+                    org = str(body.get("org", "") or DEFAULT_ORG)
                     try:
-                        result = svc.save_a2b_profile_draft(draft if isinstance(draft, dict) else {}, actor)
-                    except ValueError as exc:
+                        if tenancy is not None:
+                            osvc = tenancy.service(org)
+                        elif org == DEFAULT_ORG:
+                            osvc = svc
+                        else:
+                            raise TenancyError("組織が見つかりません")
+                        if p == "/api/a2b/approve":
+                            result = osvc.approve_a2b_draft(str(body.get("id", "")), str(body.get("sha256", "")), actor)
+                        else:
+                            result = osvc.revoke_a2b_draft(str(body.get("id", "")), actor)
+                    except (ValueError, TenancyError) as exc:
                         return self._json(400, {"error": str(exc)[:300]})
-                    return self._authorized_platform_read(sess, lambda: self._json(200, result))
+                    return self._authorized_platform_read(sess, lambda: self._json(200, result), admin=True)
                 elif p in ("/api/router/verify", "/api/cve/sync") and not ({"approver", "admin"} & set(sess.roles)):
                     # one spawns the planner CLI and an outbound model call, the other replaces feed data
                     paudit.record("system.job_denied", actor=actor, job=p)
