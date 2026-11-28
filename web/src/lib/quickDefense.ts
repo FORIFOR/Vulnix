@@ -22,6 +22,12 @@ type Result = { severity?: Severity; location?: ResultLocation; locations?: Resu
 type RecordValue = Record<string, unknown>;
 
 export const categories = ["ARTEX", "CVE", "Claude Code"] as const;
+/** What a user sees for each category (the keys stay internal). */
+export const categoryLabels: Record<Category, string> = {
+  ARTEX: "攻撃経路になりうる設定",
+  CVE: "既知の脆弱性（CVE）",
+  "Claude Code": "AIコーディング支援ツールの権限",
+};
 export const labels: Record<Status, string> = {
   confirmed: "防御確認済み", action: "対策が必要", unknown: "未確認", na: "対象外",
 };

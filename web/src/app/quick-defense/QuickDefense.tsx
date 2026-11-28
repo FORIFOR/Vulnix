@@ -12,7 +12,7 @@ import { catalogSources, osvSources, type CatalogSource } from "@/lib/catalogUpd
 import type { ScanProgress } from "@/lib/projectDefense";
 import { readCatalogCache, type CatalogFailure } from "@/lib/catalogCache";
 import { advisorySeverityLabels, groupDependencyFindings, sortByAdvisorySeverity } from "@/lib/resultPresentation";
-import { categories, checkControls, checkCves, demoEvidence, labels, record, type FixCandidate } from "@/lib/quickDefense";
+import { categories, categoryLabels, checkControls, checkCves, demoEvidence, labels, record, type FixCandidate } from "@/lib/quickDefense";
 
 const button = "rounded-lg border border-zinc-300 px-3 py-2 text-sm font-medium dark:border-zinc-700";
 const primary = "rounded-lg bg-zinc-900 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50 dark:bg-white dark:text-zinc-900";
@@ -213,7 +213,7 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
             if (event.target.checked) next.add(category); else next.delete(category);
             setSelected(next);
             setResults(null);
-          }} />{category}対策
+          }} />{categoryLabels[category]}
         </label>)}
       </fieldset>
       <section className="space-y-3 rounded-xl border border-zinc-200 p-4 dark:border-zinc-800">
@@ -386,7 +386,7 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
         </details>}
         <p className="text-sm">個別結果は勧告の重大度順です（Critical → High → Medium → Low → 重大度不明）。対象サービスでの実際の影響は未確認です。</p>
         {shown.slice(0, display).map((row, index) => <details key={index} className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
-          <summary className="cursor-pointer font-medium">{row.testCode && <span className="mr-1 rounded bg-zinc-100 px-1.5 py-0.5 text-xs font-normal text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">テスト用コード</span>}{row.category} ／ {row.title} ／ {statusLabel(row.status)}{row.severity && ` ／ 勧告の重大度 ${advisorySeverityLabels[row.severity]}`}</summary>
+          <summary className="cursor-pointer font-medium">{row.testCode && <span className="mr-1 rounded bg-zinc-100 px-1.5 py-0.5 text-xs font-normal text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">テスト用コード</span>}{categoryLabels[row.category as keyof typeof categoryLabels] ?? row.category} ／ {row.title} ／ {statusLabel(row.status)}{row.severity && ` ／ 勧告の重大度 ${advisorySeverityLabels[row.severity]}`}</summary>
           <dl className="mt-2 space-y-1 break-words text-sm">
             {(row.locations?.length || row.location) && <><dt className="font-semibold">修正箇所</dt>
               {(row.locations ?? (row.location ? [row.location] : [])).map((location, i) => <dd key={i} className="font-mono">

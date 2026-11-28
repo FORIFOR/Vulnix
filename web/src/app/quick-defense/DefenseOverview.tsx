@@ -30,8 +30,8 @@ export default function DefenseOverview({ rows, files, signedIn }: { rows: Row[]
   const agentBlocked = agent?.results?.filter((r) => r.verdict === "blocked" && r.blocked_by === "rule").length ?? 0;
   const agentPending = agent?.results?.filter((r) => r.verdict !== "breached" && !(r.verdict === "blocked" && r.blocked_by === "rule")).length ?? 0;
   const cards = [
-    { key: "ARTEX", title: "AIによる攻撃への備え", sub: "ARTEX：攻撃に使われうる設定・経路", ...area("ARTEX") },
-    { key: "Claude Code", title: "AIコーディング支援の権限", sub: "Claude Code：秘密情報・操作権限・通信制御",
+    { key: "ARTEX", title: "攻撃経路になりうる設定", sub: "認証・XML・クラウド権限・CI・公開範囲の設定", ...area("ARTEX") },
+    { key: "Claude Code", title: "AIコーディング支援ツールの権限", sub: "秘密情報・操作権限・通信の制限（Claude Code など）",
       action: area("Claude Code").action + agentBreached, confirmed: area("Claude Code").confirmed + agentBlocked,
       unknown: area("Claude Code").unknown + agentPending },
     { key: "CVE", title: "既知の脆弱性（CVE）", sub: "依存関係・影響条件・修正版", ...area("CVE") },
