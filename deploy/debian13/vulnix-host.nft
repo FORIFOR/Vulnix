@@ -1,0 +1,23 @@
+#!/usr/sbin/nft -f
+# Host firewall of the Vulnix deployment candidate. Only SSH comes in; the web server
+# and the control plane listen on 127.0.0.1 and are reached through a TLS proxy or an
+# administrator's tunnel. Vulnix's own egress tables live inside each worker's network
+# namespace and are not touched here. Outbound stays open: diagnosis targets vary, and
+# each worker is limited to its one approved destination by its own namespace.
+table inet vulnix_host
+delete table inet vulnix_host
+table inet vulnix_host {
+    chain input {
+        type filter hook input priority filter; policy drop;
+        iif "lo" accept
+        ct state established,related accept
+        ct state invalid drop
+        tcp dport 22 accept
+        udp sport 67 udp dport 68 accept
+        meta l4proto ipv6-icmp accept
+        icmp type { echo-request, destination-unreachable, time-exceeded } limit rate 10/second accept
+    }
+    chain forward {
+        type filter hook forward priority filter; policy drop;
+    }
+}

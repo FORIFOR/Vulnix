@@ -94,7 +94,7 @@ export function ExplanationPanel({
       )}
       {aiAnswer && (
         <div className="mt-3 rounded-lg border border-violet-200 bg-violet-50/70 p-2.5 text-xs leading-relaxed text-zinc-800 dark:border-violet-800 dark:bg-violet-950/40 dark:text-zinc-200">
-          <div className="mb-1 font-semibold text-violet-900 dark:text-violet-300">{answerActor}</div>
+          <div className="mb-1 font-semibold text-violet-900 dark:text-violet-300">{answerActor} · {fromModel ? "外部AIの解説" : "内蔵解説"}</div>
           {guardNote && (
             <p role="note" className="mb-1.5 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
               {guardNote}
@@ -120,7 +120,7 @@ export function ExplanationPanel({
         onClick={askAi}
         className="mt-3 w-full rounded-lg border border-zinc-300 py-1.5 text-xs font-semibold text-zinc-800 hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-600 dark:text-zinc-100 dark:hover:bg-zinc-800"
       >
-        {busy ? "解説を取得中…" : "診断について質問する（原因・証拠・対策）"}
+        {busy ? "解説を取得中…" : "原因・証拠・修正方法の解説を表示"}
       </button>
     </div>
   );

@@ -24,6 +24,7 @@ import hashlib
 import json
 import os
 import secrets
+import stat
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -44,12 +45,52 @@ class GoogleOwnershipError(RuntimeError):
     """Google could not be asked (configuration, consent refused, network)."""
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def client_from_file(redirect: str) -> tuple[str, str] | None:
+    """(client id, secret) from the web-client JSON downloaded from Google Auth Platform.
+
+    VULNIX_GOOGLE_CLIENT_FILE names it (absolute path, a regular file of this user,
+    not a link, readable by nobody else). The secret then never has to be typed,
+    pasted or put in an environment variable. The redirect must be one the client lists.
+    """
+    name = (os.environ.get("VULNIX_GOOGLE_CLIENT_FILE") or "").strip()
+    if not name or not os.path.isabs(name):
+        return None
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077
+                    or not 0 < info.st_size <= 16384):
+                return None
+            web = json.loads(stream.read(16385)).get("web")
+        cid, secret, uris = web.get("client_id"), web.get("client_secret"), web.get("redirect_uris")
+        if (isinstance(cid, str) and cid and isinstance(secret, str) and secret
+                and isinstance(uris, list) and redirect in uris):
+            return cid, secret
+    except (OSError, ValueError, AttributeError, TypeError):
+        pass
+    return None
+
+
 def config() -> dict | None:
     """The OAuth client, from the environment; None when not configured."""
     cid = (os.environ.get("VULNIX_GOOGLE_CLIENT_ID") or "").strip()
     secret = (os.environ.get("VULNIX_GOOGLE_CLIENT_SECRET") or "").strip()
     redirect = (os.environ.get("VULNIX_GOOGLE_REDIRECT_URI") or "").strip()
-    if not (cid and secret and redirect.startswith("https://")):
+    if not (cid and secret) and (from_file := client_from_file(redirect)):
+        cid, secret = from_file
+    try:
+        url = urlsplit(redirect)
+        if (not cid or not secret or url.scheme != "https" or not url.hostname
+                or url.username or url.password or url.path != "/verify/google" or url.query or url.fragment
+                or url.port == 0):
+            return None
+    except ValueError:
         return None
     return {"client_id": cid, "client_secret": secret, "redirect_uri": redirect}
 
@@ -73,17 +114,31 @@ def authorization_url(cfg: dict, state: str, code_challenge: str) -> str:
 def _http(url: str, *, data: bytes | None = None, headers: dict | None = None) -> dict:
     req = urllib.request.Request(url, data=data, headers=headers or {}, method="POST" if data else "GET")
     try:
-        with urllib.request.urlopen(req, timeout=15) as r:      # noqa: S310 - fixed Google URLs only
-            return json.loads(r.read(1_000_000) or b"{}")
+        with urllib.request.build_opener(NoRedirect()).open(req, timeout=15) as r:
+            raw = r.read(1_000_001)
+            value = json.loads(raw or b"{}") if len(raw) <= 1_000_000 else None
+            if isinstance(value, dict):
+                return value
+        raise GoogleOwnershipError("Google の応答を確認できませんでした")
     except Exception as e:  # noqa: BLE001 - reported without any token or body
         if isinstance(e, urllib.error.HTTPError):
             e.close()
+            if url == TOKEN_URL and e.code == 400:
+                raise GoogleOwnershipError("Google の確認が期限切れか無効です。対象画面から確認し直してください") from None
+            if url == SITES_URL and e.code == 403:
+                raise GoogleOwnershipError("Search Console を参照できません。選んだGoogleアカウントと同意を確認してください") from None
         raise GoogleOwnershipError(f"Google に接続できませんでした（{type(e).__name__}）") from None
 
 
-def owned_sites(cfg: dict, code: str, verifier: str, *, http: Callable = _http) -> list[str]:
+def owned_sites(cfg: dict, code: str, verifier: str, *, http: Callable = _http,
+                before_request: Callable[[], None] | None = None) -> list[str]:
     """Exchanges the code and returns the site URLs this account is a verified owner of."""
-    tok = http(TOKEN_URL, data=urllib.parse.urlencode({
+    def request(url, **kwargs):
+        if before_request is not None:
+            before_request()
+        return http(url, **kwargs)
+
+    tok = request(TOKEN_URL, data=urllib.parse.urlencode({
         "code": code, "client_id": cfg["client_id"], "client_secret": cfg["client_secret"],
         "redirect_uri": cfg["redirect_uri"], "grant_type": "authorization_code", "code_verifier": verifier,
     }).encode(), headers={"Content-Type": "application/x-www-form-urlencoded"})
@@ -94,11 +149,11 @@ def owned_sites(cfg: dict, code: str, verifier: str, *, http: Callable = _http) 
     if SCOPE not in granted.split():
         raise GoogleOwnershipError("Search Console の参照が許可されませんでした")
     try:
-        sites = http(SITES_URL, headers={"Authorization": f"Bearer {access}"})
+        sites = request(SITES_URL, headers={"Authorization": f"Bearer {access}"})
     finally:
         try:      # the token is not needed any more: ask Google to revoke it (best effort)
-            http(REVOKE_URL, data=urllib.parse.urlencode({"token": access}).encode(),
-                 headers={"Content-Type": "application/x-www-form-urlencoded"})
+            request(REVOKE_URL, data=urllib.parse.urlencode({"token": access}).encode(),
+                    headers={"Content-Type": "application/x-www-form-urlencoded"})
         except GoogleOwnershipError:
             pass
         access = ""

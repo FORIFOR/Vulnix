@@ -1,0 +1,277 @@
+{
+  "id": "a2b_lab",
+  "label": "A2B合成ラボ（API認可・組織分離）",
+  "spec_note": "テスト用の合成ラボ専用。実在のサービスには適用しない。",
+  "applies_to": {
+    "hosts": [
+      "a2b.lab.test"
+    ]
+  },
+  "tokens": {
+    "member_a_token": {
+      "label": "org-a のメンバーA"
+    },
+    "admin_b_token": {
+      "label": "org-a の管理者B"
+    },
+    "member_c_token": {
+      "label": "org-b のメンバーC"
+    }
+  },
+  "distinct_tokens": [
+    [
+      "member_a_token",
+      "admin_b_token"
+    ],
+    [
+      "member_a_token",
+      "member_c_token"
+    ],
+    [
+      "admin_b_token",
+      "member_c_token"
+    ]
+  ],
+  "paths": {
+    "note_a_path": {
+      "label": "Aのメモ",
+      "default": "/api/orgs/org-a/notes/note-a1"
+    },
+    "note_b_path": {
+      "label": "同じ組織のBのメモ",
+      "default": "/api/orgs/org-a/notes/note-b1"
+    },
+    "note_c_path": {
+      "label": "別組織Cのメモ",
+      "default": "/api/orgs/org-b/notes/note-c1"
+    },
+    "export_org_a_path": {
+      "label": "org-a の管理用エクスポート",
+      "default": "/api/orgs/org-a/admin/export"
+    }
+  },
+  "checks": [
+    {
+      "id": "a2b_cross_account",
+      "category": "idor",
+      "label": "同じ組織の他人のデータ",
+      "spec_status": "confirmed",
+      "spec_evidence": [
+        "tests/fixtures/a2b_lab.py: USERS, NOTES and the two routes (owner, organization and role checks)"
+      ],
+      "spec_note": "合成ラボ（tests/fixtures/a2b_lab.py）の仕様と照合済み。",
+      "finding": {
+        "id": "f_a2b_cross_account",
+        "title": "同じ組織の他人のデータへのアクセス（BOLA）",
+        "severity": "high",
+        "category": "A2B（API認可・組織分離）",
+        "help_term": "idor",
+        "summary": "同じ組織の他人のデータへのアクセス（BOLA）を、検証用トークンと模擬データで確認します。",
+        "impact": "モバイル・Webアプリが呼ぶAPIで、他人や他組織のデータ・管理機能に到達される恐れがあります。",
+        "steps": [
+          "データを返すAPIで、トークンの利用者と資源の所有者をサーバー側で照合する"
+        ],
+        "how_to_verify": "正当な利用者は取得でき、権限のないトークンは 403 で拒否され、応答に対象の模擬データが含まれないことを同じ実行内で確認します。"
+      },
+      "subject": {
+        "token": "member_a_token",
+        "path": "note_b_path",
+        "headers": {}
+      },
+      "preconditions": [
+        {
+          "name": "owner_access",
+          "label": "所有者Bが取得できる",
+          "token": "admin_b_token",
+          "path": "note_b_path",
+          "expect": {
+            "status": [
+              200
+            ],
+            "body_contains": [
+              "VULNIX_A2B_OWNER_B_DATA"
+            ]
+          }
+        },
+        {
+          "name": "subject_authenticated",
+          "label": "A自身のメモは取得できる",
+          "token": "member_a_token",
+          "path": "note_a_path",
+          "expect": {
+            "status": [
+              200
+            ],
+            "body_contains": [
+              "VULNIX_A2B_OWNER_A_DATA"
+            ]
+          }
+        }
+      ],
+      "denied": {
+        "status": [
+          403
+        ],
+        "body_not_contains": [
+          "VULNIX_A2B_OWNER_B_DATA"
+        ]
+      },
+      "exposed": {
+        "status": [
+          200
+        ],
+        "body_contains": [
+          "VULNIX_A2B_OWNER_B_DATA"
+        ]
+      }
+    },
+    {
+      "id": "a2b_cross_tenant",
+      "category": "idor",
+      "label": "別組織のデータ",
+      "spec_status": "confirmed",
+      "spec_evidence": [
+        "tests/fixtures/a2b_lab.py: USERS, NOTES and the two routes (owner, organization and role checks)"
+      ],
+      "spec_note": "合成ラボ（tests/fixtures/a2b_lab.py）の仕様と照合済み。",
+      "finding": {
+        "id": "f_a2b_cross_tenant",
+        "title": "別組織のデータへのアクセス（組織分離）",
+        "severity": "high",
+        "category": "A2B（API認可・組織分離）",
+        "help_term": "idor",
+        "summary": "別組織のデータへのアクセス（組織分離）を、検証用トークンと模擬データで確認します。",
+        "impact": "モバイル・Webアプリが呼ぶAPIで、他人や他組織のデータ・管理機能に到達される恐れがあります。",
+        "steps": [
+          "URLの組織IDではなく、トークンが属する組織でデータを絞り込む"
+        ],
+        "how_to_verify": "正当な利用者は取得でき、権限のないトークンは 403 で拒否され、応答に対象の模擬データが含まれないことを同じ実行内で確認します。"
+      },
+      "subject": {
+        "token": "member_a_token",
+        "path": "note_c_path",
+        "headers": {}
+      },
+      "preconditions": [
+        {
+          "name": "owner_access",
+          "label": "別組織のCが自分のメモを取得できる",
+          "token": "member_c_token",
+          "path": "note_c_path",
+          "expect": {
+            "status": [
+              200
+            ],
+            "body_contains": [
+              "VULNIX_A2B_ORG_B_DATA"
+            ]
+          }
+        },
+        {
+          "name": "subject_authenticated",
+          "label": "A自身のメモは取得できる",
+          "token": "member_a_token",
+          "path": "note_a_path",
+          "expect": {
+            "status": [
+              200
+            ],
+            "body_contains": [
+              "VULNIX_A2B_OWNER_A_DATA"
+            ]
+          }
+        }
+      ],
+      "denied": {
+        "status": [
+          403
+        ],
+        "body_not_contains": [
+          "VULNIX_A2B_ORG_B_DATA"
+        ]
+      },
+      "exposed": {
+        "status": [
+          200
+        ],
+        "body_contains": [
+          "VULNIX_A2B_ORG_B_DATA"
+        ]
+      }
+    },
+    {
+      "id": "a2b_role_bypass",
+      "category": "idor",
+      "label": "管理者専用の機能",
+      "spec_status": "confirmed",
+      "spec_evidence": [
+        "tests/fixtures/a2b_lab.py: USERS, NOTES and the two routes (owner, organization and role checks)"
+      ],
+      "spec_note": "合成ラボ（tests/fixtures/a2b_lab.py）の仕様と照合済み。",
+      "finding": {
+        "id": "f_a2b_role_bypass",
+        "title": "管理者専用機能への権限昇格",
+        "severity": "high",
+        "category": "A2B（API認可・組織分離）",
+        "help_term": "idor",
+        "summary": "管理者専用機能への権限昇格を、検証用トークンと模擬データで確認します。",
+        "impact": "モバイル・Webアプリが呼ぶAPIで、他人や他組織のデータ・管理機能に到達される恐れがあります。",
+        "steps": [
+          "管理用APIで、組織内の役割（管理者）をサーバー側で確認する"
+        ],
+        "how_to_verify": "正当な利用者は取得でき、権限のないトークンは 403 で拒否され、応答に対象の模擬データが含まれないことを同じ実行内で確認します。"
+      },
+      "subject": {
+        "token": "member_a_token",
+        "path": "export_org_a_path",
+        "headers": {}
+      },
+      "preconditions": [
+        {
+          "name": "owner_access",
+          "label": "管理者Bがエクスポートできる",
+          "token": "admin_b_token",
+          "path": "export_org_a_path",
+          "expect": {
+            "status": [
+              200
+            ],
+            "body_contains": [
+              "VULNIX_A2B_EXPORT_org-a"
+            ]
+          }
+        },
+        {
+          "name": "subject_authenticated",
+          "label": "A自身のメモは取得できる",
+          "token": "member_a_token",
+          "path": "note_a_path",
+          "expect": {
+            "status": [
+              200
+            ],
+            "body_contains": [
+              "VULNIX_A2B_OWNER_A_DATA"
+            ]
+          }
+        }
+      ],
+      "denied": {
+        "status": [
+          403
+        ],
+        "body_not_contains": [
+          "VULNIX_A2B_EXPORT_org-a"
+        ]
+      },
+      "exposed": {
+        "status": [
+          200
+        ],
+        "body_contains": [
+          "VULNIX_A2B_EXPORT_org-a"
+        ]
+      }
+    }
+  ]
+}

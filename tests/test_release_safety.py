@@ -47,9 +47,11 @@ class ReleaseBase(PersistenceBase):
         self.addCleanup(shutil.rmtree, script.parent, True)
         script.write_text(CHILD)
         self.assertTrue(self.svc.close())                     # this process lets go of the directory cleanly
-        _ = assessment_mod._DATA_DIR_LOCKS.pop(str(self.dir.resolve()), None)
-        if _ is not None:
-            _.close()
+        # close() releases the claim once no service object of this process holds it; one
+        # still held by an earlier instance of the test is dropped here
+        held = assessment_mod._DATA_DIR_LOCKS.pop(str(self.dir.resolve()), None)
+        if held is not None and held[0] is not None:
+            held[0].close()
         p = subprocess.run([sys.executable, str(script), str(REPO), str(self.dir), str(self.markers), how],
                            capture_output=True, text=True, timeout=120)
         self.assertEqual(p.returncode, 0, p.stderr[-2000:])

@@ -18,10 +18,10 @@ jobs:
       VULNIX_NO_ENV_LOCAL: "1"   # tests never read a .env.local
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: "3.12"
 
@@ -32,7 +32,7 @@ jobs:
 
       - name: Python static checks (ruff, pinned)
         run: |
-          python3 -m pip install --quiet ruff==0.6.9
+          python3 -m pip install --quiet ruff==0.6.9 -r requirements-oidc.txt
           ruff check aegis tests
 
       - name: Run Python Unit & Integration Test Suite
@@ -47,7 +47,7 @@ jobs:
 
       - name: Preserve Python suite output
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: python-suite-output-attempt-${{ github.run_attempt }}
           path: python-suite.log
@@ -65,7 +65,7 @@ jobs:
 
       - name: Preserve simulated failure output
         if: ${{ !cancelled() && steps.artifact_failure_probe.outcome == 'failure' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: failure-upload-probe-attempt-${{ github.run_attempt }}
           path: artifact-failure-probe.txt
@@ -79,7 +79,7 @@ jobs:
       - name: Read back simulated failure output
         id: artifact_read_back
         continue-on-error: true
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
         with:
           name: failure-upload-probe-attempt-${{ github.run_attempt }}
           path: artifact-failure-probe
@@ -90,7 +90,7 @@ jobs:
 
       - name: Read back simulated failure output (second read)
         if: ${{ steps.artifact_read_back.outcome == 'failure' }}
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
         with:
           name: failure-upload-probe-attempt-${{ github.run_attempt }}
           path: artifact-failure-probe
@@ -163,10 +163,10 @@ jobs:
         working-directory: web
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
 
       - name: Set up Node.js 20
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
           node-version: "20"
           cache: "npm"
@@ -177,6 +177,14 @@ jobs:
 
       - name: Run Frontend Unit Tests
         run: npm test
+
+      - name: Generated fix applied to a copy and re-verified with the same probe
+        working-directory: .
+        run: |
+          # the real framework in a throwaway venv (Vulnix itself does not depend on Flask)
+          python3 -m venv /tmp/flask-venv && /tmp/flask-venv/bin/pip install -q "flask==3.1.2"
+          VULNIX_NO_ENV_LOCAL=1 VULNIX_REQUIRE_FIX_PATCH_TEST=1 VULNIX_REAL_FLASK_PYTHON=/tmp/flask-venv/bin/python \
+            python3 -m unittest -v tests.test_fix_patch_redirect tests.test_fix_eval_cases
 
       - name: Lint
         run: npm run lint
@@ -210,10 +218,10 @@ jobs:
       VULNIX_NO_ENV_LOCAL: "1"
     steps:
       - name: Checkout Vulnix
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
 
       - name: Checkout ARTEX at the pinned commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
         with:
           repository: ${{ env.ARTEX_REPO }}
           ref: ${{ env.ARTEX_COMMIT }}
@@ -224,7 +232,7 @@ jobs:
         run: test "$(git -C artex-src rev-parse HEAD)" = "$ARTEX_COMMIT"
 
       - name: Set up Go (version from ARTEX go.mod)
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5
         with:
           go-version-file: artex-src/go.mod
           cache: false
@@ -246,7 +254,7 @@ jobs:
         run: go test ./agent -run VulnixBridge -count=1 -v
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: "3.12"
 
@@ -414,7 +422,7 @@ jobs:
           test -s "$RUNNER_TEMP/five-class-holdout.json"
 
       - name: Set up Node.js for the owned-site browser path
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
           node-version: "20"
           cache: "npm"
@@ -424,8 +432,35 @@ jobs:
         run: |
           npm --prefix web ci
           npm --prefix web run build
+          python3 -m pip install --quiet -r requirements-oidc.txt
           python3 -m pip install --quiet playwright==1.56.0
           python3 -m playwright install --with-deps chromium
+
+      - name: Cloud Run ownership browser path with offline signed token
+        run: |
+          VULNIX_NO_ENV_LOCAL=1 python3 -m scripts.check_cloud_run_ownership_ui \
+            > "$RUNNER_TEMP/cloud-run-ownership-ui.json"
+          test -s "$RUNNER_TEMP/cloud-run-ownership-ui.json"
+
+      - name: Local defense checks with a first-time user
+        run: VULNIX_NO_ENV_LOCAL=1 python3 -m scripts.check_quick_defense_ui
+
+      - name: Security Intelligence charts and audited history in the browser
+        run: VULNIX_NO_ENV_LOCAL=1 python3 -m scripts.check_security_intelligence_ui
+
+      - name: Separate ownership traffic approval in the browser
+        run: VULNIX_NO_ENV_LOCAL=1 python3 -m scripts.check_ownership_traffic_ui
+
+      - name: Preapproved ownership traffic from a single account
+        run: VULNIX_NO_ENV_LOCAL=1 python3 -m scripts.check_ownership_traffic_ui --preapproved
+
+      - name: Operator-managed personal ownership requests
+        run: VULNIX_NO_ENV_LOCAL=1 python3 -m scripts.check_ownership_traffic_ui --managed
+
+      - name: Reviewed defense from a browser with distinct approval and the real kernel Worker
+        run: |
+          VULNIX_NO_ENV_LOCAL=1 VULNIX_TEST_LOCAL_DEFENSE_KERNEL=1 python3 -m unittest -v tests.test_local_defense.TestLocalDefenseOnLinux
+          VULNIX_NO_ENV_LOCAL=1 python3 -m scripts.check_reviewed_defense_ui
 
       - name: Owned-site 390px browser path with real ARTEX and local model
         env:
@@ -460,7 +495,7 @@ jobs:
 
       - name: Upload evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: artex-real-planner-evidence
           path: |
@@ -472,6 +507,7 @@ jobs:
             ${{ runner.temp }}/initial-mixed-holdout.json
             ${{ runner.temp }}/status-selection-holdout.json
             ${{ runner.temp }}/access-holdout-real-artex.json
+            ${{ runner.temp }}/cloud-run-ownership-ui.json
             ${{ runner.temp }}/first-prompt-selection.json
             ${{ runner.temp }}/status-first-prompt.json
             ${{ runner.temp }}/access-link-holdout.json

@@ -1,0 +1,30 @@
+{
+  "openapi": "3.0.3",
+  "info": {"title": "A2B Lab", "version": "1.0"},
+  "servers": [{"url": "http://a2b.lab.test"}],
+  "components": {
+    "securitySchemes": {"bearer": {"type": "http", "scheme": "bearer"}},
+    "schemas": {
+      "Note": {"type": "object", "properties": {"id": {"type": "string"}, "owner": {"type": "string"}, "body": {"type": "string"}}},
+      "Export": {"type": "object", "properties": {"org": {"type": "string"}, "notes": {"type": "array", "items": {"$ref": "#/components/schemas/Note"}},
+        "api_token": {"type": "string"}}}
+    }
+  },
+  "security": [{"bearer": []}],
+  "paths": {
+    "/api/orgs/{org}/notes/{note}": {
+      "get": {"summary": "Read a note", "parameters": [
+        {"name": "org", "in": "path", "required": true, "schema": {"type": "string"}},
+        {"name": "note", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "responses": {"200": {"description": "the note", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Note"}}}},
+                      "403": {"description": "not yours"}}}
+    },
+    "/api/orgs/{org}/admin/export": {
+      "get": {"summary": "Export the organization", "x-required-role": "admin", "tags": ["admin"], "parameters": [
+        {"name": "org", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "responses": {"200": {"description": "everything", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Export"}}}},
+                      "403": {"description": "admins only"}}}
+    },
+    "/api/health": {"get": {"security": [], "responses": {"200": {"description": "ok"}}}}
+  }
+}

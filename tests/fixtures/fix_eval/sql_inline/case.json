@@ -1,0 +1,17 @@
+{
+ "kind": "sql",
+ "split": "dev",
+ "normal": [
+  [
+   "/user?name=alice",
+   200,
+   "alice@example.test"
+  ]
+ ],
+ "exploit": [
+  [
+   "/user?name=x%27%20OR%20%271%27%3D%271",
+   "SECRET_BOB_MARKER"
+  ]
+ ]
+}

@@ -4,6 +4,10 @@
 // authenticate the operator. The CSRF guard and the session cookie are
 // independent; neither replaces the other.
 import type { NextRequest } from "next/server";
+import { existsSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { resolve } from "node:path";
+import { catalogSource } from "@/lib/catalogUpdate";
 import { clientIp, IpLimiter } from "@/lib/ipLimit";
 
 export const dynamic = "force-dynamic";
@@ -99,6 +103,56 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ path: strin
   });
 }
 
+let catalogTransfer = false;
+const previousCatalogAttempts = new Map<string, number>();
+
+async function refreshCatalog(req: NextRequest) {
+  const source = catalogSource(req.headers.get("x-vulnix-catalog"));
+  if (!source) return Response.json({ error: "未対応のカタログです。" }, { status: 400 });
+  const session = await fetch(`${UPSTREAM}/api/auth/me`, {
+    headers: withCookie(req, {}), cache: "no-store", signal: AbortSignal.timeout(5000),
+  });
+  const identity = session.ok ? await session.json() : null;
+  if (!identity?.session) return Response.json({ error: "ログインしてください。" }, { status: 401 });
+  if (catalogTransfer || Date.now() - (previousCatalogAttempts.get(source) ?? 0) < 60_000)
+    return Response.json({ error: "別の更新が実行中か、直前に更新したカタログです。" }, { status: 429 });
+  const packaged = resolve(process.cwd(), "catalog/public_catalog.py");
+  const checkout = resolve(process.cwd(), "../aegis/public_catalog.py");
+  const helper = existsSync(packaged) ? packaged : checkout;
+  if (!existsSync(helper)) return Response.json({ code: "helper_missing" }, { status: 503 });
+  previousCatalogAttempts.set(source, Date.now());
+  catalogTransfer = true;
+  const child = spawn("python3", ["-I", "-u", helper, source], {
+    stdio: ["ignore", "pipe", "ignore"], timeout: 8 * 60_000,
+  });
+  const stop = () => { child.kill(); };
+  req.signal.addEventListener("abort", stop, { once: true });
+  if (req.signal.aborted) stop();
+  const stream = child.stdout[Symbol.asyncIterator]();
+  const success = new Promise<boolean>((done) => {
+    child.once("error", () => done(false));
+    child.once("close", (code) => {
+      req.signal.removeEventListener("abort", stop);
+      catalogTransfer = false;
+      done(code === 0);
+    });
+  });
+  return new Response(new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const result = await stream.next();
+        if (!result.done) controller.enqueue(new Uint8Array(result.value));
+        else if (await success) controller.close();
+        else controller.error(new Error("catalog archive incomplete"));
+      } catch (error) {
+        stop();
+        controller.error(error);
+      }
+    },
+    cancel() { stop(); },
+  }), { headers: { "Content-Type": "application/x-ndjson", "Cache-Control": "no-store, no-transform", "X-Accel-Buffering": "no" } });
+}
+
 export async function POST(req: NextRequest, ctx: { params: Promise<{ path: string[] }> }) {
   const origin = req.headers.get("origin");
   const host = req.headers.get("host");
@@ -116,6 +170,20 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ path: stri
   const { path } = await ctx.params;
   const refused = limited(req, "POST", path);
   if (refused) return refused;
+  if (path.length === 2 && path[0] === "catalog" && path[1] === "refresh") {
+    const unexpected = () => Response.json({ error: "引数は指定できません。" }, { status: 400 });
+    if (req.nextUrl.search || (req.headers.get("content-length") ?? "0") !== "0" || req.headers.has("transfer-encoding"))
+      return unexpected();
+    // Next may expose an empty POST as a stream. Reject actual bytes without buffering a request body.
+    if (req.body) {
+      const reader = req.body.getReader();
+      try {
+        if (!(await reader.read()).done) return unexpected();
+      } finally { await reader.cancel().catch(() => {}); }
+    }
+    try { return await refreshCatalog(req); }
+    catch { return Response.json({ error: "カタログ更新を開始できませんでした。" }, { status: 502 }); }
+  }
   try {
     const res = await fetch(upstreamUrl(req, path), {
       method: "POST",

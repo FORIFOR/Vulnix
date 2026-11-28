@@ -1,0 +1,6 @@
+#!/bin/sh
+# The Vulnix privilege broker (aegis/privbroker.py), the only command sudoers lets the
+# service run as root. Root-owned 0755; the installation it runs from is root-owned and
+# read-only for the service. -I: no environment, user site or script directory on the
+# import path; -B: no bytecode written.
+exec /usr/bin/python3 -I -B /opt/vulnix/backend/aegis/privbroker.py "$@"

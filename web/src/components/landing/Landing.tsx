@@ -158,7 +158,7 @@ export function Landing({ app = false }: { app?: boolean }) {
         <div className="mx-auto max-w-6xl px-4 py-8 text-xs leading-relaxed text-zinc-500 sm:px-6">
           <p>© Vulnix — Find. Prove. Secure.</p>
           <p className="mt-1">動画と画面は、ローカルの模擬ラボで実際に動かしたときの録画です。実在サービスの診断結果ではありません。</p>
-          <p className="mt-1">公開版の実サイト診断は読み取り専用です。ARTEXの計画と外部AIの解説は、対応する環境で明示的に許可された場合だけ利用できます。</p>
+          <p className="mt-1">公開版の実サイト診断は読み取り専用です。AIによる追加確認の計画と外部AIの解説は、対応する環境で明示的に許可された場合だけ利用できます。</p>
         </div>
       </footer>
     </div>

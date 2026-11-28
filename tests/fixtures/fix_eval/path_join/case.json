@@ -1,0 +1,17 @@
+{
+ "kind": "path",
+ "split": "dev",
+ "normal": [
+  [
+   "/download?name=readme.txt",
+   200,
+   "README for the demo"
+  ]
+ ],
+ "exploit": [
+  [
+   "/download?name=../secret.txt",
+   "TOP_SECRET_PATH_MARKER"
+  ]
+ ]
+}

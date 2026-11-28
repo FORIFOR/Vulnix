@@ -59,3 +59,10 @@ export function eventDecision(seq: unknown, seenSeq: number): "drop" | "refetch"
   if (typeof seq !== "number" || !Number.isSafeInteger(seq) || seq <= seenSeq) return "drop";
   return seq > seenSeq + 1 ? "refetch" : "apply";
 }
+
+/** A standing self-service budget changes only through the user's own attempts,
+ *  which trigger a re-read. Every other state can change with time or another
+ *  person's action (scheduled start, a new request, approval, expiry), so it is polled. */
+export function needsOwnershipRefresh(value: { self_service?: boolean }): boolean {
+  return value.self_service !== true;
+}

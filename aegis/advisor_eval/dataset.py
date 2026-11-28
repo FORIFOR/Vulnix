@@ -57,8 +57,8 @@ NEVER_OPS = ["brute_force_login", "dos_resilience_test", "subdomain_enumeration"
 # Hand-labelled operations and fixes for findings outside this dataset's ten rule families.
 # Keep these independent of the product catalog so a new catalog entry cannot silently
 # become an unmeasured cross-rule candidate.
-OTHER_RULE_OPS = ["l1_recheck_apache_status"]
-OTHER_RULE_FIXES = ["restrict_apache_status"]
+OTHER_RULE_OPS = ["l1_recheck_apache_status", "l2_redirect_target_check"]
+OTHER_RULE_FIXES = ["restrict_apache_status", "restrict_redirect_targets", "validate_redirect_on_both_ends"]
 
 TRUTH = {"normal": "true_positive", "false_positive": "likely_false_positive", "unproven": "unconfirmed",
          "proven": "confirmed", "retest_after_fix": "resolved", "ambiguous": "ambiguous"}

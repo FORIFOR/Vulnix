@@ -184,13 +184,25 @@ def _validate_check(raw, where: str, tokens: dict, paths: dict) -> dict:
           "needs a precondition on the subject's path with a different account (owner control), "
           "or `owner_control_exception` explaining why none can exist")
 
+    category = raw["category"].strip()
+    is_sqli = category == "sqli"
+
     exposed = _validate_expect(raw.get("exposed"), f"{where} exposed", need_content=True)
-    _need(all(200 <= s <= 299 for s in exposed["status"]), where, "`exposed.status` must be 2xx")
+    if is_sqli:
+        _need(all((200 <= s <= 299) or (500 <= s <= 599) for s in exposed["status"]), where,
+              "`exposed.status` for sqli must be 2xx or 5xx")
+    else:
+        _need(all(200 <= s <= 299 for s in exposed["status"]), where, "`exposed.status` must be 2xx")
     _need("body_contains" in exposed, where, "`exposed.body_contains` is required")
 
     denied = _validate_expect(raw.get("denied"), f"{where} denied", need_content=False)
-    _need(all(400 <= s <= 499 and s not in NEVER_A_DENIAL for s in denied["status"]), where,
-          f"`denied.status` must be 4xx and must not include {sorted(NEVER_A_DENIAL)}")
+    if is_sqli:
+        _need(all(((200 <= s <= 299) or (400 <= s <= 499)) and s not in NEVER_A_DENIAL
+                  for s in denied["status"]), where,
+              f"`denied.status` for sqli must be 2xx or 4xx and must not include {sorted(NEVER_A_DENIAL)}")
+    else:
+        _need(all(400 <= s <= 499 and s not in NEVER_A_DENIAL for s in denied["status"]), where,
+              f"`denied.status` must be 4xx and must not include {sorted(NEVER_A_DENIAL)}")
     _need(has_owner_control or 404 not in denied["status"], where,
           "without an owner control on the subject's path, 404 cannot be a denial (a wrong path looks the same)")
     missing = set(exposed["body_contains"]) - set(denied.get("body_not_contains", []))
@@ -598,23 +610,27 @@ def evaluate(worker_rule: dict, result: dict | None) -> dict:
     reported = result.get("preconditions")
     reported = reported if isinstance(reported, list) else []
     by_name = {p.get("name"): p for p in reported if isinstance(p, dict)}
+    expected_names = [p["name"] for p in worker_rule["preconditions"]]
+    if len(reported) != len(expected_names) or set(by_name) != set(expected_names) or len(by_name) != len(reported):
+        reasons.append("precondition_list_mismatch")
     for pre in worker_rule["preconditions"]:
         got = by_name.get(pre["name"]) or {}
         if not (got.get("performed") is True and got.get("ok") is True
                 and got.get("status") in pre["expect"]["status"]
                 and _all_true(got.get("checks"), pre["expect"])):
             reasons.append(f"precondition_failed:{pre['name']}")
-    if len(reported) != len(worker_rule["preconditions"]):
-        reasons.append("precondition_list_mismatch")
 
     subject = result.get("subject") if isinstance(result.get("subject"), dict) else {}
     status = result.get("status")
     if subject.get("performed") is not True:
         reasons.append("subject_request_not_performed")
         return {"verdict": "unverified", "reasons": reasons}
+    if reasons:
+        return {"verdict": "unverified", "reasons": reasons}
 
     exposed, denied = worker_rule["exposed"], worker_rule["denied"]
     if (status in exposed["status"] and _all_true(subject.get("exposed_checks"), exposed)
+            and subject.get("truncated") is False
             and result.get("established") is True and result.get("verdict") == "proven"):
         return {"verdict": "proven", "reasons": []}
 
@@ -654,6 +670,13 @@ def explain(check: dict, result: dict | None, outcome: dict) -> str:
     status = (result or {}).get("status")
     shown = f"HTTP {status}" if status is not None else "応答なし"
     pre_labels = "・".join(p["label"] for p in check["preconditions"])
+    if check.get("category") == "sqli":
+        if outcome["verdict"] == "proven":
+            return (f"{shown} の応答で、正常系と区別できる設定済みの SQL エラー証拠を確認しました。"
+                    "データ抽出や認証回避などの悪用可能性は実証していません。")
+        if outcome["verdict"] == "not_reproduced":
+            return f"正常系と比較し、今回のエラーベース確認では SQL エラーを再現しませんでした。SQLi 全般の不存在を意味しません（{shown}）。"
+        return f"今回のエラーベース確認は証拠不足で判定できません（{shown}）。SQLi 全般の不存在を意味しません。"
     if outcome["verdict"] == "proven":
         return (f"{shown} の応答に、権限のない検証用アカウントからは見えてはならない模擬データを確認しました。"
                 "防御を確認できていません。")

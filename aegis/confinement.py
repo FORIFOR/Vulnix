@@ -25,8 +25,13 @@ Verification before the worker is released:
      the probe's packets; "unreachable anyway" does not count.
 If any step fails, nothing is launched (ConfinementError).
 
-Off Linux, or without root / passwordless sudo, nft and cgroup v2, `status()`
-says so and `session()` refuses. There is no fallback.
+Every step that needs root goes through the privilege broker (aegis/privbroker.py):
+a fixed set of operations whose arguments the broker validates itself. The service
+never runs a shell or a command of its choosing as root. In production the broker is
+installed root-owned and named by VULNIX_PRIV_BROKER (sudoers allows only it).
+
+Off Linux, or without root / the broker through passwordless sudo, nft and cgroup v2,
+`status()` says so and `session()` refuses. There is no fallback.
 """
 from __future__ import annotations
 
@@ -47,11 +52,40 @@ PROBE_ADDR = ("198.51.100.1", 443)          # TEST-NET-2 (RFC 5737): documentati
 _ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}")
 _NAME = re.compile(r"aegis_l2_[0-9a-f]{12}")
 
-# moves itself into the cgroup, then becomes the worker: `sh -c SCRIPT sh <procs-file> <cpu> argv...`
-# after joining: a frozen cgroup (killed by a stop) is never run in - a process that
-# joins a moment after the stop is frozen on arrival and refuses here once thawed
-_ENTER = ('echo $$ > "$1" || exit 97; read f < "${1%/*}/cgroup.freeze" || exit 97; [ "$f" = 0 ] || exit 97; '
-          'ulimit -t "$2" 2>/dev/null; shift 2; exec "$@"')
+BROKER_ENV = "VULNIX_PRIV_BROKER"      # the installed broker (absolute path); unset: this checkout's
+BROKER_SOURCE = Path(__file__).resolve().with_name("privbroker.py")
+WORKER_ENV_PREFIX = "VXENV_"            # the worker's variables cross sudo under this prefix
+
+
+def ns_script(hide: list[str], keep: list[str]) -> str:
+    """The shell script (run by the broker as root inside the run's own network and
+    mount namespaces, never in the host's) that builds the private mount view: `hide`
+    covered by empty tmpfs, `keep` bound back, a fresh /proc. Paths are quoted."""
+    import shlex
+    q = shlex.quote
+    hide = sorted(set(hide), key=lambda h: -h.count("/"))
+    # -n everywhere: mount must not write its utab into the (empty) /run of the view
+    lines = ["set -eu", "mount -n --make-rprivate /",
+             "mount -n -t tmpfs -o size=1m,mode=0700 vxstash /mnt"]
+    for i, k in enumerate(keep):
+        lines += [f"mkdir /mnt/k{i}", f"mount -n --bind {q(k)} /mnt/k{i}"]
+    for h in hide:
+        if h == "/mnt":
+            continue                     # the stash itself: covered after it is gone
+        mode = "1777" if h in ("/tmp", "/var/tmp", "/dev/shm") else "0755"
+        lines.append(f"if [ -d {q(h)} ]; then mount -n -t tmpfs -o mode={mode},nosuid,nodev,size=64m vxhide {q(h)}; fi")
+    for i, k in enumerate(keep):
+        lines += [f"mkdir -p {q(k)}", f"mount -n --bind /mnt/k{i} {q(k)}"]
+    lines += ["umount -n -l /mnt"]
+    if "/mnt" in hide:
+        lines.append("mount -n -t tmpfs -o mode=0755,nosuid,nodev,size=1m vxhide /mnt")
+    lines += [
+              # a fresh /proc of this run's own PID namespace: nothing else is visible
+              "mount -n -t proc -o hidepid=invisible,subset=pid vxproc /proc",
+              # no working directory of the caller (it may lie under a hidden path)
+              "cd /",
+              'exec "$@"']
+    return "\n".join(lines)
 
 
 class ConfinementError(Exception):
@@ -138,13 +172,15 @@ class KernelConfinement:
 
     def __init__(self, *, runner=subprocess.run, platform: str | None = None,
                  cgroup_root: Path = CGROUP_ROOT, euid: int | None = None, which=_system_which,
-                 popen=subprocess.Popen):
+                 popen=subprocess.Popen, broker: str | None = None):
         self._run = runner
         self._popen = popen
         self._platform = platform or sys.platform
         self._root = Path(cgroup_root)
         self._euid = (os.geteuid() if hasattr(os, "geteuid") else -1) if euid is None else euid
         self._which = which
+        # the installed broker; empty: this checkout's privbroker.py (development)
+        self._broker_path = os.environ.get(BROKER_ENV, "") if broker is None else broker
         self._status: tuple[float, dict] | None = None
         self._staged: Path | None = None
 
@@ -173,13 +209,15 @@ class KernelConfinement:
         if unreachable:
             # the worker runs under a uid of its own; it has to be able to run Python
             return no("Worker を別の UID で実行できない配置です: " + unreachable)
+        if self._broker_path and not (self._broker_path.startswith("/") and os.path.isfile(self._broker_path)):
+            return no(f"特権ブローカー（{BROKER_ENV}）が見つかりません")
         if self._euid != 0:
             if not self._which("sudo"):
                 return no("root 権限がなく、sudo も見つかりません")
             try:
-                if self._run([self._which("sudo"), "-n", "true"], capture_output=True,
+                if self._run([*self.broker_argv(), "check"], capture_output=True,
                              text=True, timeout=5).returncode != 0:
-                    return no("root 権限またはパスワード不要の sudo が必要です")
+                    return no("特権ブローカーをパスワード不要の sudo で実行できません")
             except subprocess.TimeoutExpired:
                 return no("sudo の事前確認が時間切れになりました")
             except OSError as e:
@@ -292,8 +330,16 @@ class KernelConfinement:
                 return f"{target} を確認できません（{type(e).__name__}）"
         return ""
 
-    def _priv(self) -> list[str]:
-        return [] if self._euid == 0 else [self._which("sudo") or "sudo", "-n"]
+    def broker_argv(self, env_keys=()) -> list[str]:
+        """The command prefix of one broker operation (aegis/privbroker.py)."""
+        if self._broker_path:
+            prog, keep = [self._broker_path], []        # sudoers keeps VXENV_* for the broker
+        else:
+            prog = [sys.executable, "-I", "-B", str(BROKER_SOURCE)]
+            keep = [f"--preserve-env={','.join(WORKER_ENV_PREFIX + k for k in env_keys)}"] if env_keys else []
+        if self._euid == 0:
+            return prog
+        return [self._which("sudo") or "sudo", "-n", *keep, *prog]
 
     # ---- one run -------------------------------------------------------------
     def session(self, ip: str, port: int, *, forbidden_paths=(), protected_pid: int | None = None,
@@ -351,42 +397,40 @@ class ConfinementSession:
         self._dir = False
         self.leftover = False
 
-    def _sh(self, script: str, *args: str, **kw):
-        return self._o._run([*self._o._priv(), self._o._which("sh") or "sh", "-c", script, "sh", *args],
-                            capture_output=True, text=True, **kw)
+    def _b(self, op: str, *args: str, **kw):
+        """One privileged step, through the broker."""
+        return self._o._run([*self._o.broker_argv(), op, *args], capture_output=True, text=True, **kw)
 
-    def _nft(self, *args: str, **kw):
-        return self._o._run([*self._o._priv(), self._o._which("nft") or "nft", *args],
-                            capture_output=True, text=True, **kw)
+    @staticmethod
+    def launch_env(env: dict) -> dict:
+        """The environment for a command from wrap(): the worker's variables travel
+        under VXENV_ (the broker hands them on under their own names)."""
+        out = {"PATH": "/usr/bin:/bin"}
+        out.update({WORKER_ENV_PREFIX + k: v for k, v in env.items() if k != "PATH"})
+        return out
 
     def wrap(self, argv: list[str], env_keys=(), cpu_seconds: int = 60, interpreter: str | None = None
              ) -> list[str]:
         """The command that starts `argv` inside the cgroup, as this run's own
         unprivileged uid, with no capabilities and no_new_privs, through the
-        seccomp launcher (no UNIX-domain sockets). Secrets stay in the environment:
-        only the NAMES of the variables to keep appear on a command line."""
-        enter = [self._o._which("sh") or "sh", "-c", _ENTER, "sh",
-                 str(self.cgroup / "cgroup.procs"), str(int(cpu_seconds))]
+        seccomp launcher (no UNIX-domain sockets). The broker joins the cgroup and
+        drops to the uid; `argv` never runs as root. Secrets stay in the environment
+        (run the command with launch_env(env)): only the NAMES of the variables to
+        keep appear on a command line."""
+        import json
         keys = sorted({k for k in env_keys if k != "PATH"})
         if any(not _ENV_NAME.fullmatch(k) for k in keys):
             raise ConfinementError("invalid environment variable name")
         staged = self._o.staged_workers()
         real = Path(__file__).resolve().parent / "workers"
         mapped = [str(staged / Path(a).name) if Path(a).parent == real else a for a in argv]
-        # root only for the one write that joins the cgroup and for dropping to the
-        # worker's uid; the worker itself never holds root, a capability, or our uid
-        drop = [self._o._which("setpriv") or "setpriv", f"--reuid={self.uid}", f"--regid={self.uid}",
-                "--clear-groups", "--inh-caps=-all", "--bounding-set=-all", "--no-new-privs"]
         # the seccomp launcher is Python; a non-Python program names the interpreter
         profile = ["--profile=planner"] if self.ns is not None else []
         launch = [interpreter or mapped[0], "-I", str(staged / "_sandbox_launch.py"), *profile, *mapped]
-        # in namespace mode: into the run's network namespace and a private mount view
-        # (still root: the mounts are made there), and only then dropped to the uid
-        ns = self._ns_chain(staged) if self.ns is not None else []
-        if self._o._euid == 0:
-            return [*enter, *ns, *drop, *launch]
-        keep = [f"--preserve-env={','.join(keys)}"] if keys else []
-        return [*self._o._priv(), *keep, *enter, *ns, *drop, *launch]
+        # in namespace mode: the run's network namespace and a private mount view
+        ns = json.dumps({"hide": self.ns["hide"], "keep": self._keep_paths(staged)}) if self.ns is not None else "-"
+        return [*self._o.broker_argv(keys), "launch", self.name, str(self.uid), str(int(cpu_seconds)),
+                ",".join(keys) or "-", ns, "--", *launch]
 
     def _keep_paths(self, staged: Path) -> list[str]:
         """What must stay visible under a hidden directory: given paths, the staged
@@ -400,40 +444,6 @@ class ConfinementSession:
                 out.append(c)
         return out
 
-    def _ns_chain(self, staged: Path) -> list[str]:
-        import shlex
-        q = shlex.quote
-        keep = self._keep_paths(staged)
-        hide = sorted({h for h in self.ns["hide"]}, key=lambda h: -h.count("/"))
-        # -n everywhere: mount must not write its utab into the (empty) /run of the view
-        lines = ["set -eu", "mount -n --make-rprivate /",
-                 "mount -n -t tmpfs -o size=1m,mode=0700 vxstash /mnt"]
-        for i, k in enumerate(keep):
-            lines += [f"mkdir /mnt/k{i}", f"mount -n --bind {q(k)} /mnt/k{i}"]
-        for h in hide:
-            if h == "/mnt":
-                continue                     # the stash itself: covered after it is gone
-            mode = "1777" if h in ("/tmp", "/var/tmp", "/dev/shm") else "0755"
-            lines.append(f"if [ -d {q(h)} ]; then mount -n -t tmpfs -o mode={mode},nosuid,nodev,size=64m vxhide {q(h)}; fi")
-        for i, k in enumerate(keep):
-            lines += [f"mkdir -p {q(k)}", f"mount -n --bind /mnt/k{i} {q(k)}"]
-        lines += ["umount -n -l /mnt"]
-        if "/mnt" in hide:
-            lines.append("mount -n -t tmpfs -o mode=0755,nosuid,nodev,size=1m vxhide /mnt")
-        lines += [
-                  # a fresh /proc of this run's own PID namespace: nothing else is visible
-                  "mount -n -t proc -o hidepid=invisible,subset=pid vxproc /proc",
-                  # no working directory of the caller (it may lie under a hidden path)
-                  "cd /",
-                  'exec "$@"']
-        ip = self._ip()
-        unshare = self._o._which("unshare")
-        if not unshare:
-            raise ConfinementError("unshare が見つかりません")
-        # own IPC (no SysV / POSIX IPC of the host) and PID namespaces as well
-        return [ip, "netns", "exec", self.name, unshare, "--ipc", "--pid", "--fork",
-                self._o._which("sh") or "sh", "-c", "\n".join(lines), "sh"]
-
     def _ip(self) -> str:
         ip = self._o._which("ip")
         if not ip:
@@ -443,25 +453,19 @@ class ConfinementSession:
     def _setup_netns(self) -> None:
         """The run's network namespace (only `lo`, up) and the relay into it, started
         inside this run's cgroup (so the pinned rules apply to its upstream side)."""
-        ip = self._ip()
-        r = self._o._run([*self._o._priv(), ip, "netns", "add", self.name], capture_output=True, text=True,
-                         timeout=10)
+        self._ip()
+        r = self._b("netns-add", self.name, timeout=20)
         if r.returncode != 0:
             raise ConfinementError(f"ネットワーク名前空間を作成できません: {r.stderr.strip()[:200]}")
         self._netns = True
-        r = self._o._run([*self._o._priv(), ip, "netns", "exec", self.name, ip, "link", "set", "lo", "up"],
-                         capture_output=True, text=True, timeout=10)
-        if r.returncode != 0:
-            raise ConfinementError("名前空間の lo を有効にできません")
-        staged = self._o.staged_workers()
-        enter = [self._o._which("sh") or "sh", "-c", _ENTER, "sh", str(self.cgroup / "cgroup.procs"), "100000"]
-        argv = [*self._o._priv(), *enter, sys.executable, "-I", str(staged / "_ns_relay.py"),
-                self.name, str(self.uid), *[str(pt) for pt in self.ns["ports"]]]
+        # the relay is the INSTALLED _ns_relay.py (root-owned), started by the broker in the cgroup
+        argv = [*self._o.broker_argv(), "relay", self.name, str(self.uid), *[str(pt) for pt in self.ns["ports"]]]
         self._relay = self._o._popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                      stderr=subprocess.DEVNULL, close_fds=True, text=True)
         import select
-        ready, _, _ = select.select([self._relay.stdout], [], [], 10)
-        line = self._relay.stdout.readline().strip() if ready else ""
+        with self._relay.stdout as output:
+            ready, _, _ = select.select([output], [], [], 10)
+            line = output.readline().strip() if ready else ""
         if line != "READY":
             raise ConfinementError("名前空間への中継を起動できません")
 
@@ -490,9 +494,7 @@ class ConfinementSession:
         for key, value in self.limits.items():
             ctrl = key.split(".", 1)[0]
             f = self.cgroup / key
-            if self._sh('test -e "$1"', str(f), timeout=10).returncode != 0:
-                self._sh('echo "+$1" > "$2"', ctrl, str(self._o._root / "cgroup.subtree_control"), timeout=10)
-            r = self._sh('echo "$1" > "$2" && test "$(cat "$2")" = "$1"', str(value), str(f), timeout=10)
+            r = self._b("cgroup-limit", self.name, key, str(value), timeout=10)
             if r.returncode != 0:
                 raise ConfinementError(f"cgroup の制限（{key}）を設定できません: {r.stderr.strip()[:200]}")
 
@@ -510,15 +512,10 @@ class ConfinementSession:
             st = anc.lstat()
             if st.st_uid not in (0, me) or (st.st_mode & 0o022 and not st.st_mode & 0o1000):
                 raise ConfinementError(f"実行用ディレクトリの親 {anc} が安全ではありません")
-        r = self._sh('chown -h "$1:$1" "$2" && chmod 700 "$2"', str(self.uid), str(p), timeout=10)
+        r = self._b("own-dir", str(self.uid), str(p), timeout=10)
         if r.returncode != 0:
             raise ConfinementError(f"実行用ディレクトリの所有者を変更できません: {r.stderr.strip()[:200]}")
         self._owned.append(p)
-
-    def _as_run_uid(self) -> list[str]:
-        return [*self._o._priv(), self._o._which("setpriv") or "setpriv", f"--reuid={self.uid}",
-                f"--regid={self.uid}", "--clear-groups", "--inh-caps=-all", "--bounding-set=-all",
-                "--no-new-privs"]
 
     def _remove_owned(self) -> bool:
         """After the cgroup is empty: remove what this run's uid left - the directory it
@@ -527,37 +524,33 @@ class ConfinementSession:
         the then-empty directory is removed by us. True when everything is gone."""
         if not self._owned or self.uid is None:
             return True
-        find = self._o._which("find") or "find"
         ok = True
         try:
             for p in self._owned:
-                r = self._o._run([*self._as_run_uid(), find, str(p), "-xdev", "-mindepth", "1", "-delete"],
-                                 capture_output=True, text=True, timeout=60)
+                r = self._b("purge-dir", str(self.uid), str(p), timeout=70)
                 ok = ok and r.returncode == 0
-                r = self._sh('rmdir -- "$1"', str(p), timeout=10)
+                r = self._b("remove-dir", str(self.uid), str(p), timeout=10)
                 ok = ok and (r.returncode == 0 or not p.exists())
-            for shared in ("/tmp", "/var/tmp", "/dev/shm"):
-                self._o._run([*self._as_run_uid(), find, shared, "-xdev", "-mindepth", "1",
-                              "-user", str(self.uid), "-delete"], capture_output=True, text=True, timeout=60)
+            self._b("purge-tmp", str(self.uid), timeout=200)
         except (OSError, subprocess.SubprocessError):
             ok = False
         return ok
 
     def _apply_and_verify(self) -> None:
-        rules = ruleset(self.name, self.ip, self.port, self.extra)
+        ruleset(self.name, self.ip, self.port, self.extra)       # validated here as well (the broker builds it)
         self._check_cancelled()
         try:
-            p = self._sh('mkdir "$1"', str(self.cgroup), timeout=10)
+            p = self._b("cgroup-create", self.name, timeout=10)
+            if p.returncode == 3:
+                raise ConfinementError("このカーネルには cgroup.kill / cgroup.freeze がありません（Linux 5.14 以降が必要です）")
             if p.returncode != 0:
                 raise ConfinementError(f"cgroup を作成できません: {p.stderr.strip()[:200]}")
             self._dir = True
             self._check_cancelled()          # stopped while the cgroup was being created
-            if (self._sh('test -e "$1" && test -e "$2"', str(self.cgroup / "cgroup.kill"),
-                         str(self.cgroup / "cgroup.freeze"), timeout=10).returncode != 0):
-                raise ConfinementError("このカーネルには cgroup.kill / cgroup.freeze がありません（Linux 5.14 以降が必要です）")
             self._apply_limits()
             self._check_cancelled()
-            p = self._nft("-f", "-", input=rules, timeout=10)
+            p = self._b("nft-apply", self.name, *[f"{i},{pt}" for i, pt in ((self.ip, self.port), *self.extra)],
+                        timeout=10)
             if p.returncode != 0:
                 raise ConfinementError(f"nftables ルールを適用できません: {p.stderr.strip()[:200]}")
             self._table = True
@@ -618,7 +611,7 @@ class ConfinementSession:
             )
             self._check_cancelled()          # last point before anything runs in the cgroup
             pr = self._o._run(self.wrap([sys.executable, "-I", "-c", probe]), stdin=subprocess.DEVNULL,
-                              capture_output=True, text=True, timeout=15, env={"PATH": "/usr/bin:/bin"})
+                              capture_output=True, text=True, timeout=15, env=self.launch_env({}))
             import json
             try:
                 seen = json.loads(pr.stdout.strip().splitlines()[-1]) if pr.returncode == 0 else {}
@@ -770,7 +763,7 @@ class ConfinementSession:
         return bool(ok), ev
 
     def _listing(self) -> str:
-        p = self._nft("list", "table", "inet", self.name, timeout=10)
+        p = self._b("nft-list", self.name, timeout=10)
         return p.stdout if p.returncode == 0 else ""
 
     def still_enforced(self) -> bool:
@@ -805,8 +798,7 @@ class ConfinementSession:
             # (cgroup.kill acts only on the processes present at that moment); a frozen
             # process still dies from the kill, now and on every later write
             # the kill is always attempted; "killed" means both writes succeeded
-            return self._sh('echo 1 > "$1"; f=$?; echo 1 > "$2" && [ "$f" = 0 ]', str(self.cgroup / "cgroup.freeze"),
-                            str(self.cgroup / "cgroup.kill"), timeout=10).returncode == 0
+            return self._b("cgroup-kill", self.name, timeout=10).returncode == 0
         except (OSError, subprocess.SubprocessError):
             return False
 
@@ -820,7 +812,7 @@ class ConfinementSession:
             for _ in range(30):
                 if removed:
                     break
-                removed = (self._sh('rmdir "$1"', str(self.cgroup), timeout=10).returncode == 0
+                removed = (self._b("cgroup-remove", self.name, timeout=10).returncode == 0
                            or not self.cgroup.exists())      # already gone (e.g. re-attached after a restart)
                 if not removed:
                     self.kill()
@@ -828,7 +820,7 @@ class ConfinementSession:
             if removed and not self._remove_owned():
                 self.files_left = True          # the cgroup is gone; files of the run remain
             if removed and self._table:
-                self._nft("delete", "table", "inet", self.name, timeout=10)
+                self._b("nft-delete", self.name, timeout=10)
             relay = getattr(self, "_relay", None)
             if relay is not None:
                 try:
@@ -836,9 +828,7 @@ class ConfinementSession:
                 except (subprocess.TimeoutExpired, OSError):
                     pass
             if removed and getattr(self, "_netns", False):
-                ip = self._o._which("ip") or "/usr/sbin/ip"
-                r = self._o._run([*self._o._priv(), ip, "netns", "delete", self.name],
-                                 capture_output=True, text=True, timeout=10)
+                r = self._b("netns-delete", self.name, timeout=10)
                 if r.returncode == 0:
                     self._netns = False
                 else:

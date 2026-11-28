@@ -14,7 +14,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from aegis import artex_bridge, evidence, l2_rules
 from aegis.artex_bridge import PlanItem
@@ -30,7 +30,14 @@ from aegis.remotion_export import build_remotion_export
 from aegis.secrets_store import EncryptedSecretStore
 from aegis.service_diag import analyze_l1_service_response
 
-LAB_PORT = 18097
+def _free_port() -> int:
+    import socket
+    with socket.socket() as sock:      # OS-assigned: a fixed port collides with local services
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+LAB_PORT = _free_port()
 HOST = "svc.example.test"                 # bound to tests/fixtures/l2_profiles/example.json
 FIXTURE_PROFILE_DIR = Path(__file__).parent / "fixtures" / "l2_profiles"
 PROFILE_DIRS = [BUILTIN_PROFILE_DIR, FIXTURE_PROFILE_DIR]
@@ -181,26 +188,29 @@ class TestRulesAreConfigurationNotCode(unittest.TestCase):
 
     def test_builtin_profile_defines_each_category_as_an_independent_rule(self):
         builtin = L2RuleSet.load([BUILTIN_PROFILE_DIR])
-        (profile,) = builtin.profiles.values()
-        self.assertEqual(sorted(c["category"] for c in profile["checks"]),
+        self.assertEqual(sorted(builtin.profiles), ["sample_api", "sqli_error_based"])
+        self.assertEqual(sorted(c["category"] for c in builtin.profiles["sample_api"]["checks"]),
                          ["billing_plan", "idor", "share_link"])
-        # The bundled profile is a public template: bound to no host, nothing confirmed,
-        # nothing executable, and no detail of the (private) target API.
-        self.assertEqual((profile["spec_status"], profile["hosts"]), ("placeholder", []))
+        self.assertEqual(sorted(c["category"] for c in builtin.profiles["sqli_error_based"]["checks"]),
+                         ["sqli"])
+        # The bundled profiles are public templates: bound to no host, nothing confirmed,
+        # nothing executable, and no detail of any (private) target API.
         self.assertEqual(builtin.runnable_check_ids(), ())
-        for c in profile["checks"]:
-            self.assertEqual((c["spec_status"], c["spec_evidence"]), ("placeholder", []))
-        raw = (BUILTIN_PROFILE_DIR / "sample_api.json").read_text(encoding="utf-8")
-        self.assertIsNone(re.search(r"run\.app|\.py:\d+|mopita|classnote|deepnote|議事録", raw, re.I))
-        # the shipped template names no real service at all, in its file name or anywhere in the directory
-        self.assertEqual(sorted(p.name for p in BUILTIN_PROFILE_DIR.glob("*.json")), ["sample_api.json"])
-        for c in profile["checks"]:
-            with self.subTest(check=c["id"]):
-                self.assertTrue(c["preconditions"])
-                for pre in c["preconditions"]:
-                    self.assertTrue({"body_contains", "json_fields"} & set(pre["expect"]))
-                self.assertTrue(set(c["exposed"]["body_contains"]) <= set(c["denied"]["body_not_contains"]))
-                self.assertFalse(set(c["denied"]["status"]) & {401, 429})
+        # the shipped templates name no real service at all, in their file names or anywhere in the directory
+        self.assertEqual(sorted(p.name for p in BUILTIN_PROFILE_DIR.glob("*.json")),
+                         ["sample_api.json", "sqli_error_based.json"])
+        for profile in builtin.profiles.values():
+            self.assertEqual((profile["spec_status"], profile["hosts"]), ("placeholder", []))
+            raw = (BUILTIN_PROFILE_DIR / f"{profile['id']}.json").read_text(encoding="utf-8")
+            self.assertIsNone(re.search(r"run\.app|\.py:\d+|mopita|classnote|deepnote|議事録", raw, re.I))
+            for c in profile["checks"]:
+                with self.subTest(profile=profile["id"], check=c["id"]):
+                    self.assertEqual((c["spec_status"], c["spec_evidence"]), ("placeholder", []))
+                    self.assertTrue(c["preconditions"])
+                    for pre in c["preconditions"]:
+                        self.assertTrue({"body_contains", "json_fields"} & set(pre["expect"]))
+                    self.assertTrue(set(c["exposed"]["body_contains"]) <= set(c["denied"]["body_not_contains"]))
+                    self.assertFalse(set(c["denied"]["status"]) & {401, 429})
 
     def test_a_rule_that_could_fake_a_defense_is_rejected_at_load(self):
         base = json.loads((FIXTURE_PROFILE_DIR / "example.json").read_text(encoding="utf-8"))
@@ -308,6 +318,22 @@ class TestL2VerdictNeverFakesADefense(unittest.TestCase):
         hit = self._result(status=200, verdict="proven", established=True,
                            exposed_checks={"status": True, "body_contains": True})
         self.assertEqual(self.verdict(hit), "proven")
+        valid = [self._pre("owner_access"), self._pre("subject_authenticated")]
+        invalid = {
+            "failed": [self._pre("owner_access", ok=False), valid[1]],
+            "not performed": [self._pre("owner_access", performed=False), valid[1]],
+            "missing": [valid[1]],
+            "duplicate": [valid[0], valid[0]],
+            "inconsistent": [valid[0], {**valid[1], "checks": {"status": False}}],
+        }
+        for name, pres in invalid.items():
+            with self.subTest(case=name):
+                self.assertEqual(self.verdict({**hit, "preconditions": pres}), "unverified")
+        self.assertEqual(self.verdict({**hit, "subject": {**hit["subject"], "truncated": True}}), "unverified")
+        # Equal owner and subject content is the strongest exposure evidence.
+        self.assertEqual(self.verdict({**hit, "subject": {**hit["subject"], "identical_to_control": True}}),
+                         "proven")
+        self.assertEqual(self.verdict(self._result()), "not_reproduced")
         empty_200 = self._result(status=200, verdict="proven", established=True,
                                  exposed_checks={"status": True, "body_contains": False})
         self.assertEqual(self.verdict(empty_200), "unverified")
@@ -349,6 +375,215 @@ class TestOwnershipPrimitives(unittest.TestCase):
                     res = verify_ownership_challenge(host, "well_known", expected_token="t")
                     self.assertFalse(res["verified"])
             opened.assert_not_called()
+
+    def test_meta_tag_and_verification_code_verification(self):
+        from aegis.ownership import default_well_known_fetcher
+        tok = "vulnix-verify=deadbeef1234"
+        seen_urls = []
+
+        def ok_html(url):
+            seen_urls.append(url)
+            return f"<html><head><META content='{tok}' NAME=\"vulnix-verify\"></head></html>"
+
+        res = verify_ownership_challenge("stg.example.com", "meta_tag", expected_token=tok, http_fetcher=ok_html)
+        self.assertTrue(res["verified"])
+        self.assertEqual(res["method"], "meta_tag")
+        self.assertEqual(seen_urls[-1], "https://stg.example.com/")
+
+        res_otc = verify_ownership_challenge("stg.example.com", "verification_code", expected_token=tok, http_fetcher=ok_html)
+        self.assertTrue(res_otc["verified"])
+        self.assertEqual(res_otc["method"], "verification_code")
+
+        # Partial token match or wrong meta name must fail
+        for bad_html in (
+            f"<html><head><meta name='vulnix-verify' content='{tok}extra'></head></html>",
+            f"<meta name='vulnix-verify' content=' {tok}'>",
+            f"<!-- <meta name='vulnix-verify' content='{tok}'> -->",
+            f"<meta data-content='{tok}' name='vulnix-verify'>",
+            f"<html><body><meta name='vulnix-verify' content='{tok}'></body></html>",
+            f"<html><head><meta name='other' content='{tok}'></head></html>",
+            f"<html><body>{tok}</body></html>",
+            f"<html><body><head><meta name='vulnix-verify' content='{tok}'></head></body></html>",
+            f"<html><head><template><meta name='vulnix-verify' content='{tok}'></template></head></html>",
+            f"<html><template><head><meta name='vulnix-verify' content='{tok}'></head></template></html>",
+            f"<html><head></head><body><head><meta name='vulnix-verify' content='{tok}'></head></body></html>",
+            f"<html><head><!-- <meta name='vulnix-verify' content='{tok}'> --></head></html>",
+            f"<html><head><meta name='vulnix-verify' content='{tok}'><body></body></head></html>",
+            f"<html><head><meta name='vulnix-verify' content='{tok}'>",
+        ):
+            self.assertFalse(verify_ownership_challenge(
+                "stg.example.com", "meta_tag", expected_token=tok, http_fetcher=lambda _u, h=bad_html: h)["verified"])
+
+        # default_well_known_fetcher must forward the requested path and larger cap for "/"
+        with patch("aegis.ownership.resolve_public_addresses", return_value=["203.0.113.10"]), \
+             patch("aegis.ownership.fetch_proof_file_pinned", return_value="ok") as pinned:
+            default_well_known_fetcher("https://stg.example.com/")
+            pinned.assert_called_once_with("stg.example.com", "203.0.113.10", path="/", max_bytes=65536)
+
+    def test_meta_tag_proof_is_host_and_tenant_bound_and_failure_grants_no_scope(self):
+        from aegis.ownership import challenge_for_host
+        with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
+            first, second = AssessmentService(Path(a), 18081), AssessmentService(Path(b), 18081)
+            host = "proof.example.com"
+            token = first.issue_ownership_challenge(url=f"https://{host}/")["challenge"]["token"]
+            self.assertNotEqual(token, challenge_for_host("other.example.com", first._ownership_secret)["token"])
+            self.assertNotEqual(token, second.issue_ownership_challenge(url=f"https://{host}/")["challenge"]["token"])
+            body = f'<head><meta name="vulnix-verify" content="{token}"></head>'
+            failed = second.verify_asset_ownership(url_or_host=host, method="meta_tag", http_fetch=lambda _u: body)
+            self.assertFalse(failed["verified"])
+            with self.assertRaises(ValueError):
+                second.confirm_asset_scope(url_or_host=f"https://{host}/")
+
+    def test_meta_tag_redirect_is_not_followed(self):
+        from aegis.ownership import fetch_proof_file_pinned
+        conn = MagicMock()
+        conn.getresponse.return_value.status = 302
+        with patch("aegis.ownership.socket.create_connection"), \
+             patch("aegis.ownership.ssl.create_default_context"), \
+             patch("aegis.ownership.http.client.HTTPConnection", return_value=conn):
+            self.assertEqual(fetch_proof_file_pinned("proof.example.com", "8.8.8.8", path="/"), "")
+        conn.request.assert_called_once()
+
+    def test_verification_code_is_reusable_but_proof_expires(self):
+        from aegis.assessment import OWNERSHIP_PROOF_MAX_AGE_S
+        with tempfile.TemporaryDirectory() as d:
+            svc = AssessmentService(Path(d), 18081)
+            host = "code.example.com"
+            token = svc.issue_ownership_challenge(url=f"https://{host}/")["challenge"]["token"]
+            body = f'<head><meta name="vulnix-verify" content="{token}"></head>'
+            for _ in range(2):
+                self.assertTrue(svc.verify_asset_ownership(
+                    url_or_host=host, method="verification_code", http_fetch=lambda _u: body)["verified"])
+            svc._ownership_proofs[host]["verified_at"] -= OWNERSHIP_PROOF_MAX_AGE_S + 1
+            with self.assertRaises(ValueError):
+                svc.confirm_asset_scope(url_or_host=f"https://{host}/")
+
+    def test_meta_tag_rechecks_each_new_dns_address_before_scope_traffic(self):
+        with tempfile.TemporaryDirectory() as d:
+            svc = AssessmentService(Path(d), 18081)
+            host = "address.example.com"
+            token = svc.issue_ownership_challenge(url=f"https://{host}/")["challenge"]["token"]
+            body = f'<head><meta name="vulnix-verify" content="{token}"></head>'
+            self.assertTrue(svc.verify_asset_ownership(
+                url_or_host=host, method="meta_tag", http_fetch=lambda _u: body)["verified"])
+            svc.confirm_asset_scope(url_or_host=f"https://{host}/")
+            svc._custom_resolver = lambda _h: ["8.8.8.8"]
+            svc._proof_file_fetch = lambda _h, _a: body
+            self.assertEqual(svc._resolve_host(host), ["8.8.8.8"])
+            svc._custom_resolver = lambda _h: ["1.1.1.1"]
+            svc._proof_file_fetch = lambda _h, _a: ""
+            with self.assertRaises(NetworkError):
+                svc._resolve_host(host)
+            self.assertEqual(svc._resolve_host(host), [])
+
+    def test_meta_tag_and_verification_code_flow_in_service(self):
+        with tempfile.TemporaryDirectory() as d:
+            svc = AssessmentService(Path(d), 18081)
+            for method, host in (("meta_tag", "meta.example.com"), ("verification_code", "otc.example.com")):
+                reg = svc.issue_ownership_challenge(url=f"https://{host}/", approver="approver")
+                tok = reg["challenge"]["token"]
+                ver = svc.verify_asset_ownership(
+                    url_or_host=host,
+                    method=method,
+                    actor="operator",
+                    http_fetch=lambda _u, t=tok: f'<html><head><meta name="vulnix-verify" content="{t}"></head></html>',
+                )
+                self.assertTrue(ver["verified"])
+                confirmed = svc.confirm_asset_scope(url_or_host=f"https://{host}/", approver="approver")
+                self.assertTrue(confirmed["scope_confirmed"])
+
+            # Non-443 port must still be refused for HTTP-based meta_tag proof
+            reg_port = svc.issue_ownership_challenge(url="https://port.example.com:8443/", approver="approver")
+            tok_port = reg_port["challenge"]["token"]
+            ver_port = svc.verify_asset_ownership(
+                url_or_host="https://port.example.com:8443/",
+                method="meta_tag",
+                actor="operator",
+                http_fetch=lambda _u, t=tok_port: f'<head><meta name="vulnix-verify" content="{t}"></head>',
+            )
+            self.assertTrue(ver_port["verified"])
+            with self.assertRaises(ValueError):
+                svc.confirm_asset_scope(url_or_host="https://port.example.com:8443/", approver="approver")
+
+    def test_sqli_error_based_builtin_profile_and_status_rules(self):
+        sqli_path = BUILTIN_PROFILE_DIR / "sqli_error_based.json"
+        self.assertTrue(sqli_path.is_file())
+        raw = json.loads(sqli_path.read_text(encoding="utf-8"))
+        profile = validate_profile(raw, str(sqli_path))
+        self.assertEqual(profile["id"], "sqli_error_based")
+        self.assertEqual(profile["checks"][0]["category"], "sqli")
+        self.assertEqual(profile["checks"][0]["spec_status"], "placeholder")
+        self.assertIn("候補", profile["checks"][0]["finding"]["title"])
+        self.assertIn(200, profile["checks"][0]["denied"]["status"])
+        self.assertIn(500, profile["checks"][0]["exposed"]["status"])
+
+        # Access-control categories (e.g. idor) must still reject 2xx in denied.status
+        non_sqli = json.loads(json.dumps(raw))
+        non_sqli["checks"][0]["category"] = "idor"
+        non_sqli["checks"][0]["exposed"]["status"] = [200]
+        with self.assertRaises(RuleError):
+            validate_profile(non_sqli)
+
+    def test_sqli_error_based_evidence_matrix(self):
+        import http.client
+        from urllib.parse import parse_qs, urlsplit
+        from aegis.workers.reproduction_probe import _match
+        rules = L2RuleSet.load([BUILTIN_PROFILE_DIR])
+        rule = rules.worker_rule("sqli_error_string")
+        self.assertNotIn("sqli_error_string", rules.runnable_check_ids())
+        exposed, denied = rule["exposed"], rule["denied"]
+        cases = {
+            "positive": (500, "application/json", '{"error":{"code":"42601","message":"SQLSTATE syntax error"}}', False, True),
+            "negative": (200, "application/json", '{"items":[]}', True, False),
+            "ordinary 500": (500, "application/json", '{"error":"internal"}', False, False),
+            "auth error": (401, "application/json", '{"error":"unauthorized"}', False, False),
+            "SQL-like prose": (500, "text/html", '<p>SQLSTATE 42601 syntax error is an example</p>', False, False),
+            "incomplete": (500, "application/json", '{"error":{"code":"42601","message":"SQLSTATE', False, False),
+            "insufficient evidence": (500, "application/json", '{"error":{"message":"SQLSTATE"}}', False, False),
+        }
+        class MockSqliLab(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                name = parse_qs(urlsplit(self.path).query).get("case", [""])[0]
+                status, content_type, body, _, _ = cases[name]
+                payload = body.encode()
+                self.send_response(status)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *_args):
+                pass
+
+        lab = http.server.ThreadingHTTPServer(("127.0.0.1", 0), MockSqliLab)
+        thread = threading.Thread(target=lab.serve_forever, daemon=True)
+        thread.start()
+        try:
+            for name, (_, _, _, negative, positive) in cases.items():
+                with self.subTest(case=name):
+                    conn = http.client.HTTPConnection("127.0.0.1", lab.server_port)
+                    try:
+                        conn.request("GET", "/api/items?case=" + name.replace(" ", "%20"))
+                        response = conn.getresponse()
+                        obs = {"status": response.status,
+                               "content_type": response.getheader("Content-Type"),
+                               "body": response.read().decode(), "truncated": False}
+                    finally:
+                        conn.close()
+                    self.assertEqual(all(_match(exposed, obs).values()), positive)
+                    self.assertEqual(all(_match(denied, obs).values()), negative)
+        finally:
+            lab.shutdown()
+            lab.server_close()
+            thread.join()
+        self.assertIn("SQLi 全般の不存在を意味しません", l2_rules.explain(
+            {"category": "sqli", "preconditions": []}, {"status": 200},
+            {"verdict": "not_reproduced", "reasons": []}))
+        proven_note = l2_rules.explain(
+            {"category": "sqli", "preconditions": []}, {"status": 500},
+            {"verdict": "proven", "reasons": []})
+        self.assertIn("SQL エラー証拠", proven_note)
+        self.assertIn("悪用可能性は実証していません", proven_note)
 
 
 class TestSecretStore(unittest.TestCase):
@@ -1624,7 +1859,8 @@ class TestUnconfirmedRulesCannotRun(RealServiceBase):
         # a site profile is listed but nothing in it runs until an admin accepts its exact content
         self.assertEqual(self.svc.l2.runnable_check_ids(), ())
         status = self.svc.l2_profiles_status()["profiles"]
-        self.assertEqual([(p["id"], p["site"], p["accepted"]) for p in status], [("sample_api", True, False)])
+        self.assertEqual([(p["id"], p["site"], p["accepted"]) for p in status],
+                         [("sample_api", True, False), ("sqli_error_based", False, True)])
         with self.assertRaises(ValueError):
             self.svc.accept_l2_profile("sample_api", "0" * 64, "root")              # not the content on disk
         self.svc.accept_l2_profile("sample_api", status[0]["sha256"], "root")
@@ -1666,7 +1902,8 @@ class TestUnconfirmedRulesCannotRun(RealServiceBase):
         self.svc.workers.kill_all()
         self.svc = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT, verify_seconds=0.1)       # no site profile present
         self.assertEqual(self.svc.l2.runnable_check_ids(), ())
-        self.assertEqual([p["hosts"] for p in self.svc.l2.profiles.values()], [[]])
+        self.assertTrue(self.svc.l2.profiles)
+        self.assertTrue(all(p["hosts"] == [] for p in self.svc.l2.profiles.values()))
 
 
 @l2_requested_by_another()
@@ -2014,3 +2251,288 @@ class TestRealServiceApi(RealServiceBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAStopWhoseScopeExpiredCanBeEnded(RealServiceBase):
+    """Found by the combined failure test (2026-11-29): stopped AND the scope gone (expired,
+    revoked, or not restored) used to be a dead end - "再診断を実行" was refused for the
+    missing scope and ownership verification for the stop."""
+
+    def test_rediagnose_ends_the_stop_without_starting_and_ownership_can_be_redone(self):
+        self.onboard()
+        self.assertEqual(self.run_l1()["state"], "completed")
+        self.svc.emergency_stop("appr")
+        self.assertEqual(self.svc.snapshot()["state"], "stopped")
+        with self.svc._lock:                                   # the confirmed scope expires
+            self.svc._verified_external_hosts[HOST]["not_after"] = time.time() - 1
+        ch = self.svc.issue_ownership_challenge(url=self.url, approver="appr")["challenge"]
+        with self.assertRaises(ValueError):                    # verification refused while stopped (unchanged)
+            self.svc.verify_asset_ownership(url_or_host=self.url, method="dns_txt", actor="appr",
+                                            dns_lookup=self._token_lookup(ch))
+        self.fake.seen.clear()
+        with self.assertRaises(ValueError) as cm:
+            self.svc.restart("appr")
+        self.assertIn("緊急停止を解除しました", str(cm.exception))
+        snap = self.svc.snapshot()
+        self.assertEqual(snap["state"], "idle")                # ended, and nothing started
+        self.assertEqual(self.fake.seen, [])
+        self.assertIn("diagnosis.stop_ended", [e["event"] for e in self.svc.audit.entries()])
+        self.onboard()                                         # now possible again
+        self.assertEqual(self.run_l1()["state"], "completed")
+
+    def test_a_stop_with_a_valid_scope_still_needs_a_real_new_run(self):
+        self.onboard()
+        self.assertEqual(self.run_l1()["state"], "completed")
+        self.svc.emergency_stop("appr")
+        self.svc.restart("appr")                               # scope valid: the usual new run
+        end = time.time() + 20
+        while time.time() < end and self.svc.snapshot()["state"] == "running":
+            time.sleep(0.05)
+        self.assertEqual(self.svc.snapshot()["state"], "completed")
+        self.assertNotIn("diagnosis.stop_ended", [e["event"] for e in self.svc.audit.entries()])
+
+
+class TestSuspendedA2BApprovalStopsReruns(RealServiceBase):
+    """Independent-review follow-up (2026-11-28): after an A2B approval is suspended because
+    its approver lost the role, no re-verification of a COMPLETED diagnosis sends a request
+    with the test accounts (verify_finding, verify_fix, after a restart, or on re-login)."""
+    PID = "a2b_d0123456789ab"
+
+    def setUp(self):
+        super().setUp()
+        from aegis.a2b_profile import save_site_profile
+        # the same host must come from the A2B profile only (not the fixture directory)
+        self.svc.close()
+        self.svc = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT, verify_seconds=0.1,
+                                     real_site_read_only=False)   # production loader: built-in + site profiles
+        self.svc._custom_resolver = lambda h: ["127.0.0.1"] if h == HOST else []
+        profile = {**json.loads((FIXTURE_PROFILE_DIR / "example.json").read_text()), "id": self.PID}
+        save_site_profile(self.dir, profile)
+        sha = self.svc._read_l2_profiles().sources[self.PID]["sha256"]
+        self.svc.accept_l2_profile(self.PID, sha, "padmin")
+        (self.svc._a2b_dir() / "d0123456789ab.json").write_text(json.dumps({
+            "id": "d0123456789ab", "name": "example", "profile_id": self.PID, "profile": profile, "sha256": sha,
+            "revision": 1, "saved_by": "alice", "saved_at": time.time(), "draft": {},
+            "approval": {"status": "approved", "sha256": sha, "requested_by": "alice", "approved_by": "padmin"}}))
+        self.alive = {"padmin", "alice", "appr"}
+        self.svc._authority = lambda account, kind: account in self.alive
+        self.onboard()
+        self.assertEqual(self.run_l1()["state"], "completed")
+        self.set_secrets()
+
+    def token_requests(self):
+        return [p for p, auth in self.fake.seen if auth and any(t in auth for t in ALL_TOKENS)]
+
+    def test_no_rerun_with_test_accounts_after_the_approval_is_suspended(self):
+        self.fake.seen.clear()
+        self.svc.request_l2_run("f_ex_idor", "alice")              # requester and approver are two people
+        self.svc.verify_finding("f_ex_idor", actor="appr")
+        self.assertEqual(self.finding("f_ex_idor")["evidence_status"], "proven")
+        self.assertTrue(self.token_requests())                     # it really ran while approved
+        self.assertEqual(self.svc.snapshot()["state"], "completed")
+        self.alive.discard("padmin")                               # the approver lost the role
+        self.assertEqual(self.svc.enforce_a2b_authority(), ["d0123456789ab"])
+        self.fake.seen.clear()
+        for rerun in (lambda: self.svc.verify_finding("f_ex_idor", actor="appr"), lambda: self.svc.verify_fix("appr")):
+            try:
+                self.svc.request_l2_run("f_ex_idor", "alice")
+            except Exception:   # noqa: BLE001 - the item may no longer be requestable at all
+                pass
+            try:
+                rerun()
+            except Exception:   # noqa: BLE001 - a refusal is the expected outcome
+                pass
+        self.assertEqual(self.token_requests(), [])
+        self.assertEqual(self.finding("f_ex_idor")["evidence_status"], "proven")   # the earlier result is kept
+        events = [e["event"] for e in self.svc.audit.entries()]
+        self.assertIn("a2b.approval_suspended", events)
+        # a restart (a new service object on the same data) keeps it suspended and unloaded
+        self.svc.close()
+        self.svc = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT, verify_seconds=0.1,
+                                     real_site_read_only=False)   # production loader: built-in + site profiles
+        self.svc._custom_resolver = lambda h: ["127.0.0.1"] if h == HOST else []
+        self.svc._authority = lambda account, kind: account in self.alive
+        self.assertNotIn(self.PID, self.svc.l2.profiles)
+        self.assertEqual(self.svc._a2b_read("d0123456789ab")["approval"]["status"], "suspended")
+        self.alive.add("padmin")                                   # role given back: nothing comes back by itself
+        self.svc.enforce_a2b_authority()
+        self.fake.seen.clear()
+        try:
+            self.svc.request_l2_run("f_ex_idor", "alice")
+            self.svc.verify_finding("f_ex_idor", actor="appr")
+        except Exception:   # noqa: BLE001
+            pass
+        self.assertEqual(self.token_requests(), [])
+        self.assertEqual(self.svc._a2b_read("d0123456789ab")["approval"]["status"], "suspended")
+        self.assertNotIn(self.PID, self.svc.l2.profiles)
+
+    def test_a_pending_request_of_a_requester_who_lost_the_role_never_runs(self):
+        self.fake.seen.clear()
+        self.svc.request_l2_run("f_ex_idor", "alice")
+        self.alive.discard("alice")
+        with self.assertRaises(ValueError):
+            self.svc.verify_finding("f_ex_idor", actor="appr")
+        self.assertEqual(self.token_requests(), [])
+
+    def test_suspension_noticed_only_at_launch_refuses_the_launch(self):
+        self.fake.seen.clear()
+        self.svc.request_l2_run("f_ex_idor", "alice")
+        self.alive.discard("padmin")                               # approver lost the role; no route has run the check
+        try:
+            self.svc.verify_finding("f_ex_idor", actor="appr")      # the launch guard notices it
+        except Exception:   # noqa: BLE001 - refused, or recorded as a refused run
+            pass
+        events = [e["event"] for e in self.svc.audit.entries()]
+        self.assertIn("a2b.approval_suspended", events)
+        self.assertEqual(events[events.index("a2b.approval_suspended") + 1], "deny")   # the Gateway refused the launch
+        self.assertEqual(self.token_requests(), [])
+        self.assertEqual(self.svc._a2b_read("d0123456789ab")["approval"]["status"], "suspended")
+        self.assertNotIn(self.PID, self.svc.l2.profiles)
+
+    def test_a_rerun_in_flight_when_the_approval_is_suspended_is_stopped_and_not_recorded(self):
+        before = dict(self.finding("f_ex_idor"))
+        self.svc.request_l2_run("f_ex_idor", "alice")
+        self.fake.mode = "hang"
+        out = {}
+        th = threading.Thread(target=lambda: out.update(r=self._quiet(lambda: self.svc.verify_finding("f_ex_idor", actor="appr"))))
+        th.start()
+        self.assertTrue(self.fake.hanging.wait(15))          # the worker is talking to the service now
+        seen = len(self.fake.seen)
+        self.alive.discard("padmin")
+        self.assertEqual(self.svc.enforce_a2b_authority(), ["d0123456789ab"])
+        th.join(30)
+        self.assertFalse(th.is_alive())
+        time.sleep(1)
+        self.assertEqual(len(self.fake.seen), seen)          # nothing more was sent
+        after = self.finding("f_ex_idor")
+        self.assertNotEqual(after.get("verdict"), "proven")
+        self.assertEqual(after.get("evidence"), before.get("evidence"))   # the late result was not recorded
+        events = [e["event"] for e in self.svc.audit.entries()]
+        self.assertIn("a2b.approval_suspended", events)
+        self.assertTrue({"emergency_stop", "gateway.emergency_stop"} & set(events) or self.svc.a.stop_report, events[-8:])
+        self.assertEqual(self.svc.workers.active_pids(), [])
+
+    def _restart(self, anchor, confirm=True):
+        """A new service object on the same data directory (a process restart)."""
+        self.svc.workers.kill_all()
+        self.svc.close()
+        self.svc = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT, verify_seconds=0.1,
+                                     real_site_read_only=False, audit_anchor=anchor, audit_anchor_root=self.dir)
+        self.svc._custom_resolver = lambda h: ["127.0.0.1"] if h == HOST else []
+        self.svc._authority = lambda account, kind: account in self.alive
+        # the loopback test switch is never restored after a restart (authority_ledger): the
+        # operator confirms the scope again, as after any restart of this test fixture
+        if confirm:
+            self.svc.confirm_asset_scope(url_or_host=self.url, approver="appr", activate_workspace=True,
+                                         allow_loopback_test=True)
+
+    def test_combined_inflight_suspension_restart_role_back_and_restore_with_the_audit_anchor(self):
+        """One sequence of the failure cases together (P1 of the release hardening):
+        approved rerun -> backup -> rerun in flight when the approver loses the role ->
+        restart -> role given back -> restore of the older backup -> operator acceptance."""
+        import shutil
+        from tests.test_audit_anchor import NAME, Helper, _short_tmp, separate_client
+        tmp = Path(tempfile.mkdtemp(dir=_short_tmp()))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        helper = Helper(tmp / "anchor", tmp / "a.sock").start()
+        self.addCleanup(helper.stop)
+        anchor = lambda: separate_client(helper.socket)                     # noqa: E731
+        self._restart(anchor())
+        self.set_secrets()
+        # 1. approved: a rerun really sends the test accounts' requests; its records are anchored
+        self.fake.seen.clear()
+        self.svc.request_l2_run("f_ex_idor", "alice")
+        self.svc.verify_finding("f_ex_idor", actor="appr")
+        self.assertEqual(self.finding("f_ex_idor")["evidence_status"], "proven")
+        self.assertTrue(self.token_requests())
+        self.assertTrue(self.svc.audit.anchor_status(max_age=0)["enabled"])
+        # 2. a backup of the whole data directory (as backup.sh: service stopped)
+        self.svc.close()
+        backup = tmp / "backup"
+        shutil.copytree(self.dir, backup)
+        self._restart(anchor())
+        self.set_secrets()
+        # 3. a rerun in flight when the approver loses the role: stopped, nothing recorded
+        before = dict(self.finding("f_ex_idor"))
+        self.svc.request_l2_run("f_ex_idor", "alice")
+        self.fake.mode = "hang"
+        th = threading.Thread(target=lambda: self._quiet(lambda: self.svc.verify_finding("f_ex_idor", actor="appr")))
+        th.start()
+        self.assertTrue(self.fake.hanging.wait(15))
+        seen = len(self.fake.seen)
+        self.alive.discard("padmin")
+        self.assertEqual(self.svc.enforce_a2b_authority(), ["d0123456789ab"])
+        th.join(30)
+        self.assertFalse(th.is_alive())
+        time.sleep(1)
+        self.assertEqual(len(self.fake.seen), seen)
+        self.assertEqual(self.finding("f_ex_idor").get("evidence"), before.get("evidence"))
+        self.fake.mode = "vulnerable"
+        # 4. restart: still suspended (its profile is not even loaded: no test account can be
+        #    configured for it); the role given back does not revive it
+        self._restart(anchor())
+        with self.assertRaises(ValueError):
+            self.set_secrets()
+        self.assertEqual(self.svc._a2b_read("d0123456789ab")["approval"]["status"], "suspended")
+        self.alive.add("padmin")
+        self.svc.enforce_a2b_authority()
+        self.fake.seen.clear()
+        self._quiet(lambda: self.svc.request_l2_run("f_ex_idor", "alice"))
+        self._quiet(lambda: self.svc.verify_finding("f_ex_idor", actor="appr"))
+        self.assertEqual(self.token_requests(), [])
+        self.assertEqual(self.svc._a2b_read("d0123456789ab")["approval"]["status"], "suspended")
+        # 5. restore the older backup (approval "approved" again on disk): the anchor sees the
+        #    rolled-back audit log and nothing it protects is written - no Worker starts
+        self.svc.workers.kill_all()
+        self.svc.close()
+        shutil.rmtree(self.dir)
+        shutil.copytree(backup, self.dir)
+        self._restart(anchor(), confirm=False)
+        # the authority ledger does not trust the restored grants either: stopped, rejected
+        self.assertEqual(self.svc.snapshot()["state"], "stopped")
+        self.assertIn("state.authority_rejected", [e["event"] for e in self.svc.audit.entries()])
+        self.assertEqual(self.svc._a2b_read("d0123456789ab")["approval"]["status"], "approved")
+        self.assertEqual(self.svc.audit.anchor_status(max_age=0)["error"], "rollback")
+        # the restored grants are not trusted either: the scope cannot even be confirmed again
+        with self.assertRaises(ValueError):
+            self.svc.confirm_asset_scope(url_or_host=self.url, approver="appr", activate_workspace=True,
+                                         allow_loopback_test=True)
+        self.fake.seen.clear()
+        self._quiet(self.set_secrets)
+        self._quiet(lambda: self.svc.request_l2_run("f_ex_idor", "alice"))
+        self._quiet(lambda: self.svc.verify_finding("f_ex_idor", actor="appr"))
+        self.assertEqual(self.token_requests(), [])                   # refused until an operator decides
+        # even ending the stop ("再診断を実行") is refused while the anchor reports the rollback
+        with self.assertRaises(ValueError):
+            self.svc.restart("appr")
+        self.assertEqual(self.svc.snapshot()["state"], "stopped")
+        # 6. the operator accepts the restore (the helper's own reset) and establishes ownership
+        #    and scope again: only now it may run again
+        helper.store.reset(f"{NAME}:audit.jsonl")
+        self._restart(anchor(), confirm=False)
+        self.assertIsNone(self.svc.audit.anchor_status(max_age=0)["error"])
+        self.assertEqual(self.svc.snapshot()["state"], "stopped")
+        # "再診断を実行" ends the stop without starting anything (the scope is gone), and says so
+        with self.assertRaises(ValueError) as ended:
+            self.svc.restart("appr")
+        self.assertIn("緊急停止を解除しました", str(ended.exception))
+        self.assertEqual(self.svc.snapshot()["state"], "idle")
+        self.assertEqual(self.token_requests(), [])
+        self.onboard()                                         # ownership and scope established again
+        # the profile acceptance was not restored either (authority ledger): accepted again
+        sha = self.svc._read_l2_profiles().sources[self.PID]["sha256"]
+        self.svc.accept_l2_profile(self.PID, sha, "padmin")
+        self.assertEqual(self.run_l1()["state"], "completed")
+        self.set_secrets()
+        self.fake.seen.clear()
+        self.svc.request_l2_run("f_ex_idor", "alice")
+        self.svc.verify_finding("f_ex_idor", actor="appr")
+        self.assertTrue(self.token_requests())
+        self.assertTrue(any(r.get("reset") for r in helper.records()))
+
+    @staticmethod
+    def _quiet(fn):
+        try:
+            return fn()
+        except Exception as e:   # noqa: BLE001
+            return e

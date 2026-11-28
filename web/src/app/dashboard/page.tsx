@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
 import { AssetRegistrationModal } from "@/components/AssetRegistrationModal";
+import { assetProject, ProjectOverview } from "@/components/ProjectOverview";
 import { OwnershipWizard } from "@/components/OwnershipWizard";
 import { RiskScore } from "@/components/findings/RiskScore";
 import { Card, Pill } from "@/components/ui";
@@ -38,7 +39,11 @@ function DashboardInner() {
   const [wizardAsset, setWizardAsset] = useState<Asset | null>(null);
   // public beta: plain view (no permit records, no demo targets that need one)
   const { multiTenant: plain } = useSession();
-  const visible = assets?.filter((a) => !(plain && !a.assessment_id && !a.challenge));
+  const lab = assets?.find((asset) => asset.id === "lab" && asset.name === "lab.test" && asset.assessment_id);
+  const requestedProject = params.get("project") ?? "";
+  const project = requestedProject && assets?.some((a) => assetProject(a) === requestedProject) ? requestedProject : "";
+  const visible = assets?.filter((a) => (!project || assetProject(a) === project)
+    && !(plain && !a.assessment_id && !a.challenge));
 
   const [wizardNotice, setWizardNotice] = useState<string | null>(null);
 
@@ -94,15 +99,24 @@ function DashboardInner() {
         <div>
           <h1 className="text-2xl font-bold">セキュリティ診断</h1>
           <p className="text-xs text-zinc-500">
-            サイトのURLを入力して所有確認をすると、公開ページの設定を確認し、結果と対策を表示します。
+            手元のプロジェクト、または所有するWebサイト・APIを検証できます。
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Link
-            href="/assessments/scan_001"
-            className="rounded-lg border border-zinc-300 bg-white px-3.5 py-2 text-sm font-semibold text-zinc-900 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800"
+          <Link href="/assessments/scan_001?tab=intelligence" className="rounded-lg border border-zinc-300 px-3.5 py-2 text-sm font-semibold dark:border-zinc-700">
+            分析を開く
+          </Link>
+          {lab ? <button
+            type="button"
+            disabled={busyId === lab.id}
+            onClick={() => handleSelectAsset(lab)}
+            className="rounded-lg border border-zinc-300 px-3.5 py-2 text-sm font-semibold disabled:opacity-50 dark:border-zinc-700"
           >
-            練習用サイトで試す
+            隔離ラボを開く
+          </button> : <Link href="/assets" className="text-sm underline">登録済みサイト・隔離ラボ</Link>}
+          <Link href="/quick-defense"
+            className="rounded-lg border border-zinc-900 px-3.5 py-2 text-sm font-semibold transition-all hover:-translate-y-0.5 hover:shadow-sm dark:border-white">
+            フォルダを診断する（登録不要）
           </Link>
           <button
             type="button"
@@ -121,13 +135,14 @@ function DashboardInner() {
       {err && <p role="alert" className="mb-4 rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-800 dark:bg-red-950/40 dark:text-red-200">{err}</p>}
       {!assets && !err && <p className="text-sm text-zinc-500">読み込み中…</p>}
 
+      {assets && <ProjectOverview assets={assets} selected={project} page="/dashboard" />}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {visible?.map((a) => (
           <Card key={a.id} className="flex h-full flex-col justify-between">
             <div>
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
-                  <div className="truncate font-semibold">{a.name}</div>
+                  <div className="truncate font-semibold">{a.display_name ?? a.name}</div>
                   <div className="text-xs text-zinc-500">{a.kind}・{a.environment}</div>
                 </div>
                 <Pill className={STATUS_CLS[a.status] ?? "bg-zinc-200 text-zinc-800"}>{a.status}</Pill>
@@ -144,7 +159,7 @@ function DashboardInner() {
             </div>
 
             <div className="mt-4 flex items-center justify-between gap-2 border-t border-zinc-100 pt-3 dark:border-zinc-800">
-              {a.assessment_id ? (
+              {a.assessment_id && (!a.challenge || (a.ownership_verified && a.scope_confirmed)) ? (
                 <button
                   type="button"
                   disabled={busyId === a.id}
@@ -162,7 +177,7 @@ function DashboardInner() {
                   }}
                   className="flex-1 rounded-lg bg-zinc-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-zinc-700 dark:bg-white dark:text-zinc-900"
                 >
-                  所有確認を続ける →
+                  {a.ownership_verified ? "診断範囲を確認する →" : "所有確認を続ける →"}
                 </button>
               ) : (
                 <button
@@ -206,6 +221,8 @@ function DashboardInner() {
         key={wizardOpen ? `open-${wizardAsset?.id ?? "new"}` : "closed"}
         open={wizardOpen}
         initialAsset={wizardAsset}
+        projectLabel={wizardAsset ? assetProject(wizardAsset) : project}
+        knownAssets={assets}
         notice={wizardNotice}
         onClose={() => setWizardOpen(false)}
         onAssetsChanged={setAssets}

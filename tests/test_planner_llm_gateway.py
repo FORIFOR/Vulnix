@@ -150,6 +150,24 @@ class TestInspection(unittest.TestCase):
                         {"type": "text"}, "json_object", {}):
             self.refused(chat(tools=(), response_format=invalid), "response_format")
 
+    def test_a_json_schema_is_forwarded_only_to_a_local_model_and_only_when_self_contained(self):
+        schema = {"type": "object", "properties": {"steps": {"type": "array", "items": {"enum": ["H1"]}}}}
+        rf = {"type": "json_schema", "json_schema": {"name": "plan", "strict": True, "schema": schema}}
+        local = PlannerLLMGateway(mode="forward", model="qwen3:8b", upstream_url="http://127.0.0.1:9/v1/chat/completions",
+                                  allowed_hosts={"lab.test"}, transport=ok_transport)
+        self.assertEqual(local.inspect(chat(tools=(), response_format=rf))["response_format"], rf)
+        # a local qwen3 may be told not to think (the run stays on loopback)
+        self.assertEqual(local.inspect(chat(tools=(), reasoning_effort="none"))["reasoning_effort"], "none")
+        for bad in ({**rf, "json_schema": {**rf["json_schema"], "schema": {"$ref": "https://x.example/s"}}},
+                    {**rf, "json_schema": {**rf["json_schema"], "schema": {"enum": ["x" * 20000]}}},
+                    {**rf, "json_schema": {"name": "plan", "schema": schema, "extra": 1}},
+                    {"type": "json_schema"}):
+            with self.subTest(bad=str(bad)[:60]):
+                with self.assertRaises(GatewayRefused):
+                    local.inspect(chat(tools=(), response_format=bad))
+        with self.assertRaises(GatewayRefused):                      # never to a real (external) upstream
+            preview().inspect(chat(tools=(), response_format=rf))
+
     def test_reasoning_controls_are_model_bound_and_require_explicit_approval_to_forward(self):
         body = chat(tools=(), reasoning_effort="low")
         with preview() as gw:
@@ -673,6 +691,21 @@ class TestFirstTurnTool(unittest.TestCase):
         self.assertNotIn("tool_choice", g.inspect(later))
         self.assertNotIn("tool_choice", g.inspect(chat(tools=("graph_overview",))))
         self.assertNotIn("tool_choice", self.gw().inspect(chat(tools=("add_intent",))))
+
+    def test_the_forced_turn_offers_only_that_tool_for_servers_that_ignore_tool_choice(self):
+        g = self.gw("add_intent")
+        first = g.inspect(chat(tools=("graph_overview", "add_intent", "prove_goal")))
+        self.assertEqual([t["function"]["name"] for t in first["tools"]], ["add_intent"])
+        later = chat(tools=("graph_overview", "add_intent", "prove_goal"))
+        later["messages"] += [{"role": "assistant", "content": "x"}, {"role": "user", "content": "y"}]
+        self.assertEqual(len(g.inspect(later)["tools"]), 3)          # later turns: ARTEX's full list
+        self.assertEqual(len(self.gw().inspect(chat(tools=("add_intent", "prove_goal")))["tools"]), 2)
+        # the run's tool fingerprint is ARTEX's full list: the next turn is not "tools changed"
+        with self.gw("add_intent") as g:
+            self.assertEqual(post(g, chat(tools=("graph_overview", "add_intent", "prove_goal")))[0], 200)
+            nxt = chat(tools=("graph_overview", "add_intent", "prove_goal"))
+            nxt["messages"] += [{"role": "assistant", "content": "x"}, {"role": "user", "content": "y"}]
+            self.assertEqual(post(g, nxt)[0], 200)
 
     def test_only_the_runs_first_request_and_never_over_artex_choice(self):
         forced = {"type": "function", "function": {"name": "add_intent"}}

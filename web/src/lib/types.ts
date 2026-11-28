@@ -10,6 +10,7 @@ export interface Phase { key: string; label: string; status: PhaseStatus; detail
 export interface Evidence {
   evidence_id: string;
   kind: string;
+  tool?: string;
   saved_at: number | null;
   audit_hash: string | null;
   content: string;
@@ -52,6 +53,27 @@ export interface Finding {
   executor: { agent: string; model: string; tool: string };
   demo_fixture: boolean;
   _in_verification?: boolean;
+  cve_evidence?: CveChain[];
+}
+
+/** One CVE's impact chain, as `aegis/cve_evidence.py` records it: each link only as far as its evidence. */
+export interface CveChain {
+  cve: string;
+  product: string;
+  version: string;
+  version_source: string;
+  affected_ranges: Record<string, string>[];
+  fixed_in: string[];
+  kev: boolean;
+  configuration: { required: string; observed: boolean | null };
+  reachability: { path: string | null; observed: boolean | null };
+  lab_check: string | null;
+  reproduction: "proven" | "not_reproduced" | null;
+  status: "not_affected" | "version_match" | "conditions_unmet" | "conditions_met" | "reproduced" | "not_reproduced";
+  status_label: string;
+  confirmed_impact: boolean;
+  lab_history?: ("proven" | "not_reproduced")[];
+  fixed_after_reproduction?: boolean;
 }
 
 export interface Approval {
@@ -201,6 +223,7 @@ export interface Snapshot {
   demo: boolean;
   target_url?: string;
   is_external_service?: boolean;
+  optional_status_scope?: boolean;
   /** public beta: a real site gets only the read-only diagnosis (no L2, no re-checks) */
   real_site_read_only?: boolean;
   l2_separation_required?: boolean;
@@ -237,7 +260,7 @@ export interface Snapshot {
     note: string;
     backends: string[];
   };
-  asset: { id: string; name: string; kind: string; environment: string };
+  asset: Pick<Asset, "id" | "name" | "kind" | "environment" | "gcp_project" | "project_label">;
   authorization: {
     status: "authorized" | "missing";
     ref: string;
@@ -281,12 +304,19 @@ export interface OwnershipChallenge {
   dns_txt_value: string;
   well_known_url: string;
   well_known_content: string;
+  meta_tag_url?: string;
+  meta_tag_name?: string;
+  meta_tag_content?: string;
+  meta_tag_html?: string;
+  code?: string;
 }
 
 export interface Asset {
   id: string;
   name: string;
   display_name?: string;
+  gcp_project?: string;
+  project_label?: string;
   target_url?: string;
   scheme?: string;
   port?: number;
@@ -349,6 +379,16 @@ export interface ArtexPlanView {
 }
 
 export interface RunHistoryEntry {
+  run_id?: string;
+  asset_id?: string;
+  condition_id?: string | null;
+  assessment_id?: string;
+  org_id?: string;
+  external?: boolean;
+  audit_hash?: string;
+  coverage?: { key: string; status: PhaseStatus }[];
+  scope?: { port_count: number; host_count: number; mode: string };
+  severity?: Record<Severity, number>;
   at: number;
   asset: string;
   score: number | null;

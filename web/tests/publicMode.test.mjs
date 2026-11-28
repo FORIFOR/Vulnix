@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import ts from "typescript";
 const source = readFileSync(new URL("../src/lib/publicMode.ts", import.meta.url), "utf8");
 const { outputText } = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } });
-const { publicDecision, isPublicPage } = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`);
+const { publicDecision, isPublicPage, isGuestPage } = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`);
 
 test("the landing page and its static assets are served", () => {
   for (const p of ["/", "/_next/static/chunks/app.js", "/_next/image", "/media/vulnix-ad.mp4", "/media/shot-chat.png",
@@ -39,4 +39,11 @@ test("pages that skip the login redirect and the app chrome", () => {
   assert.equal(isPublicPage("/welcome"), true);
   assert.equal(isPublicPage("/invite"), true);
   assert.equal(isPublicPage("/dashboard"), false);
+});
+
+test("only the in-browser folder scan is usable signed out; the internet public mode still redirects it", () => {
+  assert.equal(isGuestPage("/quick-defense"), true);
+  assert.equal(isGuestPage("/api-check"), true);      // static analysis only; saving needs a platform role
+  for (const p of ["/assets", "/settings", "/quick-defense/x", "/quick-defense/", "/QUICK-DEFENSE", "/api-check/x", "/"]) assert.equal(isGuestPage(p), false, p);
+  assert.equal(publicDecision("/quick-defense"), "redirect");
 });

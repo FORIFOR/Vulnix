@@ -161,6 +161,52 @@ class TestPayloadIsAnAllowList(unittest.TestCase):
         self.assertTrue(result.advice, result.rejected)
         self.assertTrue(all(a.claim_level in {"suspected", "inconclusive"} for a in result.advice))
 
+    def test_japanese_explanation_and_remediation_use_only_cited_cves(self):
+        finding = _leaky_finding()
+        valid = _ok_item(cites=["rule", "verdict", "cve"],
+                         risk_explanation="入力情報にはCVE-2021-41773が含まれます。")
+        self.assertEqual(len(adv.validate_advice({"advice": [valid]}, {"F1": finding})[0]), 1)
+        cases = [
+            ({**valid, "cites": ["rule", "verdict"]}, "risk_explanation"),
+            ({**valid, "risk_explanation": "ＣＶＥ－２０２４－１２３４にも注意してください。"}, "risk_explanation"),
+            ({**valid, "remediation": [_rem("CVE-2024-1234に対応するため設定を見直す。")]}, "remediation"),
+            ({**valid, "risk_explanation": "CVE 2024 1234 にも注意してください。"}, "risk_explanation"),
+            ({**valid, "risk_explanation": "CVE\u20102024\u22121234 にも注意してください。"}, "risk_explanation"),
+        ]
+        for item, field in cases:
+            with self.subTest(field=field):
+                accepted, rejected = adv.validate_advice({"advice": [item]}, {"F1": finding})
+                self.assertFalse(accepted)
+                self.assertEqual(rejected[0]["where"], field)
+
+    def test_a_cited_input_value_counts_as_its_field_but_a_value_not_sent_does_not(self):
+        # real local models cite the value ("f_sqli") instead of the field name ("rule")
+        finding = _leaky_finding()
+        sent = adv.finding_to_payload_item("F1", finding)
+        by_value = _ok_item(cites=[sent["rule"], sent["verdict"]])
+        accepted, rejected = adv.validate_advice({"advice": [by_value]}, {"F1": finding})
+        self.assertEqual(len(accepted), 1, rejected)
+        self.assertEqual(accepted[0].cites, ("rule", "verdict"))
+        for bad in (["f_idor"], ["proven"] if sent["verdict"] != "proven" else ["candidate"], ["anything"]):
+            with self.subTest(bad=bad):
+                accepted, rejected = adv.validate_advice({"advice": [_ok_item(cites=bad)]}, {"F1": finding})
+                self.assertFalse(accepted)
+                self.assertEqual(rejected[0]["where"], "cites")
+
+    def test_a_broken_outer_shape_is_retried_once_on_loopback_only(self):
+        good = json.dumps({"choices": [{"finish_reason": "stop", "message": {"content": json.dumps(
+            {"advice": [_ok_item()]}, ensure_ascii=False)}}]}).encode()
+        bad = json.dumps({"choices": [{"finish_reason": "stop", "message": {"content": "[1, 2]"}}]}).encode()
+        replies = [bad, good]
+        a = adv.AbliterationAdvisor("http://127.0.0.1:9/v1/chat/completions",
+                                    transport=lambda *x: replies.pop(0))
+        self.assertEqual(len(a.advise([_leaky_finding()]).advice), 1)
+        calls = []
+        a = adv.AbliterationAdvisor("http://127.0.0.1:9/v1/chat/completions",
+                                    transport=lambda *x: calls.append(1) or bad)
+        self.assertFalse(a.advise([_leaky_finding()]).advice)
+        self.assertEqual(len(calls), 2)          # one retry, not a loop
+
     def test_a_payload_that_still_leaks_is_refused_before_sending(self):
         calls = []
         a = adv.AbliterationAdvisor("http://127.0.0.1:9/v1/chat/completions",
@@ -209,7 +255,7 @@ class TestPhaseOneIsMockOnly(unittest.TestCase):
         advisor = adv.ExternalAbliterationAdvisor(
             "https://api.abliteration.ai/v1/chat/completions", api_key="test-only-key",
             transport=lambda url, headers, body: seen.append((url, headers, body)) or json.dumps(
-                {"choices": [{"message": {"content": '{"advice": []}'}}]}).encode(),
+                {"choices": [{"finish_reason": "stop", "message": {"content": '{"advice": []}'}}]}).encode(),
         )
         advisor.advise([_leaky_finding()])
         self.assertEqual(seen[0][1]["Authorization"], "Bearer test-only-key")
@@ -218,7 +264,7 @@ class TestPhaseOneIsMockOnly(unittest.TestCase):
         self.assertLessEqual(request["max_tokens"], 2048)
         self.assertEqual(request["response_format"], {"type": "json_object"})
         self.assertEqual(request["reasoning_effort"], "none")
-        for bad_finish in ("length", "content_filter"):
+        for bad_finish in ("length", "content_filter", "tool_calls", "function_call"):
             bad_advisor = adv.ExternalAbliterationAdvisor(
                 "https://api.abliteration.ai/v1/chat/completions", api_key="test-only-key",
                 transport=lambda _u, _h, _b, fr=bad_finish: json.dumps(
@@ -227,6 +273,24 @@ class TestPhaseOneIsMockOnly(unittest.TestCase):
             )
             with self.assertRaises(adv.AdvisorError):
                 bad_advisor.advise([_leaky_finding()])
+
+    def test_external_advisor_requires_a_single_unambiguous_json_object(self):
+        def advisor_for(content):
+            def transport(_url, _headers, _body):
+                return json.dumps({"choices": [{"finish_reason": "stop",
+                                                "message": {"content": content}}]}).encode()
+
+            return adv.ExternalAbliterationAdvisor(
+                "https://api.abliteration.ai/v1/chat/completions",
+                api_key="test-only-key", transport=transport)
+
+        for response in ('{"advice": [], "advice": []}', 'prefix {"advice": []}',
+                         '{"advice": [], "number": NaN}'):
+            with self.subTest(response=response), self.assertRaises(adv.AdvisorError):
+                advisor_for(response).advise([_leaky_finding()])
+        result = advisor_for('{"advice": []}').advise([_leaky_finding()])
+        self.assertEqual(result.rejected, ())
+        self.assertEqual(result.missing_refs, result.sent_refs)
 
     def test_external_transport_holds_send_scope_only_while_request_is_written(self):
         events = []
@@ -830,7 +894,8 @@ class TestServiceIntegration(RealServiceBase):
         self.svc._real_site_safe_ai = True
         item = _ok_item(remediation=[_rem("CSPを適切に設定する", "set_csp")],
                         next_checks=[_chk("confirm_fix", "l1_recheck_security_headers")])
-        reply = json.dumps({"choices": [{"message": {"content": _advice_reply([item])([])}}]}).encode()
+        content = json.dumps({"advice": [item]}, ensure_ascii=False)
+        reply = json.dumps({"choices": [{"finish_reason": "stop", "message": {"content": content}}]}).encode()
         env = {"VULNIX_ADVISOR_PRICE_MODEL": "mock",
                "VULNIX_ADVISOR_MAX_COST_USD": "0.50",
                "VULNIX_ADVISOR_USD_PER_1K_INPUT": "0.10",
@@ -866,7 +931,8 @@ class TestServiceIntegration(RealServiceBase):
         self.svc._real_site_safe_ai = True
         item = _ok_item(remediation=[_rem("CSPを適切に設定する", "set_csp")],
                         next_checks=[_chk("confirm_fix", "l1_recheck_security_headers")])
-        reply = json.dumps({"choices": [{"message": {"content": _advice_reply([item])([])}}]}).encode()
+        content = json.dumps({"advice": [item]}, ensure_ascii=False)
+        reply = json.dumps({"choices": [{"finish_reason": "stop", "message": {"content": content}}]}).encode()
         env = {"VULNIX_ADVISOR_PRICE_MODEL": "mock", "VULNIX_ADVISOR_MAX_COST_USD": "0.50",
                "VULNIX_ADVISOR_USD_PER_1K_INPUT": "0.10", "VULNIX_ADVISOR_USD_PER_1K_OUTPUT": "0.10",
                **platform_env}

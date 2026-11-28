@@ -123,6 +123,10 @@ class OrgStore:
         os.replace(tmp, self.path)
 
     # ---- reads -----------------------------------------------------------------
+    def org_ids(self) -> list[str]:
+        with self._lock:
+            return sorted(self._data["orgs"])
+
     def exists(self, org_id: str) -> bool:
         return org_id in self._data["orgs"]
 
@@ -322,6 +326,9 @@ class TenantRegistry:
     """One AssessmentService per organization, created on first use. The default
     organization is the service the process already runs (data directory root)."""
 
+    # set by the server: org_id -> (account, kind) -> bool (see AssessmentService._authority)
+    authority_for = None
+
     def __init__(self, store: OrgStore, default_svc, factory: Callable[[Path], object], data_dir: Path):
         self.store = store
         self.default_svc = default_svc
@@ -340,6 +347,7 @@ class TenantRegistry:
         # Every organization, including the legacy default one, shares this
         # process-wide lab. No tenant may change its mode during another run.
         default_svc._may_switch_lab = False
+        default_svc._intelligence_org_id = DEFAULT_ORG
         # One external-advisor spend total for the whole platform: with public sign-up a
         # new organization must not bring a fresh budget (VULNIX_ADVISOR_PLATFORM_MAX_COST_USD).
         from .spend_cap import DurableSpendCap
@@ -351,9 +359,11 @@ class TenantRegistry:
             return self.default_svc
         if not valid_org_id(org_id) or not self.store.exists(org_id):
             raise TenancyError("組織が見つかりません")
+        created = False
         with self._lock:
             svc = self._services.get(org_id)
             if svc is None:
+                created = True
                 d = self._dir / org_id
                 d.mkdir(parents=True, exist_ok=True)
                 os.chmod(d, 0o700)
@@ -361,9 +371,18 @@ class TenantRegistry:
                 # The mock lab is one process-wide service. A mode change would
                 # change what another organization's running check observes.
                 svc._may_switch_lab = False
+                svc._intelligence_org_id = org_id
                 svc._platform_advisor_cap = self.platform_advisor_cap
+                if self.authority_for is not None:
+                    svc._authority = self.authority_for(org_id)
                 self._services[org_id] = svc
-            return svc
+        if created and self.authority_for is not None:
+            # approvals whose approver or requester lost authority while this service was not loaded
+            try:
+                svc.enforce_a2b_authority()
+            except Exception:   # noqa: BLE001 - a suspension is applied even if its record failed
+                pass
+        return svc
 
     def loaded(self) -> list:
         with self._lock:

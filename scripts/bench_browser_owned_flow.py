@@ -275,6 +275,11 @@ def main() -> None:
                             actions.append("confirm_scope")
                             page.get_by_label("AIが提案した場合").check()
                             actions.append("consent_to_extra_get")
+                            page.get_by_role("button", name="診断範囲を保存", exact=True).click()
+                            actions.append("save_scope")
+                            page.wait_for_url("**/assessments/scan_001")
+                            page.get_by_text("診断内容と許可範囲", exact=True).wait_for()
+                            assert site.seen == [], "saving scope unexpectedly contacted the target"
                             started = time.monotonic()
                             run_entered, run_release = threading.Event(), threading.Event()
                             original_run_inner = svc._run_inner
@@ -380,6 +385,7 @@ def main() -> None:
                             fixed_l1_only_label_visible = fallback_label.count() > 0
                             page.get_by_role("tab", name="診断").click()
                             assert page.get_by_role("button", name="L2検証", exact=False).count() == 0
+                            page.get_by_text("追加確認の計画と出所", exact=True).click()
                             expected_plan_heading = "ARTEXによる追加確認" if real_bin else "追加確認の計画"
                             page.get_by_role("heading", name=expected_plan_heading, exact=True).wait_for()
                             if not real_bin:
@@ -449,7 +455,15 @@ def main() -> None:
                                 page.locator("h3").filter(has_text="Apache mod_status の公開露出").wait_for()
                                 org_switch_isolated = True
                             assert not page_errors, page_errors
-                            assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+                            layout = page.evaluate("""() => ({
+                                viewport: innerWidth,
+                                width: document.documentElement.scrollWidth,
+                                overflowing: Array.from(document.body.querySelectorAll('*'))
+                                  .filter((node) => node.getBoundingClientRect().right > innerWidth + 1)
+                                  .slice(0, 12)
+                                  .map((node) => [node.tagName, node.getAttribute('class')]),
+                            })""")
+                            assert layout["width"] <= layout["viewport"], layout
                             idle_at = len(api_calls)
                             silent_change_recovered_s = None
                             revocation_hidden_s = None

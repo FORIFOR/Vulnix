@@ -67,8 +67,10 @@ def sha256(data: bytes) -> str:
 
 
 def allowed_checks(allowed_levels) -> list[dict]:
+    # The evaluation covers the checks it was frozen with (those described above); a check added
+    # to the live catalog later joins only in a new evaluation version, so recorded hashes hold.
     return [{"catalog_id": c.id, "level": c.level, "does": CHECK_DESCRIPTIONS[c.id]}
-            for c in sorted(CATALOG, key=lambda c: c.id) if c.level in allowed_levels]
+            for c in sorted(CATALOG, key=lambda c: c.id) if c.level in allowed_levels and c.id in CHECK_DESCRIPTIONS]
 
 
 def common_payload(view: dict, target_refs, allowed_levels=("L1", "L2")) -> dict:

@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import shutil
 import socket
 import sys
 import tempfile
@@ -145,8 +146,12 @@ class TestDeadlineEdges(GatewayBase):
     def test_a_run_that_finishes_just_before_the_deadline_is_a_normal_result(self):
         srv = _FiniteDrip(n=1, gap=0.01)
         try:
-            code = "import json, time; time.sleep(1.7); print(json.dumps({'status': 200, 'headers': {}}))"
-            self.make(srv.port, {"late_ok": _script_tool("late_ok", code, 2.0)})
+            code = "print('{\"status\": 200, \"headers\": {}}')"
+            self.make(srv.port, {"late_ok": _script_tool("late_ok", code, 10.0)})
+            # The child still runs normally. Place its exit just before the
+            # deadline with the runtime clock, independent of scheduler latency.
+            ticks = iter((100.0, 100.0, 109.999, 109.999))
+            self.workers._clock = lambda: next(ticks)
             d = self.execute("late_ok")
         finally:
             srv.close()
@@ -399,12 +404,22 @@ class TestPipesHeldResources(unittest.TestCase):
     def test_reader_threads_end_once_the_descendant_exits(self):
         pool = WorkerPool(max_concurrent=1)
         self.addCleanup(pool.kill_all)
-        code = "import os, time\nif os.fork() == 0:\n    os.setsid(); time.sleep(1.5); os._exit(0)\n"
+        # The descendant lives until the test releases it (not for a fixed time): under load
+        # the worker's own exit can take longer than any fixed lifetime, and a descendant that
+        # is already gone when the grace period ends holds nothing.
+        release = Path(tempfile.mkdtemp()) / "release"
+        self.addCleanup(lambda: release.parent.exists() and shutil.rmtree(release.parent, ignore_errors=True))
+        code = ("import os, time\nif os.fork() == 0:\n    os.setsid()\n    end = time.monotonic() + 60\n"
+                f"    while not os.path.exists({str(release)!r}) and time.monotonic() < end:\n"
+                "        time.sleep(0.02)\n    os._exit(0)\n")
+        self.addCleanup(release.touch)                       # never left behind, whatever fails
         r = pool.run([sys.executable, "-I", "-c", code], timeout_s=5)
         self.assertTrue(r.pipes_held)
+        self.assertEqual((r.stdout, r.stderr), ("", ""))     # nothing from a held pipe is trusted
         drains = lambda: [t for t in threading.enumerate() if t.name.startswith(f"worker-drain-{r.pid}-")]  # noqa: E731
         self.assertEqual(len(drains()), 2)                   # held while the descendant lives
-        end = time.monotonic() + 5
+        release.touch()
+        end = time.monotonic() + 10
         while drains() and time.monotonic() < end:
             time.sleep(0.05)
         self.assertEqual(drains(), [])                       # and released after it exits

@@ -49,10 +49,12 @@ PROMPT_MARKER = "vulnix-advisor/v2"
 _PROMPT_BEFORE_CATALOG = (
     f"[{PROMPT_MARKER}] あなたは Vulnix のセキュリティ診断アドバイザーです。"
     "与えられた所見（参照ID、規則、分類、深刻度、判定）だけを根拠に答えてください。"
-    "claim_level は判定に合うものを選び、cites には根拠にした入力の項目名を入れてください。"
+    "claim_level は判定に合うものを選び、cites には根拠にした入力の項目名（値ではなく、rule・category・severity・"
+    "verdict・verdict_basis・cve・risk_score・kev のいずれか）を入れてください。"
     "remediation の fix と next_checks の operation は、次の一覧の id だけを使えます。"
     "それ以外の操作は提案できません。実行は Vulnix の承認ゲートを通ります。"
     "URL、ホスト名、コマンド、攻撃手順は書かないでください。"
+    "CVE番号を書く場合は対象所見の cve から選び、cites に cve を含めてください。"
 )
 _PROMPT_AFTER_CATALOG = (
     ' JSON だけを返してください: {"advice": [{"ref": "F1", "claim_level": "observed", "cites": ["rule", "verdict"], '
@@ -65,7 +67,7 @@ SYSTEM_ADVISOR_PROMPT = _PROMPT_BEFORE_CATALOG + catalog.catalog_for_prompt() + 
 
 KNOWN_RULES = frozenset({
     "f_l1_tls", "f_l1_no_tls", "f_headers", "f_l1_cookies", "f_l1_cors", "f_powered",
-    "f_l1_unauth_api", "f_l1_apache_mod_status", "f_banner", "f_idor", "f_sqli",
+    "f_l1_unauth_api", "f_l1_apache_mod_status", "f_banner", "f_idor", "f_sqli", "f_open_redirect",
 })
 KNOWN_CATEGORIES = frozenset({
     "暗号・TLS設定", "設定不備", "セッション・Cookie設定", "CORS・オリジン境界", "既知の脆弱性（CVE）",
@@ -75,6 +77,9 @@ SEVERITIES = ("critical", "high", "medium", "low", "info")
 VERDICTS = ("candidate", "detected", "proven", "not_reproduced", "unverified", "fixed")
 VERDICT_BASES = ("l1_observation", "l2_reproduction", "demo_fixture")
 _CVE_RE = re.compile(r"^CVE-\d{4}-\d{4,7}$")
+# Any dash-like character or spacing between the parts, after NFKC normalization.
+_CVE_SEP = r"[\s\-\u2010-\u2015\u2212\u30fc_]*"
+_CVE_IN_TEXT_RE = re.compile(rf"CVE{_CVE_SEP}([0-9]{{4}}){_CVE_SEP}([0-9]{{4,}})", re.IGNORECASE)
 MAX_FINDINGS = 20
 
 
@@ -285,11 +290,13 @@ def _clean_text(value: object, limit: int) -> str | None:
     return s
 
 
-def _text_problem(text: str, *, overclaim_ok: bool, rules) -> str | None:
+def _text_problem(text: str, *, cited_cves: set[str], overclaim_ok: bool, rules) -> str | None:
     """Secondary, best-effort checks on the model's free text (structure is checked first)."""
     if leak_reasons(text):
         return f"leak: {leak_reasons(text)}"
     n = _norm(text)
+    if any(f"CVE-{year}-{number}" not in cited_cves for year, number in _CVE_IN_TEXT_RE.findall(n)):
+        return "unfaithful_cite: CVE in text was not cited for this finding"
     if _TOOLING_RE.search(n):
         return "text: commands or attack tools"
     if not overclaim_ok and _OVERCLAIM_RE.search(n):
@@ -342,6 +349,13 @@ def validate_advice(raw: object, ref_map: dict[str, dict]) -> tuple[list[Advice]
             reject("claim_level", p)
             continue
         cites = item.get("cites")
+        if isinstance(cites, list):
+            # A model that cites a value ("f_sqli") instead of its field ("rule") is still citing
+            # the input: map a value to the field only when it equals what was sent in that field.
+            by_value = {str(v): k for k, v in sent.items()
+                        if k in catalog.CITABLE_FIELDS and isinstance(v, (str, int)) and not isinstance(v, bool)}
+            cites = [c if not isinstance(c, str) or c in catalog.CITABLE_FIELDS else by_value.get(c, c)
+                     for c in cites]
         if (not isinstance(cites, list) or not cites or len(cites) > len(catalog.CITABLE_FIELDS)
                 or not all(isinstance(c, str) for c in cites)):
             reject("cites", "schema: cites must be a non-empty list of field names")
@@ -352,12 +366,13 @@ def validate_advice(raw: object, ref_map: dict[str, dict]) -> tuple[list[Advice]
         if bad_cite is not None:
             reject("cites", f"unfaithful_cite: {bad_cite} was not in the input")
             continue
+        cited_cves = set(sent["cve"]) if "cve" in cites else set()
         overclaim_ok = claim == "reproduced"
         explanation = _clean_text(item.get("risk_explanation"), MAX_EXPLANATION)
         if explanation is None:
             reject("risk_explanation", "schema: missing, empty, too long or control characters")
             continue
-        if (p := _text_problem(explanation, overclaim_ok=overclaim_ok, rules=())):
+        if (p := _text_problem(explanation, cited_cves=cited_cves, overclaim_ok=overclaim_ok, rules=())):
             reject("risk_explanation", p)
             continue
         # remediation: catalog actions allowed for this rule
@@ -390,7 +405,8 @@ def validate_advice(raw: object, ref_map: dict[str, dict]) -> tuple[list[Advice]
             if detail is None:
                 reject("remediation", "schema: detail too long or control characters")
                 continue
-            if (p := _text_problem(detail, overclaim_ok=overclaim_ok, rules=_REMEDIATION_FORBIDDEN)):
+            if (p := _text_problem(detail, cited_cves=cited_cves, overclaim_ok=overclaim_ok,
+                                   rules=_REMEDIATION_FORBIDDEN)):
                 reject("remediation", p)
                 continue
             actions.add(action)
@@ -507,7 +523,14 @@ class AbliterationAdvisor:
         }
         return json.dumps(payload, ensure_ascii=False).encode("utf-8"), ref_map
 
-    def advise(self, findings: list[dict], *, before_send=None, send_scope=None) -> AdviceResult:
+    def _parse_choice(self, choice: dict) -> object:
+        if choice.get("finish_reason") in ("length", "content_filter"):
+            raise ValueError("incomplete advisor reply")
+        content = choice["message"]["content"]
+        return _extract_json_from_text(content) if isinstance(content, str) else None
+
+    def advise(self, findings: list[dict], *, before_send=None, send_scope=None,
+               _retried: bool = False) -> AdviceResult:
         body, ref_map = self.build_request(findings)
         if not ref_map:
             return AdviceResult((), (), (), (), self.name, self.endpoint_kind)
@@ -521,17 +544,18 @@ class AbliterationAdvisor:
             else:
                 raw = self._send(self.url, self._headers(), body)
             data = json.loads(raw)
-            choice = data["choices"][0]
-            if choice.get("finish_reason") in ("length", "content_filter"):
-                raise ValueError(f"unusable finish_reason: {choice.get('finish_reason')}")
-            content = choice["message"]["content"]
+            parsed = self._parse_choice(data["choices"][0])
         except Exception as e:  # noqa: BLE001 - any transport / format failure is one error
             raise AdvisorError(f"no usable reply: {type(e).__name__}") from None
-        parsed = _extract_json_from_text(content) if isinstance(content, str) else None
         try:
             advice, rejected = validate_advice(parsed, ref_map)
         except Exception as e:  # noqa: BLE001 - a reply the validator cannot even walk is one error, audited
             raise AdvisorError(f"reply could not be validated: {type(e).__name__}") from None
+        if (not advice and any(r.get("where") == "root" for r in rejected)
+                and self.endpoint_kind != "external" and not _retried):
+            # Local models sometimes break the outer JSON shape; ask once more. Never for a paid
+            # external endpoint (each request is billed), and the retry is validated the same way.
+            return self.advise(findings, before_send=before_send, send_scope=send_scope, _retried=True)
         answered = {a.ref for a in advice}
         return AdviceResult(
             advice=tuple(advice), rejected=tuple(rejected), sent_refs=tuple(ref_map),
@@ -612,6 +636,23 @@ class ExternalAbliterationAdvisor(AbliterationAdvisor):
         if self.model in ("abliterated-model", "abliterated-model-large-flash"):
             payload["reasoning_effort"] = "none"
         return json.dumps(payload, ensure_ascii=False).encode("utf-8"), ref_map
+
+    def _parse_choice(self, choice: dict) -> object:
+        message = choice["message"]
+        if choice.get("finish_reason") != "stop" or any(message.get(key) for key in
+                                                       ("tool_calls", "function_call", "refusal")):
+            raise ValueError("expected a completed advisory response")
+
+        def unique_object(pairs):
+            result = dict(pairs)
+            if len(result) != len(pairs):
+                raise ValueError("duplicate JSON key")
+            return result
+
+        def invalid_constant(_):
+            raise ValueError("invalid JSON constant")
+
+        return json.loads(message["content"], object_pairs_hook=unique_object, parse_constant=invalid_constant)
 
     def __post_init__(self) -> None:
         super().__post_init__()

@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+
 import { useRouter } from "next/navigation";
 import { selectOrg } from "@/lib/org";
 import { useEffect, useState } from "react";
@@ -198,6 +200,9 @@ export default function LoginPage() {
               {selfRegistration
                 ? "アカウントをお持ちでない場合は上の「新規アカウント登録」から登録できます。"
                 : "アカウントは管理者が作成します（設定 → アカウントとロール）。"}
+            </p>
+            <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
+              手元のプロジェクトなら、<Link href="/quick-defense" className="font-medium text-zinc-900 underline dark:text-zinc-100">ログインせずにフォルダを診断</Link>できます（ファイルはブラウザの外に送りません）。
             </p>
           </form>
         ) : (

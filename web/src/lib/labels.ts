@@ -318,7 +318,7 @@ export const DIAG_OP_REASON: Record<string, string> = {
   stopped_or_reset: "停止またはリセットされました",
   requester_authority_revoked: "依頼者の権限が失効しました",
   spec_timeout: "所有者の仕様が期限内に入力されませんでした",
-  item_running: "ARTEX 計画の項目を実行中です。終わってから開始してください",
+  item_running: "追加確認の計画の項目を実行中です。終わってから開始してください",
   authority_revoked_after_request: "権限が失効したため、結果は表示しません",
 };
 

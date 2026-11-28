@@ -55,6 +55,38 @@ class TestCoverage(unittest.TestCase):
         with patch.dict(os.environ, {**CFG, "VULNIX_GOOGLE_REDIRECT_URI": "http://x.test/cb"}):
             self.assertIsNone(g.config())
 
+    def test_downloaded_client_file_configures_both_google_flows_without_secret_variables(self):
+        import json
+        from aegis import cloud_inventory
+        origin = "https://127.0.0.1:3445"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "client.json"
+            path.write_text(json.dumps({"web": {
+                "client_id": "cid.apps.googleusercontent.com", "client_secret": "sec-file",
+                "redirect_uris": [origin + "/verify/google", origin + "/verify/cloud"]}}))
+            path.chmod(0o600)
+            env = {"VULNIX_GOOGLE_CLIENT_FILE": str(path),
+                   "VULNIX_GOOGLE_REDIRECT_URI": origin + "/verify/google",
+                   "VULNIX_CLOUD_REDIRECT_URI": origin + "/verify/cloud"}
+            blank = {k: "" for k in ("VULNIX_GOOGLE_CLIENT_ID", "VULNIX_GOOGLE_CLIENT_SECRET",
+                                     "VULNIX_CLOUD_CLIENT_ID", "VULNIX_CLOUD_CLIENT_SECRET")}
+            with patch.dict(os.environ, {**blank, **env}):
+                self.assertEqual(g.config()["client_secret"], "sec-file")
+                self.assertEqual(cloud_inventory.config()["redirect_uri"], origin + "/verify/cloud")
+                # a redirect the client does not list is not used
+                with patch.dict(os.environ, {"VULNIX_GOOGLE_REDIRECT_URI": "https://other.test/verify/google"}):
+                    self.assertIsNone(g.config())
+                # readable by others, a link or a relative path: not used
+                path.chmod(0o644)
+                self.assertIsNone(g.config())
+                path.chmod(0o600)
+                link = Path(tmp) / "link.json"
+                link.symlink_to(path)
+                with patch.dict(os.environ, {"VULNIX_GOOGLE_CLIENT_FILE": str(link)}):
+                    self.assertIsNone(g.config())
+                with patch.dict(os.environ, {"VULNIX_GOOGLE_CLIENT_FILE": "client.json"}):
+                    self.assertIsNone(g.config())
+
 
 class TestGoogleOwnershipOverHttp(TestPublicReadOnlyRealSites):
     def setUp(self):
@@ -406,7 +438,7 @@ class TestGoogleOwnershipReview(TestGoogleOwnershipOverHttp):
 
         def boom(*a, **k):
             raise urllib.error.HTTPError(g.TOKEN_URL, 400, "ya29.SECRET-in-message", {}, None)
-        with patch("urllib.request.urlopen", side_effect=boom):
+        with patch("urllib.request.OpenerDirector.open", side_effect=boom):
             with self.assertRaises(g.GoogleOwnershipError) as cm:
                 g.owned_sites(cfg, "code", "verifier")
         self.assertNotIn("ya29", str(cm.exception))

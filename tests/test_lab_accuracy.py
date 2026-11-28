@@ -12,7 +12,7 @@ from aegis.lab import set_lab_mode, start_lab
 
 LAB_PORT = 18194
 PATCHED_LAB_PORT = 18195
-CHECKS = ("f_banner", "f_idor", "f_sqli")
+CHECKS = ("f_banner", "f_idor", "f_sqli", "f_open_redirect")
 ALL_CHECKS = CHECKS + ("f_headers", "f_powered")
 
 
@@ -72,12 +72,13 @@ class TestLabAccuracy(unittest.TestCase):
             by_id = {f["id"]: f for f in snap["findings"]}
             self.assertEqual(by_id["f_idor"]["evidence_status"], "candidate")
             self.assertEqual(by_id["f_sqli"]["evidence_status"], "candidate")
+            self.assertEqual(by_id["f_open_redirect"]["evidence_status"], "candidate")
         by_id = {f["id"]: f for f in patched["findings"]}
         self.assertEqual(by_id["f_banner"]["evidence_status"], "candidate")
         self.assertEqual(patched["risk"]["score"], 0)
         patched_analysis = next(p for p in patched_l1["phases"] if p["key"] == "analysis")
         self.assertIn("検出 0 件", patched_analysis["detail"])
-        self.assertIn("候補 3 件", patched_analysis["detail"])
+        self.assertIn("候補 4 件", patched_analysis["detail"])
         self.assertEqual({f["id"] for f in vulnerable["findings"] if f["evidence_status"] == "detected"},
                          {"f_banner", "f_headers", "f_powered"})
 
@@ -121,8 +122,9 @@ class TestLabAccuracy(unittest.TestCase):
     def test_measured_accuracy_for_the_five_known_lab_conditions(self):
         self.assertIsNot(self.lab, self.patched_lab)
         self.assertNotEqual(self.lab.server_port, self.patched_lab.server_port)
-        for approve, expected in ((False, (3, 0, 2, 2, 3)),
-                                  (True, (5, 0, 0, 5, 0))):
+        # six conditions: banner CVE, IDOR, SQLi, open redirect, headers, X-Powered-By
+        for approve, expected in ((False, (3, 0, 3, 2, 4)),
+                                  (True, (6, 0, 0, 6, 0))):
             vulnerable_l1, vulnerable = self.run_mode("vulnerable", approve)
             patched_l1, patched = self.run_mode("patched", approve)
             positive = vulnerable if approve else vulnerable_l1
@@ -139,5 +141,5 @@ class TestLabAccuracy(unittest.TestCase):
             recall = tp / (tp + fn)
             false_positive_rate = fp / (fp + tn)
             self.assertEqual(precision, 1.0)
-            self.assertEqual(recall, 1.0 if approve else 0.6)
+            self.assertEqual(recall, 1.0 if approve else 0.5)
             self.assertEqual(false_positive_rate, 0.0)

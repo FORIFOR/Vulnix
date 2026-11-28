@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 import contextlib
 import atexit
+import functools
 import hashlib
 import hmac
 import ipaddress
@@ -24,6 +25,7 @@ import subprocess
 import threading
 import time
 import urllib.parse
+import unicodedata
 import weakref
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_FLOOR
@@ -39,11 +41,13 @@ from .report_diagnosis import diagnosis_lines as diagnosis_report_lines
 from .report_diagnosis import undecided_lines as undecided_report_lines
 from .evidence import (EVIDENCE_LABELS, enforce_verdict, evidence_status,
                        evidence_summary, reproduction_note, reproduction_verdict)
+from .cve_evidence import impact_chain, with_reproduction
 from .gateway import (LAB_REPRODUCTION_CHECKS, Gateway, State, http_probe_tool,
                       reproduction_probe_tool, status_marker_tool)
 from .lab import get_lab_mode, set_lab_mode
 from .network import EgressGuard, NetworkError, system_resolver
-from .ownership import (PROHIBITED_ACTIONS_SUMMARY, fetch_proof_file_pinned, proof_file_matches, public_address,
+from .ownership import (HTTP_PROOF_METHODS, OWNERSHIP_METHODS, PROHIBITED_ACTIONS_SUMMARY,
+                        fetch_proof_file_pinned, meta_tag_matches, proof_file_matches, public_address,
                         challenge_for_host, parse_service_target,
                         verify_ownership_challenge)
 from .authority_ledger import AuthorityLedger, LedgerError, canonical, default_revocation_marker_dirs
@@ -63,6 +67,11 @@ from .service_diag import (analyze_l1_service_response, analyze_status_marker_re
                            build_l2_candidates, clean_target_text, compute_finding_risk_score,
                            sanitize_http_probe_payload)
 from .google_ownership import METHOD as GOOGLE_METHOD, covering_property
+from .cloud_run_store import SQLiteCloudRunStore
+from .cloud_run_ownership import CloudRunProof
+from .google_oidc import verify_google_id_token
+
+CLOUD_RUN_METHOD = "cloud_run_oidc"
 
 SEVERITY_WEIGHT = {"critical": 40, "high": 25, "medium": 10, "low": 3, "info": 0}
 VERDICT_FACTOR = {"proven": 1.0, "detected": 0.6, "candidate": 0.0, "unverified": 0.0, "aborted": 0.0,
@@ -255,16 +264,18 @@ def separate_l2_approver_from_env(environ=None) -> bool:
     return False
 
 
-_DATA_DIR_LOCKS: dict[str, object] = {}
+# data directory -> [lock file handle (None without flock), service objects holding it]
+_DATA_DIR_LOCKS: dict[str, list] = {}
+_DATA_DIR_LOCKS_GUARD = threading.Lock()
 
 
 def _close_data_dir_locks_at_exit() -> None:
-    # The claims stay held for the entire process lifetime. Closing explicitly at
-    # interpreter shutdown avoids leaking file handles in long test processes.
-    for handle in _DATA_DIR_LOCKS.values():
-        if handle is not None:
-            handle.close()
-    _DATA_DIR_LOCKS.clear()
+    # Closing explicitly at interpreter shutdown avoids leaking file handles.
+    with _DATA_DIR_LOCKS_GUARD:
+        for handle, _count in _DATA_DIR_LOCKS.values():
+            if handle is not None:
+                handle.close()
+        _DATA_DIR_LOCKS.clear()
 
 
 atexit.register(_close_data_dir_locks_at_exit)
@@ -285,26 +296,82 @@ def _claim_data_dir(data_dir: Path) -> None:
     could be written over by the other. (Several service objects inside one
     process - as tests do when they 'restart' - share the claim.)"""
     key = str(Path(data_dir).resolve())
-    if key in _DATA_DIR_LOCKS:
-        return
-    try:
-        import fcntl
-    except ImportError:          # no flock on this platform: nothing to enforce
-        _DATA_DIR_LOCKS[key] = None
-        return
-    fh = open(Path(data_dir) / ".lock", "a+")
-    try:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        fh.close()
-        raise RuntimeError(
-            f"データディレクトリ {data_dir} は別のコントロールプレーンのプロセスが使用中です。"
-            "同じデータディレクトリで2つ起動することはできません") from None
-    _DATA_DIR_LOCKS[key] = fh      # held for the life of the process
+    with _DATA_DIR_LOCKS_GUARD:
+        held = _DATA_DIR_LOCKS.get(key)
+        if held is not None:
+            held[1] += 1
+            return
+        try:
+            import fcntl
+        except ImportError:          # no flock on this platform: nothing to enforce
+            _DATA_DIR_LOCKS[key] = [None, 1]
+            return
+        fh = open(Path(data_dir) / ".lock", "a+")
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            fh.close()
+            raise RuntimeError(
+                f"データディレクトリ {data_dir} は別のコントロールプレーンのプロセスが使用中です。"
+                "同じデータディレクトリで2つ起動することはできません") from None
+        _DATA_DIR_LOCKS[key] = [fh, 1]   # held while any service object of this process uses it
+
+
+def _release_data_dir(data_dir: Path) -> None:
+    """A service object closed: the last one releases the claim (and its file handle).
+    Without this, every organization ever loaded kept one descriptor until exit."""
+    key = str(Path(data_dir).resolve())
+    with _DATA_DIR_LOCKS_GUARD:
+        held = _DATA_DIR_LOCKS.get(key)
+        if held is None:
+            return
+        held[1] -= 1
+        if held[1] <= 0:
+            del _DATA_DIR_LOCKS[key]
+            if held[0] is not None:
+                held[0].close()
 
 
 # Findings whose single-item verification is a bundled-lab check (fixed lab paths).
-LAB_ONLY_FINDING_IDS = frozenset({"f_banner", "f_idor", "f_sqli", "fx_idor", "fx_sqli", "fx_banner"})
+def _planner_engine() -> str:
+    """fixed (default) | hybrid | structured | artex - the diagnosis loop's planner."""
+    value = os.environ.get("VULNIX_PLANNER_ENGINE", "").strip().lower()
+    return value if value in ("fixed", "hybrid", "structured", "artex") else "fixed"
+
+
+def _model_timeout_for_planner() -> float:
+    """One planner-model request: the same 1-120 s rule as the gateway's local transport."""
+    from .router import _model_timeout
+    return _model_timeout(os.environ.get("VULNIX_PLANNER_LLM_TIMEOUT_S", 30))
+
+
+def _planner_timeout() -> float:
+    """Wall-clock limit of one ARTEX planner process (and its CPU-seconds cap): 120 s by
+    default; a slower local model may be given up to 600 s via VULNIX_ARTEX_PLANNER_TIMEOUT_S."""
+    try:
+        value = float(os.environ.get("VULNIX_ARTEX_PLANNER_TIMEOUT_S", "120"))
+    except ValueError:
+        return 120.0
+    return value if 30 <= value <= 600 else 120.0
+
+
+def _lab_verdict(result, check: str) -> str:
+    """The frozen evidence judge, plus the separately kept open-redirect check."""
+    if check == "open_redirect":
+        from .redirect_evidence import open_redirect_verdict
+        return open_redirect_verdict(result)
+    return reproduction_verdict(result, check)
+
+
+def _lab_note(result, check: str) -> str:
+    if check == "open_redirect":
+        from .redirect_evidence import open_redirect_note
+        return open_redirect_note(result)
+    return reproduction_note(result, check)
+
+
+LAB_ONLY_FINDING_IDS = frozenset({"f_banner", "f_idor", "f_sqli", "f_open_redirect",
+                                  "fx_idor", "fx_sqli", "fx_banner"})
 
 # Under separation of duties, a request for an L2 run can be approved for this long.
 L2_REQUEST_MAX_AGE_S = 24 * 3600
@@ -391,6 +458,7 @@ class AssessmentService:
         self._l2_requests: dict[str, dict] = {}
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.state_path = self.data_dir / "state.json"
+        self.cloud_run_store = SQLiteCloudRunStore(self.data_dir / "cloud-run-challenges.sqlite3")
         self.secrets = EncryptedSecretStore(self.data_dir)
         self._ownership_secret = hashlib.sha256(
             self.secrets._master_key + b":vulnix-ownership-v1"
@@ -743,6 +811,9 @@ class AssessmentService:
                 self.audit.record("control_plane.closed", clean=clean)
             except Exception:
                 pass
+            if not getattr(self, "_claim_released", False):
+                self._claim_released = True
+                _release_data_dir(self.data_dir)
             return clean
 
     @staticmethod
@@ -1186,6 +1257,13 @@ class AssessmentService:
             return None
         if ext.get("held_since"):
             return None          # held after an unclean shutdown: needs re-approval
+        if ext.get("proof_method") == CLOUD_RUN_METHOD:
+            try:
+                binding = self.cloud_run_store.binding(str(ext.get("tenant") or ""), h)
+            except Exception:
+                return None
+            if not binding or binding[1] != ext.get("cloud_run_version"):
+                return None
         try:
             ipaddress.ip_address(h)
             return None          # a real service is always a DNS name, never an address
@@ -1300,7 +1378,11 @@ class AssessmentService:
         new = [a for a in addrs if a not in known]
         first_use = not known
         stale = time.time() - float(ext.get("addresses_verified_at") or 0) > ADDRESS_PROOF_MAX_AGE_S
-        if not new and not stale:
+        method = str(ext.get("proof_method") or "dns_txt")
+        # A new Cloud Run proof can have a different verified IP set while the
+        # scope record still remembers addresses accepted under the old proof.
+        # Check the current signed proof even for an otherwise familiar address.
+        if not new and not stale and method != CLOUD_RUN_METHOD:
             return
         with self._lock:
             # the name lookup may have taken long: nothing more is looked up or
@@ -1308,25 +1390,45 @@ class AssessmentService:
             if self._withdrawn_since_locked(host, ext, epoch0):
                 raise NetworkError(f"{host} の診断許可は取り消しまたは停止済みです。所有の再確認は行いません")
         token = challenge_for_host(host, self._ownership_secret)["token"]
-        method = str(ext.get("proof_method") or "dns_txt")
         ok, detail, address_bound = False, "", False
         try:
-            if method == GOOGLE_METHOD:
+            if method == CLOUD_RUN_METHOD:
+                proof = self._ownership_proofs.get(host) or {}
+                covered = set(proof.get("verified_addresses") or [])
+                fresh = isinstance(proof.get("verified_at"), (int, float)) and \
+                    0 <= time.time() - float(proof["verified_at"]) <= OWNERSHIP_PROOF_MAX_AGE_S
+                binding_ok = (self.cloud_run_store.binding(str(proof.get("tenant") or ""), host)
+                              or (None, None))[1] == proof.get("cloud_run_version")
+                ok = bool(fresh and binding_ok and proof.get("method") == method
+                          and covered and set(addrs).issubset(covered))
+                address_bound = ok
+                detail = ("所有確認時に各接続先の meta タグを確認済み" if ok else
+                          "所有確認時に証明されていない接続先のため再確認が必要です")
+            elif method == GOOGLE_METHOD:
                 # Google cannot be asked again (no token is kept). The first use, while
                 # the proof is fresh, binds the name like a DNS proof does; any later new
                 # or stale address needs a new proof made by the owner.
                 proof = self._ownership_proofs.get(host) or {}
                 fresh = isinstance(proof.get("verified_at"), (int, float)) and \
                     0 <= time.time() - float(proof["verified_at"]) <= OWNERSHIP_PROOF_MAX_AGE_S
-                ok = bool(first_use and fresh and proof.get("method") == GOOGLE_METHOD)
-                detail = ("Google での所有確認（初回の接続先を記録）" if ok else
-                          "Google での確認は再実行できないため、所有確認のやり直しが必要です")
+                ok = bool(first_use and fresh and proof.get("method") == method)
+                detail = ("Google 所有確認後の初回接続先を記録" if ok else
+                          "所有確認または登録が失効したため再確認が必要です")
             elif method == "well_known":
                 # binds the ADDRESS: the file is fetched from each address itself
                 fetch = self._proof_file_fetch or fetch_proof_file_pinned
                 ok = all(proof_file_matches(fetch(host, a), token) for a in (new or addrs))
                 address_bound = ok
                 detail = "検証ファイルを各アドレスから取得して確認"
+            elif method in ("meta_tag", "verification_code"):
+                # binds the ADDRESS: the root HTML is fetched from each address itself
+                if self._proof_file_fetch is not None:
+                    fetch_root = lambda h, a: self._proof_file_fetch(h, a)
+                else:
+                    fetch_root = lambda h, a: fetch_proof_file_pinned(h, a, path="/", max_bytes=65536)
+                ok = all(meta_tag_matches(fetch_root(host, a), token) for a in (new or addrs))
+                address_bound = ok
+                detail = "トップページの meta タグを各アドレスから取得して確認"
             else:
                 # binds the NAME only: it shows the DNS zone is still the owner's,
                 # not that a new address is (dangling record, takeover of a released IP)
@@ -1441,6 +1543,7 @@ class AssessmentService:
                 raise PolicyError("この要求を出したワークスペースは停止または切り替え済みです")
             if self._unstopped_now_locked() or self.workers.busy_sessions():
                 raise PolicyError("停止を確認できていないWorkerが残っているため、新しいWorkerは起動しません")
+            self._a2b_guard_locked(host)
             if not self._in_ownership_flow(host):
                 return
             ext = self._external_entry(host)
@@ -1666,7 +1769,7 @@ class AssessmentService:
             meta = profile["paths"][node["path"]]
             return {"account": profile["tokens"][node["token"]]["label"], "token_key": node["token"],
                     "path": meta["default"], "path_override_pattern": meta.get("override_pattern"),
-                    "headers": dict(node["headers"])}
+                    "headers": dict(node.get("headers") or {})}
         return {
             "id": c["id"], "label": c["label"],
             "request": req(c["subject"]),
@@ -1674,6 +1777,288 @@ class AssessmentService:
             "denied": c["denied"], "exposed": c["exposed"],
             "spec_evidence": c["spec_evidence"],
         }
+
+    # ---- A2B drafts: four separate steps -------------------------------------
+    # 1. the user reads the API definition and confirms test data (in the browser);
+    # 2. a draft is saved in THIS organization's store - never in a profile directory, so
+    #    nothing can run from it;
+    # 3. a platform admin approves the exact profile built from it (SHA-256), which writes it
+    #    into this organization's profile directory and accepts it;
+    # 4. each run still needs a verified asset, stored test accounts and the per-item L2
+    #    approval by someone other than the requester (unchanged).
+    # Editing an approved draft, or revoking it, removes the profile and its acceptance.
+    def _a2b_dir(self) -> Path:
+        d = self.data_dir / "a2b_drafts"
+        d.mkdir(mode=0o700, exist_ok=True)
+        os.chmod(d, 0o700)
+        return d
+
+    def _a2b_read(self, draft_id: str) -> dict:
+        from .a2b_profile import DRAFT_ID_RE
+        if not isinstance(draft_id, str) or not DRAFT_ID_RE.fullmatch(draft_id):
+            raise ValueError("下書きが見つかりません")
+        f = self._a2b_dir() / f"{draft_id}.json"
+        if not f.is_file():
+            raise ValueError("下書きが見つかりません")
+        return json.loads(f.read_text(encoding="utf-8"))
+
+    def _a2b_write(self, rec: dict) -> None:
+        d = self._a2b_dir()
+        fd, tmp = tempfile.mkstemp(dir=d, prefix=".d-", suffix=".json")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(rec, fh, ensure_ascii=False, indent=2)
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, d / f"{rec['id']}.json")
+        except BaseException:
+            Path(tmp).unlink(missing_ok=True)
+            raise
+
+    def _a2b_view(self, rec: dict) -> dict:
+        pid = rec["profile_id"]
+        src = self.l2.sources.get(pid)
+        runnable = bool(src and src["site"] and self._accepted_profiles.get(pid) == rec["approval"].get("sha256")
+                        and src["sha256"] == rec["approval"].get("sha256"))
+        status = rec["approval"]["status"]
+        if status == "approved" and not runnable:
+            status = "changed"          # the file or the acceptance no longer matches what was approved
+        profile = rec["profile"]
+        return {"id": rec["id"], "name": rec["name"], "host": profile["applies_to"]["hosts"][0],
+                "profile_id": pid, "sha256": rec["sha256"], "revision": rec["revision"],
+                "saved_by": rec["saved_by"], "saved_at": rec["saved_at"],
+                "checks": [{"kind": c["id"][len(pid) + 1:], "label": c["label"], "confirmed": c["spec_status"] == "confirmed"}
+                           for c in profile["checks"]],
+                "approval": {**rec["approval"], "status": status}, "approved_profile_loaded": runnable,
+                "draft": rec["draft"]}
+
+    def a2b_drafts(self) -> list[dict]:
+        with self._lock:
+            out = []
+            for f in sorted(self._a2b_dir().glob("d*.json")):
+                try:
+                    rec = json.loads(f.read_text(encoding="utf-8"))
+                    if isinstance(rec, dict) and isinstance(rec.get("approval"), dict):
+                        out.append(self._a2b_view(rec))
+                except Exception:   # noqa: BLE001 - one unreadable record never hides the others
+                    continue
+            return sorted(out, key=lambda r: r["saved_at"], reverse=True)
+
+    def a2b_review(self) -> list[dict]:
+        """For a platform admin: the drafts waiting for approval or approved, with the exact
+        profile content (paths, markers, denial statuses) the SHA-256 covers."""
+        out = []
+        for d in self.a2b_drafts():
+            if d["approval"]["status"] in ("requested", "approved", "changed"):
+                rec = self._a2b_read(d["id"])
+                out.append({**d, "rules": [self._describe_rule(rec["profile"], c) for c in rec["profile"]["checks"]
+                                           if c["spec_status"] == "confirmed"]})
+        return out
+
+    def save_a2b_draft(self, draft: dict, actor: str, draft_id: str | None = None) -> dict:
+        """Save (or update) a draft of THIS organization. It has no execution power."""
+        from .a2b_profile import build_profile, profile_bytes, profile_id_for
+        with self._lock:
+            if self.a.state == "running":
+                raise ValueError("診断実行中は検証内容を変更できません。停止するか終わってから保存してください")
+            if draft_id:
+                rec = self._a2b_read(draft_id)          # only this organization's own store
+            else:
+                rec = {"id": "d" + secrets.token_hex(6), "revision": 0,
+                       "approval": {"status": "draft"}}
+                while (self._a2b_dir() / f"{rec['id']}.json").exists():
+                    rec["id"] = "d" + secrets.token_hex(6)
+            profile = build_profile(draft, profile_id_for(rec["id"]))   # DraftError for the user
+            sha = hashlib.sha256(profile_bytes(profile)).hexdigest()
+            if draft_id and sha == rec.get("sha256") and rec["approval"].get("status") != "suspended":
+                return self._a2b_view(rec)
+            was = rec["approval"].get("status")
+            self._audit_first("a2b.draft_saved", actor=actor, draft=rec["id"], profile=profile["id"],
+                              sha256=sha, revision=rec["revision"] + 1,
+                              checks={c["id"]: c["spec_status"] for c in profile["checks"]})
+            if was in ("approved", "requested"):
+                self._a2b_unload_locked(rec, actor, "a2b.approval_voided_by_change")
+            rec.update({"name": str(draft.get("name") or "").strip()[:80], "draft": draft, "profile": profile,
+                        "profile_id": profile["id"], "sha256": sha, "revision": rec["revision"] + 1,
+                        "saved_by": actor, "saved_at": time.time(),
+                        "approval": {"status": "draft", **({"voided": was} if was in ("approved", "requested") else {})}})
+            self._a2b_write(rec)
+            return self._a2b_view(rec)
+
+    def request_a2b_approval(self, draft_id: str, sha256: str, actor: str) -> dict:
+        with self._lock:
+            rec = self._a2b_read(draft_id)
+            if sha256 != rec["sha256"]:
+                raise ValueError("下書きの内容が表示時から変わっています。確認し直してください")
+            if not any(c["spec_status"] == "confirmed" for c in rec["profile"]["checks"]):
+                raise ValueError("仕様と試験データを確認した項目がありません。未確認の候補は承認を依頼できません")
+            view = self._a2b_view(rec)
+            if view["approval"]["status"] == "approved":     # still loaded as approved: nothing to ask
+                return view
+            if rec["approval"]["status"] == "approved":     # approved, but no longer loaded: start over
+                self._a2b_unload_locked(rec, actor, "a2b.approval_voided_by_change")
+            self._audit_first("a2b.approval_requested", actor=actor, draft=rec["id"], sha256=rec["sha256"])
+            rec["approval"] = {"status": "requested", "sha256": rec["sha256"], "requested_by": actor,
+                               "requested_at": time.time()}
+            self._a2b_write(rec)
+            return self._a2b_view(rec)
+
+    def approve_a2b_draft(self, draft_id: str, sha256: str, actor: str) -> dict:
+        """A PLATFORM admin (checked by the caller) approves the exact profile of a requested
+        draft. The profile is written into this organization's profile directory and accepted."""
+        from .a2b_profile import save_site_profile
+        with self._lock:
+            if self.a.state == "running":
+                raise ValueError("診断実行中は承認できません")
+            rec = self._a2b_read(draft_id)
+            if rec["approval"]["status"] != "requested":
+                raise ValueError("承認を依頼された下書きではありません")
+            if not sha256 or sha256 != rec["sha256"] or sha256 != rec["approval"].get("sha256"):
+                raise ValueError("下書きの内容が表示時から変わっています。内容を確認し直してください")
+            if actor in (rec["approval"].get("requested_by"), rec.get("saved_by")):
+                raise ValueError("承認を依頼した本人・下書きを保存した本人は承認できません。別の管理者が承認してください")
+            gone = self._a2b_authority_failure({**rec, "approval": {**rec["approval"], "approved_by": None,
+                                                                    "status": "requested"}})
+            if gone:
+                raise ValueError(gone)
+            hosts = set(rec["profile"]["applies_to"]["hosts"])
+            taken = sorted(pid for pid, prof in self.l2.profiles.items()
+                           if pid != rec["profile_id"] and hosts & set(prof.get("hosts") or []))
+            if taken:      # checked BEFORE writing: which of two same-host files loads must never be decided by name
+                raise ValueError(f"この検証内容を有効にできません（同じホストの検証内容が既にあります: {', '.join(taken)[:120]}）。"
+                                 "同じホストの検証内容が既にある場合は、先にそちらを取り下げてください")
+            save_site_profile(self.data_dir, rec["profile"])
+            fresh = self._read_l2_profiles()
+            if rec["profile_id"] not in fresh.sources:      # e.g. another profile already covers this host
+                from .a2b_profile import remove_site_profile
+                remove_site_profile(self.data_dir, rec["profile_id"])
+                why = next((r["reason"] for r in fresh.rejected if rec["profile_id"] in str(r.get("file", ""))),
+                           "読み込めませんでした")
+                raise ValueError(f"この検証内容を有効にできません（{str(why)[:200]}）。"
+                                 "同じホストの検証内容が既にある場合は、先にそちらを取り下げてください")
+            try:
+                self.accept_l2_profile(rec["profile_id"], sha256, actor)   # reads the file again, audits, commits
+                rec["approval"] = {**rec["approval"], "status": "approved", "approved_by": actor,
+                                   "approved_at": time.time()}
+                self._a2b_write(rec)
+            except Exception:
+                # nothing half-done stays: no file, no acceptance (audited like a revocation)
+                self._a2b_unload_locked(rec, actor, "a2b.approval_rolled_back")
+                raise
+            return self._a2b_view(rec)
+
+    def revoke_a2b_draft(self, draft_id: str, actor: str) -> dict:
+        with self._lock:
+            if self.a.state == "running":
+                raise ValueError("診断実行中は取り消せません")
+            rec = self._a2b_read(draft_id)
+            err = self._a2b_unload_locked(rec, actor, "a2b.approval_revoked")
+            rec["approval"] = {"status": "revoked", "revoked_by": actor, "revoked_at": time.time()}
+            self._a2b_write(rec)
+            if err:
+                raise err
+            return self._a2b_view(rec)
+
+    # Set by the server: (account, "platform_admin" | "org_operator") -> whether the account
+    # holds that authority NOW. None (no server, e.g. a library caller) checks nothing.
+    _authority = None
+
+    def _a2b_authority_failure(self, rec: dict) -> str | None:
+        """Why an approved or requested draft has lost the authority it was given with."""
+        check = self._authority
+        if check is None:
+            return None
+        ap = rec.get("approval") or {}
+        if ap.get("status") == "approved" and not check(ap.get("approved_by") or "", "platform_admin"):
+            return "承認した管理者がプラットフォーム管理者の権限を失いました。権限のある管理者の再承認が必要です"
+        for who in dict.fromkeys(x for x in (ap.get("requested_by"), rec.get("saved_by")) if x):
+            if not check(who, "org_operator"):
+                return ("承認を依頼した人（または下書きを保存した人）がこの組織での操作権限を失いました。"
+                        "権限のある人が下書きを保存し直し、承認を依頼し直してください")
+        return None
+
+    def _a2b_suspend_locked(self, rec: dict, reason: str, actor: str) -> AuditWriteFailed | None:
+        """Take the approval away (a removal of authority: applied first, recorded after).
+        The draft, its history and the audit records stay."""
+        err = self._a2b_unload_locked(rec, actor, "a2b.approval_suspended", reason=reason,
+                                      approved_by=rec["approval"].get("approved_by"),
+                                      requested_by=rec["approval"].get("requested_by"))
+        rec["approval"] = {"status": "suspended", "reason": reason, "suspended_at": time.time(),
+                           "was": rec["approval"].get("status"),
+                           "approved_by": rec["approval"].get("approved_by"),
+                           "requested_by": rec["approval"].get("requested_by")}
+        self._a2b_write(rec)
+        return err
+
+    def enforce_a2b_authority(self, actor: str = "system:authority") -> list[str]:
+        """Suspend every approved or requested draft whose approver, requester or saver no
+        longer holds the authority it was given with. A run of the same host in progress is
+        stopped first. Called after role and membership changes, at start and before launch."""
+        if self._authority is None:
+            return []
+        suspended, errors = [], []
+        with self._lock:
+            for f in sorted(self._a2b_dir().glob("d*.json")):
+                try:
+                    rec = json.loads(f.read_text(encoding="utf-8"))
+                    if rec.get("approval", {}).get("status") not in ("approved", "requested"):
+                        continue
+                    reason = self._a2b_authority_failure(rec)
+                except Exception:   # noqa: BLE001 - one unreadable record never stops the others
+                    continue
+                if not reason:
+                    continue
+                try:
+                    hosts = {h.lower() for h in rec["profile"]["applies_to"]["hosts"]}
+                    # whatever relies on this approval now ends: a diagnosis, or a re-verification of a
+                    # finished one whose worker is still out (the state stays "completed" then)
+                    in_flight = (self.a.state in ("running", "paused") or self._inflight > 0
+                                 or bool(self.workers.busy_sessions()) or bool(self.workers.active_pids()))
+                    if (rec["approval"]["status"] == "approved" and in_flight
+                            and (self.a.asset.get("name") or "").lower() in hosts):
+                        self.emergency_stop(actor)
+                    err = self._a2b_suspend_locked(rec, reason, actor)
+                except Exception as e:   # noqa: BLE001 - the others are still suspended; the launch guard refuses this one
+                    errors.append(e)
+                    continue
+                if err:
+                    errors.append(err)
+                suspended.append(rec["id"])
+        if errors:
+            raise errors[0]
+        return suspended
+
+    def _a2b_guard_locked(self, host: str) -> None:
+        """At a worker launch: an approved draft for this host whose authority is gone is
+        suspended now, and the launch is refused (whatever the server has noticed so far)."""
+        if self._authority is None or not host:
+            return
+        for f in sorted(self._a2b_dir().glob("d*.json")):
+            try:
+                rec = json.loads(f.read_text(encoding="utf-8"))
+                hosts = {h.lower() for h in rec["profile"]["applies_to"]["hosts"]}
+            except Exception:   # noqa: BLE001 - an unreadable record has no loaded profile of its own
+                continue
+            if rec.get("approval", {}).get("status") == "approved" and host.lower() in hosts:
+                reason = self._a2b_authority_failure(rec)
+                if reason:
+                    self._a2b_suspend_locked(rec, reason, "system:authority")
+                    raise PolicyError(f"{host} の検証内容の承認は停止されました: {reason}")
+
+    def _a2b_unload_locked(self, rec: dict, actor: str, event: str, **extra) -> AuditWriteFailed | None:
+        """Remove the profile file and its acceptance: nothing of this draft stays runnable.
+        A removal of authority: applied first, whatever the audit log does, then recorded;
+        a failed record is returned for the caller to report after finishing."""
+        from .a2b_profile import remove_site_profile
+        pid = rec["profile_id"]
+        removed = remove_site_profile(self.data_dir, pid)
+        if pid in self._accepted_profiles:
+            self._accepted_profiles.pop(pid, None)
+            self.ledger.commit()        # a removal: kept in memory even if the file cannot be replaced
+        if removed or pid in self.l2.sources:
+            self.l2 = self._read_l2_profiles()
+            self._apply_profile_acceptance_locked()
+        self._save_state_locked()
+        return self._audit_reduction(event, actor=actor, draft=rec["id"], profile=pid, **extra)
 
     def accept_l2_profile(self, profile_id: str, sha256: str, actor: str) -> dict:
         """An admin accepts the exact content of a site profile. The file is read
@@ -2358,7 +2743,10 @@ class AssessmentService:
         `llm_approval` ({"max_calls": N, "first_request_sha256": <from the preview>}) is
         needed when the planner's model is a real (non-loopback) endpoint behind the
         Planner LLM Gateway; only an approver can give it."""
-        if not self._artex_real_cmd:
+        # The diagnosis loop's default engine is the fixed rule: no ARTEX process, database,
+        # model or planner gateway is started. ARTEX / structured / hybrid stay selectable.
+        fixed = diagnosis is not None and _planner_engine() == "fixed"
+        if not self._artex_real_cmd and not fixed:
             raise ValueError("ARTEX プランナーが設定されていません（VULNIX_ARTEX_REAL_CMD）")
         with self._lock:
             self._refuse_after_stop_locked()
@@ -2408,7 +2796,7 @@ class AssessmentService:
                 observations = [{"title": clean_target_text(f["title"], 200),
                                  "detail": clean_target_text(f.get("summary", ""), 400)}
                                 for f in self.a.findings.values()
-                                if f.get("id") in ("f_banner", "f_idor", "f_sqli")
+                                if f.get("id") in ("f_banner", "f_idor", "f_sqli", "f_open_redirect")
                                 and evidence_status(f) in ("detected", "proven")]
                 if getattr(self, "_lab_account_resource_observed", None) is not None:
                     surface = "present" if self._lab_account_resource_observed else "absent"
@@ -2427,7 +2815,7 @@ class AssessmentService:
         # VULNIX_ARTEX_EXPECTED_SHA256 before it runs (a mismatch, or anything that is not
         # the ARTEX overlay build, is refused by the bridge).
         dev = os.environ.get("AEGIS_ENV", "").strip().lower() in ("development", "dev")
-        if not dev and not re.fullmatch(r"[0-9a-fA-F]{64}", self._artex_expected_sha256.strip()):
+        if not fixed and not dev and not re.fullmatch(r"[0-9a-fA-F]{64}", self._artex_expected_sha256.strip()):
             self.audit.record("artex.plan_refused", actor=actor, reason="binary sha256 not pinned")
             raise ValueError("本番環境では ARTEX バイナリの SHA-256（VULNIX_ARTEX_EXPECTED_SHA256）の指定が必須です")
         for url, default in ((self._artex_llm_url, None), (self._artex_pg_dsn, 5432)):
@@ -2438,8 +2826,10 @@ class AssessmentService:
             if port == self.lab_port:
                 # a pinned port gives the planner whatever listens there
                 raise ValueError("ARTEX の LLM / DB の接続先に検証ラボのポートは使用できません")
-        st = dict(self._l2_confinement.status())
-        if st.get("ok"):
+        st = {} if fixed else dict(self._l2_confinement.status())
+        if fixed:
+            confinement, protected = None, ()          # nothing is launched for the plan itself
+        elif st.get("ok"):
             confinement = self._l2_confinement
             protected = sorted(str(p) for p in self.data_dir.iterdir() if p.is_file())
         elif (not real_site and os.environ.get("VULNIX_ARTEX_ALLOW_UNCONFINED") == "1"
@@ -2452,9 +2842,10 @@ class AssessmentService:
                              f"（{str(st.get('reason', ''))[:200]}）")
         if request_authorized is not None and not request_authorized():
             raise ValueError("要求者の権限が失効したため、ARTEX 計画を開始しません")
-        self.audit.record("artex.plan_requested", actor=actor, targets=len(targets), confined=confinement is not None)
-        gateway = self._planner_gateway(actor, llm_approval, roles, gen, llm_mode,
-                                        real_site=real_site, request_authorized=request_authorized)
+        self.audit.record("artex.plan_requested", actor=actor, targets=len(targets), confined=confinement is not None,
+                          engine="fixed" if fixed else _planner_engine())
+        gateway = None if fixed else self._planner_gateway(actor, llm_approval, roles, gen, llm_mode,
+                                                           real_site=real_site, request_authorized=request_authorized)
         llm_url, llm_key = self._artex_llm_url, ""
         if gateway is not None:
             try:
@@ -2465,7 +2856,7 @@ class AssessmentService:
             with self._lock:
                 self._artex_gateways.add(gateway)
             llm_url, llm_key = gateway.url, gateway.token
-        fresh = os.environ.get("VULNIX_ARTEX_RESET_DB") == "1" and bool(self._artex_pg_dsn)
+        fresh = os.environ.get("VULNIX_ARTEX_RESET_DB") == "1" and bool(self._artex_pg_dsn) and not fixed
         if fresh:
             _ARTEX_DB_LOCK.acquire()
         try:
@@ -2473,16 +2864,32 @@ class AssessmentService:
                 # the same starting state for every run: a preview and the approved forward
                 # then send the same first request (anything left over would change it)
                 self._reset_artex_db()
-            run = run_artex_planner(self._artex_real_cmd, request, llm_url=llm_url, llm_key=llm_key,
-                                    llm_model=self._artex_llm_model, pg_dsn=self._artex_pg_dsn,
-                                    expected_sha256=self._artex_expected_sha256,
-                                    confinement=confinement, forbidden_paths=protected,
-                                    on_leftover=self._note_leftover_session,
-                                    on_started=lambda sess: self._artex_session_started(sess, gen),
-                                    on_finished=self._artex_session_finished,
-                                    may_start=lambda: self._artex_may_start(gen) and
-                                    (request_authorized is None or request_authorized()),
-                                    data_dirs=(str(self.data_dir),))
+            engine = _planner_engine()
+            if fixed:
+                from .structured_planner import run_fixed_planner
+                run = run_fixed_planner(diagnosis[0].planner_view(), diagnosis[0], targets, frozenset(diagnosis[1]))
+            elif engine in ("structured", "hybrid") and diagnosis is not None:
+                # no ARTEX process: the model (through the same gateway) only fills Vulnix's
+                # step schema; the contract, Gateway, approvals and judge below are unchanged
+                from .structured_planner import run_structured_planner
+                run = run_structured_planner(diagnosis[0].planner_view(), diagnosis[0], targets,
+                                             frozenset(diagnosis[1]), llm_url=llm_url, llm_key=llm_key,
+                                             llm_model=gateway.model if gateway is not None else self._artex_llm_model,
+                                             hybrid=engine == "hybrid",
+                                             no_think=os.environ.get("VULNIX_PLANNER_NO_THINK") == "1",
+                                             timeout_s=_model_timeout_for_planner())
+            else:
+                run = run_artex_planner(self._artex_real_cmd, request, llm_url=llm_url, llm_key=llm_key,
+                                      llm_model=self._artex_llm_model, pg_dsn=self._artex_pg_dsn,
+                                      timeout_s=_planner_timeout(),
+                                      expected_sha256=self._artex_expected_sha256,
+                                      confinement=confinement, forbidden_paths=protected,
+                                      on_leftover=self._note_leftover_session,
+                                      on_started=lambda sess: self._artex_session_started(sess, gen),
+                                      on_finished=self._artex_session_finished,
+                                      may_start=lambda: self._artex_may_start(gen) and
+                                      (request_authorized is None or request_authorized()),
+                                      data_dirs=(str(self.data_dir),))
         except ArtexBridgeError as e:
             self.audit.record("artex.plan_failed", actor=actor, reason=str(e)[:200])
             raise ValueError(artex_failure_message(str(e))) from None
@@ -2568,7 +2975,10 @@ class AssessmentService:
                 self._artex_items[item.id] = {"item": item, "task_id": tk.id if tk else None,
                                               "gen": gen, "run_id": run_id, "requested_by": actor}
             kind = prov.get("kind")
-            label = ("ARTEX 本体（overlay ビルド・ハッシュ固定）" if kind == "artex-binary" and prov.get("pinned")
+            label = ("固定ルール（AI・ARTEX不使用）" if kind == "vulnix-fixed"
+                     else "固定ルール優先＋構造化出力モデル（ARTEX不使用）" if kind == "vulnix-hybrid"
+                     else "構造化出力モデル（ARTEX不使用）" if kind == "vulnix-structured"
+                     else "ARTEX 本体（overlay ビルド・ハッシュ固定）" if kind == "artex-binary" and prov.get("pinned")
                      else "ARTEX ビルド（ハッシュ未固定のため本体と未確認）" if kind == "artex-binary"
                      else "ARTEX 互換プロセス（本体と未確認）")
             self._artex_plan = {
@@ -2577,7 +2987,7 @@ class AssessmentService:
                            "artex_module": prov.get("artex_module"), "artex_commit": prov.get("artex_commit"),
                            "go_version": prov.get("go_version"), "norma_version": prov.get("norma_version"),
                            "label": label},
-                "llm_model": gateway.model if gateway is not None else self._artex_llm_model,
+                "llm_model": None if fixed else gateway.model if gateway is not None else self._artex_llm_model,
                 "llm_gateway": ({k: v for k, v in (self._artex_llm_last or {}).get("report", {}).items()
                                  if k not in ("records", "failed_upstream")} if gateway is not None else None),
                 "isolation": {**_artex_isolation_view(prov.get("isolation") or {}),
@@ -2694,9 +3104,17 @@ class AssessmentService:
         bound = None
         if real:
             bound = self._take_preview_approval(actor, approval, roles)
+        local_transport = None
+        if not real:
+            # A local model on this machine can take longer than a hosted one for the first,
+            # largest prompt. The wait is bounded by the same 1-120 s rule as every model call
+            # (default 30 s) and happens after the send lease is released (stop stays prompt).
+            from .router import _http_transport, _model_timeout
+            local_transport = functools.partial(
+                _http_transport, timeout_s=_model_timeout(os.environ.get("VULNIX_PLANNER_LLM_TIMEOUT_S", 30)))
         return PlannerLLMGateway(mode="forward", upstream_url=upstream,
                                  api_key=os.environ.get("VULNIX_ABLITERATION_KEY", "") if real else "",
-                                 approval=bound, **common)
+                                 approval=bound, transport=local_transport, **common)
 
     def _previews_path(self) -> Path:
         return self.data_dir / "planner_llm_previews.json"
@@ -2788,8 +3206,11 @@ class AssessmentService:
     def artex_plan_view(self) -> dict | None:
         with self._lock:
             real_site = self._in_ownership_flow(self.a.asset.get("name"))
-            configured = bool(self._artex_real_cmd) and (
-                not real_site or (self._real_site_local_artex and self._is_external_service_asset()))
+            # a fixed-rule plan (the default diagnosis-loop engine) exists without ARTEX on the lab
+            configured = (bool(self._artex_real_cmd) and (
+                not real_site or (self._real_site_local_artex and self._is_external_service_asset()))) or (
+                not real_site and self._artex_plan is not None
+                and (self._artex_plan.get("engine") or {}).get("kind") == "vulnix-fixed")
             if not configured:
                 return {"configured": False, "plan": None}
             if self._artex_plan is None:
@@ -3149,7 +3570,47 @@ class AssessmentService:
                 dict(x) for x in self._extra_assets
                 if x["id"] != primary["id"] and x["name"].lower() != primary["name"].lower()
             ]
+            for asset in [primary, *extras]:
+                if not asset.get("challenge"):
+                    continue
+                proof = self._ownership_proofs.get(asset["name"]) or {}
+                verified_at = proof.get("verified_at")
+                scope_active = self._external_entry(asset["name"]) is not None
+                asset["scope_confirmed"] = scope_active
+                asset["ownership_verified"] = bool(
+                    scope_active or (
+                        proof.get("verified") is True and not proof.get("held_since")
+                        and (proof.get("scheme"), proof.get("port")) == (asset.get("scheme"), asset.get("port"))
+                        and isinstance(verified_at, (int, float))
+                        and 0 <= time.time() - verified_at <= OWNERSHIP_PROOF_MAX_AGE_S))
             return [primary, *extras]
+
+    @staticmethod
+    def _project_label(value: str) -> str:
+        if not isinstance(value, str) or len(value) > 80 or any(
+                unicodedata.category(char).startswith("C") for char in value):
+            raise ValueError("プロジェクト名は制御文字を含まない80文字以内にしてください")
+        return value.strip()
+
+    def set_asset_project(self, asset_id: str, label: str, actor: str) -> list[dict]:
+        label = self._project_label(label)
+        with self._lock:
+            record = next((item for item in (self.a.asset, *self._extra_assets)
+                           if item["id"] == asset_id), None)
+            if record is None:
+                raise ValueError("この組織に対象が見つかりません")
+            previous = record.get("project_label")
+            self._require_working_store()
+            self._audit_first("asset.project_changed", actor=actor, asset_id=asset_id)
+            record["project_label"] = label
+            self._save_state_locked()
+            if self._persist_error:
+                if previous is None:
+                    record.pop("project_label", None)
+                else:
+                    record["project_label"] = previous
+                raise ValueError("プロジェクト名を保存できませんでした")
+            return self.assets()
 
     def register_asset(self, *, name: str, kind: str, environment: str,
                        authorization_ref: str = "", ownership_verified: bool = False,
@@ -3278,7 +3739,7 @@ class AssessmentService:
             "environment": asset_record["environment"],
             # keep registration metadata of real services (ownership proof, URL)
             **{k: asset_record[k] for k in (
-                "display_name", "target_url", "scheme", "port", "gcp_project",
+                "display_name", "target_url", "scheme", "port", "gcp_project", "project_label", "ownership_registration_version",
                 "scope_confirmed", "challenge", "ownership_proof", "approver",
                 "sow_optional_ref") if k in asset_record},
         }
@@ -3368,7 +3829,7 @@ class AssessmentService:
                         "environment": next_auth["environment"],
                         # a real service keeps its registration metadata when promoted
                         **{k: next_auth[k] for k in (
-                            "display_name", "target_url", "scheme", "port", "gcp_project",
+                            "display_name", "target_url", "scheme", "port", "gcp_project", "project_label", "ownership_registration_version",
                             "scope_confirmed", "challenge", "ownership_proof", "approver",
                             "sow_optional_ref") if k in next_auth},
                     }
@@ -3408,6 +3869,7 @@ class AssessmentService:
         memory; the asset record and the authority then leave the ledger in the
         same commit (the first save after this)."""
         gone = str(name).rstrip(".").lower()
+        self.cloud_run_store.revoke_host(gone)
         if not (self._in_ownership_flow(gone) or gone in self._ownership_proofs):
             return
         self._verified_external_hosts.pop(gone, None)
@@ -3441,6 +3903,115 @@ class AssessmentService:
                 return prop, float(verified_at)
         return None
 
+    def cloud_run_binding(self, tenant: str, host: str) -> dict:
+        host = CloudRunProof._host(host)
+        with self._lock:
+            asset = self._asset_record(host)
+            if not asset or not self._in_ownership_flow(host):
+                raise ValueError("先に登録済みの HTTPS 443 対象を選んでください")
+            binding = self.cloud_run_store.binding(tenant, host)
+            proof = self._ownership_proofs.get(host) or {}
+            return {"host": host, "subject": binding[0] if binding else None,
+                    "configured": bool(binding),
+                    "ownership_verified": bool(binding and proof.get("verified") is True
+                                               and proof.get("method") == CLOUD_RUN_METHOD
+                                               and proof.get("tenant") == tenant
+                                               and proof.get("cloud_run_version") == binding[1]
+                                               and not proof.get("held_since")),
+                    "scope_confirmed": self._external_entry(host) is not None}
+
+    def register_cloud_run_subject(self, *, tenant: str, host: str, subject: str,
+                                   actor: str, grant_guard=None) -> dict:
+        host = CloudRunProof._host(host)
+        if not isinstance(subject, str) or not re.fullmatch(r"[A-Za-z0-9._:@-]{1,256}", subject):
+            raise ValueError("無効な OIDC 主体です")
+        with (grant_guard() if grant_guard else contextlib.nullcontext()) as current_roles, self._lock:
+            if current_roles is not None and "admin" not in current_roles:
+                raise ValueError("組織管理者の権限が必要です")
+            asset = self._asset_record(host)
+            if not asset or not self._in_ownership_flow(host) or \
+                    (asset.get("scheme"), asset.get("port")) != ("https", 443):
+                raise ValueError("登録済みの HTTPS 443 対象が必要です")
+            self._require_working_store()
+            self._audit_first("asset.cloud_run_subject_registered", actor=actor, host=host)
+            self._revoke_real_service_locked(host, note="Cloud Run 主体の登録が変更されました")
+            self._save_state_locked()
+            self.cloud_run_store.register(tenant, host, subject, time.time())
+            return self.cloud_run_binding(tenant, host)
+
+    def revoke_cloud_run_subject(self, *, tenant: str, host: str, actor: str,
+                                 grant_guard=None) -> dict:
+        host = CloudRunProof._host(host)
+        with (grant_guard() if grant_guard else contextlib.nullcontext()) as current_roles, self._lock:
+            if current_roles is not None and "admin" not in current_roles:
+                raise ValueError("組織管理者の権限が必要です")
+            self.cloud_run_store.revoke(tenant, host)
+            if self._in_ownership_flow(host):
+                self._revoke_real_service_locked(host, note="Cloud Run 主体が失効しました")
+                self._save_state_locked()
+            audit_error = self._audit_reduction("asset.cloud_run_subject_revoked", actor=actor, host=host)
+            self._raise_if_unstopped("Cloud Run 所有証明を失効しました")
+            if audit_error:
+                raise audit_error
+            return {"host": host, "revoked": True}
+
+    def issue_cloud_run_challenge(self, *, tenant: str, host: str, requester: str) -> dict:
+        host = CloudRunProof._host(host)
+        with self._lock:
+            if self.gateway.state is State.STOPPED or self._stop_flag().exists():
+                raise ValueError("緊急停止中はチャレンジを発行できません")
+            asset = self._asset_record(host)
+            if not asset or not self._in_ownership_flow(host) or \
+                    (asset.get("scheme"), asset.get("port")) != ("https", 443):
+                raise ValueError("登録済みの HTTPS 443 対象が必要です")
+            proof = CloudRunProof(store=self.cloud_run_store, verify_id_token=verify_google_id_token)
+            issued = proof.issue(tenant, host, requester)
+            self._audit_first("asset.cloud_run_challenge_issued", actor=requester, host=host,
+                              expires_at=issued["expires_at"])
+            return issued
+
+    def finish_cloud_run_challenge(self, *, tenant: str, host: str, requester: str,
+                                   challenge: str, id_token: str, roles=None,
+                                   grant_guard=None, resolve_addresses=None, fetch_pinned=None,
+                                   verify_id_token=None) -> dict:
+        host = CloudRunProof._host(host)
+        with self._lock:
+            if self.gateway.state is State.STOPPED or self._stop_flag().exists():
+                raise ValueError("緊急停止中は所有確認を行いません")
+            asset = self._asset_record(host)
+            if not asset or not self._in_ownership_flow(host):
+                raise ValueError("対象が登録されていません")
+            endpoint = (str(asset.get("scheme")), int(asset.get("port") or 0))
+            version = self.cloud_run_store.binding(tenant, host)
+            epoch0 = self.gateway._launch_epoch
+        def may_continue():
+            with self._lock:
+                return (self.gateway.state is not State.STOPPED
+                        and not self._stop_flag().exists()
+                        and self.gateway._launch_epoch == epoch0
+                        and self._asset_record(host) is not None)
+        kwargs = {"store": self.cloud_run_store,
+                  "verify_id_token": verify_id_token or verify_google_id_token,
+                  "may_continue": may_continue}
+        if resolve_addresses is not None:
+            kwargs["resolve_addresses"] = resolve_addresses
+        if fetch_pinned is not None:
+            kwargs["fetch_pinned"] = fetch_pinned
+        proof = CloudRunProof(**kwargs)
+        addresses = proof.finish(challenge=challenge, tenant=tenant, host=host,
+                                 requester=requester, id_token=id_token)
+        if not addresses or not may_continue():
+            return {"host": host, "verified": False, "l2_auto_approved": False,
+                    "verification": {"detail": "Cloud Run 所有確認に失敗しました"}}
+        if not version:
+            raise ValueError("登録が失効しました")
+        return self.verify_asset_ownership(
+            url_or_host=host, method=CLOUD_RUN_METHOD, actor=requester,
+            roles=roles, grant_guard=grant_guard, google_endpoint=endpoint,
+            cloud_run_tenant=tenant, cloud_run_version=version[1],
+            cloud_run_addresses=addresses,
+        )
+
     def issue_ownership_challenge(
         self,
         *,
@@ -3449,11 +4020,13 @@ class AssessmentService:
         approver: str = "operator",
         kind: str = "Webアプリケーション",
         environment: str = "ステージング環境",
+        project_label: str = "",
         grant_guard=None,
     ) -> dict:
         """Step 1 & 2 of the 5-step registration flow: parse target URL, generate
         DNS TXT / .well-known challenge, and create an unverified asset record.
         SOW number is optional; an internal authorization record is generated if omitted."""
+        label = self._project_label(project_label)
         parsed = parse_service_target(url)
         host = parsed["host"]
         ch = challenge_for_host(host, self._ownership_secret)
@@ -3494,10 +4067,15 @@ class AssessmentService:
                 well_known_url=ch["well_known_url"],
                 authorization_ref=internal_auth_ref,
             )
+            # A registration refresh also invalidates every outstanding Cloud Run
+            # challenge, even when the URL and registered subject appear unchanged.
+            self.cloud_run_store.rotate_host(host)
             ledger_before = self.ledger.snapshot()
             endpoint_revoked = False
             self._real_service_hosts.add(host)
             if existing is not None:
+                if (existing.get("scheme"), existing.get("port")) != (parsed["scheme"], parsed["port"]):
+                    existing["ownership_registration_version"] = secrets.token_hex(8)
                 if (existing.get("scheme"), existing.get("port")) != (parsed["scheme"], parsed["port"]) and (
                         host in self._ownership_proofs or host in self._verified_external_hosts):
                     # a different endpoint of the host: the earlier proof, scope and
@@ -3518,6 +4096,8 @@ class AssessmentService:
                 existing["approver"] = approver
                 if not existing.get("ownership_verified"):
                     existing["status"] = "所有確認待ち"
+                if label:
+                    existing["project_label"] = label
                 asset_rec = dict(existing)
             else:
                 aid = "asset_" + secrets.token_hex(3)
@@ -3542,6 +4122,7 @@ class AssessmentService:
                     "ownership_verified": False,
                     "scope_confirmed": False,
                     "challenge": ch,
+                    **({"project_label": label} if label else {}),
                     "note": "Step 2: DNS TXT または検証ファイルで管理権限を確認してください",
                 }
                 self._extra_assets.insert(0, asset_rec)
@@ -3598,6 +4179,9 @@ class AssessmentService:
         google_property: str | None = None,
         google_endpoint: tuple[str, int] | None = None,
         google_verified_at: float | None = None,
+        cloud_run_tenant: str | None = None,
+        cloud_run_version: str | None = None,
+        cloud_run_addresses: list[str] | None = None,
         grant_guard=None,
     ) -> dict:
         """Step 2 of the 5-step registration flow: verify ownership via DNS TXT,
@@ -3617,7 +4201,15 @@ class AssessmentService:
                 raise ValueError("先に対象URLを登録して検証トークンを発行してください")
         ch = challenge_for_host(host, self._ownership_secret)
 
-        if method == GOOGLE_METHOD:
+        if method == CLOUD_RUN_METHOD:
+            if not cloud_run_tenant or not cloud_run_version or not cloud_run_addresses:
+                raise ValueError("Cloud Run の検証済みチャレンジが必要です")
+            res = {"verified": True, "method": CLOUD_RUN_METHOD,
+                   "checked_target": f"https://{host}/", "verified_at": time.time(),
+                   "detail": "Google署名と登録主体、ホスト上のチャレンジを確認しました",
+                   "tenant": cloud_run_tenant, "cloud_run_version": cloud_run_version,
+                   "verified_addresses": sorted(set(cloud_run_addresses))}
+        elif method == GOOGLE_METHOD:
             now = time.time()
             if (google_verified_at is not None and
                     (not isinstance(google_verified_at, (int, float))
@@ -3658,19 +4250,25 @@ class AssessmentService:
         # organization membership through the signed ledger commit, so a mid-flight
         # removal or logout cannot grant ownership from an old role snapshot.
         with (grant_guard() if grant_guard else contextlib.nullcontext(roles)) as current_roles, self._lock:
+            if self.gateway.state is State.STOPPED or self._stop_flag().exists():
+                raise ValueError("緊急停止中は所有確認結果を記録しません")
             target_asset = next(
                 (x for x in self._extra_assets if x.get("name", "").lower() == host),
                 None,
             )
             if target_asset is None and self.a.asset.get("name", "").lower() == host:
                 target_asset = self.a.asset
-            if method == GOOGLE_METHOD and google_endpoint is not None and (
+            if method in (GOOGLE_METHOD, CLOUD_RUN_METHOD) and google_endpoint is not None and (
                     target_asset is None
                     or (str(target_asset.get("scheme") or "https"), int(target_asset.get("port") or 0))
                     != google_endpoint):
                 # the registration changed while Google was being asked: the property was
                 # checked against the old scheme / port, so nothing is recorded
                 raise ValueError("確認中にサイトの登録内容が変わりました。もう一度お試しください")
+            if method == CLOUD_RUN_METHOD:
+                binding = self.cloud_run_store.binding(cloud_run_tenant, host)
+                if binding is None or binding[1] != cloud_run_version:
+                    raise ValueError("確認中に Cloud Run 主体の登録が変更または失効しました")
             if (current_roles is not None and "approver" not in current_roles
                     and (host in self._ownership_proofs or host in self._verified_external_hosts)):
                 # Decided now, under the lock, and BEFORE anything is changed: someone
@@ -3789,10 +4387,13 @@ class AssessmentService:
             proof_ok = (
                 isinstance(proof, dict) and proof.get("verified") is True
                 and not proof.get("held_since")          # held after an unclean shutdown: prove again
-                and proof.get("method") in ("dns_txt", "well_known", GOOGLE_METHOD)
+                and proof.get("method") in (*OWNERSHIP_METHODS, GOOGLE_METHOD, CLOUD_RUN_METHOD)
                 and proof.get("host") == host
                 and hmac.compare_digest(str(proof.get("token_sha256") or ""), expected)
                 and isinstance(proof.get("verified_at"), (int, float))
+                and (proof.get("method") != CLOUD_RUN_METHOD or
+                     (self.cloud_run_store.binding(str(proof.get("tenant") or ""), host) or (None, None))[1]
+                     == proof.get("cloud_run_version"))
             )
             # The `ownership_verified` flag alone is never enough: the legacy lab
             # registration can set it from a checkbox. Only a recorded challenge
@@ -3825,10 +4426,12 @@ class AssessmentService:
                     f"確認しようとしたURL（{parsed['scheme']}・ポート{parsed['port']}）は、"
                     f"所有確認を行った宛先（{scheme}・ポート{port}）と一致しません")
             target_asset["scheme"], target_asset["port"] = scheme, port
-            if proof["method"] == "well_known" and (scheme, port) != ("https", 443) and not allow_loopback_test:
-                # the proof file was served by the HTTPS service on 443; it says
+            if (proof["method"] in (*HTTP_PROOF_METHODS, CLOUD_RUN_METHOD)
+                    and (scheme, port) != ("https", 443)
+                    and (proof["method"] == CLOUD_RUN_METHOD or not allow_loopback_test)):
+                # the HTTP proof was served by the HTTPS service on 443; it says
                 # nothing about who operates another port of the same host
-                raise ValueError("検証ファイルによる所有確認で診断できるのは https の443番ポートだけです。"
+                raise ValueError("HTTP による所有確認で診断できるのは https の443番ポートだけです。"
                                  "他のポートを診断するには DNS TXT で所有確認してください")
 
             # audit first: a scope that cannot be recorded is not granted
@@ -3859,6 +4462,8 @@ class AssessmentService:
                 "confirmed_at": now,
                 "proof_method": proof["method"],
                 "proof_verified_at": proof["verified_at"],
+                "tenant": proof.get("tenant"),
+                "cloud_run_version": proof.get("cloud_run_version"),
             }
             self._commit_audited_grant_locked(before, "範囲確認", "asset.scope_confirmed")
             self._authority_notice = None      # the operator has re-established authority since
@@ -4052,11 +4657,13 @@ class AssessmentService:
             # revoked or is held: it is never shown as the demo lab.
             is_ext = self._in_ownership_flow(self.a.asset.get("name"))
             scope_active = self._is_external_service_asset()
+            ext = self._external_entry(self.a.asset.get("name")) if scope_active else None
             return {
                 "id": self.a.id, "asset": self.a.asset, "demo": not is_ext,
                 "target_url": self.a.target_url,
                 "is_external_service": is_ext,
                 "scope_active": scope_active,
+                "optional_status_scope": bool(ext and ext.get("allow_status_probe")),
                 "real_site_read_only": bool(getattr(self, "real_site_read_only", False)),
                 "lab_mode": get_lab_mode(),
                 "lab_endpoint": self.a.target_url if is_ext else f"127.0.0.1:{self.lab_port}",
@@ -4159,7 +4766,24 @@ class AssessmentService:
                 raise ValueError("停止を確認できていないWorkerが残っているため、新しい診断は開始できません")
             # a run that may not start (scope expired, revoked, held) is refused
             # BEFORE the previous results are cleared
-            self._ensure_active_window_locked()
+            try:
+                self._ensure_active_window_locked()
+            except ValueError:
+                if not self._stopped_without_scope_locked():
+                    raise
+                # Stopped AND the scope is gone (expired, revoked, or not restored after a
+                # restore): no run may start, and ownership verification is refused while
+                # stopped - without this there would be no way out. The stop is ended (all
+                # workers confirmed stopped, recorded first; refused like any diagnosis change
+                # while the audit anchor reports a rollback) and nothing is started.
+                self._audit_first("diagnosis.stop_ended", actor=actor, target=self.a.asset["name"],
+                                  reason="scope_inactive")
+                self._reset_workspace_locked(end_stop=True)
+                self._save_state_locked()
+                if self.a.state == "stopped" or self.gateway.state is State.STOPPED:
+                    raise ValueError("前の診断のWorkerの停止を確認できなかったため、停止を解除できません") from None
+                raise ValueError("緊急停止を解除しました（診断は開始していません）。診断範囲の確認が失効または取り消されているため、"
+                                 "所有確認と範囲確認をやり直してから、再診断を実行してください") from None
             # audit first: a run that cannot be recorded does not start (nothing is cleared)
             self._audit_first("assessment.restarted", actor=actor, target=self.a.asset["name"])
             try:
@@ -4181,6 +4805,13 @@ class AssessmentService:
                 self._grant_not_committed("assessment.restarted", "refused_after_record")
                 raise
         return self.snapshot()
+
+    def _stopped_without_scope_locked(self) -> bool:
+        """An emergency stop is in force and the active real service has no valid scope."""
+        name = self.a.asset.get("name")
+        return ((self.a.state == "stopped" or self.gateway.state is State.STOPPED)
+                and self._in_ownership_flow(name) and self._external_entry(name) is None
+                and not self._persist_error)
 
     def pause(self, actor: str) -> None:
         with self._lock:
@@ -4280,29 +4911,32 @@ class AssessmentService:
                              "この操作は実在するサイトでは使えません")
 
     def decide_approval(self, approval_id: str, decision: str, actor: str,
-                        approver_class: str | None = None) -> None:
+                        approver_class: str | None = None, *, local: bool = False) -> None:
         with self._lock:
             self._refuse_read_only_real_locked()
             ap = self.a.approvals.get(approval_id)
             if ap is None or ap["status"] != "pending":
                 raise ValueError("approval not pending")
+            requester = ap.get("local_requester") if local else self.a.started_by
+            if bool(ap.get("local_requester")) != local:
+                raise ValueError("approval does not match the execution route")
             if self.a.state == "stopped":
                 raise ValueError("assessment stopped")
-            if decision == "approve" and self._separation_required():
+            if decision == "approve" and (local or self._separation_required()):
                 # a rejection is always allowed (the safe direction); an approval needs a
                 # second person: not whoever started this run, not an unknown starter, not
                 # a self-registered identity. One person alone leaves it pending.
                 refused = self._approver_refused(approver_class)
                 reason = ("self-registered approver" if refused else
-                          "requester unknown" if not self.a.started_by else
-                          "separation of duties" if actor == self.a.started_by else "")
+                          "requester unknown" if not requester else
+                          "separation of duties" if actor == requester else "")
                 if reason:
                     self.audit.record("approval.denied", request=approval_id, actor=actor,
-                                      requested_by=self.a.started_by, reason=reason)
+                                      requested_by=requester, reason=reason)
                     raise ApproverRequired(
                         self.approver_refusal_text(approver_class) if refused else
                         "この実行の依頼者が記録されていないため、承認できません。実行をやり直してください"
-                        if not self.a.started_by else
+                        if not requester else
                         "診断を開始した本人は、その L2 を承認できません。別の承認責任者が承認してください")
             audit_error = self._decide(approval_id, decision, actor)
         if audit_error:
@@ -4356,6 +4990,10 @@ class AssessmentService:
             raise ValueError("このL2検証には、別の担当者による実行依頼が必要です（依頼が無いか、期限切れです）")
         if req.get("requested_by") == approver:
             raise ValueError("依頼した本人は承認できません。別の承認責任者が承認してください")
+        if self._authority is not None and not self._authority(req.get("requested_by") or "", "org_operator"):
+            self._l2_requests.pop(finding_id, None)
+            raise ValueError("このL2検証を依頼した人がこの組織での操作権限を失ったため、依頼は無効になりました。"
+                             "権限のある人が依頼し直してください")
         return req
 
     def _take_rerun_request(self, finding_id: str, check_id: str, approver: str) -> dict | None:
@@ -4378,6 +5016,23 @@ class AssessmentService:
             f = self.a.findings.get(finding_id) or {}
             return (self.l2.has_check(f.get("reproduce_check"))
                     or self._l2_check_for_finding(finding_id) is not None)
+
+    def _record_lab_reproduction(self, fid: str, check: str, res: dict, ev: dict | None, title: str) -> None:
+        """Store one lab reproduction result on its finding (verdict from evidence.py only)."""
+        if not ev or fid not in self.a.findings:
+            return
+        self._think(title, _lab_note(res, check) + f" [証拠 {ev['evidence_id']}]",
+                    phase="verification", tool="reproduction_probe", level="L2")
+        verdict = _lab_verdict(res, check)
+        with self._lock:
+            f = self.a.findings[fid]
+            self._upsert_finding({
+                **f, "demo_fixture": False, "verdict": verdict, "_in_verification": False,
+                "what_was_established": _lab_note(res, check) if verdict == "proven" else None,
+                "verdict_note": _lab_note(res, check),
+                "executor": {**EXECUTOR, "tool": "reproduction_probe"},
+                "evidence": [e for e in f.get("evidence", []) if e.get("audit_hash")] + [ev],
+            })
 
     def verify_finding(self, finding_id: str, actor: str, *, roles=None,
                        request_authorized=None, approver_class: str | None = None) -> dict:
@@ -4449,7 +5104,7 @@ class AssessmentService:
                     phase="verification", tool="Gateway", level="L1",
                 )
             else:
-                for fid in ("f_banner", "f_idor", "f_sqli"):
+                for fid in ("f_banner", "f_idor", "f_sqli", "f_open_redirect"):
                     if fid in self.a.findings:
                         self.verify_finding(fid, actor=actor)
                         if self.a.state == "failed":
@@ -4675,6 +5330,21 @@ class AssessmentService:
                         "executor": {**EXECUTOR, "tool": "reproduction_probe"},
                         "evidence": prev_ev + [ev],
                     })
+        elif finding_id == "f_open_redirect":
+            self._think(
+                "オープンリダイレクトの仮説検証",
+                "戻り先パラメータに外部URLと // で始まるURLを渡し、Locationヘッダーの移動先だけを判定します（リダイレクトは追跡しません）。",
+                phase="verification", tool="reproduction_probe", level="L2",
+            )
+            # audit first: the approval reference exists only once it is recorded
+            self.audit.record("approval.approved", request="req_f_open_redirect", actor=actor,
+                              action="safe_reproduction", risk_level="L2")
+            apr = self.approval_store.approve(actor, "eng_demo", "lab", "safe_reproduction")
+            res, ev = self._exec("reproduction_probe", "safe_reproduction",
+                                 {"url": url, "check": "open_redirect"}, approval_id=apr)
+            if res and ev:
+                self._record_lab_reproduction("f_open_redirect", "open_redirect", res, ev,
+                                              "オープンリダイレクト 実機応答の判定")
         elif finding_id == "f_banner":
             self._think(
                 "CVE-2021-41773 パス正規化バイパスの仮説検証",
@@ -4889,22 +5559,29 @@ class AssessmentService:
             res_sqli, ev_sqli = self._exec("reproduction_probe", "safe_reproduction",
                                            {"url": url, "check": "sqli"},
                                            approval_id=apr_ref3)
+            res_redirect = ev_redirect = None
+            if "f_open_redirect" in self.a.findings:
+                apr_ref4 = self.approval_store.approve(actor, "eng_demo", "lab", "safe_reproduction")
+                res_redirect, ev_redirect = self._exec("reproduction_probe", "safe_reproduction",
+                                                       {"url": url, "check": "open_redirect"},
+                                                       approval_id=apr_ref4)
 
             with self._lock:
                 for fid, check, result, evidence in (
                     ("f_banner", "cve_2021_41773", res_cve, ev_cve),
                     ("f_idor", "idor", res_idor, ev_idor),
                     ("f_sqli", "sqli", res_sqli, ev_sqli),
+                    ("f_open_redirect", "open_redirect", res_redirect, ev_redirect),
                 ):
                     if fid not in self.a.findings:
                         continue
                     finding = self.a.findings[fid]
-                    verdict = reproduction_verdict(result, check)
+                    verdict = _lab_verdict(result, check)
                     latest_ids[fid] = evidence["evidence_id"] if evidence else None
                     self._upsert_finding({
                         **finding, "verdict": verdict, "_in_verification": False,
-                        "what_was_established": reproduction_note(result, check) if verdict == "proven" else None,
-                        "verdict_note": reproduction_note(result, check),
+                        "what_was_established": _lab_note(result, check) if verdict == "proven" else None,
+                        "verdict_note": _lab_note(result, check),
                         "evidence": finding["evidence"] + ([evidence] if evidence else []),
                     })
 
@@ -5246,6 +5923,8 @@ class AssessmentService:
                 self._mark_verifying(banner_id, True)
                 self._mark_verifying("f_idor", True)
                 self._mark_verifying("f_sqli", True)
+                if "f_open_redirect" in self.a.findings:
+                    self._mark_verifying("f_open_redirect", True)
 
                 # 1. Run demo_verify window first so emergency-stop tests during active verification
                 #    can deterministically observe and SIGKILL the worker.
@@ -5348,10 +6027,21 @@ class AssessmentService:
                         "evidence": [e for e in fs["evidence"] if e.get("audit_hash")] + [sqli_ev],
                     })
 
+                if "f_open_redirect" in self.a.findings:
+                    apr_redirect = self.approval_store.approve(actor, "eng_demo", "lab", "safe_reproduction")
+                    redirect_res, redirect_ev = self._exec("reproduction_probe", "safe_reproduction",
+                                                           {"url": url, "check": "open_redirect"},
+                                                           approval_id=apr_redirect)
+                    if redirect_res is None:
+                        return
+                    self._record_lab_reproduction("f_open_redirect", "open_redirect", redirect_res, redirect_ev,
+                                                  "オープンリダイレクト 実証結果の確認")
+
                 for tk in tasks_l2:
                     if tk.status != "unsupported":
                         tk.status = "completed"
-                verdicts = [evidence_status(self.a.findings[fid]) for fid in (banner_id, "f_idor", "f_sqli")
+                verdicts = [evidence_status(self.a.findings[fid])
+                            for fid in (banner_id, "f_idor", "f_sqli", "f_open_redirect")
                             if fid in self.a.findings]
                 proven_count = verdicts.count("proven")
                 not_reproduced_count = verdicts.count("not_reproduced")
@@ -5524,6 +6214,10 @@ class AssessmentService:
                 "severity": "high", "verdict": "detected", "category": "既知の脆弱性（CVE）",
                 "cve": cve_ids, "risk_level": "L2",
                 "help_term": "cve",
+                # one chain per CVE: version match -> conditions -> reachability -> lab proof
+                "cve_evidence": [impact_chain(c.cve, product=c.product, version=c.version,
+                                              version_source="Server ヘッダー", in_kev=c.in_kev)
+                                 for c in sorted(candidates, key=lambda c: c.cve.id)],
                 "summary": f"Server ヘッダーが「{banner}」を示しています。このバージョンはパス・トラバーサル等の既知脆弱性{kev_note}の影響範囲です。",
                 "why_detected": "応答ヘッダーのバージョン文字列が、NVD / CISA KEV フィードの影響バージョンと一致したためです。",
                 "caveat": "バナー段階では「検出（未実証）」です。L2再現試験を承認すると、隔離ラボで実際に到達可能か検証します。",
@@ -5558,6 +6252,22 @@ class AssessmentService:
             "evidence": [],
             "remediation": {"steps": ["プリペアドステートメント（プレースホルダー付きクエリ）を使用し文字列連結を廃止する"],
                             "how_to_verify": "修正後に同じ試験を実行し、SQLエラー差分が発生しないことを確認します。"},
+            "executor": {**EXECUTOR, "tool": "http_probe"}, "demo_fixture": False})
+
+        # The OAuth "return to" redirect: a candidate until its own approved probe measures it.
+        self._upsert_finding({
+            "id": "f_open_redirect", "title": "ログイン後の戻り先URLのオープンリダイレクト確認（/auth/callback）",
+            "severity": "medium", "verdict": "candidate", "category": "入力検証", "cve": [],
+            "risk_level": "L2", "help_term": "open_redirect",
+            "summary": "模擬ラボの /auth/callback?return_to= は、承認後に外部サイトへの移動を許すか確認する候補です。現時点では未計測です。",
+            "why_detected": "模擬ラボに用意された確認対象です。OAuth連携の戻り先をそのまま移動先に使う実装でよく起きます。",
+            "caveat": "承認済みの再現試験で移動先（Locationヘッダー）を測るまで、脆弱性として検出したとは扱いません。",
+            "evidence": [],
+            "remediation": {"steps": [
+                "戻り先は「/」で始まり「//」「/\\」で始まらない同一サイト内の相対パス、または許可した自社オリジンの完全一致だけを受け付け、それ以外は既定の「/」にする",
+                "開始時（stateに保存する前）とコールバック時（リダイレクトする直前）の両方で同じ検証を行う",
+                "例（Python）: if not (t.startswith('/') and not t.startswith(('//', '/\\')) and not urlsplit(t).netloc): t = '/'",
+            ], "how_to_verify": "修正後に同じ試験を実行し、絶対URLと // で始まるURLの両方で移動先が同じサイト内に留まることを確認します。"},
             "executor": {**EXECUTOR, "tool": "http_probe"}, "demo_fixture": False})
 
         missing = [x for x in ("content-security-policy", "x-content-type-options",
@@ -5659,6 +6369,104 @@ class AssessmentService:
             self.a.activity = {"title": title, "tool": tool, "risk_level": level, **EXECUTOR}
             self.bus.publish(self.a.id, "activity.updated", activity=self.a.activity)
 
+    def _intelligence_condition_locked(self):
+        from .intelligence import fingerprint
+
+        engagement = self.a.engagement
+        target = engagement.targets["lab"]
+        external = self._in_ownership_flow(self.a.asset.get("name"))
+        entry = self._external_entry(self.a.asset.get("name")) if external else None
+        return fingerprint({
+            "version": 1, "asset_id": self.a.asset.get("id"), "target": self.a.target_url,
+            "external": external, "read_only": self.real_site_read_only,
+            "lab_mode": None if external else get_lab_mode(),
+            "hosts": sorted(target.hosts), "ports": sorted(target.ports),
+            "cidrs": sorted(target.cidrs), "actions": sorted(engagement.allowed_actions),
+            "status_probe": bool(entry and entry.get("allow_status_probe")),
+            "scope_generation": self._scope_generation(entry) if entry else None,
+            "phase_keys": [phase["key"] for phase in self.a.phases],
+        })
+
+    def _save_intelligence_run_locked(self):
+        from . import intelligence
+
+        asset = self.a.asset
+        external = self._in_ownership_flow(asset.get("name"))
+        target = self.a.engagement.targets["lab"]
+        condition = getattr(self, "_intelligence_start_condition", None)
+        record = getattr(self, "_intelligence_started_id", None)
+        source = self.a.plan_source or {}
+        scan = self.ledger.scan_usage.get(asset["name"], {}) if external else {}
+        root_hash = scan.get("result_audit_hash")
+        # Variable planner plans and verification-only runs have no comparable recipe.
+        if (not record or condition != self._intelligence_condition_locked()
+                or source.get("engine") not in (None, "builtin")
+                or not external or not self.real_site_read_only or not root_hash or scan.get("status_probe_allowed")):
+            condition = None
+        states = dict.fromkeys(intelligence.STATES, 0)
+        severity = dict.fromkeys(intelligence.SEVERITIES, 0)
+        proofs = {root_hash} if root_hash else set()
+        unknown = False
+        for f in self._real_findings():
+            state = evidence_status(f)
+            entries = [e for e in f.get("evidence", []) if e.get("audit_hash") and e.get("saved_at") is not None]
+            if state in ("proven", "not_reproduced"):
+                entries = [e for e in entries if e.get("tool") == "reproduction_probe"]
+            if state in ("detected", "proven", "not_reproduced"):
+                if entries:
+                    proofs.add(entries[-1]["audit_hash"])
+                else:
+                    state = "incomplete"
+                    unknown = True
+            states[state] += 1
+            severity[f["severity"]] += 1
+        coverage = [{"key": p["key"], "status": p["status"]} for p in self.a.phases]
+        risk = self._risk()
+        summary = {
+            "run_id": record or secrets.token_hex(16), "assessment_id": self.a.id,
+            "asset_id": asset["id"],
+            "asset": asset["name"] if re.fullmatch(r"[A-Za-z0-9.-]{1,253}", str(asset["name"])) else "登録資産",
+            "org_id": getattr(self, "_intelligence_org_id", "default"),
+            "at": time.time(), "external": external, "condition_id": condition,
+            "scope": {"port_count": len(target.ports), "host_count": len(target.hosts),
+                      "mode": "read_only" if external and self.real_site_read_only else "authorized"},
+            "coverage": coverage, "counts": states, "severity": severity,
+            "evidence_hashes": sorted(proofs),
+            "score": risk["score"] if not unknown and any(p["status"] == "done" for p in coverage) else None,
+            "label": risk["label"] if not unknown and any(p["status"] == "done" for p in coverage) else None,
+            "findings": sum(states.values()),
+        }
+        intelligence.append(self.data_dir / "intelligence-runs.json", summary, self.audit)
+
+    def intelligence_snapshot(self, org_id: str) -> dict:
+        from . import intelligence
+
+        with self._lock:
+            assets = []
+            for asset in (self.a.asset, *self._extra_assets):
+                name = str(asset.get("name") or "")
+                project = asset.get("project_label") or asset.get("gcp_project")
+                assets.append({
+                    "id": asset["id"],
+                    "name": name if re.fullmatch(r"[A-Za-z0-9.-]{1,253}", name) else "登録資産",
+                    "external": self._in_ownership_flow(name),
+                    "project_key": intelligence.fingerprint(project) if isinstance(project, str) and project else None,
+                })
+            asset_ids = {a["id"] for a in assets}
+            if self._persist_error:
+                return {"state": "persistence_error", "runs": []}
+            try:
+                rows = intelligence.load(self.data_dir / "intelligence-runs.json")
+            except (OSError, ValueError):
+                return {"state": "persistence_error", "runs": []}
+            archive_error = getattr(self, "_intelligence_archive_error", False)
+        entries, valid = self.audit.verified_entries()
+        if not valid:
+            return {"state": "audit_unavailable", "runs": []}
+        runs, damaged = intelligence.verify_rows(rows, entries, org_id, asset_ids)
+        return {"state": "audit_unavailable" if damaged else "persistence_error" if archive_error else "available",
+                "runs": runs, "assets": assets}
+
     def _set_state(self, state, reason: str | None = None, kind: str = "run"):
         if self._stale_runner():
             raise _Stopped()
@@ -5668,7 +6476,14 @@ class AssessmentService:
                                   "at": time.time()}
         elif state in ("idle", "running", "completed"):
             self.a.failure = None
-        if state == "completed" and self.a.state != "completed":
+        completed_now = state == "completed" and self.a.state != "completed"
+        if state == "running" and self.a.state != "paused":
+            try:
+                self._intelligence_start_condition = self._intelligence_condition_locked()
+            except Exception:  # read-only history must never prevent the existing run
+                self._intelligence_start_condition = None
+            self._intelligence_started_id = secrets.token_hex(16)
+        if completed_now:
             # a real history entry per completed run (counts only; no finding text)
             risk = self._risk()
             summary = evidence_summary(list(self.a.findings.values()))
@@ -5681,6 +6496,17 @@ class AssessmentService:
             del self.a.run_history[MAX_RUN_HISTORY:]
         self.a.state = state
         self._save_state_locked()
+        if completed_now:
+            if self._persist_error:
+                self.a.run_history.pop(0)
+            else:
+                try:
+                    self._save_intelligence_run_locked()
+                    self._intelligence_archive_error = False
+                except Exception:  # a secondary archive failure does not change diagnostic authority
+                    self._intelligence_archive_error = True
+            self._intelligence_started_id = None
+            self._intelligence_start_condition = None
         if state == "completed" and self._persist_error:
             state = self.a.state        # the failed save has already made it "failed"
             try:
@@ -5748,6 +6574,10 @@ class AssessmentService:
 
     def _upsert_finding(self, f):
         f = enforce_verdict(f)          # "proven" only with a recorded L2 reproduction
+        if isinstance(f.get("cve_evidence"), list):
+            # the chain follows the finding's own evidence status, never a looser one
+            status = evidence_status(f)
+            f = {**f, "cve_evidence": [with_reproduction(e, status) for e in f["cve_evidence"]]}
         with self._lock:
             if self._stale_runner():
                 raise _Stopped()

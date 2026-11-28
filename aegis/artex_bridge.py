@@ -105,6 +105,11 @@ CATALOG: tuple[CatalogEntry, ...] = (
                  "認可境界（IDOR）の非破壊再現（検証用アカウント・隔離Worker）",
                  ("idor", "bola", "越权", "水平越权", "access control", "authorization", "アクセス制御", "認可"),
                  check="idor", finding_id="f_idor"),
+    CatalogEntry("l2_open_redirect", "reproduction_probe", "safe_reproduction", "L2",
+                 "戻り先URLのオープンリダイレクトの非破壊再現（移動先を判定、追跡しない・隔離Worker）",
+                 ("open redirect", "unvalidated redirect", "url redirect", "开放重定向", "任意跳转", "重定向",
+                  "オープンリダイレクト", "リダイレクト", "return_to", "redirect_uri"),
+                 check="open_redirect", finding_id="f_open_redirect"),
     CatalogEntry("l2_cve_2021_41773", "reproduction_probe", "safe_reproduction", "L2",
                  "CVE-2021-41773 成立の非破壊再現（隔離Worker）",
                  ("cve-2021-41773", "41773", "path traversal", "路径穿越", "目录穿越", "パストラバーサル"),
@@ -443,6 +448,8 @@ def run_artex_planner(command: list[str], request: dict, *, llm_url: str, llm_mo
                     raise ArtexBridgeError("ARTEX の隔離が起動前に確認できなくなりました")
                 argv = sess.wrap(list(command), env_keys=tuple(k for k in env if k != "PATH"),
                                  cpu_seconds=int(timeout_s) + 5, interpreter=sys.executable)
+                if hasattr(sess, "launch_env"):
+                    env = sess.launch_env(env)
                 if listing is not None:
                     drops_before = dropped_packets(listing())
             except ArtexBridgeError:

@@ -1,0 +1,17 @@
+{
+ "kind": "path",
+ "split": "holdout",
+ "normal": [
+  [
+   "/files/get?file=notes.txt",
+   200,
+   "public notes"
+  ]
+ ],
+ "exploit": [
+  [
+   "/files/get?file=../private.txt",
+   "HOLDOUT_SECRET_MARKER"
+  ]
+ ]
+}

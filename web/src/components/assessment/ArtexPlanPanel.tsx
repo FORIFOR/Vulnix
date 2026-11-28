@@ -43,14 +43,20 @@ export function ArtexPlanPanel({ snap, onUpdate }: {
   };
 
   const verified = plan?.engine.kind === "artex-binary" && plan.engine.pinned === true;
+  // the engine that actually planned: only an ARTEX run is called ARTEX
+  const kind = plan?.engine.kind;
+  const artex = kind === "artex-binary" || kind === "unverified" || kind === undefined;
+  const source = kind === "vulnix-fixed" ? "固定ルール" : kind === "vulnix-hybrid" ? "固定ルール＋AI"
+    : kind === "vulnix-structured" ? "AI（構造化出力）" : "ARTEX";
+  const textLabel = artex ? "ARTEX の原文" : kind === "vulnix-fixed" ? "固定ルールの手順" : "計画の原文";
   return (
     <Card className="mb-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
-          <h2 className="font-semibold">{realSite ? (verified ? "ARTEXによる追加確認" : "追加確認の計画") : "ARTEX 計画（提案のみ・Gateway 経由で実行）"}</h2>
+          <h2 className="font-semibold">{realSite ? (verified ? "ARTEXによる追加確認" : "追加確認の計画") : `${source} による計画（提案のみ・Gateway 経由で実行）`}</h2>
           <p className="mt-0.5 text-xs text-zinc-500">
-            {realSite ? "計画の提案元を確認し、安全性を確認した読み取り専用の検査だけを実行できます。提案は検出結果ではありません。"
-              : "ARTEX は方向を提案するだけです。対象・操作・引数は Vulnix が登録済み対象と許可済み検証カタログから再構成します。"}
+            {realSite ? "計画の提案元を確認し、許可範囲の読み取り項目だけが追加候補になります。実際に得られた証拠は結果タブで確認できます。"
+              : `${source}は検査を提案するだけです。対象・操作・引数は Vulnix が登録済み対象と許可済み検証カタログから再構成します。`}
           </p>
         </div>
         <button
@@ -60,7 +66,7 @@ export function ArtexPlanPanel({ snap, onUpdate }: {
           className="rounded-lg bg-zinc-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-white dark:text-zinc-900"
         >
           {busy === "plan" ? "計画中…" : realSite ? (plan ? "追加確認を考え直す" : "追加確認を考える")
-            : plan ? "ARTEX で再計画" : "ARTEX で計画を作成"}
+            : plan ? "候補を見直す" : "追加確認の候補を見る"}
         </button>
       </div>
 
@@ -69,11 +75,11 @@ export function ArtexPlanPanel({ snap, onUpdate }: {
       {plan && (
         <div className="mt-3 space-y-3 text-sm">
           <div className="flex flex-wrap items-center gap-2 text-xs">
-            <Pill className={verified ? "bg-emerald-100 text-emerald-900 dark:bg-emerald-900/50 dark:text-emerald-100"
-              : "bg-amber-100 text-amber-900 dark:bg-amber-900/50 dark:text-amber-100"}>
+            <span className={`min-w-0 max-w-full wrap-anywhere rounded-full px-2 py-0.5 font-semibold ${verified ? "bg-emerald-100 text-emerald-900 dark:bg-emerald-900/50 dark:text-emerald-100"
+              : "bg-amber-100 text-amber-900 dark:bg-amber-900/50 dark:text-amber-100"}`}>
               {realSite ? `診断エンジン: ${plan.engine.label}` : plan.engine.label}
-            </Pill>
-            {realSite && <span className="text-zinc-500">AIモデル: {snap.plan_source?.model || "利用を確認できず"}</span>}
+            </span>
+            {realSite && <span className="min-w-0 max-w-full wrap-anywhere text-zinc-500">AIモデル: {snap.plan_source?.model || "利用を確認できず"}</span>}
             {!realSite && plan.isolation && (
               <Pill className={plan.isolation.confined ? "bg-emerald-100 text-emerald-900 dark:bg-emerald-900/50 dark:text-emerald-100"
                 : "bg-red-100 text-red-900 dark:bg-red-900/50 dark:text-red-100"}>
@@ -107,7 +113,7 @@ export function ArtexPlanPanel({ snap, onUpdate }: {
                       <Pill className={st.cls}>{realSite && it.status === "planned" ? "確認可能" : st.label}</Pill>
                     </div>
                     {!realSite && <p className="mt-1 break-words text-xs text-zinc-500">
-                      <span className="font-medium">ARTEX の原文</span>（AI出力・未翻訳。実行内容は上の検証項目のとおりで、この文では決まりません）#{it.intent_id}：{it.intent_summary}
+                      <span className="font-medium">{textLabel}</span>{kind === "vulnix-fixed" ? "（実行内容は上の検証項目のとおり）" : "（AI出力・未翻訳。実行内容は上の検証項目のとおりで、この文では決まりません）"}#{it.intent_id}：{it.intent_summary}
                     </p>}
                   </div>
                   {it.status !== "observed" && it.status !== "unsupported" && <button
@@ -128,7 +134,7 @@ export function ArtexPlanPanel({ snap, onUpdate }: {
           {plan.advisories.length > 0 && (
             <div>
               <h3 className="mb-1 text-xs font-semibold text-zinc-600 dark:text-zinc-400">参考提案（実行されません）</h3>
-              {!realSite && <p className="mb-1 text-xs text-zinc-500">ARTEX の原文をそのまま表示しています（AI出力・未翻訳。日本語以外の場合があります）。</p>}
+              {!realSite && <p className="mb-1 text-xs text-zinc-500">{textLabel}をそのまま表示しています{kind === "vulnix-fixed" ? "。" : "（AI出力・未翻訳。日本語以外の場合があります）。"}</p>}
               <ul className="space-y-1 text-xs">
                 {plan.advisories.map((a, i) => (
                   <li key={i} className="rounded-lg bg-zinc-50 p-2 dark:bg-zinc-800/60">

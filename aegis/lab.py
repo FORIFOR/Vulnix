@@ -10,6 +10,8 @@ real underlying software components (SQLite engine + sandboxed filesystem tree):
        directory without `Path.resolve().is_relative_to()` confinement, reading
        the real `etc/lab-release` file inside the sandbox directory.
      - Allows cross-account access at `/api/accounts/B/secret` without owner check.
+     - Redirects `/auth/callback?return_to=<any URL>` to that URL unchecked (open redirect,
+       the OAuth "return to" pattern).
   2. "patched":
      - Advertises Apache/2.4.62, hides X-Powered-By, and sets CSP/HSTS/XCTO.
      - Uses parameterized SQLite prepared statements (`?` placeholders) and
@@ -17,6 +19,8 @@ real underlying software components (SQLite engine + sandboxed filesystem tree):
      - Enforces `Path.resolve().is_relative_to(public_root)` confinement on CGI
        paths (HTTP 403).
      - Enforces owner authorization on `/api/accounts/B/secret` (HTTP 403).
+     - Redirects only to a same-site relative path ("/x", never "//x" or "/\\x"); any other
+       `return_to` goes to "/".
 """
 from __future__ import annotations
 
@@ -106,6 +110,12 @@ def _query_sqlite(query_param: str, mode: str) -> tuple[int, dict]:
         conn.close()
 
 
+def _same_site_path(target: str) -> bool:
+    """A relative path on this site: starts with one "/" and has no scheme or host."""
+    return (target.startswith("/") and not target.startswith(("//", "/\\"))
+            and "\\" not in target and not urlsplit(target).netloc)
+
+
 def _resolve_sandbox_cgi(raw_path: str, st: LabState) -> tuple[int, dict]:
     """Reproduce CVE-2021-41773 path normalization flaw inside an isolated sandbox directory."""
     public_root = (st.sandbox_dir / "public").resolve()
@@ -193,6 +203,17 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 "error": "403 Forbidden: owner verification blocked cross-account access",
             }, ensure_ascii=False).encode("utf-8")
             return self._send(403, payload, "application/json; charset=utf-8")
+
+        # 2b. OAuth-style "return to" redirect (open redirect when unchecked)
+        if raw_path == "/auth/callback":
+            target = (parse_qs(split.query).get("return_to") or ["/"])[0]
+            if self._mode == "patched" and not _same_site_path(target):
+                target = "/"
+            self.send_response(302)
+            self.send_header("Location", target)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
 
         # 3. Real SQLite engine error-differential check endpoint
         if raw_path == "/api/search":
