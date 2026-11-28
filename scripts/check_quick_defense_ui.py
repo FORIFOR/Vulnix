@@ -24,6 +24,9 @@ from aegis.tenancy import OrgStore, TenantRegistry  # noqa: E402
 from scripts.check_diagnosis_ui import Backend, free_port, wait_for_web  # noqa: E402
 from scripts.quick_defense_holdout import write_fixture  # noqa: E402
 
+# what the page shows for each category (web/src/lib/quickDefense.ts categoryLabels)
+LABEL = {"ARTEX": "攻撃経路になりうる設定", "CVE": "既知の脆弱性（CVE）", "Claude Code": "AIコーディング支援ツールの権限"}
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -171,11 +174,11 @@ def main():
                     for category, title in (("ARTEX", "EC2起動テンプレートのメタデータ保護"),
                                             ("Claude Code", "外部入力とHTML出力")):
                         status = unknown if category == "Claude Code" and unknown else expected
-                        expect(section.get_by_text(f"{category} ／ {title} ／ {status}", exact=True)).to_be_visible()
-                    expect(section.get_by_text("CVE ／ CVE-2021-41773 ／ 未確認", exact=True)).to_be_visible()
+                        expect(section.get_by_text(f"{LABEL[category]} ／ {title} ／ {status}", exact=True)).to_be_visible()
+                    expect(section.get_by_text("既知の脆弱性（CVE） ／ CVE-2021-41773 ／ 未確認", exact=True)).to_be_visible()
                     assert "never-display-this" not in page.locator("body").inner_text()
                     expect(section.get_by_text("対象外 2件 ／ ファイル上限 1件", exact=False)).to_be_visible()
-                    expect(section.get_by_text("Claude Code ／ 外部入力とHTML出力", exact=False)).to_have_count(1)
+                    expect(section.get_by_text("AIコーディング支援ツールの権限 ／ 外部入力とHTML出力", exact=False)).to_have_count(1)
                     measured.append(round(elapsed, 3))
                 scan("対策が必要", "")
                 defense = page.get_by_role("region", name="実行時の防御確認")
@@ -242,7 +245,7 @@ def main():
                 expect(defense.get_by_text("MFA ／ 設定確認済み", exact=True)).to_be_visible()
                 page.get_by_role("button", name="ローカル検証を開始").click()
                 expect(defense.get_by_text("認証 ／ 未確認", exact=True)).to_be_visible()
-                cached_match = section.get_by_text("CVE ／ CVE-2018-27182 ／ 対策が必要", exact=True)
+                cached_match = section.get_by_text("既知の脆弱性（CVE） ／ CVE-2018-27182 ／ 対策が必要", exact=True)
                 expect(section.get_by_text("依存関係ごとの修正（2組）", exact=True)).to_be_visible()
                 a2b = page.get_by_role("region", name="A2B防御の状況")
                 expect(a2b.get_by_text("公開API", exact=True)).to_be_visible()
@@ -262,7 +265,7 @@ def main():
                 expect(section).to_be_visible()
                 expect(cached_match).to_have_count(0)
                 update_details.click()
-                finding = section.get_by_text("Claude Code ／ 外部入力とHTML出力 ／ 対策が必要", exact=True)
+                finding = section.get_by_text("AIコーディング支援ツールの権限 ／ 外部入力とHTML出力 ／ 対策が必要", exact=True)
                 finding.click()
                 expect(finding.locator("..").get_by_text("修正方法", exact=True)).to_be_visible()
                 expect(finding.locator("..").get_by_text("database/dataAccess.ts:1", exact=True)).to_be_visible()
@@ -276,13 +279,13 @@ def main():
                         "BlockPublicPolicy": True, "RestrictPublicBuckets": True,
                     }}}}}))
                 scan("設定・コードを確認", "")
-                expect(section.get_by_text("Claude Code ／ ストレージの公開防止 ／ 設定・コードを確認", exact=True)).to_be_visible()
+                expect(section.get_by_text("AIコーディング支援ツールの権限 ／ ストレージの公開防止 ／ 設定・コードを確認", exact=True)).to_be_visible()
                 cloud({"Ref": "Endpoint"}, {"Ref": "TokenMode"})
                 (folder / "database" / "dataAccess.ts").write_text(
                     "function display(value, target) { target.innerHTML = normalize(value); }")
                 storage.write_text(json.dumps({"Resources": {"Storage": {"Type": "AWS::S3::Bucket"}}}))
                 scan("未確認", "未確認")
-                expect(section.get_by_text("Claude Code ／ ストレージの公開防止 ／ 未確認", exact=True)).to_be_visible()
+                expect(section.get_by_text("AIコーディング支援ツールの権限 ／ ストレージの公開防止 ／ 未確認", exact=True)).to_be_visible()
                 page.get_by_text("CVEカタログの更新", exact=True).click()
                 feed = page.get_by_label("NVD・OSVのJSONを手動で読み込む")
                 def import_catalog(data):
@@ -298,7 +301,7 @@ def main():
                 import_catalog(compound)
                 expect(page.get_by_text("選択したNVDデータ", exact=False)).to_be_visible()
                 start.click()
-                missing = section.get_by_text("CVE ／ CVE-2099-31415 ／ 未確認", exact=True)
+                missing = section.get_by_text("既知の脆弱性（CVE） ／ CVE-2099-31415 ／ 未確認", exact=True)
                 missing.click()
                 expect(section.get_by_text("必要な構成条件の一部", exact=False)).to_be_visible()
                 sbom = folder / "fixture-sbom.json"
@@ -308,7 +311,7 @@ def main():
                 ]}))
                 picker.set_input_files(folder)
                 start.click()
-                section.get_by_text("CVE ／ CVE-2099-31415 ／ 未確認", exact=True).click()
+                section.get_by_text("既知の脆弱性（CVE） ／ CVE-2099-31415 ／ 未確認", exact=True).click()
                 expect(section.get_by_text("製品・版・構成条件の組み合わせ", exact=False)).to_be_visible()
                 advisory = {"id": "CVE-2099-27182", "affected": [
                     {"package": {"ecosystem": "npm", "name": "fixture-dependency"}, "versions": ["1.2.3"]},
@@ -316,12 +319,12 @@ def main():
                 import_catalog(advisory)
                 expect(page.get_by_text("選択したOSVデータ", exact=False)).to_be_visible()
                 start.click()
-                expect(section.get_by_text("CVE ／ CVE-2099-27182 ／ 対策が必要", exact=True)).to_be_visible()
+                expect(section.get_by_text("既知の脆弱性（CVE） ／ CVE-2099-27182 ／ 対策が必要", exact=True)).to_be_visible()
                 lock_version("1.2.4")
                 picker.set_input_files(folder)
                 start.click()
-                expect(section.get_by_text("CVE ／ 依存関係と公開CVEの照合 ／ 未確認", exact=True)).to_be_visible()
-                expect(section.get_by_text("CVE ／ CVE-2018-27182", exact=False)).to_have_count(0)
+                expect(section.get_by_text("既知の脆弱性（CVE） ／ 依存関係と公開CVEの照合 ／ 未確認", exact=True)).to_be_visible()
+                expect(section.get_by_text("既知の脆弱性（CVE） ／ CVE-2018-27182", exact=False)).to_have_count(0)
                 holdout = path / "defense-holdout"
                 catalog = write_fixture(holdout)
                 (holdout / "gitleaks-redacted.json").write_text(json.dumps([
@@ -354,11 +357,11 @@ def main():
                     ("CVE", "CVE-2099-40103", "対策が必要", "go.mod:5"),
                 ]
                 for category, label, verdict, location in expected_holdout:
-                    summary = section.get_by_text(f"{category} ／ {label} ／ {verdict}", exact=True)
+                    summary = section.get_by_text(f"{LABEL[category]} ／ {label} ／ {verdict}", exact=True)
                     summary.click()
                     expect(summary.locator("..").get_by_text(location, exact=True)).to_be_visible()
                 expect(section.get_by_text("CVE-2099-40104", exact=False)).to_have_count(0)
-                expect(section.get_by_text("Claude Code ／ Gitleaksの資格情報候補", exact=False)).to_have_count(1)
+                expect(section.get_by_text("AIコーディング支援ツールの権限 ／ Gitleaksの資格情報候補", exact=False)).to_have_count(1)
                 assert "SYNTHETIC_ONLY" not in section.inner_text()
                 assert "REDACTED" not in section.inner_text()
                 assert "/outside" not in section.inner_text()
