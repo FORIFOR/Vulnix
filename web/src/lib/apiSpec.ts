@@ -124,23 +124,42 @@ const ADMIN_DECORATOR = /@(?:admin_required|staff_member_required|superuser_requ
 /** Flask / FastAPI (Python) and Express (JavaScript / TypeScript) route definitions. */
 export function analyzeRoutes(files: { path: string; text: string }[]): ApiAnalysis {
   const endpoints: ApiEndpoint[] = [];
+  // FastAPI dependency aliases: `CurrentUser = Annotated[User, Depends(get_current_user)]`
+  const aliases = new Set(files.flatMap(({ text }) => [...text.matchAll(
+    /^(\w+)\s*=\s*Annotated\[[^\n]*Depends\(\s*(?:get_current_\w+|auth\w*|verify\w*|require\w*)/gm)].map((m) => m[1])));
+  const aliasUse = aliases.size ? new RegExp(`:\\s*(?:${[...aliases].join("|")})\\b`) : null;
+  const middlewareFiles: string[] = [];
   for (const { path: file, text } of files) {
     const lines = text.split("\n");
+    // an app-wide HTTP middleware that answers 401: every route of this app is behind it
+    const mw = text.match(/@app\.middleware\(\s*["']http["']\s*\)[\s\S]{0,800}?status_code\s*=\s*401/);
+    if (mw) middlewareFiles.push(file);
     lines.forEach((line, i) => {
       const py = line.match(/^\s*@\w+\.(route|get|post|put|patch|delete)\(\s*["']([^"']+)["'](.*)$/);
       const js = line.match(/\b(?:app|router)\.(get|post|put|patch|delete)\(\s*["'`]([^"'`]+)["'`]/);
       if (!py && !js) return;
       const [verb, route, rest] = py ? [py[1], py[2], py[3]] : [js![1], js![2], line];
       const methods = verb === "route" ? (rest.match(/methods\s*=\s*\[([^\]]*)\]/)?.[1].match(/[A-Za-z]+/g) ?? ["GET"]) : [verb];
-      // decorators of the same handler: the block of lines around this one
-      const block = lines.slice(Math.max(0, i - 4), i + 6).join("\n");
-      const auth = AUTH_DECORATOR.test(block) || (js && /\b(?:auth|authenticate|requireAuth|passport)\w*/.test(line)) ? "declared" : "unknown";
+      // this handler only: its stacked decorators and its own `def` signature (Python), or the
+      // route line itself (JavaScript) - never the neighbouring handler's
+      let block = line;
+      if (py) {
+        let start = i;
+        while (start > 0 && /^\s*@/.test(lines[start - 1])) start--;
+        let end = i;
+        while (end < lines.length - 1 && end - i < 6 && !/^\s*(?:async\s+)?def\b/.test(lines[end])) end++;
+        while (end < lines.length - 1 && end - i < 14 && !/\)\s*(?:->[^:]*)?:\s*(?:#.*)?$/.test(lines[end])) end++;
+        block = lines.slice(start, end + 1).join("\n");
+      }
+      const auth = AUTH_DECORATOR.test(block) || (aliasUse?.test(block) ?? false) || (py && mw)
+        || (js && /\b(?:auth|authenticate|requireAuth|passport)\w*/.test(line)) ? "declared" : "unknown";
       const admin = ADMIN_DECORATOR.test(block) || (!!js && /\b(?:admin|requireRole\(\s*["']admin)/i.test(line));
       for (const m of methods) endpoints.push(endpoint(m, route, `${file}:${i + 1}`, auth, admin));
     });
   }
   return { title: "プロジェクトのルート定義", host: null, endpoints, candidates: endpoints.flatMap(candidates),
-    notes: ["ソースのルート定義から読み取った候補です。認証の有無はデコレーター等から推定できた場合だけ「宣言あり」とし、それ以外は未確認です"] };
+    notes: ["ソースのルート定義から読み取った候補です。認証の有無はデコレーター・依存関係・アプリ全体のミドルウェアから推定できた場合だけ「宣言あり」とし、それ以外は未確認です",
+      ...middlewareFiles.map((f) => `${f}: アプリ全体のミドルウェアが 401 を返すため、このファイルのルートは「認証の宣言あり」としました（除外パスと実装は未確認）`)] };
 }
 
 /** "{org}" etc. still in a path: the user has to put a real test record's value there. */

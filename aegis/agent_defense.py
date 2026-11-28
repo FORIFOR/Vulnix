@@ -536,8 +536,33 @@ MAX_SETTINGS_BYTES = 65536
 _RUN_LOCK = threading.Lock()
 
 
+def public_candidate_reasons(env=None) -> list[str]:
+    """Signs that this server is a public / hosted / release candidate. On such a server the
+    runtime check cannot be enabled at all - no switch overrides this - because the macOS
+    sandbox is not proven to isolate completely (see SELF_TEST_SCOPE). The static review of
+    the permission settings (folder scan) stays available everywhere."""
+    env = os.environ if env is None else env
+    reasons = []
+    if env.get("VULNIX_PUBLIC_MODE") == "1":
+        reasons.append("公開サイト（VULNIX_PUBLIC_MODE=1）")
+    if env.get("VULNIX_PUBLIC_SIGNUP") == "1":
+        reasons.append("公開登録（VULNIX_PUBLIC_SIGNUP=1）")
+    if (env.get("AEGIS_ENV") or "").strip().lower() in ("production", "prod", "staging", "stg"):
+        reasons.append(f"AEGIS_ENV={env.get('AEGIS_ENV')}")
+    if env.get("K_SERVICE") or env.get("CLOUD_RUN_JOB"):
+        reasons.append("ホスト型の実行環境（Cloud Run）")
+    if env.get("VULNIX_RELEASE_BUILD") == "1":
+        reasons.append("配布用ビルド（VULNIX_RELEASE_BUILD=1）")
+    return reasons
+
+
 def availability() -> dict:
-    """Whether this server may run the check: only on the user's own machine, by explicit choice."""
+    """Whether this server may run the check: only on the user's own machine, by explicit
+    choice, and never on a public / hosted / release candidate."""
+    public = public_candidate_reasons()
+    if public:
+        return {"available": False, "reason": "公開候補の構成では、Claude Code の実行時確認は有効にできません（"
+                + "、".join(public) + "）。完全な隔離を証明できていないためです。設定ファイルの静的な確認は使えます"}
     if os.environ.get("VULNIX_AGENT_DEFENSE_LOCAL") != "1":
         return {"available": False, "reason": "このサーバーでは実行できません。利用者の端末で起動した Vulnix で、"
                                               "VULNIX_AGENT_DEFENSE_LOCAL=1 を設定したときだけ実行します"}

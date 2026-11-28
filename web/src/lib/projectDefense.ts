@@ -242,10 +242,13 @@ function deploymentChecks(name: string, body: string, input: unknown, path: stri
       if (match) user = { value: match[1].split(":")[0], line: i + 1 };
     }
     const root = user && /^(root|0+)$/i.test(user.value);
-    const nodeWithoutUser = !user && finalBase && /^(?:(?:docker\.io\/)?library\/)?node:[A-Za-z0-9_.-]+$/.test(finalBase.image);
+    // official images whose default user is root (Docker Hub library images)
+    const official = finalBase?.image.match(/^(?:(?:docker\.io\/)?library\/)?(node|python|ruby|golang|debian|ubuntu|alpine|php|eclipse-temurin|openjdk|rust):[A-Za-z0-9_.-]+$/);
+    const nodeWithoutUser = !user && !!official;
     add("コンテナの既定ユーザー", root || nodeWithoutUser ? "action" : "unknown",
       root ? "最終ステージでrootユーザーを明示しています。" :
-      nodeWithoutUser ? "最終ステージのNode公式イメージに対し非rootユーザーの指定がありません。配備側の上書きは未確認です。" :
+      nodeWithoutUser ? `最終ステージの公式イメージ（${official![1]}）は既定でrootで動きますが、非rootユーザーの指定がありません。配備側の上書きは未確認です。` :
+      user ? `非rootユーザー（${user.value}）を指定済みです。配備側での上書きと書き込み可能な領域は未確認です。` :
         "実行時のユーザーと書き込み権限が未確認です。",
       "必要な権限だけを持つ実行ユーザーを設定し、実行時の上書きと書き込み可能な領域を確認する。",
       user?.line ?? finalBase?.line);

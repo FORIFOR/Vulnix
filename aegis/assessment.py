@@ -1923,25 +1923,28 @@ class AssessmentService:
             if self.a.state == "running":
                 raise ValueError("診断実行中は取り消せません")
             rec = self._a2b_read(draft_id)
-            self._a2b_unload_locked(rec, actor, "a2b.approval_revoked")
+            err = self._a2b_unload_locked(rec, actor, "a2b.approval_revoked")
             rec["approval"] = {"status": "revoked", "revoked_by": actor, "revoked_at": time.time()}
             self._a2b_write(rec)
+            if err:
+                raise err
             return self._a2b_view(rec)
 
-    def _a2b_unload_locked(self, rec: dict, actor: str, event: str) -> None:
-        """Remove the profile file and its acceptance: nothing of this draft stays runnable."""
+    def _a2b_unload_locked(self, rec: dict, actor: str, event: str) -> AuditWriteFailed | None:
+        """Remove the profile file and its acceptance: nothing of this draft stays runnable.
+        A removal of authority: applied first, whatever the audit log does, then recorded;
+        a failed record is returned for the caller to report after finishing."""
         from .a2b_profile import remove_site_profile
         pid = rec["profile_id"]
-        self._audit_first(event, actor=actor, draft=rec["id"], profile=pid)
         removed = remove_site_profile(self.data_dir, pid)
         if pid in self._accepted_profiles:
-            before = self.ledger.snapshot()
             self._accepted_profiles.pop(pid, None)
-            self._commit_audited_grant_locked(before, "プロファイル承認の取り消し", event)
+            self.ledger.commit()        # a removal: kept in memory even if the file cannot be replaced
         if removed or pid in self.l2.sources:
             self.l2 = self._read_l2_profiles()
             self._apply_profile_acceptance_locked()
         self._save_state_locked()
+        return self._audit_reduction(event, actor=actor, draft=rec["id"], profile=pid)
 
     def accept_l2_profile(self, profile_id: str, sha256: str, actor: str) -> dict:
         """An admin accepts the exact content of a site profile. The file is read

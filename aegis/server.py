@@ -2205,10 +2205,25 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                         else:
                             raise TenancyError("組織が見つかりません")
                         if p == "/api/a2b/approve":
-                            result = osvc.approve_a2b_draft(str(body.get("id", "")), str(body.get("sha256", "")), actor)
+                            # the admin role is checked again, live, while the grant is made
+                            with ops.locked_session(sess.token) as current:
+                                if current is None or current.operator != sess.operator or "admin" not in current.roles:
+                                    paudit.record("a2b.approval_denied", actor=actor, op=p, org=org[:64], reason="role_lost")
+                                    return self._json(403, {"error": "管理者の権限が失効しました"})
+                                result = osvc.approve_a2b_draft(str(body.get("id", "")), str(body.get("sha256", "")), actor)
+                            paudit.record("a2b.approved", actor=actor, org=org[:64], draft=str(body.get("id", ""))[:32],
+                                          sha256=str(body.get("sha256", ""))[:64])
                         else:
                             result = osvc.revoke_a2b_draft(str(body.get("id", "")), actor)
+                            paudit.record("a2b.revoked", actor=actor, org=org[:64], draft=str(body.get("id", ""))[:32])
+                    except AuditWriteFailed:
+                        raise
                     except (ValueError, TenancyError) as exc:
+                        try:
+                            paudit.record("a2b.approval_refused", actor=actor, op=p, org=org[:64],
+                                          draft=str(body.get("id", ""))[:32], reason=str(exc)[:200])
+                        except Exception:   # noqa: BLE001 - the refusal stands either way
+                            pass
                         return self._json(400, {"error": str(exc)[:300]})
                     return self._authorized_platform_read(sess, lambda: self._json(200, result), admin=True)
                 elif p in ("/api/router/verify", "/api/cve/sync") and not ({"approver", "admin"} & set(sess.roles)):

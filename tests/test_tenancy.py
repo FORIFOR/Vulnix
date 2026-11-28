@@ -2146,6 +2146,25 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
         self.assertEqual((code, r["approval"]["status"]), (200, "revoked"))
         self.assertFalse(list((osvc.data_dir / "l2_profiles").glob(f"{d1['profile_id']}.json")))
         self.assertFalse([c for c in osvc.l2.runnable_check_ids() if c.startswith(d1["profile_id"])])
+        # a platform admin can revoke; grants and refusals are in the platform audit
+        self.assertEqual(self.req(a, "/assets/a2b-drafts/request", {"id": d1["id"], "sha256": r["sha256"]}, org=oa)[0], 200)
+        self.assertEqual(self.req(p, "/a2b/approve", {**approve, "sha256": r["sha256"]})[0], 200)
+        code, r = self.req(p, "/a2b/revoke", {"org": oa, "id": d1["id"]})
+        self.assertEqual((code, r["approval"]["status"]), (200, "revoked"))
+        events = {e["event"] for e in self.reg.platform_audit.entries()}
+        self.assertTrue({"a2b.approved", "a2b.approval_refused", "a2b.revoked", "a2b.approval_denied"} <= events, events)
+        # withdrawing works even when the audit log cannot be written (a removal is never held back)
+        self.assertEqual(self.req(a, "/assets/a2b-drafts/request", {"id": d1["id"], "sha256": r["sha256"]}, org=oa)[0], 200)
+        self.assertEqual(self.req(p, "/a2b/approve", {**approve, "sha256": r["sha256"]})[0], 200)
+        self.assertTrue([c for c in osvc.l2.runnable_check_ids() if c.startswith(d1["profile_id"])])
+        from unittest.mock import patch as _patch
+        from aegis.audit import AuditWriteFailed
+        with _patch.object(osvc.audit, "record", side_effect=OSError("disk full")):
+            with self.assertRaises(AuditWriteFailed) as caught:
+                osvc.revoke_a2b_draft(d1["id"], "alice")
+        self.assertTrue(caught.exception.applied)
+        self.assertFalse([c for c in osvc.l2.runnable_check_ids() if c.startswith(d1["profile_id"])])
+        self.assertNotIn(d1["profile_id"], osvc._accepted_profiles)
         # nobody approves a draft they requested or saved
         dd = self.svc.save_a2b_draft(DRAFT, "padmin")
         self.svc.request_a2b_approval(dd["id"], dd["sha256"], "padmin")

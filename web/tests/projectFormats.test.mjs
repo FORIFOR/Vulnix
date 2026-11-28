@@ -52,10 +52,15 @@ test("flag the absence of an explicit runtime user only for a recognized default
     fixture("Dockerfile.node", "FROM node:22-bookworm-slim\n"),
     fixture("Dockerfile.explicit", "FROM node:22-bookworm-slim\nUSER node\n"),
     fixture("Dockerfile.custom", "FROM custom.invalid/base:v1\n"),
+    fixture("Dockerfile.python", "FROM python:3.13-slim\nCMD [\"uvicorn\"]\n"),
+    fixture("Dockerfile.uid", "FROM python:3.12-slim\nUSER 10001\n"),
   ], {});
   const results = report.rows.filter((row) => row.title === "コンテナの既定ユーザー");
-  assert.deepEqual(results.map((row) => row.status), ["action", "unknown", "unknown"]);
-  assert.equal(results[0].location.line, 1);
+  const by = Object.fromEntries(results.map((row) => [row.location.path, row]));
+  assert.deepEqual(["Dockerfile.node", "Dockerfile.explicit", "Dockerfile.custom", "Dockerfile.python", "Dockerfile.uid"]
+    .map((f) => by[f].status), ["action", "unknown", "unknown", "action", "unknown"]);
+  assert.equal(by["Dockerfile.node"].location.line, 1);
+  assert.match(by["Dockerfile.uid"].evidence, /非root.*10001/);       // already set: said so, only the override is open
 });
 
 test("same CVE from NVD and OSV appears once and preserves the package match", async () => {

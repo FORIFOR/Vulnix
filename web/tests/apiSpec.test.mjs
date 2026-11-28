@@ -48,3 +48,32 @@ test("Flask, FastAPI and Express routes become candidates; auth is 'declared' on
   assert.equal(a.endpoints.find((e) => e.path === "/api/invoices/{invoiceId}").auth, "declared");
   assert.ok(hasTemplate("/api/x/{id}") && !hasTemplate("/api/x/1"));
 });
+
+test("FastAPI dependency aliases and an app-wide 401 middleware count as declared auth", () => {
+  const a = analyzeRoutes([
+    { path: "deps.py", text: "CurrentUser = Annotated[User, Depends(get_current_user)]\n" },
+    { path: "routes.py", text: [
+      "@router.patch(\"/children/{child_id}\")",
+      "def update_child(child_id: str, guardian: CurrentUser, db: Db):",
+      "    return 1",
+      "@router.get(\"/open\")",
+      "def open_route():",
+      "    return 1",
+    ].join("\n") },
+    { path: "main.py", text: [
+      "@app.middleware(\"http\")",
+      "async def _require_device(request, call_next):",
+      "    if not ok(request):",
+      "        return JSONResponse(status_code=401, content={})",
+      "    return await call_next(request)",
+      "@app.get(\"/sessions/{sid}\")",
+      "def get_session(sid: str):",
+      "    return 1",
+    ].join("\n") },
+  ]);
+  const auth = Object.fromEntries(a.endpoints.map((e) => [e.path, e.auth]));
+  assert.equal(auth["/children/{child_id}"], "declared");
+  assert.equal(auth["/open"], "unknown");
+  assert.equal(auth["/sessions/{sid}"], "declared");
+  assert.ok(a.notes.some((n) => n.includes("ミドルウェア")));
+});

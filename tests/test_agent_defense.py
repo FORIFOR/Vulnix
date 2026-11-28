@@ -68,6 +68,22 @@ class TestSettingsAreReducedToPermissionRules(unittest.TestCase):
 
 
 @unittest.skipUnless(ad.claude_cli() and Path("/usr/bin/sandbox-exec").exists(), "claude CLI and macOS sandbox-exec")
+class TestPublicCandidatesCannotEnableTheRuntimeCheck(unittest.TestCase):
+    def test_no_switch_enables_it_on_a_public_or_hosted_or_release_server(self):
+        from unittest.mock import patch
+        for extra in ({"VULNIX_PUBLIC_MODE": "1"}, {"VULNIX_PUBLIC_SIGNUP": "1"}, {"AEGIS_ENV": "production"},
+                      {"AEGIS_ENV": "staging"}, {"K_SERVICE": "vulnix"}, {"VULNIX_RELEASE_BUILD": "1"}):
+            with patch.dict(os.environ, {"VULNIX_AGENT_DEFENSE_LOCAL": "1", **extra}):
+                state = ad.availability()
+                self.assertFalse(state["available"], extra)
+                self.assertIn("公開候補", state["reason"])
+                rep = ad.evaluate_settings('{"permissions": {}}')
+                self.assertEqual(rep["status"], "unsupported")
+
+    def test_the_users_own_machine_is_unaffected(self):
+        self.assertEqual(ad.public_candidate_reasons({"VULNIX_AGENT_DEFENSE_LOCAL": "1"}), [])
+
+
 class TestConfinement(unittest.TestCase):
     def test_self_test_passes_its_sampled_rules(self):
         # a sample of the profile's rules (SELF_TEST_SCOPE), not proof of full isolation
