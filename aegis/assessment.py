@@ -264,16 +264,18 @@ def separate_l2_approver_from_env(environ=None) -> bool:
     return False
 
 
-_DATA_DIR_LOCKS: dict[str, object] = {}
+# data directory -> [lock file handle (None without flock), service objects holding it]
+_DATA_DIR_LOCKS: dict[str, list] = {}
+_DATA_DIR_LOCKS_GUARD = threading.Lock()
 
 
 def _close_data_dir_locks_at_exit() -> None:
-    # The claims stay held for the entire process lifetime. Closing explicitly at
-    # interpreter shutdown avoids leaking file handles in long test processes.
-    for handle in _DATA_DIR_LOCKS.values():
-        if handle is not None:
-            handle.close()
-    _DATA_DIR_LOCKS.clear()
+    # Closing explicitly at interpreter shutdown avoids leaking file handles.
+    with _DATA_DIR_LOCKS_GUARD:
+        for handle, _count in _DATA_DIR_LOCKS.values():
+            if handle is not None:
+                handle.close()
+        _DATA_DIR_LOCKS.clear()
 
 
 atexit.register(_close_data_dir_locks_at_exit)
@@ -294,22 +296,40 @@ def _claim_data_dir(data_dir: Path) -> None:
     could be written over by the other. (Several service objects inside one
     process - as tests do when they 'restart' - share the claim.)"""
     key = str(Path(data_dir).resolve())
-    if key in _DATA_DIR_LOCKS:
-        return
-    try:
-        import fcntl
-    except ImportError:          # no flock on this platform: nothing to enforce
-        _DATA_DIR_LOCKS[key] = None
-        return
-    fh = open(Path(data_dir) / ".lock", "a+")
-    try:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        fh.close()
-        raise RuntimeError(
-            f"データディレクトリ {data_dir} は別のコントロールプレーンのプロセスが使用中です。"
-            "同じデータディレクトリで2つ起動することはできません") from None
-    _DATA_DIR_LOCKS[key] = fh      # held for the life of the process
+    with _DATA_DIR_LOCKS_GUARD:
+        held = _DATA_DIR_LOCKS.get(key)
+        if held is not None:
+            held[1] += 1
+            return
+        try:
+            import fcntl
+        except ImportError:          # no flock on this platform: nothing to enforce
+            _DATA_DIR_LOCKS[key] = [None, 1]
+            return
+        fh = open(Path(data_dir) / ".lock", "a+")
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            fh.close()
+            raise RuntimeError(
+                f"データディレクトリ {data_dir} は別のコントロールプレーンのプロセスが使用中です。"
+                "同じデータディレクトリで2つ起動することはできません") from None
+        _DATA_DIR_LOCKS[key] = [fh, 1]   # held while any service object of this process uses it
+
+
+def _release_data_dir(data_dir: Path) -> None:
+    """A service object closed: the last one releases the claim (and its file handle).
+    Without this, every organization ever loaded kept one descriptor until exit."""
+    key = str(Path(data_dir).resolve())
+    with _DATA_DIR_LOCKS_GUARD:
+        held = _DATA_DIR_LOCKS.get(key)
+        if held is None:
+            return
+        held[1] -= 1
+        if held[1] <= 0:
+            del _DATA_DIR_LOCKS[key]
+            if held[0] is not None:
+                held[0].close()
 
 
 # Findings whose single-item verification is a bundled-lab check (fixed lab paths).
@@ -791,6 +811,9 @@ class AssessmentService:
                 self.audit.record("control_plane.closed", clean=clean)
             except Exception:
                 pass
+            if not getattr(self, "_claim_released", False):
+                self._claim_released = True
+                _release_data_dir(self.data_dir)
             return clean
 
     @staticmethod
@@ -1986,9 +2009,13 @@ class AssessmentService:
                     continue
                 try:
                     hosts = {h.lower() for h in rec["profile"]["applies_to"]["hosts"]}
-                    if (rec["approval"]["status"] == "approved" and self.a.state in ("running", "paused")
+                    # whatever relies on this approval now ends: a diagnosis, or a re-verification of a
+                    # finished one whose worker is still out (the state stays "completed" then)
+                    in_flight = (self.a.state in ("running", "paused") or self._inflight > 0
+                                 or bool(self.workers.busy_sessions()) or bool(self.workers.active_pids()))
+                    if (rec["approval"]["status"] == "approved" and in_flight
                             and (self.a.asset.get("name") or "").lower() in hosts):
-                        self.emergency_stop(actor)          # the run that relied on this approval ends
+                        self.emergency_stop(actor)
                     err = self._a2b_suspend_locked(rec, reason, actor)
                 except Exception as e:   # noqa: BLE001 - the others are still suspended; the launch guard refuses this one
                     errors.append(e)

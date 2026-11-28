@@ -1,0 +1,38 @@
+[Unit]
+Description=Vulnix control plane (loopback only)
+After=network-online.target nftables.service
+Wants=network-online.target
+
+[Service]
+User=vulnix
+Group=vulnix
+UMask=0077
+WorkingDirectory=/opt/vulnix/backend
+Environment=PATH=/usr/sbin:/usr/bin
+Environment=PYTHONPATH=/opt/vulnix/backend/vendor:/opt/vulnix/backend
+Environment=VULNIX_NO_ENV_LOCAL=1
+Environment=VULNIX_PUBLIC_SIGNUP=1
+# 0 = no traffic to real sites at all (until DeepNote's L1 acceptance is approved; then l1)
+Environment=VULNIX_REAL_SERVICE_DIAGNOSIS=0
+Environment=VULNIX_REAL_SITE_LOCAL_ARTEX=0
+Environment=VULNIX_ARTEX_LLM_PLANS_PER_HOUR=0
+Environment=VULNIX_CHAT_PER_DAY=0
+ExecStart=/usr/bin/python3 -m aegis.server --port 8788 --data-dir /var/lib/vulnix
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+# sized from measurement: one descriptor per loaded organization (at most 500 by default)
+# plus connections and worker pipes (tests/test_data_dir_lock_cleanup.py)
+LimitNOFILE=8192
+ProtectHome=yes
+ProtectSystem=full
+ReadWritePaths=/var/lib/vulnix
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+LockPersonality=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

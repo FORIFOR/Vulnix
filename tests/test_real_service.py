@@ -2251,3 +2251,139 @@ class TestRealServiceApi(RealServiceBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSuspendedA2BApprovalStopsReruns(RealServiceBase):
+    """Independent-review follow-up (2026-11-28): after an A2B approval is suspended because
+    its approver lost the role, no re-verification of a COMPLETED diagnosis sends a request
+    with the test accounts (verify_finding, verify_fix, after a restart, or on re-login)."""
+    PID = "a2b_d0123456789ab"
+
+    def setUp(self):
+        super().setUp()
+        from aegis.a2b_profile import save_site_profile
+        # the same host must come from the A2B profile only (not the fixture directory)
+        self.svc.close()
+        self.svc = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT, verify_seconds=0.1,
+                                     real_site_read_only=False)   # production loader: built-in + site profiles
+        self.svc._custom_resolver = lambda h: ["127.0.0.1"] if h == HOST else []
+        profile = {**json.loads((FIXTURE_PROFILE_DIR / "example.json").read_text()), "id": self.PID}
+        save_site_profile(self.dir, profile)
+        sha = self.svc._read_l2_profiles().sources[self.PID]["sha256"]
+        self.svc.accept_l2_profile(self.PID, sha, "padmin")
+        (self.svc._a2b_dir() / "d0123456789ab.json").write_text(json.dumps({
+            "id": "d0123456789ab", "name": "example", "profile_id": self.PID, "profile": profile, "sha256": sha,
+            "revision": 1, "saved_by": "alice", "saved_at": time.time(), "draft": {},
+            "approval": {"status": "approved", "sha256": sha, "requested_by": "alice", "approved_by": "padmin"}}))
+        self.alive = {"padmin", "alice", "appr"}
+        self.svc._authority = lambda account, kind: account in self.alive
+        self.onboard()
+        self.assertEqual(self.run_l1()["state"], "completed")
+        self.set_secrets()
+
+    def token_requests(self):
+        return [p for p, auth in self.fake.seen if auth and any(t in auth for t in ALL_TOKENS)]
+
+    def test_no_rerun_with_test_accounts_after_the_approval_is_suspended(self):
+        self.fake.seen.clear()
+        self.svc.request_l2_run("f_ex_idor", "alice")              # requester and approver are two people
+        self.svc.verify_finding("f_ex_idor", actor="appr")
+        self.assertEqual(self.finding("f_ex_idor")["evidence_status"], "proven")
+        self.assertTrue(self.token_requests())                     # it really ran while approved
+        self.assertEqual(self.svc.snapshot()["state"], "completed")
+        self.alive.discard("padmin")                               # the approver lost the role
+        self.assertEqual(self.svc.enforce_a2b_authority(), ["d0123456789ab"])
+        self.fake.seen.clear()
+        for rerun in (lambda: self.svc.verify_finding("f_ex_idor", actor="appr"), lambda: self.svc.verify_fix("appr")):
+            try:
+                self.svc.request_l2_run("f_ex_idor", "alice")
+            except Exception:   # noqa: BLE001 - the item may no longer be requestable at all
+                pass
+            try:
+                rerun()
+            except Exception:   # noqa: BLE001 - a refusal is the expected outcome
+                pass
+        self.assertEqual(self.token_requests(), [])
+        self.assertEqual(self.finding("f_ex_idor")["evidence_status"], "proven")   # the earlier result is kept
+        events = [e["event"] for e in self.svc.audit.entries()]
+        self.assertIn("a2b.approval_suspended", events)
+        # a restart (a new service object on the same data) keeps it suspended and unloaded
+        self.svc.close()
+        self.svc = AssessmentService(self.dir, LAB_PORT, l2_confinement=TEST_CONFINEMENT, verify_seconds=0.1,
+                                     real_site_read_only=False)   # production loader: built-in + site profiles
+        self.svc._custom_resolver = lambda h: ["127.0.0.1"] if h == HOST else []
+        self.svc._authority = lambda account, kind: account in self.alive
+        self.assertNotIn(self.PID, self.svc.l2.profiles)
+        self.assertEqual(self.svc._a2b_read("d0123456789ab")["approval"]["status"], "suspended")
+        self.alive.add("padmin")                                   # role given back: nothing comes back by itself
+        self.svc.enforce_a2b_authority()
+        self.fake.seen.clear()
+        try:
+            self.svc.request_l2_run("f_ex_idor", "alice")
+            self.svc.verify_finding("f_ex_idor", actor="appr")
+        except Exception:   # noqa: BLE001
+            pass
+        self.assertEqual(self.token_requests(), [])
+        self.assertEqual(self.svc._a2b_read("d0123456789ab")["approval"]["status"], "suspended")
+        self.assertNotIn(self.PID, self.svc.l2.profiles)
+
+    def test_a_pending_request_of_a_requester_who_lost_the_role_never_runs(self):
+        self.fake.seen.clear()
+        self.svc.request_l2_run("f_ex_idor", "alice")
+        self.alive.discard("alice")
+        with self.assertRaises(ValueError):
+            self.svc.verify_finding("f_ex_idor", actor="appr")
+        self.assertEqual(self.token_requests(), [])
+
+    def test_suspension_noticed_only_at_launch_refuses_the_launch(self):
+        self.fake.seen.clear()
+        self.svc.request_l2_run("f_ex_idor", "alice")
+        self.alive.discard("padmin")                               # approver lost the role; no route has run the check
+        try:
+            self.svc.verify_finding("f_ex_idor", actor="appr")      # the launch guard notices it
+        except Exception:   # noqa: BLE001 - refused, or recorded as a refused run
+            pass
+        events = [e["event"] for e in self.svc.audit.entries()]
+        self.assertIn("a2b.approval_suspended", events)
+        self.assertEqual(events[events.index("a2b.approval_suspended") + 1], "deny")   # the Gateway refused the launch
+        self.assertEqual(self.token_requests(), [])
+        self.assertEqual(self.svc._a2b_read("d0123456789ab")["approval"]["status"], "suspended")
+        self.assertNotIn(self.PID, self.svc.l2.profiles)
+
+    def test_a_pending_request_of_a_requester_who_lost_the_role_never_runs(self):
+        self.fake.seen.clear()
+        self.svc.request_l2_run("f_ex_idor", "alice")
+        self.alive.discard("alice")
+        with self.assertRaises(ValueError):
+            self.svc.verify_finding("f_ex_idor", actor="appr")
+        self.assertEqual(self.token_requests(), [])
+
+    def test_a_rerun_in_flight_when_the_approval_is_suspended_is_stopped_and_not_recorded(self):
+        before = dict(self.finding("f_ex_idor"))
+        self.svc.request_l2_run("f_ex_idor", "alice")
+        self.fake.mode = "hang"
+        out = {}
+        th = threading.Thread(target=lambda: out.update(r=self._quiet(lambda: self.svc.verify_finding("f_ex_idor", actor="appr"))))
+        th.start()
+        self.assertTrue(self.fake.hanging.wait(15))          # the worker is talking to the service now
+        seen = len(self.fake.seen)
+        self.alive.discard("padmin")
+        self.assertEqual(self.svc.enforce_a2b_authority(), ["d0123456789ab"])
+        th.join(30)
+        self.assertFalse(th.is_alive())
+        time.sleep(1)
+        self.assertEqual(len(self.fake.seen), seen)          # nothing more was sent
+        after = self.finding("f_ex_idor")
+        self.assertNotEqual(after.get("verdict"), "proven")
+        self.assertEqual(after.get("evidence"), before.get("evidence"))   # the late result was not recorded
+        events = [e["event"] for e in self.svc.audit.entries()]
+        self.assertIn("a2b.approval_suspended", events)
+        self.assertTrue({"emergency_stop", "gateway.emergency_stop"} & set(events) or self.svc.a.stop_report, events[-8:])
+        self.assertEqual(self.svc.workers.active_pids(), [])
+
+    @staticmethod
+    def _quiet(fn):
+        try:
+            return fn()
+        except Exception as e:   # noqa: BLE001
+            return e

@@ -2230,6 +2230,11 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
         self.assertEqual(view(a, d2)["approval"]["status"], "suspended")
         self.assertIn("依頼", view(a, d2)["approval"]["reason"])
         self.assertEqual(view(a, d3)["approval"]["status"], "suspended")
+        # signing in again gives the removed member nothing back
+        b2 = self.login("bobby", "bobby-Passw0rd!")
+        self.assertEqual(self.req(b2, "/assets/a2b-drafts", org=oa)[0], 403)
+        self.assertEqual(self.req(b2, "/assets/a2b-drafts/request", {"id": d2["id"], "sha256": d2["sha256"]}, org=oa)[0], 403)
+        self.assertEqual(view(a, d2)["approval"]["status"], "suspended")
         self.assertEqual(self.req(q, "/a2b/approve", {"org": oa, "id": d3["id"], "sha256": d3["sha256"]})[0], 400)
         # a member who holds the role saves the same content again: it becomes theirs and can be approved
         code, r = self.req(a, "/assets/a2b-drafts", {"draft": DRAFT, "id": d3["id"]}, org=oa)
