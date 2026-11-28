@@ -50,6 +50,7 @@ systemctl enable --quiet nftables
 # 4. accounts: the control plane and the web server run as two unprivileged users
 id vulnix >/dev/null 2>&1 || useradd --system --home-dir /var/lib/vulnix --no-create-home --shell /usr/sbin/nologin vulnix
 id vulnix-web >/dev/null 2>&1 || useradd --system --home-dir /nonexistent --no-create-home --shell /usr/sbin/nologin vulnix-web
+id vulnix-anchor >/dev/null 2>&1 || useradd --system --home-dir /nonexistent --no-create-home --shell /usr/sbin/nologin vulnix-anchor
 install -d -m 0755 /usr/local/libexec
 install -o root -g root -m 0755 "$here/vulnix-priv" /usr/local/libexec/vulnix-priv
 visudo -cqf "$here/vulnix-sudoers"
@@ -68,10 +69,19 @@ chgrp -R vulnix-web /opt/vulnix/web.new && chmod -R u+rwX,g+rX,g-w,o-rwx /opt/vu
 for d in backend web node; do rm -rf "/opt/vulnix/$d.old"; [ -d "/opt/vulnix/$d" ] && mv "/opt/vulnix/$d" "/opt/vulnix/$d.old"; mv "/opt/vulnix/$d.new" "/opt/vulnix/$d"; done
 install -d -m 0700 -o vulnix -g vulnix /var/lib/vulnix
 
+# 5b. local audit anchor: its own user and copy; the service only reaches its socket
+install -d -o root -g root -m 0755 /opt/vulnix-anchor
+install -o root -g root -m 0644 /opt/vulnix/backend/aegis/audit_anchor.py /opt/vulnix-anchor/audit_anchor.py
+install -d -o root -g root -m 0755 /etc/vulnix
+printf 'VULNIX_AUDIT_ANCHOR_SOCKET=/run/vulnix-anchor/anchor.sock\nVULNIX_AUDIT_ANCHOR_UID=%s\nVULNIX_AUDIT_ANCHOR_SOURCE=prod\n' \
+    "$(id -u vulnix-anchor)" > /etc/vulnix/anchor.env
+chmod 0644 /etc/vulnix/anchor.env
+
 # 6. services
-install -m 0644 "$here/vulnix-backend.service" "$here/vulnix-web.service" /etc/systemd/system/
+install -m 0644 "$here/vulnix-anchor.service" "$here/vulnix-backend.service" "$here/vulnix-web.service" /etc/systemd/system/
 systemctl daemon-reload
-systemctl enable --quiet vulnix-backend vulnix-web
+systemctl enable --quiet vulnix-anchor vulnix-backend vulnix-web
+systemctl restart vulnix-anchor
 systemctl restart vulnix-backend
 sleep 3
 systemctl restart vulnix-web

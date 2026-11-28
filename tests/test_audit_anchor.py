@@ -599,3 +599,73 @@ class TestDisabled(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPrivilegeChangesAreAnchored(unittest.TestCase):
+    def test_role_membership_and_account_changes_are_critical(self):
+        for e in ("operator.created", "operator.roles_changed", "auth.mfa_enabled", "tenancy.org_created",
+                  "tenancy.member_roles_changed", "tenancy.member_removed"):
+            self.assertTrue(is_anchored_event(e), e)
+
+
+class TestRestoreDetectsTheRollback(AnchorBase):
+    """deploy/debian13/restore.sh runs aegis.audit_check after extracting a backup: an older
+    backup of the data directory is a rollback the anchor (not in the backup) still sees."""
+
+    def setUp(self):
+        super().setUp()
+        self.root_data = self.root                     # the anchor root is the data directory
+        (self.root / "orgs" / "org_a").mkdir(parents=True)
+
+    def write(self, path, events):
+        log = self.audit(path)
+        for e in events:
+            log.record(e, actor="alice")
+
+    def test_a_restored_older_backup_is_reported_as_a_rollback_until_accepted(self):
+        from aegis.audit_check import check
+        platform = self.root / "platform-audit.jsonl"
+        org = self.root / "orgs" / "org_a" / "audit.jsonl"
+        self.write(platform, ["operator.created", "auth.login"])
+        self.write(org, ["allow", "result"])
+        backup = self.root.parent / (self.root.name + "-backup")
+        shutil.copytree(self.root, backup, ignore=shutil.ignore_patterns("anchor", "a.sock"))
+        self.addCleanup(shutil.rmtree, backup, True)
+        ok = check(self.root, anchor=self.client())
+        self.assertTrue(ok["chains_ok"] and ok["anchor_ok"], ok)
+        # work after the backup: a role change and a diagnosis
+        self.write(platform, ["operator.roles_changed"])
+        self.write(org, ["allow", "result"])
+        # restore the backup (the anchor keeps its own record)
+        for rel in ("platform-audit.jsonl", "orgs/org_a/audit.jsonl"):
+            shutil.copy2(backup / rel, self.root / rel)
+        rep = check(self.root, anchor=self.client())
+        self.assertTrue(rep["chains_ok"])                       # each chain alone still verifies
+        self.assertFalse(rep["anchor_ok"])
+        self.assertEqual(sorted(rep["mismatched_sources"]), [f"{NAME}:orgs/org_a/audit.jsonl",
+                                                             f"{NAME}:platform-audit.jsonl"])
+        self.assertEqual({e["anchor_error"] for e in rep["logs"]}, {"rollback"})
+        # while it stands, nothing the anchor protects is written: no new Worker run
+        self.assertRefused("rollback", self.audit(org).record, "allow", actor="alice")
+        self.assertRefused("rollback", self.audit(platform).record, "operator.roles_changed", actor="alice")
+        # the operator accepts the restore: the helper's own reset (not reachable from the socket)
+        for src in rep["mismatched_sources"]:
+            self.helper.store.reset(src)
+        again = check(self.root, anchor=self.client())
+        self.assertTrue(again["anchor_ok"], again)
+        self.audit(org).record("allow", actor="alice")         # anchoring resumes
+        self.assertTrue(any(r.get("reset") for r in self.helper.records()))   # the reset is on record
+
+    def test_without_an_anchor_only_the_chains_are_checked_and_a_broken_one_fails(self):
+        from aegis.audit_check import check, main
+        log = AuditLog(self.root / "audit.jsonl")
+        log.record("auth.login", actor="a")
+        log.record("auth.login", actor="b")
+        self.assertTrue(check(self.root, anchor=None)["chains_ok"])
+        lines = (self.root / "audit.jsonl").read_text().splitlines()
+        lines[0] = lines[0].replace('"a"', '"z"')
+        (self.root / "audit.jsonl").write_text("\n".join(lines) + "\n")
+        import contextlib
+        import io
+        with patch.dict(os.environ, {SOCKET_ENV: ""}), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(main(["--data-dir", str(self.root)]), 1)
