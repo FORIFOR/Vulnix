@@ -176,3 +176,79 @@ test("an allowlist guard and a fixed destination host are not open redirects", (
   ].join("\n");
   assert.deepEqual(kinds(code), ["redirect@13"]);
 });
+
+test("an allowlist that exits, safe_path, and a project helper are told apart from a direct flow", () => {
+  const src = [
+    "@app.get('/kits/{kid}/files/{name:path}')",
+    "async def member(kid: str, name: str):",
+    "    manifest = load(kid)",
+    "    if name not in manifest['files']:",
+    "        raise HTTPException(404, 'no')",
+    "    path = child(folder, name)",
+    "    return FileResponse(path)",
+    "",
+    "@app.get('/a/{name}')",
+    "async def a(name: str):",
+    "    return FileResponse(safe_path(root, name))",
+    "",
+    "@app.get('/r/{jid}')",
+    "async def r(jid: str):",
+    "    _, path = rendered(cid, jid)",
+    "    return FileResponse(path)",
+    "",
+    "@app.get('/d/{name}')",
+    "async def d(name: str):",
+    "    return FileResponse(os.path.join(root, name))",
+    "",
+    "@app.get('/q/{name}')",
+    "async def q(name: str, allowed: str):",
+    "    if name not in allowed:",
+    "        raise HTTPException(404, 'no')",
+    "    return FileResponse(name)",
+  ].join("\n");
+  const found = Object.fromEntries(pythonFlow(src).map((f) => [f.func, f]));
+  assert.equal(found.member, undefined);
+  assert.equal(found.a, undefined);
+  assert.equal(found.r.via, "rendered");                 // reported, as not followed
+  assert.equal(found.d.via, undefined);                  // a direct flow stays a finding
+  assert.equal(found.q.via, undefined);                  // an "allowlist" that is request data is not one
+  assert.equal(found.q.kind, "path");
+});
+
+test("an allowlist does not clear request data under another name, a nested check, or a sink on its exit line", () => {
+  const src = [
+    "@app.route('/a')",
+    "def a():",
+    "    body = request.get_json()",
+    "    name = request.args['n']",
+    "    if name not in body['allowed']:",
+    "        abort(400)",
+    "    return send_file(os.path.join(BASE, name))",
+    "",
+    "@app.route('/b')",
+    "def b():",
+    "    name = request.args['n']",
+    "    kind = request.args['k']",
+    "    if kind == 'img':",
+    "        if name not in IMAGES:",
+    "            abort(404)",
+    "    return send_file(os.path.join(BASE, name))",
+    "",
+    "@app.route('/c')",
+    "def c():",
+    "    url = request.args['u']",
+    "    if url not in SAFE:",
+    "        return redirect(url)",
+    "    return 'ok'",
+    "",
+    "@app.route('/d')",
+    "def d():",
+    "    name = unquote_plus(request.args['n'])",
+    "    return send_file(os.path.join(BASE, name))",
+  ].join("\n");
+  const found = Object.fromEntries(pythonFlow(src).map((f) => [`${f.func}:${f.kind}`, f]));
+  assert.ok(found["a:path"] && !found["a:path"].via);
+  assert.ok(found["b:path"] && !found["b:path"].via);
+  assert.ok(found["c:redirect"]);
+  assert.ok(found["d:path"] && !found["d:path"].via);
+});

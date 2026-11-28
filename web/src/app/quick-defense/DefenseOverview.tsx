@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { getJSON, postJSON } from "@/lib/api";
 
-type Row = { category: string; status: "confirmed" | "action" | "unknown" | "na"; title: string };
+type Row = { category: string; status: "confirmed" | "action" | "unknown" | "na"; title: string; testCode?: boolean };
 type AgentRow = {
   id: string; label: string; verdict: "blocked" | "breached" | "unverified" | "not_tested";
   blocked_by: "rule" | "approval_required" | null; advice: string | null; secret_reached_model: boolean;
@@ -19,11 +19,13 @@ export default function DefenseOverview({ rows, files, signedIn }: { rows: Row[]
   const agent = run && run.files === files && run.signedIn === signedIn ? run.report : null;
   const setAgent = (report: AgentReport | null) => setRun(report ? { files, signedIn, report } : null);
   const count = (pred: (r: Row) => boolean) => rows?.filter(pred).length ?? 0;
+  // the cards count the product's own code; findings in test code are counted apart
   const area = (category: string) => ({
-    action: count((r) => r.category === category && r.status === "action"),
-    confirmed: count((r) => r.category === category && r.status === "confirmed"),
-    unknown: count((r) => r.category === category && r.status === "unknown"),
+    action: count((r) => !r.testCode && r.category === category && r.status === "action"),
+    confirmed: count((r) => !r.testCode && r.category === category && r.status === "confirmed"),
+    unknown: count((r) => !r.testCode && r.category === category && r.status === "unknown"),
   });
+  const testFindings = count((r) => !!r.testCode && (r.status === "action" || r.status === "unknown"));
   const agentBreached = agent?.results?.filter((r) => r.verdict === "breached").length ?? 0;
   const agentBlocked = agent?.results?.filter((r) => r.verdict === "blocked" && r.blocked_by === "rule").length ?? 0;
   const agentPending = agent?.results?.filter((r) => r.verdict !== "breached" && !(r.verdict === "blocked" && r.blocked_by === "rule")).length ?? 0;
@@ -47,6 +49,8 @@ export default function DefenseOverview({ rows, files, signedIn }: { rows: Row[]
             <p className={`text-2xl font-semibold tabular-nums transition-all ${cls}`}>{n}</p>
           </div>)}
       </div>
+      {testFindings > 0 && <p className="text-xs text-zinc-500">上の件数は製品のコードの分です。テスト用コード（tests/ など）の所見 {testFindings} 件は、
+        下の一覧の後ろに「テスト用コード」として分けて表示しています。意図的な脆弱性のサンプルかどうかは、内容を見て判断してください。</p>}
       <div className="grid gap-2 sm:grid-cols-2">
         {cards.map((c) =>
           <div key={c.key} className="rounded-xl border border-zinc-200 bg-white p-3 transition-shadow hover:shadow-sm dark:border-zinc-800 dark:bg-zinc-900">

@@ -1520,6 +1520,7 @@ class AssessmentService:
                 raise PolicyError("この要求を出したワークスペースは停止または切り替え済みです")
             if self._unstopped_now_locked() or self.workers.busy_sessions():
                 raise PolicyError("停止を確認できていないWorkerが残っているため、新しいWorkerは起動しません")
+            self._a2b_guard_locked(host)
             if not self._in_ownership_flow(host):
                 return
             ext = self._external_entry(host)
@@ -1845,7 +1846,7 @@ class AssessmentService:
                     rec["id"] = "d" + secrets.token_hex(6)
             profile = build_profile(draft, profile_id_for(rec["id"]))   # DraftError for the user
             sha = hashlib.sha256(profile_bytes(profile)).hexdigest()
-            if draft_id and sha == rec.get("sha256"):
+            if draft_id and sha == rec.get("sha256") and rec["approval"].get("status") != "suspended":
                 return self._a2b_view(rec)
             was = rec["approval"].get("status")
             self._audit_first("a2b.draft_saved", actor=actor, draft=rec["id"], profile=profile["id"],
@@ -1892,6 +1893,10 @@ class AssessmentService:
                 raise ValueError("下書きの内容が表示時から変わっています。内容を確認し直してください")
             if actor in (rec["approval"].get("requested_by"), rec.get("saved_by")):
                 raise ValueError("承認を依頼した本人・下書きを保存した本人は承認できません。別の管理者が承認してください")
+            gone = self._a2b_authority_failure({**rec, "approval": {**rec["approval"], "approved_by": None,
+                                                                    "status": "requested"}})
+            if gone:
+                raise ValueError(gone)
             hosts = set(rec["profile"]["applies_to"]["hosts"])
             taken = sorted(pid for pid, prof in self.l2.profiles.items()
                            if pid != rec["profile_id"] and hosts & set(prof.get("hosts") or []))
@@ -1930,7 +1935,89 @@ class AssessmentService:
                 raise err
             return self._a2b_view(rec)
 
-    def _a2b_unload_locked(self, rec: dict, actor: str, event: str) -> AuditWriteFailed | None:
+    # Set by the server: (account, "platform_admin" | "org_operator") -> whether the account
+    # holds that authority NOW. None (no server, e.g. a library caller) checks nothing.
+    _authority = None
+
+    def _a2b_authority_failure(self, rec: dict) -> str | None:
+        """Why an approved or requested draft has lost the authority it was given with."""
+        check = self._authority
+        if check is None:
+            return None
+        ap = rec.get("approval") or {}
+        if ap.get("status") == "approved" and not check(ap.get("approved_by") or "", "platform_admin"):
+            return "承認した管理者がプラットフォーム管理者の権限を失いました。権限のある管理者の再承認が必要です"
+        for who in dict.fromkeys(x for x in (ap.get("requested_by"), rec.get("saved_by")) if x):
+            if not check(who, "org_operator"):
+                return ("承認を依頼した人（または下書きを保存した人）がこの組織での操作権限を失いました。"
+                        "権限のある人が下書きを保存し直し、承認を依頼し直してください")
+        return None
+
+    def _a2b_suspend_locked(self, rec: dict, reason: str, actor: str) -> AuditWriteFailed | None:
+        """Take the approval away (a removal of authority: applied first, recorded after).
+        The draft, its history and the audit records stay."""
+        err = self._a2b_unload_locked(rec, actor, "a2b.approval_suspended", reason=reason,
+                                      approved_by=rec["approval"].get("approved_by"),
+                                      requested_by=rec["approval"].get("requested_by"))
+        rec["approval"] = {"status": "suspended", "reason": reason, "suspended_at": time.time(),
+                           "was": rec["approval"].get("status"),
+                           "approved_by": rec["approval"].get("approved_by"),
+                           "requested_by": rec["approval"].get("requested_by")}
+        self._a2b_write(rec)
+        return err
+
+    def enforce_a2b_authority(self, actor: str = "system:authority") -> list[str]:
+        """Suspend every approved or requested draft whose approver, requester or saver no
+        longer holds the authority it was given with. A run of the same host in progress is
+        stopped first. Called after role and membership changes, at start and before launch."""
+        if self._authority is None:
+            return []
+        suspended, errors = [], []
+        with self._lock:
+            for f in sorted(self._a2b_dir().glob("d*.json")):
+                try:
+                    rec = json.loads(f.read_text(encoding="utf-8"))
+                    if rec.get("approval", {}).get("status") not in ("approved", "requested"):
+                        continue
+                    reason = self._a2b_authority_failure(rec)
+                except Exception:   # noqa: BLE001 - one unreadable record never stops the others
+                    continue
+                if not reason:
+                    continue
+                try:
+                    hosts = {h.lower() for h in rec["profile"]["applies_to"]["hosts"]}
+                    if (rec["approval"]["status"] == "approved" and self.a.state in ("running", "paused")
+                            and (self.a.asset.get("name") or "").lower() in hosts):
+                        self.emergency_stop(actor)          # the run that relied on this approval ends
+                    err = self._a2b_suspend_locked(rec, reason, actor)
+                except Exception as e:   # noqa: BLE001 - the others are still suspended; the launch guard refuses this one
+                    errors.append(e)
+                    continue
+                if err:
+                    errors.append(err)
+                suspended.append(rec["id"])
+        if errors:
+            raise errors[0]
+        return suspended
+
+    def _a2b_guard_locked(self, host: str) -> None:
+        """At a worker launch: an approved draft for this host whose authority is gone is
+        suspended now, and the launch is refused (whatever the server has noticed so far)."""
+        if self._authority is None or not host:
+            return
+        for f in sorted(self._a2b_dir().glob("d*.json")):
+            try:
+                rec = json.loads(f.read_text(encoding="utf-8"))
+                hosts = {h.lower() for h in rec["profile"]["applies_to"]["hosts"]}
+            except Exception:   # noqa: BLE001 - an unreadable record has no loaded profile of its own
+                continue
+            if rec.get("approval", {}).get("status") == "approved" and host.lower() in hosts:
+                reason = self._a2b_authority_failure(rec)
+                if reason:
+                    self._a2b_suspend_locked(rec, reason, "system:authority")
+                    raise PolicyError(f"{host} の検証内容の承認は停止されました: {reason}")
+
+    def _a2b_unload_locked(self, rec: dict, actor: str, event: str, **extra) -> AuditWriteFailed | None:
         """Remove the profile file and its acceptance: nothing of this draft stays runnable.
         A removal of authority: applied first, whatever the audit log does, then recorded;
         a failed record is returned for the caller to report after finishing."""
@@ -1944,7 +2031,7 @@ class AssessmentService:
             self.l2 = self._read_l2_profiles()
             self._apply_profile_acceptance_locked()
         self._save_state_locked()
-        return self._audit_reduction(event, actor=actor, draft=rec["id"], profile=pid)
+        return self._audit_reduction(event, actor=actor, draft=rec["id"], profile=pid, **extra)
 
     def accept_l2_profile(self, profile_id: str, sha256: str, actor: str) -> dict:
         """An admin accepts the exact content of a site profile. The file is read
@@ -4852,6 +4939,10 @@ class AssessmentService:
             raise ValueError("このL2検証には、別の担当者による実行依頼が必要です（依頼が無いか、期限切れです）")
         if req.get("requested_by") == approver:
             raise ValueError("依頼した本人は承認できません。別の承認責任者が承認してください")
+        if self._authority is not None and not self._authority(req.get("requested_by") or "", "org_operator"):
+            self._l2_requests.pop(finding_id, None)
+            raise ValueError("このL2検証を依頼した人がこの組織での操作権限を失ったため、依頼は無効になりました。"
+                             "権限のある人が依頼し直してください")
         return req
 
     def _take_rerun_request(self, finding_id: str, check_id: str, approver: str) -> dict | None:

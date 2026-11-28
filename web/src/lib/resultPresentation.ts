@@ -6,8 +6,9 @@ export const advisorySeverityLabels: Record<Severity, string> = {
 };
 const rank = (severity?: Severity) => severity ? severityOrder[severity] : 4;
 
-export function sortByAdvisorySeverity<T extends { severity?: Severity }>(rows: readonly T[]): T[] {
-  return [...rows].sort((a, b) => rank(a.severity) - rank(b.severity));
+export function sortByAdvisorySeverity<T extends { severity?: Severity; testCode?: boolean }>(rows: readonly T[]): T[] {
+  // the product's own code first, test code after it, each by severity
+  return [...rows].sort((a, b) => Number(!!a.testCode) - Number(!!b.testCode) || rank(a.severity) - rank(b.severity));
 }
 
 type Finding = {

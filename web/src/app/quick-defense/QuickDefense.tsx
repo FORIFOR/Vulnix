@@ -151,7 +151,7 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
         setEnded("timeout");
       }, 35000);
       running.current = finish;
-      worker.onmessage = ({ data }: MessageEvent<{ result?: ProjectReport; progress?: ScanProgress }>) => {
+      worker.onmessage = ({ data }: MessageEvent<{ result?: ProjectReport; progress?: ScanProgress; error?: true | "entry-limit" }>) => {
         if (data.progress) {
           setProgress(data.progress);
           return;
@@ -159,7 +159,9 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
         finish();
         setBusy(false);
         if (!data.result) {
-          setError("検証を完了できませんでした。フォルダを選び直してください。");
+          setError(data.error === "entry-limit"
+            ? "診断する設定・コードのファイルが多すぎます（上限 12,000 件）。リポジトリ全体ではなく、アプリのフォルダ（例: backend や web）を選んでください。"
+            : "検証を完了できませんでした。フォルダを選び直してください。");
           return;
         }
         setReport(data.result);
@@ -218,13 +220,14 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
         <label className="block text-sm font-semibold">プロジェクトフォルダを選択
           <input ref={folderInput} type="file" {...{ webkitdirectory: "" }} multiple disabled={busy} className="mt-2 block w-full text-sm" onChange={(event) => {
             const list = event.target.files;
-            const tooMany = (list?.length ?? 0) > 12000;
+            // files the scan never reads (images, generated reports) only have their names checked
+            const tooMany = (list?.length ?? 0) > 200000;
             setFiles(!tooMany && list ? Array.from(list) : []);
             setReport(null);
             setResults(null);
             setProgress(null);
             setEnded(null);
-            setError(tooMany ? "ファイルが12,000件を超えています。さらに小さいフォルダを選んでください。" : "");
+            setError(tooMany ? "ファイルが20万件を超えています。さらに小さいフォルダを選んでください。" : "");
             event.target.value = "";
           }} />
         </label>
@@ -334,7 +337,8 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
             onClick={() => (files.length ? folderInput : sbomInput).current?.click()}>{files.length ? "修正後のフォルダを選ぶ" : "更新したSBOMを選ぶ"}</button>}
         </div>
         <p role="status" className="text-sm">{Object.keys(labels).map((key) =>
-          `${statusLabel(key as keyof typeof labels)} ${visible.filter((row) => row.status === key).length}件`).join(" ・ ")}</p>
+          `${statusLabel(key as keyof typeof labels)} ${visible.filter((row) => row.status === key).length}件`).join(" ・ ")}
+          {visible.some((row) => row.testCode) && `（うちテスト用コード ${visible.filter((row) => row.testCode).length}件。一覧の後ろに分けて表示）`}</p>
         <StatusBar rows={visible} label={statusLabel} active={statusFilter}
           onSelect={(key) => { setStatusFilter(key === statusFilter ? null : key); setDisplay(100); }} />
         {report && <p className="text-sm">
@@ -382,7 +386,7 @@ export default function QuickDefense({ bundledFeed }: { bundledFeed: unknown }) 
         </details>}
         <p className="text-sm">個別結果は勧告の重大度順です（Critical → High → Medium → Low → 重大度不明）。対象サービスでの実際の影響は未確認です。</p>
         {shown.slice(0, display).map((row, index) => <details key={index} className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
-          <summary className="cursor-pointer font-medium">{row.category} ／ {row.title} ／ {statusLabel(row.status)}{row.severity && ` ／ 勧告の重大度 ${advisorySeverityLabels[row.severity]}`}</summary>
+          <summary className="cursor-pointer font-medium">{row.testCode && <span className="mr-1 rounded bg-zinc-100 px-1.5 py-0.5 text-xs font-normal text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">テスト用コード</span>}{row.category} ／ {row.title} ／ {statusLabel(row.status)}{row.severity && ` ／ 勧告の重大度 ${advisorySeverityLabels[row.severity]}`}</summary>
           <dl className="mt-2 space-y-1 break-words text-sm">
             {(row.locations?.length || row.location) && <><dt className="font-semibold">修正箇所</dt>
               {(row.locations ?? (row.location ? [row.location] : [])).map((location, i) => <dd key={i} className="font-mono">

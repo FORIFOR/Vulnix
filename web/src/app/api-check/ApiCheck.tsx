@@ -15,7 +15,7 @@ const KINDS = Object.keys(KIND_LABEL) as ApiKind[];
 const SOURCE_EXT = /\.(?:py|js|ts|mjs|cjs)$/i;
 const SPEC_NAME = /(?:openapi|swagger)[^/]*\.(?:json|ya?ml)$/i;
 
-type Approval = { status: "draft" | "requested" | "approved" | "changed" | "revoked"; voided?: string };
+type Approval = { status: "draft" | "requested" | "approved" | "changed" | "revoked" | "suspended"; voided?: string; reason?: string };
 export type Draft = { id: string; name: string; host: string; sha256: string; revision: number; saved_by: string;
   checks: { kind: string; label: string; confirmed: boolean }[]; approval: Approval; approved_profile_loaded: boolean };
 type DraftList = { drafts: Draft[]; org: string; may_approve: boolean };
@@ -26,6 +26,7 @@ const STATUS: Record<Approval["status"], { label: string; tone: string }> = {
   approved: { label: "承認済み（実行には項目ごとの承認が必要）", tone: "bg-emerald-50 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200" },
   changed: { label: "内容が変わったため承認は無効", tone: "bg-red-50 text-red-800 dark:bg-red-950/40 dark:text-red-200" },
   revoked: { label: "取り下げ済み", tone: "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400" },
+  suspended: { label: "権限の失効により停止中", tone: "bg-red-50 text-red-800 dark:bg-red-950/40 dark:text-red-200" },
 };
 /** The four steps a user sees; none of the earlier ones gives the power of a later one. */
 const STEPS = ["仕様と試験データの確認", "下書きを保存", "管理者の承認", "実行の許可（項目ごと）"];
@@ -258,9 +259,12 @@ function DraftStatus({ draft, onChange }: { draft: Draft; onChange: (d: Draft) =
       <span className={`rounded-full px-2 py-0.5 text-xs ${st.tone}`}>{st.label}</span>
       {draft.approval.voided && <span className="text-xs text-red-700 dark:text-red-300">変更により以前の承認は無効になりました</span>}
     </div>
+    {draft.approval.status === "suspended" && draft.approval.reason &&
+      <p className="text-xs text-red-700 dark:text-red-300">{draft.approval.reason}</p>}
     <p className="text-xs text-zinc-500">仕様確認済みの項目 {confirmed} / {draft.checks.length}（未確認の候補は承認されても実行されません）・第 {draft.revision} 版</p>
     <div className="flex flex-wrap gap-2">
-      {(draft.approval.status === "draft" || draft.approval.status === "changed" || draft.approval.status === "revoked") &&
+      {(draft.approval.status === "draft" || draft.approval.status === "changed" || draft.approval.status === "revoked"
+        || draft.approval.status === "suspended") &&
         <button type="button" className={btn} disabled={busy || confirmed === 0}
           onClick={() => void act("/api/assets/a2b-drafts/request", { id: draft.id, sha256: draft.sha256 })}>管理者に承認を依頼</button>}
       {(draft.approval.status === "requested" || draft.approval.status === "approved" || draft.approval.status === "changed") &&

@@ -273,3 +273,27 @@ test("npm: an imported package is marked, one only in the manifest is not direct
   assert.equal(where["left-pad"], "imported");
   assert.equal(where["unused-lib"], "not_imported_directly");
 });
+
+test("findings in test code are still reported, marked and listed after the product's own", async () => {
+  const report = await scanProject([
+    fixture("tests/fixtures/Dockerfile", "FROM python:3.13-slim\n"),
+    fixture("backend/Dockerfile", "FROM python:3.13-slim\n"),
+    fixture("web/src/app.test.ts", "el.innerHTML = location.hash;\n"),
+  ], { vulnerabilities: [], osv: [] });
+  const docker = report.rows.filter((row) => row.location?.path?.endsWith("Dockerfile"));
+  assert.equal(docker.length, 2);                                     // nothing is dropped
+  const testRow = docker.find((row) => row.location.path === "tests/fixtures/Dockerfile");
+  const prodRow = docker.find((row) => row.location.path === "backend/Dockerfile");
+  assert.equal(testRow.testCode, true);
+  assert.equal(prodRow.testCode, undefined);
+  assert.ok(report.rows.indexOf(prodRow) < report.rows.indexOf(testRow));
+  assert.ok(report.rows.filter((row) => row.testCode).every((row, i, all) => report.rows.indexOf(row) >= report.rows.length - all.length));
+});
+
+test("many files the scan never reads do not stop it; too many readable ones still do", async () => {
+  const media = Array.from({ length: limits.entries + 10 }, (_, i) => fixture(`docs/quality/shot-${i}.png`, ""));
+  const report = await scanProject([...media, fixture("Dockerfile", "FROM python:3.13-slim\n")], { vulnerabilities: [], osv: [] });
+  assert.ok(report.rows.some((row) => row.location?.path === "Dockerfile"));
+  const code = Array.from({ length: limits.entries + 1 }, (_, i) => fixture(`src/m${i}.py`, ""));
+  await assert.rejects(scanProject(code, { vulnerabilities: [], osv: [] }), /entry-limit/);
+});

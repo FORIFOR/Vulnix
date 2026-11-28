@@ -38,5 +38,5 @@ const files = [];
 const feed = process.argv[3] ? JSON.parse(readFileSync(process.argv[3], "utf8")) : { vulnerabilities: [] };
 const report = await scanProject(files, feed);
 const rows = report.rows.map((r) => ({ status: r.status, title: r.title, kind: r.kind, path: r.location?.path, line: r.location?.line,
-  fixes: (r.fixes || []).length || undefined }));
+  fixes: (r.fixes || []).length || undefined, testCode: r.testCode || undefined }));
 console.log(JSON.stringify({ read: report.read, unsupported: report.unsupported, files: files.length, rows }, null, 1));

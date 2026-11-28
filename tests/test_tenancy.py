@@ -2179,6 +2179,107 @@ class TestTenantIsolationOverHttp(unittest.TestCase):
         self.reg.store._data["orgs"][oa]["members"]["alice"] = ["viewer"]
         self.assertEqual(self.req(a, "/assets/a2b-drafts", {"draft": DRAFT}, org=oa)[0], 403)
 
+    def test_a2b_approval_stops_when_the_approver_or_the_requester_loses_authority(self):
+        from tests.test_a2b_profile import DRAFT
+        from aegis.policy import PolicyError
+        a = self.signup("alice")
+        oa = a["orgs"][0]["id"]
+        p = self.login("padmin", "padmin-pw-1")
+        osvc = self.reg.service(oa)
+
+        def approved(user, by, draft=DRAFT):
+            _, d = self.req(user, "/assets/a2b-drafts", {"draft": draft}, org=oa)
+            self.assertEqual(self.req(user, "/assets/a2b-drafts/request", {"id": d["id"], "sha256": d["sha256"]}, org=oa)[0], 200)
+            code, r = self.req(by, "/a2b/approve", {"org": oa, "id": d["id"], "sha256": d["sha256"]})
+            self.assertEqual(code, 200, r)
+            return d
+
+        def runnable(d):
+            return [c for c in osvc.l2.runnable_check_ids() if c.startswith(d["profile_id"])]
+
+        def view(user, d):
+            return next(x for x in self.req(user, "/assets/a2b-drafts", org=oa)[1]["drafts"] if x["id"] == d["id"])
+
+        # 1. the approving platform admin loses the admin role: suspended, re-approval needed
+        self.ops.create_account("padmin2", "padmin2-Passw0rd!", actor="padmin")
+        self.ops.set_roles("padmin2", ["approver", "admin"], actor="padmin")
+        q = self.login("padmin2", "padmin2-Passw0rd!")
+        d1 = approved(a, p)
+        self.assertTrue(runnable(d1))
+        self.assertEqual(self.req(q, "/operators/roles", {"name": "padmin", "roles": ["operator"]})[0], 200)
+        self.assertFalse(runnable(d1))
+        v = view(a, d1)
+        self.assertEqual(v["approval"]["status"], "suspended")
+        self.assertIn("承認した管理者", v["approval"]["reason"])
+        self.assertEqual(v["draft"], DRAFT)                                   # the draft itself is kept
+        self.assertEqual(self.req(p, "/a2b/approve", {"org": oa, "id": d1["id"], "sha256": d1["sha256"]})[0], 403)
+        self.assertEqual(self.req(a, "/assets/a2b-drafts/request", {"id": d1["id"], "sha256": d1["sha256"]}, org=oa)[0], 200)
+        self.assertEqual(self.req(q, "/a2b/approve", {"org": oa, "id": d1["id"], "sha256": d1["sha256"]})[0], 200)
+        self.assertTrue(runnable(d1))
+        self.assertEqual(self.req(a, "/assets/a2b-drafts/withdraw", {"id": d1["id"]}, org=oa)[0], 200)
+        # 2. the requester leaves the organization: approved and requested drafts are suspended
+        token = self.req(a, "/orgs/invites", {"roles": ["runner"]}, org=oa)[1]["token"]
+        b = self.signup("bobby")
+        self.assertEqual(self.req(b, "/invites/accept", {"token": token})[0], 200)
+        d2 = approved(b, q)
+        _, d3 = self.req(b, "/assets/a2b-drafts", {"draft": DRAFT}, org=oa)
+        self.assertEqual(self.req(b, "/assets/a2b-drafts/request", {"id": d3["id"], "sha256": d3["sha256"]}, org=oa)[0], 200)
+        self.assertTrue(runnable(d2))
+        self.assertEqual(self.req(a, "/orgs/members/remove", {"name": "bobby"}, org=oa)[0], 200)
+        self.assertFalse(runnable(d2))
+        self.assertEqual(view(a, d2)["approval"]["status"], "suspended")
+        self.assertIn("依頼", view(a, d2)["approval"]["reason"])
+        self.assertEqual(view(a, d3)["approval"]["status"], "suspended")
+        self.assertEqual(self.req(q, "/a2b/approve", {"org": oa, "id": d3["id"], "sha256": d3["sha256"]})[0], 400)
+        # a member who holds the role saves the same content again: it becomes theirs and can be approved
+        code, r = self.req(a, "/assets/a2b-drafts", {"draft": DRAFT, "id": d3["id"]}, org=oa)
+        self.assertEqual((code, r["approval"]["status"], r["saved_by"]), (200, "draft", "alice"))
+        self.assertEqual(self.req(a, "/assets/a2b-drafts/request", {"id": d3["id"], "sha256": r["sha256"]}, org=oa)[0], 200)
+        self.assertEqual(self.req(q, "/a2b/approve", {"org": oa, "id": d3["id"], "sha256": r["sha256"]})[0], 200)
+        self.assertEqual(self.req(a, "/assets/a2b-drafts/withdraw", {"id": d3["id"]}, org=oa)[0], 200)
+        events = [e["event"] for e in osvc.audit.entries()]
+        self.assertGreaterEqual(events.count("a2b.approval_suspended"), 3)
+        # 3. a change made while the server was down: the next start suspends it,
+        #    and the launch guard refuses even before that
+        d4 = approved(a, q)
+        self.assertTrue(runnable(d4))
+        self.reg.store._data["orgs"][oa]["members"]["alice"] = ["viewer"]     # out of band
+        h = d4["host"]
+        with osvc._lock, self.assertRaises(PolicyError):
+            osvc._a2b_guard_locked(h)
+        self.assertFalse(runnable(d4))
+        self.reg.store._data["orgs"][oa]["members"]["alice"] = ["owner"]
+        self.assertEqual(self.req(a, "/assets/a2b-drafts/request", {"id": d4["id"], "sha256": d4["sha256"]}, org=oa)[0], 200)
+        self.assertEqual(self.req(q, "/a2b/approve", {"org": oa, "id": d4["id"], "sha256": d4["sha256"]})[0], 200)
+        self.reg.store._data["orgs"][oa]["members"]["alice"] = ["viewer"]
+        make_handler(self.svc, self.ops, tenancy=self.reg, public_signup=True)   # a restart
+        self.assertFalse(runnable(d4))
+        self.assertEqual(osvc._a2b_read(d4["id"])["approval"]["status"], "suspended")
+        # 4. a run of that host in progress is stopped
+        self.reg.store._data["orgs"][oa]["members"]["alice"] = ["owner"]
+        self.assertEqual(self.req(a, "/assets/a2b-drafts/request", {"id": d4["id"], "sha256": d4["sha256"]}, org=oa)[0], 200)
+        self.assertEqual(self.req(q, "/a2b/approve", {"org": oa, "id": d4["id"], "sha256": d4["sha256"]})[0], 200)
+        with osvc._lock:
+            osvc.a.asset["name"] = h
+            osvc._set_state("running")
+        self.assertEqual(self.req(q, "/operators/roles", {"name": "padmin2", "roles": ["operator"]})[0] in (403, 409), True)  # not on oneself
+        self.assertEqual(self.req(p, "/operators/roles", {"name": "padmin2", "roles": ["operator"]})[0], 403)  # p is no admin now
+        self.ops.set_roles("padmin", ["approver", "admin"], actor="padmin2")
+        p = self.login("padmin", "padmin-pw-1")
+        self.assertEqual(self.req(p, "/operators/roles", {"name": "padmin2", "roles": ["operator"]})[0], 200)
+        self.assertEqual(osvc.a.state, "stopped")
+        self.assertFalse(runnable(d4))
+        self.assertTrue(list(osvc._a2b_dir().glob(f"{d4['id']}.json")))        # records stay
+        # 5. a pending L2 run request of someone who lost the role is void
+        from unittest.mock import patch as _patch
+        osvc._l2_requests["f1"] = {"requested_by": "alice", "requested_at": time.time(), "check": "c1", "host": h}
+        self.reg.store._data["orgs"][oa]["members"]["alice"] = ["viewer"]
+        with _patch.object(type(osvc), "_separation_required", return_value=True):
+            with self.assertRaises(ValueError) as e:
+                osvc._take_l2_request("f1", "c1", "padmin")
+        self.assertIn("権限を失った", str(e.exception))
+        self.assertNotIn("f1", osvc._l2_requests)
+
     def test_pre_existing_accounts_keep_the_existing_workspace(self):
         p = self.login("padmin", "padmin-pw-1")
         self.assertEqual(self.add_site(p, "legacy.lab.test")[0], 200)

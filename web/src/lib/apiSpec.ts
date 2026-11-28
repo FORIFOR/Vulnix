@@ -10,6 +10,8 @@ export type ApiEndpoint = {
   /** "none": the definition declares no authentication; "declared": it declares some; "unknown": it does not say. */
   auth: "none" | "declared" | "unknown";
   admin: boolean; orgParam: string | null; idParam: string | null; sensitive: string[];
+  /** Where a "declared" came from, or why a route behind an app-wide check is still unknown. */
+  authBasis?: "route" | "middleware" | "middleware_excluded" | "middleware_conditional";
 };
 export type ApiCandidate = { kind: ApiKind; endpoint: ApiEndpoint; reason: string; unknown: string[] };
 export type ApiAnalysis = { title: string; host: string | null; endpoints: ApiEndpoint[]; candidates: ApiCandidate[]; notes: string[] };
@@ -56,7 +58,11 @@ function candidates(e: ApiEndpoint): ApiCandidate[] {
   if (e.auth === "none" && !PUBLIC.test(e.path))
     out.push({ kind: "auth", endpoint: e, reason: "定義上、認証なしで呼べる", unknown: ["公開してよいAPIか（利用者の確認が必要）"] });
   if (e.auth === "unknown")
-    out.push({ kind: "auth", endpoint: e, reason: "認証の有無を定義から読み取れない", unknown: ["実装上の認証の有無"] });
+    out.push({ kind: "auth", endpoint: e, reason: e.authBasis === "middleware_excluded"
+      ? "アプリ全体の認証ミドルウェアの対象外と読める（除外されているか、確認されるパスに含まれない）"
+      : e.authBasis === "middleware_conditional"
+        ? "アプリ全体の認証ミドルウェアが、認証情報の無い要求や一部のパスだけを確認する書き方で、このルートが確認されるか読み取れない"
+        : "認証の有無を定義から読み取れない", unknown: ["実装上の認証の有無"] });
   if (e.idParam && !e.admin)
     out.push({ kind: "cross_account", endpoint: e, reason: `資源を識別するパラメーター {${e.idParam}} がある`, unknown: [owner, data] });
   if (e.orgParam)
@@ -131,12 +137,17 @@ export function analyzeRoutes(files: { path: string; text: string }[]): ApiAnaly
   const middlewareFiles: string[] = [];
   for (const { path: file, text } of files) {
     const lines = text.split("\n");
-    // an app-wide HTTP middleware that answers 401: every route of this app is behind it
-    const mw = text.match(/@app\.middleware\(\s*["']http["']\s*\)[\s\S]{0,800}?status_code\s*=\s*401/);
-    if (mw) middlewareFiles.push(file);
+    // an app-wide HTTP middleware that answers 401 declares auth for the routes of this file,
+    // except the paths it names (exclusions such as "/health" or a PUBLIC_PATHS set)
+    const mw = middleware401(lines, files);
+    if (mw) middlewareFiles.push(`${file}: アプリ全体のミドルウェアが 401 を返します。`
+      + (mw.optional ? "認証情報が無い要求を通すか、確認するパスを読み取れない書き方のため、このファイルのルートは未確認のままです"
+        : "対象と読めるルートを「認証の宣言あり」とし、除外されるパス・対象外のパスは未確認のままにしました")
+      + (mw.bypass.length ? `。認証を求めない条件があります（${mw.bypass.join("、")}）。設定や送信元によっては認証が外れます` : ""));
     lines.forEach((line, i) => {
       const py = line.match(/^\s*@\w+\.(route|get|post|put|patch|delete)\(\s*["']([^"']+)["'](.*)$/);
-      const js = line.match(/\b(?:app|router)\.(get|post|put|patch|delete)\(\s*["'`]([^"'`]+)["'`]/);
+      // a Python decorator line also looks like `app.get("...")`: it is never read as JavaScript
+      const js = py ? null : line.match(/\b(?:app|router)\.(get|post|put|patch|delete)\(\s*["'`]([^"'`]+)["'`]/);
       if (!py && !js) return;
       const [verb, route, rest] = py ? [py[1], py[2], py[3]] : [js![1], js![2], line];
       const methods = verb === "route" ? (rest.match(/methods\s*=\s*\[([^\]]*)\]/)?.[1].match(/[A-Za-z]+/g) ?? ["GET"]) : [verb];
@@ -151,15 +162,120 @@ export function analyzeRoutes(files: { path: string; text: string }[]): ApiAnaly
         while (end < lines.length - 1 && end - i < 14 && !/\)\s*(?:->[^:]*)?:\s*(?:#.*)?$/.test(lines[end])) end++;
         block = lines.slice(start, end + 1).join("\n");
       }
-      const auth = AUTH_DECORATOR.test(block) || (aliasUse?.test(block) ?? false) || (py && mw)
-        || (js && /\b(?:auth|authenticate|requireAuth|passport)\w*/.test(line)) ? "declared" : "unknown";
+      const own = AUTH_DECORATOR.test(block) || (aliasUse?.test(block) ?? false)
+        || (!!js && /\b(?:auth|authenticate|requireAuth|passport)\w*/.test(line.replace(js[0], "")));
+      const covers = py && mw ? middlewareCovers(mw, route) : null;
+      const viaMw = covers === "yes";
+      const auth = own || viaMw ? "declared" : "unknown";
+      const basis = own ? "route" : viaMw ? "middleware" : covers === "no" ? "middleware_excluded"
+        : covers === "unknown" ? "middleware_conditional" : undefined;
       const admin = ADMIN_DECORATOR.test(block) || (!!js && /\b(?:admin|requireRole\(\s*["']admin)/i.test(line));
-      for (const m of methods) endpoints.push(endpoint(m, route, `${file}:${i + 1}`, auth, admin));
+      for (const m of methods) endpoints.push({ ...endpoint(m, route, `${file}:${i + 1}`, auth, admin), ...(basis ? { authBasis: basis } : {}) });
     });
   }
   return { title: "プロジェクトのルート定義", host: null, endpoints, candidates: endpoints.flatMap(candidates),
     notes: ["ソースのルート定義から読み取った候補です。認証の有無はデコレーター・依存関係・アプリ全体のミドルウェアから推定できた場合だけ「宣言あり」とし、それ以外は未確認です",
-      ...middlewareFiles.map((f) => `${f}: アプリ全体のミドルウェアが 401 を返すため、このファイルのルートは「認証の宣言あり」としました（除外パスと実装は未確認）`)] };
+      "「宣言あり」はコード上の宣言です。実際に認証が強制されているかは、承認後に試験用アカウントで実行して確かめるまで分かりません",
+      ...middlewareFiles] };
+}
+
+type Middleware = {
+  /** paths it lets through without the check: exact values, and prefixes (startswith) */
+  exact: string[]; prefix: string[];
+  /** when it checks only some paths: those (exact / prefix); empty = every other path */
+  onlyExact: string[]; onlyPrefix: string[];
+  /** conditions other than the path under which the 401 is never reached */
+  bypass: string[];
+  /** the check runs only when a credential is present (`if token and not verify(token)`) */
+  optional: boolean;
+};
+
+/** The body of a FastAPI/Starlette `@app.middleware("http")` that returns 401, read as far as
+ * this static reading can: which paths its conditions name (directly or through a constant of
+ * this or another file), whether they are let through or are the only ones checked, and the
+ * other conditions under which the 401 is not reached. Anything it cannot place stays unknown. */
+function middleware401(lines: string[], files: { path: string; text: string }[]): Middleware | null {
+  const at = lines.findIndex((l) => /^@\w+\.middleware\(\s*["']http["']\s*\)/.test(l));
+  if (at < 0) return null;
+  let end = at + 1;
+  while (end < lines.length && (end <= at + 1 || !/^\S/.test(lines[end]) || /^\s*#/.test(lines[end]))) end++;
+  const bodyLines = lines.slice(at, end);
+  const at401 = bodyLines.findIndex((l) => /status_code\s*=\s*401|HTTP_401_UNAUTHORIZED/.test(l));
+  if (at401 < 0) return null;
+  const sources = [lines, ...files.map((f) => f.text.split("\n"))];
+  const literals = (t: string) => [...t.matchAll(/["'](\/[^"'\s]*)["']/g)].map((m) => m[1]);
+  // a constant's path literals: `NAME = {...}` here or in another file (`access.OPEN_PATHS`)
+  const resolve = (expr: string) => {
+    const out = literals(expr);
+    for (const ref of expr.match(/[A-Za-z_][\w.]*/g) ?? []) {
+      const name = ref.split(".").pop()!;
+      if (/^(?:request|url|path|not|in|and|or|startswith|endswith)$/.test(name)) continue;
+      for (const src of sources) {
+        const def = src.findIndex((l) => new RegExp(`^${name}\\s*(?::[^=]*)?=`).test(l));
+        if (def < 0) continue;
+        let stop = def;
+        while (stop < src.length - 1 && stop - def < 40 && !/[\])}]\s*$/.test(src[stop]) && !/=\s*["'][^"']*["']\s*$/.test(src[stop])) stop++;
+        out.push(...literals(src.slice(def, stop + 1).join("\n")));
+        break;
+      }
+    }
+    return out;
+  };
+  const m: Middleware = { exact: [], prefix: [], onlyExact: [], onlyPrefix: [], bypass: [], optional: false };
+  const indentOf = (l: string) => l.match(/^\s*/)![0].length;
+  const cond = (l: string) => /^\s*(?:if|elif)\s+(.+?):\s*(?:#.*)?$/.exec(l)?.[1];
+  // read one condition; `skips` = true when meeting it means the check is skipped
+  const read = (c: string, skips: boolean) => {
+    for (const raw of c.split(/\s+(?:and|or)\s+/)) {
+      let clause = raw.trim();
+      const count = (t: string, c: string) => t.split(c).length - 1;
+      while (clause.startsWith("(") && count(clause, "(") > count(clause, ")")) clause = clause.slice(1).trim();
+      while (clause.endsWith(")") && count(clause, ")") > count(clause, "(")) clause = clause.slice(0, -1).trim();
+      const negated = /^not\s+/.test(clause) || /\snot\s+in\s/.test(clause);
+      if (/\bpath\b|\burl\b/.test(clause)) {
+        const starts = /startswith\s*\(/.test(clause);
+        const values = resolve(clause.replace(/^.*?(?:\snot\s+in\s|\sin\s|startswith\s*\()/, ""));
+        // "skipped when it matches" = let through; "checked only when it matches" = the only ones checked
+        const letThrough = skips !== negated;
+        (letThrough ? (starts ? m.prefix : m.exact) : (starts ? m.onlyPrefix : m.onlyExact)).push(...values);
+        if (!values.length && !letThrough) m.optional = true;      // only some paths, which we cannot tell
+        if (!values.length && letThrough) m.bypass.push(clause.slice(0, 60));
+        continue;
+      }
+      if (!skips && /^[A-Za-z_][\w.]*$/.test(clause)) { m.optional = true; continue; }   // `if token and not verify(token)`
+      const call = /^(not\s+)?([A-Za-z_][\w.]*)\s*\(/.exec(clause);
+      if (call && !(call[1] && /(?:^|\.)(?:ok|is_?auth\w*|verify\w*|check\w*|valid\w*)$/i.test(call[2])) && !/device_for|cookies|headers\.get|\.get$/.test(call[2]))
+        m.bypass.push(`${call[2]}(${/\(\s*\)/.test(clause) ? "" : "…"})`);
+      else if (!call && skips) m.bypass.push(clause.slice(0, 60));
+    }
+  };
+  // the `if`s around the 401: meeting them is required for the check
+  let indent = indentOf(bodyLines[at401]);
+  for (let k = at401 - 1; k > 0; k--) {
+    const c = cond(bodyLines[k]);
+    if (indentOf(bodyLines[k]) >= indent || !c) { if (indentOf(bodyLines[k]) < indent && !/^\s*(?:else|try|with|for|async)\b/.test(bodyLines[k]) ) indent = indentOf(bodyLines[k]); continue; }
+    indent = indentOf(bodyLines[k]);
+    read(c, false);
+  }
+  // an earlier `if ...: return await call_next(request)` skips the check when met
+  for (let k = 1; k < at401; k++) {
+    const c = cond(bodyLines[k]);
+    if (!c) continue;
+    const inner = bodyLines.slice(k + 1).findIndex((l) => indentOf(l) <= indentOf(bodyLines[k]) && l.trim());
+    const block = bodyLines.slice(k + 1, inner < 0 ? undefined : k + 1 + inner);
+    if (k + block.length < at401 && block.some((l) => /call_next\s*\(/.test(l))) read(c, true);
+  }
+  for (const key of ["exact", "prefix", "onlyExact", "onlyPrefix", "bypass"] as const) m[key] = [...new Set(m[key])];
+  return m;
+}
+
+/** Whether this middleware checks the route: "yes", "no" (let through or not one it checks), "unknown". */
+function middlewareCovers(m: Middleware, route: string): "yes" | "no" | "unknown" {
+  if (m.optional) return "unknown";
+  if (m.exact.includes(route) || m.prefix.some((x) => x.length > 1 && route.startsWith(x))) return "no";
+  if (m.onlyExact.length || m.onlyPrefix.length)
+    return m.onlyExact.includes(route) || m.onlyPrefix.some((x) => route.startsWith(x)) ? "yes" : "no";
+  return "yes";
 }
 
 /** "{org}" etc. still in a path: the user has to put a real test record's value there. */

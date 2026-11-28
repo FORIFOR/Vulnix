@@ -9,7 +9,9 @@
  */
 
 export type PythonFlowKind = "sql" | "command" | "code" | "template" | "xss" | "path" | "ssrf" | "deserialize" | "redirect";
-export type PythonFlowFinding = { kind: PythonFlowKind; line: number; func: string; sink: string };
+/** `via`: a file path that reaches the sink only through the return value of a helper of the
+ * project (e.g. `path = rendered(cid, jid)`). What that helper checks is not followed. */
+export type PythonFlowFinding = { kind: PythonFlowKind; line: number; func: string; sink: string; via?: string };
 const KINDS: PythonFlowKind[] = ["sql", "command", "code", "template", "xss", "path", "ssrf", "deserialize", "redirect"];
 
 type Logical = { indent: number; code: string; line: number };
@@ -24,7 +26,7 @@ const ANY_KIND = String.raw`int|float|bool|len|UUID|uuid\.UUID`;
 const SANITIZERS: Partial<Record<PythonFlowKind, string>> = {
   template: String.raw`(?:\w+\.)*escape\w*|(?:bleach\.)?clean`,
   xss: String.raw`(?:\w+\.)*escape\w*|(?:bleach\.)?clean`,
-  path: String.raw`(?:werkzeug\.utils\.)?secure_filename|(?:os\.path\.)?basename|[\w.]*safe_join\w*`,
+  path: String.raw`(?:werkzeug\.utils\.)?secure_filename|(?:os\.path\.)?basename|[\w.]*safe_join\w*|[\w.]*safe_path\w*`,
   command: String.raw`(?:shlex\.)?quote`,
   // the helper a Vulnix fix adds (fixPatch.ts) and similarly named same-site checks
   redirect: String.raw`[\w.]*safe_redirect\w*`,
@@ -207,6 +209,11 @@ function merge(tainted: Taint, name: string, kinds: Set<PythonFlowKind>): void {
   tainted.set(name, prior ? new Set([...prior, ...kinds]) : kinds);
 }
 
+// `x = helper(...)` / `a, b = helper(...)`: the whole value is one call of a bare-named function
+const HELPER_CALL = /^([A-Za-z_]\w*)\s*\((?:[^()]|\([^()]*\))*\)$/;
+// builtins and wrappers that pass a value on unchanged are not helpers that could check it
+const NOT_HELPER = /^(?:str|bytes|repr|format|list|tuple|set|frozenset|dict|sorted|reversed|Path|PurePath|PosixPath|PurePosixPath|WindowsPath|PureWindowsPath|F|FP|open|getattr|join|normpath|normcase|abspath|realpath|relpath|dirname|expanduser|expandvars|fspath|cast|unquote|unquote_plus|quote|quote_plus|urljoin|strip|lower|upper|replace|decode|encode)$/;
+
 type Sink = { kind: PythonFlowKind; pattern: RegExp; arg?: number; requires?: RegExp; unless?: RegExp };
 const SINKS: Sink[] = [
   { kind: "sql", pattern: /\.(?:execute|executemany|executescript|raw)\s*\(/g },
@@ -234,7 +241,8 @@ function params(signature: string): string[] {
 export function pythonFlow(input: string): PythonFlowFinding[] {
   const lines = logicalLines(input);
   const findings: PythonFlowFinding[] = [];
-  type Scope = { indent: number; name: string; flask: boolean; tainted: Taint; blocks: { indent: number; conditional: boolean }[] };
+  type Scope = { indent: number; name: string; flask: boolean; tainted: Taint; blocks: { indent: number; conditional: boolean }[];
+    via: Map<string, string>; params: Set<string> };
   const stack: Scope[] = [];
   for (let index = 0; index < lines.length && findings.length < MAX_FINDINGS; index++) {
     const { indent, code, line } = lines[index];
@@ -252,7 +260,7 @@ export function pythonFlow(input: string): PythonFlowFinding[] {
       if (route || djangoView) for (const name of params(def[2])) tainted.set(name, new Set(KINDS));
       // Flask sends a returned str as HTML; FastAPI encodes it as JSON and Django needs a response object.
       const flask = decorators.some((d) => /^@[\w.]*\.route\s*\(/.test(d));
-      stack.push({ indent, name: def[1], flask, tainted, blocks: [] });
+      stack.push({ indent, name: def[1], flask, tainted, blocks: [], via: new Map(), params: new Set(tainted.keys()) });
       continue;
     }
     const scope = stack[stack.length - 1];
@@ -261,10 +269,10 @@ export function pythonFlow(input: string): PythonFlowFinding[] {
     // An assignment under if/else/for/while/except may not run, so it adds taint but never clears it.
     const conditional = scope.blocks.some((b) => b.conditional);
     const reported = new Set<PythonFlowKind>();
-    const report = (kind: PythonFlowKind, sink: string) => {
+    const report = (kind: PythonFlowKind, sink: string, via?: string) => {
       if (reported.has(kind) || findings.length >= MAX_FINDINGS) return;
       reported.add(kind);
-      findings.push({ kind, line, func: scope.name, sink });
+      findings.push({ kind, line, func: scope.name, sink, ...(via ? { via } : {}) });
     };
     for (const sink of SINKS) {
       sink.pattern.lastIndex = 0;
@@ -276,7 +284,10 @@ export function pythonFlow(input: string): PythonFlowFinding[] {
         if (sink.requires && !args.some((a) => sink.requires!.test(a))) continue;
         if (sink.unless && args.some((a) => sink.unless!.test(a))) continue;
         if (!taintedFor(value, sink.kind, scope.tainted)) continue;
-        report(sink.kind, m[0].replace(/\s*\($/, ""));
+        // a path whose every tainted name came back from a project helper: that helper's checks are not followed
+        const names = [...new Set(value.match(/[A-Za-z_]\w*/g) ?? [])].filter((n) => scope.tainted.get(n)?.has(sink.kind));
+        const via = sink.kind === "path" && names.length && names.every((n) => scope.via.has(n)) ? scope.via.get(names[0]) : undefined;
+        report(sink.kind, m[0].replace(/\s*\($/, ""), via);
       }
     }
     // A Flask view that returns request data as a plain string sends it as HTML.
@@ -284,8 +295,18 @@ export function pythonFlow(input: string): PythonFlowFinding[] {
     if (ret && scope.flask && !NOT_HTML.test(ret[1]) && taintedFor(ret[1], "xss", scope.tainted)) report("xss", "return");
     if (/:\s*$/.test(code) && /^(?:if|elif|else|for|async\s+for|while|try|except|finally|with|async\s+with|match|case)\b/.test(code)) {
       // `if '..' in name:` (or '/', '\\') rejects path traversal for that name.
+      // Only at the function's own level: a check inside another `if` leaves the other branch unchecked.
       const guard = /^if\s+"(?:\.\.?[/\\]?|[/\\])"\s+in\s+([A-Za-z_]\w*)\s*:/.exec(code);
-      if (guard) scope.tainted.get(guard[1])?.delete("path");
+      if (guard && !conditional) scope.tainted.get(guard[1])?.delete("path");
+      // `if name not in allowed:` whose block exits: an allowlist, unless the collection is itself the
+      // request (request.*, or a parameter of the view). One looked up by a request value is the server's.
+      const member = /^if\s+([A-Za-z_]\w*)\s+not\s+in\s+(.+):\s*$/.exec(code);
+      const exit = lines[index + 1];
+      const fromRequest = (expr: string) => SOURCE.test(expr) || (expr.match(/[A-Za-z_]\w*/g) ?? []).some((n) =>
+        scope.params.has(n) || (scope.tainted.get(n)?.size && !scope.via.has(n)));
+      if (member && !conditional && exit && exit.indent > indent && /^(?:return|raise|abort)\b/.test(exit.code)
+        && !new RegExp(`(?<![\\w.])${member[1]}(?![\\w])`).test(exit.code) && !fromRequest(member[2]))
+        for (const k of ["redirect", "ssrf", "path"] as const) scope.tainted.get(member[1])?.delete(k);
       // `if not is_allowed_redirect(x):` (any allow/safe/valid/trusted check) whose block replaces x or exits
       const allow = /^if\s+not\s+[\w.]*(?:allow|safe|valid|trust)\w*\s*\(\s*([A-Za-z_]\w*)\b/i.exec(code);
       const next = lines[index + 1];
@@ -328,10 +349,24 @@ export function pythonFlow(input: string): PythonFlowFinding[] {
     const names = assign[1].split(",").map((s) => s.trim());
     const values = names.length > 1 ? splitTop(assign[3].replace(/^\((.*)\)$/, "$1")) : [assign[3]];
     names.forEach((name, k) => {
-      const kinds = taintKinds(values.length === names.length ? values[k] : assign[3], scope.tainted);
-      if (assign[2] === "+=" || conditional) merge(scope.tainted, name, kinds);
-      else if (kinds.size) scope.tainted.set(name, kinds);
-      else scope.tainted.delete(name);
+      const value = values.length === names.length ? values[k] : assign[3];
+      const kinds = taintKinds(value, scope.tainted);
+      const called = HELPER_CALL.exec(value.trim())?.[1];
+      const taintedNames = [...new Set(value.match(/[A-Za-z_]\w*/g) ?? [])].filter((n) => scope.tainted.get(n)?.size);
+      const derived = !called && taintedNames.length > 0 && taintedNames.every((n) => scope.via.has(n)) ? scope.via.get(taintedNames[0]) : undefined;
+      const helper = called && !NOT_HELPER.test(called) ? called : derived;
+      const fromHelper = !!helper && kinds.size > 0;
+      if (assign[2] === "+=" || conditional) {
+        const before = scope.tainted.get(name)?.size;
+        merge(scope.tainted, name, kinds);
+        if (kinds.size && !(fromHelper && (!before || scope.via.has(name)))) scope.via.delete(name);
+        else if (fromHelper && !before) scope.via.set(name, helper!);
+      } else {
+        if (kinds.size) scope.tainted.set(name, kinds);
+        else scope.tainted.delete(name);
+        if (fromHelper) scope.via.set(name, helper!);
+        else scope.via.delete(name);
+      }
     });
   }
   return findings;

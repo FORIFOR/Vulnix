@@ -16,7 +16,9 @@ export type FixCandidate = {
    *  Static only: nothing was run against the user's project. */
   projectRecheck: "cleared" | "still_found";
 };
-type Result = { severity?: Severity; location?: ResultLocation; locations?: ResultLocation[]; category: Category; title: string; status: Status; evidence: string; risk: string; fix: string; retest: string; patch?: FixCandidate };
+type Result = { severity?: Severity; location?: ResultLocation; locations?: ResultLocation[]; category: Category; title: string; status: Status; evidence: string; risk: string; fix: string; retest: string; patch?: FixCandidate;
+  /** every place it was found is test code (tests/, fixtures/, *.test.ts ...): still checked and shown, kept apart */
+  testCode?: boolean };
 type RecordValue = Record<string, unknown>;
 
 export const categories = ["ARTEX", "CVE", "Claude Code"] as const;

@@ -16,8 +16,14 @@ const FIX_REASON: Record<string, string> = {
 import { affects, collectPackages, compareVersions, propertyLine, sbomComponents, type Package, type Location } from "./projectPackages";
 import { advisorySeverity, checkCloudFormation, checkControls, checkLockfile, record, type ResultLocation } from "./quickDefense";
 
-export const limits = { entries: 12000, files: 180, timeMs: 30000, findings: 5000, fileBytes: 1024 * 1024, dependencyBytes: 4 * 1024 * 1024, bytes: 12 * 1024 * 1024 };
+export const limits = { entries: 12000, allEntries: 200000, files: 180, timeMs: 30000, findings: 5000, fileBytes: 1024 * 1024, dependencyBytes: 4 * 1024 * 1024, bytes: 12 * 1024 * 1024 };
 export type ProjectFile = { file: File; path: string };
+
+/** Test code by its usual place or name. Deliberately vulnerable samples live here; a finding in
+ * them is not dropped, only told apart from findings in the product's own code. */
+export const isTestPath = (path: string) =>
+  /(^|\/)(tests?|__tests__|testdata|test_data|e2e|cypress|playwright)\//i.test(path)
+  || /(^|\/)(test_[^/]*\.py|[^/]*_test\.(py|go)|conftest\.py|[^/]*\.(test|spec)\.[cm]?[jt]sx?)$/i.test(path);
 type Result = ReturnType<typeof checkControls>[number];
 type Component = { location?: Location; part: string; vendor: string; product: string; version: string };
 const excluded = /^(?:\.|node_modules$|vendor$|dist$|build$|coverage$|target$|__pycache__$|secrets?$)/i;
@@ -478,7 +484,9 @@ export type ScanProgress = {
 
 export async function scanProject(files: ProjectFile[], feed: unknown, onProgress?: (value: ScanProgress) => void, lookupCatalog?: CatalogLookup) {
   const deadline = performance.now() + limits.timeMs;
-  if (files.length > limits.entries) throw new Error("entry-limit");
+  // The limit applies to the files the scan reads. Generated images, reports and other files it
+  // never reads (a real project had 16,000 of them under docs/) only need their name classified.
+  if (files.length > limits.allEntries) throw new Error("entry-limit");
   const seenPaths = new Set<string>();
   const candidates = files.flatMap(({ file, path }) => {
     if (seenPaths.has(path)) return [];
@@ -486,6 +494,7 @@ export async function scanProject(files: ProjectFile[], feed: unknown, onProgres
     const kind = classifyPath(path);
     return kind ? [{ file, path: path.split("/").slice(1).join("/") || file.name, ...kind }] : [];
   }).sort((a, b) => a.priority - b.priority);
+  if (candidates.length > limits.entries) throw new Error("entry-limit");
   const rows: Result[] = [];
   // package names the scanned source imports (reachability of a dependency CVE, by name only)
   const imported = { npm: new Set<string>(), PyPI: new Set<string>() };
@@ -650,8 +659,10 @@ export async function scanProject(files: ProjectFile[], feed: unknown, onProgres
             diff: fix.diff, patched: fix.patched, changedLines: fix.changedLines,
             sampleVerified: SAMPLE_VERIFIED.has(flow.kind), projectRecheck: (again ? "still_found" : "cleared") as "still_found" | "cleared" } };
         })(),
-        ...item("Claude Code", PYTHON_FLOW[flow.kind][0], "action",
-          `ソースの${flow.line}行目。関数 ${flow.func} の中で、要求データが ${flow.sink} に渡る経路を静的に確認しました（同じ関数内の追跡。実行時の到達性・入力検証は未確認）。`,
+        ...item("Claude Code", PYTHON_FLOW[flow.kind][0], flow.via ? "unknown" : "action",
+          flow.via
+            ? `ソースの${flow.line}行目。関数 ${flow.func} の中で、要求データがプロジェクト内の関数 ${flow.via}() を経由して ${flow.sink} に渡ります。${flow.via}() の中での検証（許可リスト・パスの確認など）は追っていないため、判定は未確認です。`
+            : `ソースの${flow.line}行目。関数 ${flow.func} の中で、要求データが ${flow.sink} に渡る経路を静的に確認しました（同じ関数内の追跡。実行時の到達性・入力検証は未確認）。`,
           PYTHON_FLOW[flow.kind][1]),
         location: { path, line: flow.line },
       })));
@@ -757,7 +768,12 @@ export async function scanProject(files: ProjectFile[], feed: unknown, onProgres
   // Preserve evidence of an unmatched catalog even when the other catalog matched.
   if (!Array.isArray(feed)) addRows(...nvdRows.filter((row) => !row.title.startsWith("CVE-")));
   addRows(...osvRows.filter((row) => !row.title.startsWith("CVE-")));
-  rows.sort((a, b) => Number(b.status === "action") - Number(a.status === "action"));
+  for (const row of rows) {
+    const where = row.locations?.length ? row.locations : row.location ? [row.location] : [];
+    if (where.length && where.every((l) => isTestPath(l.path))) row.testCode = true;
+  }
+  // product code first; test code is still checked and listed, after it
+  rows.sort((a, b) => Number(!!a.testCode) - Number(!!b.testCode) || Number(b.status === "action") - Number(a.status === "action"));
   const scanProgress = progress();
   onProgress?.(scanProgress);
   for (const { path } of candidates.slice(processed, processed + 100 - incomplete.length)) {

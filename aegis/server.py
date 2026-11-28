@@ -18,6 +18,7 @@ import http.cookies
 import hashlib
 import json
 import os
+import sys
 import re
 import secrets
 import signal
@@ -395,6 +396,39 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 return True
         except Exception:  # noqa: BLE001 - cannot confirm live authority: refuse
             return False
+
+    def authority_for(org_id: str):
+        """What an approval needs to stay valid, checked NOW (A2B: the approving platform
+        admin, the requesting and saving members)."""
+        def check(account: str, kind: str) -> bool:
+            if not account:
+                return False
+            if kind == "platform_admin":
+                return "admin" in ops.roles_of(account)
+            roles = (service_roles(tenancy.store.roles_in(org_id, account)) if tenancy is not None
+                     else ops.roles_of(account))
+            return bool({"operator", "approver", "admin"} & set(roles))
+        return check
+
+    def enforce_authority(services) -> None:
+        for s in services:
+            try:
+                s.enforce_a2b_authority()
+            except AuditWriteFailed:     # applied; the gap is noted by the service
+                pass
+            except Exception as e:   # noqa: BLE001 - one organization never blocks the others;
+                # the launch guard still refuses a run of that approval
+                print(f"vulnix: approval authority check failed: {type(e).__name__}", file=sys.stderr)
+
+    def all_services():
+        return tenancy.loaded() if tenancy is not None else [svc]
+
+    svc._authority = authority_for(DEFAULT_ORG)
+    if tenancy is not None:
+        tenancy.authority_for = authority_for
+        for loaded in tenancy.loaded():
+            loaded._authority = authority_for(getattr(loaded, "_intelligence_org_id", DEFAULT_ORG))
+    enforce_authority(all_services())       # what changed while the server was down
 
     def live_request_authority(sess, org_id: str, *, approver: bool = False):
         """A short check plus a launch lease for foreground Worker requests."""
@@ -1615,9 +1649,11 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
             except AuditWriteFailed as e:
                 return self._json(503, {"error": str(e), "applied": False, "audit_failed": True})
             except AuthError as e:
+                enforce_authority(all_services())   # a removal kept in memory although it could not be saved
                 paudit.record("operator.roles_change_failed", actor=sess.operator, target=target[:64],
                                  requested=roles[:8], error=str(e)[:200])
                 return self._admin_failure(sess, e, 409)
+            enforce_authority(all_services())      # approvals given by an admin who lost the role
             if unrecorded:
                 # noted after the store's lock is released
                 default_svc._note_audit_gap("operator.roles_changed", unrecorded[0], log="platform")
@@ -1758,6 +1794,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                                 return
                             raise AuditWriteFailed(AUDIT_REFUSED) from e
                     st.set_roles(org_id, sess.operator, target, body.get("roles"), journal=journal)
+                    enforce_authority([tenancy.service(org_id)])
                     if unrecorded:
                         osvc_gap = tenancy.service(org_id)
                         osvc_gap._note_audit_gap("tenancy.member_roles_changed", unrecorded[0])
@@ -1767,6 +1804,7 @@ def make_handler(svc: AssessmentService, ops: OperatorStore, *, require_read_aut
                 if p == "/api/orgs/members/remove":
                     target = str(body.get("name", "")).strip()
                     st.remove_member(org_id, sess.operator, target)
+                    enforce_authority([tenancy.service(org_id)])
                     # a removal: applied whatever the audit log does, then recorded
                     if not audit_after(audit, "tenancy.member_removed", gap_svc=tenancy.service(org_id),
                                        actor=sess.operator, target=target):

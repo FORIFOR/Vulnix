@@ -6,7 +6,11 @@ const releaseTraceExclusions = [
   "@vercel/nft", "@next/font", "babel-packages", "browserslist", "devalue",
   "loader-utils2", "loader-utils3", "lru-cache", "schema-utils3", "shell-quote",
   "source-map08", "tar", "ws",
-].map((name) => `./node_modules/next/dist/compiled/${name}/**/*`);
+].map((name) => `./node_modules/next/dist/compiled/${name}/**/*`).concat(
+  // image optimization is off (images.unoptimized): sharp and its native libvips build (which
+  // bundles expat, libpng, libheif, libxml2 ...) are never loaded, so they are not shipped
+  "./node_modules/sharp/**/*", "./node_modules/@img/**/*",
+);
 
 const releaseSha = process.env.VULNIX_RELEASE_SHA;
 if (process.env.VULNIX_RELEASE_BUILD === "1" && !/^[a-f0-9]{40}$/.test(releaseSha ?? "")) {
