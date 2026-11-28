@@ -1506,7 +1506,7 @@ class TestConfinementExtensionsKeepTheL2Path(unittest.TestCase):
         sess = self.owner().reattach("aegis_l2_0123456789ab")
         sess._teardown()                                   # raised AttributeError before
         self.assertFalse(sess.leftover)
-        self.assertTrue(any(c[-4:] == ["delete", "table", "inet", "aegis_l2_0123456789ab"] for c in self.calls))
+        self.assertTrue(any(c[-2:] == ["nft-delete", "aegis_l2_0123456789ab"] for c in self.calls))
 
     def test_a_kill_freezes_the_cgroup_before_killing_and_entry_refuses_a_frozen_one(self):
         from aegis import confinement as cf
@@ -1516,11 +1516,37 @@ class TestConfinementExtensionsKeepTheL2Path(unittest.TestCase):
         sess = ConfinementSession(o, "127.0.0.1", 1)
         sess._dir = True
         sess.kill()
-        script, *args = self.calls[-1][2:]
-        self.assertEqual(script, 'echo 1 > "$1"; f=$?; echo 1 > "$2" && [ "$f" = 0 ]')
-        self.assertTrue(args[1].endswith("cgroup.freeze") and args[2].endswith("cgroup.kill"), args)
-        self.assertIn("cgroup.freeze", cf._ENTER)
-        self.assertLess(cf._ENTER.index('echo $$ > "$1"'), cf._ENTER.index("cgroup.freeze"))  # join, then check
+        self.assertEqual(self.calls[-1][-2:], ["cgroup-kill", sess.name])
+        # the broker: freeze first, then kill (both always tried); entry joins, then refuses a frozen cgroup
+        from aegis import privbroker as pb
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil_rmtree, root)
+        cg = root / sess.name
+        cg.mkdir()
+        writes = []
+
+        class Knob:
+            def __init__(self, path):
+                self.path = path
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def write(self, v):
+                writes.append((Path(self.path).name, v))
+        with patch.object(pb, "CGROUP_ROOT", root), patch("builtins.open", lambda p, m="r", *a, **k: Knob(p)):
+            self.assertEqual(pb.op_cgroup_kill([sess.name]), 0)
+        self.assertEqual(writes, [("cgroup.freeze", "1"), ("cgroup.kill", "1")])
+        (cg / "cgroup.procs").write_text("")
+        (cg / "cgroup.freeze").write_text("1\n")             # stopped
+        with patch.object(pb, "CGROUP_ROOT", root), self.assertRaises(SystemExit) as ex:
+            pb._join(sess.name, 5)
+        self.assertEqual(ex.exception.code, 97)
+        self.assertEqual((cg / "cgroup.procs").read_text(), str(os.getpid()))      # joined first, then refused
+        del cf
 
     def test_wrap_names_the_interpreter_only_when_asked(self):
         from aegis.confinement import ConfinementSession
@@ -1530,8 +1556,8 @@ class TestConfinementExtensionsKeepTheL2Path(unittest.TestCase):
             sess = ConfinementSession(o, "127.0.0.1", 1)
             plain = sess.wrap(["/usr/bin/python3", "worker.py"])
             go = sess.wrap(["/work/artex-vulnix-planner"], interpreter="/usr/bin/python3")
-        self.assertEqual(plain[plain.index("-I") - 1], "/usr/bin/python3")
-        self.assertEqual(go[go.index("-I") - 1:], ["/usr/bin/python3", "-I", "/staged/_sandbox_launch.py",
+        self.assertEqual(plain[plain.index("--") + 1], "/usr/bin/python3")
+        self.assertEqual(go[go.index("--") + 1:], ["/usr/bin/python3", "-I", "/staged/_sandbox_launch.py",
                                                    "/work/artex-vulnix-planner"])
 
     def test_the_owned_directory_is_cleared_as_the_run_uid_then_removed(self):
@@ -1542,10 +1568,18 @@ class TestConfinementExtensionsKeepTheL2Path(unittest.TestCase):
         d = Path(tempfile.mkdtemp())
         self.addCleanup(lambda: d.exists() and d.rmdir())
         sess.own_directory(d)
-        self.assertIn("chown -h", " ".join(self.calls[-1]))
+        self.assertEqual(self.calls[-1][-3:], ["own-dir", "4242", str(d.resolve())])
         self.assertTrue(sess._remove_owned())
-        deletes = [c for c in self.calls if "-delete" in c]
-        self.assertTrue(deletes and all("--reuid=4242" in c for c in deletes), deletes)
+        ops = [c[c.index(next(x for x in c if x.endswith("privbroker.py"))) + 1:] for c in self.calls[1:]]
+        # contents deleted AS the run uid (the broker drops to it), then the empty directory removed
+        self.assertEqual(ops, [["purge-dir", "4242", str(d.resolve())], ["remove-dir", "4242", str(d.resolve())],
+                               ["purge-tmp", "4242"]])
+        from aegis import privbroker as pb
+        with patch.object(pb, "_tool", lambda t: f"/usr/bin/{t}"):
+            drop = pb._drop(4242)
+        for flag in ("--reuid=4242", "--regid=4242", "--clear-groups", "--inh-caps=-all", "--bounding-set=-all",
+                     "--no-new-privs"):
+            self.assertIn(flag, drop)
 
     def test_a_symlink_or_non_empty_directory_is_never_given_away(self):
         from aegis.confinement import ConfinementError, ConfinementSession
@@ -1619,7 +1653,17 @@ class TestPlannerSeccompProfileAndNamespaceChain(unittest.TestCase):
             sess = ConfinementSession(o, "127.0.0.1", 18080, extra_endpoints=(("127.0.0.1", 5432),),
                                       namespaces={"hide": ab.planner_hidden_paths(["/srv/vulnix/data/state.json"]),
                                                   "keep": [work]})
-            argv = sess.wrap(["/tmp/vulnix-artex-abc/artex-vulnix-planner"], interpreter="/usr/bin/python3")
+            wrapped = sess.wrap(["/tmp/vulnix-artex-abc/artex-vulnix-planner"], interpreter="/usr/bin/python3")
+        # what the broker execs for that request (it builds the namespace chain itself)
+        from aegis import privbroker as pb
+        i = wrapped.index("launch")
+        with patch.object(pb, "_tool", lambda t: f"/usr/bin/{t}"), \
+                patch.object(pb, "_run_uid", lambda s: int(s)), \
+                patch.object(pb, "NETNS_DIR", Path(tempfile.mkdtemp())) as nd:
+            (nd / sess.name).write_text("")
+            name, cpu, argv, env = pb.plan_launch(wrapped[i + 1:])
+        self.assertEqual(name, sess.name)
+        self.assertEqual(env, {"PATH": "/usr/bin:/bin"})
         i = argv.index("netns")
         self.assertEqual(argv[i:i + 3], ["netns", "exec", sess.name])
         script = argv[argv.index("-c", i) + 1]

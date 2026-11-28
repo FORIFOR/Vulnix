@@ -50,8 +50,10 @@ systemctl enable --quiet nftables
 # 4. accounts: the control plane and the web server run as two unprivileged users
 id vulnix >/dev/null 2>&1 || useradd --system --home-dir /var/lib/vulnix --no-create-home --shell /usr/sbin/nologin vulnix
 id vulnix-web >/dev/null 2>&1 || useradd --system --home-dir /nonexistent --no-create-home --shell /usr/sbin/nologin vulnix-web
-install -m 0440 "$here/vulnix-sudoers" /etc/sudoers.d/vulnix
-visudo -cqf /etc/sudoers.d/vulnix
+install -d -m 0755 /usr/local/libexec
+install -o root -g root -m 0755 "$here/vulnix-priv" /usr/local/libexec/vulnix-priv
+visudo -cqf "$here/vulnix-sudoers"
+install -o root -g root -m 0440 "$here/vulnix-sudoers" /etc/sudoers.d/vulnix
 
 # 5. artifacts (root-owned, read-only for the services); data only for vulnix
 for d in backend web node; do rm -rf "/opt/vulnix/$d.new"; install -d -m 0755 "/opt/vulnix/$d.new"; done

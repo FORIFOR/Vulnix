@@ -448,6 +448,8 @@ def run_artex_planner(command: list[str], request: dict, *, llm_url: str, llm_mo
                     raise ArtexBridgeError("ARTEX の隔離が起動前に確認できなくなりました")
                 argv = sess.wrap(list(command), env_keys=tuple(k for k in env if k != "PATH"),
                                  cpu_seconds=int(timeout_s) + 5, interpreter=sys.executable)
+                if hasattr(sess, "launch_env"):
+                    env = sess.launch_env(env)
                 if listing is not None:
                     drops_before = dropped_packets(listing())
             except ArtexBridgeError:

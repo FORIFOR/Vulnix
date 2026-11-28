@@ -11,6 +11,8 @@ WorkingDirectory=/opt/vulnix/backend
 Environment=PATH=/usr/sbin:/usr/bin
 Environment=PYTHONPATH=/opt/vulnix/backend/vendor:/opt/vulnix/backend
 Environment=VULNIX_NO_ENV_LOCAL=1
+# the only root program it may run (sudoers): aegis/privbroker.py through this wrapper
+Environment=VULNIX_PRIV_BROKER=/usr/local/libexec/vulnix-priv
 Environment=VULNIX_PUBLIC_SIGNUP=1
 # 0 = no traffic to real sites at all (until DeepNote's L1 acceptance is approved; then l1)
 Environment=VULNIX_REAL_SERVICE_DIAGNOSIS=0

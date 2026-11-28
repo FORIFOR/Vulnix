@@ -577,6 +577,15 @@ class TestRealServiceL2NeedsKernelConfinement(PersistenceBase):
             TEST_CONFINEMENT.session("93.184.216.34", 443)
 
 
+def broker_op(argv):
+    """(operation, arguments) of a privilege-broker command (aegis/privbroker.py), else (None, argv)."""
+    argv = [str(x) for x in argv]
+    for i, x in enumerate(argv):
+        if x.endswith("privbroker.py") or x.endswith("vulnix-priv"):
+            return (argv[i + 1] if i + 1 < len(argv) else None), argv[i + 2:]
+    return None, argv
+
+
 class _FakeRun:
     """Stands in for subprocess.run: records commands, plays a scripted kernel."""
     def __init__(self, *, sudo_ok=True, probe=None, counters=(0, 3), nft_apply_rc=0, listing=True):
@@ -587,21 +596,21 @@ class _FakeRun:
     def __call__(self, argv, **kw):
         self.calls.append((list(argv), kw))
         R = subprocess.CompletedProcess
-        a = [x for x in argv if x not in ("/bin/sudo", "-n")]
-        if a == ["true"]:
+        op, a = broker_op(argv)
+        if op == "check":
             return R(argv, 0 if self.sudo_ok else 1, "", "")
-        if a[0] == "/bin/nft" and a[1:3] == ["-f", "-"]:
-            self.name = kw["input"].split()[2]
+        if op == "nft-apply":
+            self.name = a[0]
             return R(argv, self.nft_apply_rc, "", "boom" if self.nft_apply_rc else "")
-        if a[0] == "/bin/nft" and a[1] == "list":
+        if op == "nft-list":
             if not self.listing:
                 return R(argv, 1, "", "no such table")
             n = self.counters.pop(0) if len(self.counters) > 1 else self.counters[0]
             return R(argv, 0, f'table inet {self.name} {{\n chain confined {{\n  counter packets {n} bytes 0 drop\n }}\n'
                               f' chain output {{\n  type filter hook output priority filter; policy accept;\n'
                               f'  socket cgroupv2 level 1 "{self.name}" jump confined\n }}\n}}\n', "")
-        if "-c" in argv and any("_sandbox_launch.py" in str(x) for x in argv):   # the probe
-            uid = int(next(x for x in argv if str(x).startswith("--reuid=")).split("=", 1)[1])
+        if op == "launch" and "-c" in argv and any("_sandbox_launch.py" in str(x) for x in argv):   # the probe
+            uid = int(a[1])
             out = self.probe if self.probe is not None else json.dumps(self.healthy(uid))
             return R(argv, 0, out + "\n", "")
         return R(argv, 0, "", "")
@@ -663,7 +672,8 @@ class TestKernelConfinementLogic(unittest.TestCase):
 
     def test_sudo_preflight_times_out_and_refuses_confinement(self):
         def slow_sudo(argv, **kwargs):
-            self.assertEqual(argv, ["/bin/sudo", "-n", "true"])
+            self.assertEqual(argv[:2], ["/bin/sudo", "-n"])
+            self.assertEqual(broker_op(argv), ("check", []))
             self.assertEqual(kwargs.get("timeout"), 5)
             raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
 
@@ -678,15 +688,15 @@ class TestKernelConfinementLogic(unittest.TestCase):
             self.assertTrue(s.evidence["probe_in_cgroup"])
             self.assertTrue(s.still_enforced())
             name = s.name
-        self.assertTrue(run.ran("cgroup.kill"))
-        self.assertTrue(run.ran("delete", "table", name))
-        self.assertTrue(run.ran("rmdir"))
+        self.assertTrue(run.ran("cgroup-kill", name))
+        self.assertTrue(run.ran("nft-delete", name))
+        self.assertTrue(run.ran("cgroup-remove", name))
 
     def assert_refused(self, run):
         with self.assertRaises(ConfinementError):
             with self.make(run).session("203.0.113.7", 443):
                 self.fail("the worker would have been started")
-        self.assertTrue(run.ran("rmdir"), "the cgroup was left behind")
+        self.assertTrue(run.ran("cgroup-remove"), "the cgroup was left behind")
 
     def test_unconfirmed_confinement_is_refused(self):
         self.assert_refused(_FakeRun(counters=(0, 0)))                         # the kernel dropped nothing
@@ -699,7 +709,7 @@ class TestKernelConfinementLogic(unittest.TestCase):
 
     def test_a_runner_that_raises_is_a_refusal(self):
         def boom(argv, **kw):
-            if "true" in argv:
+            if broker_op(argv)[0] == "check":
                 return subprocess.CompletedProcess(argv, 0, "", "")
             raise OSError("exec failed")
         with self.assertRaises(ConfinementError):
@@ -713,26 +723,33 @@ class TestKernelConfinementLogic(unittest.TestCase):
         argv = s.wrap(["/usr/bin/python3", "-I", real_worker, "--x"],
                       env_keys=("PATH", "VULNIX_L2_TOKEN_A", "X"), cpu_seconds=7)
         self.assertEqual(argv[:2], ["/bin/sudo", "-n"])
-        self.assertIn("--preserve-env=VULNIX_L2_TOKEN_A,X", argv)
-        self.assertIn(str(s.cgroup / "cgroup.procs"), argv)
-        self.assertIn(f"--reuid={s.uid}", argv)
-        self.assertIn(f"--regid={s.uid}", argv)
+        # the variables cross sudo under the broker's prefix; only their NAMES are on argv
+        self.assertIn("--preserve-env=VXENV_VULNIX_L2_TOKEN_A,VXENV_X", argv)
+        op, a = broker_op(argv)
+        self.assertEqual(op, "launch")
+        self.assertEqual(a[:5], [s.name, str(s.uid), "7", "VULNIX_L2_TOKEN_A,X", "-"])
+        self.assertEqual(a[5], "--")
         self.assertGreaterEqual(s.uid, 3_000_000_000)
-        for flag in ("--clear-groups", "--inh-caps=-all", "--bounding-set=-all", "--no-new-privs"):
-            self.assertIn(flag, argv)
         staged = conf.staged_workers()
-        self.assertIn(str(staged / "_sandbox_launch.py"), argv)
+        self.assertEqual(a[6:9], ["/usr/bin/python3", "-I", str(staged / "_sandbox_launch.py")])
         self.assertIn(str(staged / "reproduction_probe.py"), argv)         # the copy, not the repository
         self.assertNotIn(real_worker, argv)
-        self.assertLess(argv.index("/bin/setpriv"), argv.index(str(staged / "_sandbox_launch.py")))
         self.assertFalse(any("TOKEN" in a and "=" in a and not a.startswith("--preserve-env") for a in argv))
+        self.assertEqual(s.launch_env({"PATH": "/x", "VULNIX_L2_TOKEN_A": "secret"}),
+                         {"PATH": "/usr/bin:/bin", "VXENV_VULNIX_L2_TOKEN_A": "secret"})
         with self.assertRaises(ConfinementError):
             s.wrap(["x"], env_keys=("BAD=1,ALL",))
         as_root = ConfinementSession(self.make(_FakeRun(), euid=0), "203.0.113.7", 443)
         root_argv = as_root.wrap(["w"])
-        self.assertEqual(root_argv[0], "/bin/sh")
+        self.assertEqual(root_argv[0], sys.executable)          # the broker itself, no sudo
         self.assertNotIn("/bin/sudo", root_argv)
-        self.assertIn(f"--reuid={as_root.uid}", root_argv)
+        self.assertEqual(broker_op(root_argv)[1][:2], [as_root.name, str(as_root.uid)])
+        installed = ConfinementSession(KernelConfinement(runner=_FakeRun(), platform="linux", euid=1000,
+                                                         which=lambda t: f"/bin/{t}", broker="/usr/local/libexec/vulnix-priv"),
+                                       "203.0.113.7", 443)
+        inst = installed.wrap(["/usr/bin/python3", "w"], env_keys=("A",))
+        # the installed broker: no --preserve-env (sudoers keeps VXENV_*), nothing but the broker after sudo
+        self.assertEqual(inst[:4], ["/bin/sudo", "-n", "/usr/local/libexec/vulnix-priv", "launch"])
 
     def test_every_run_gets_a_fresh_unassigned_uid(self):
         import pwd
@@ -887,7 +904,7 @@ class TestKernelConfinementLogic(unittest.TestCase):
         real = run.__call__
 
         def stuck(argv, **kw):
-            if any(str(a).startswith(("rmdir", "echo 1")) for a in argv):
+            if broker_op(argv)[0] in ("cgroup-remove", "cgroup-kill"):
                 run.calls.append((list(argv), kw))
                 return subprocess.CompletedProcess(argv, 1, "", "busy")
             return real(argv, **kw)
@@ -899,15 +916,16 @@ class TestKernelConfinementLogic(unittest.TestCase):
                 s.cgroup.mkdir(parents=True, exist_ok=True)       # it exists, but cannot be removed
         self.assertTrue(s.leftover)
         self.assertEqual(called, [s])                              # the caller is told
-        self.assertEqual(run.ran("delete", "table"), [])           # still confined
+        self.assertEqual(run.ran("nft-delete"), [])                # still confined
 
     def test_a_kernel_without_cgroup_kill_is_refused(self):
         run = _FakeRun()
         real = run.__call__
 
         def old_kernel(argv, **kw):
-            if any(str(a).startswith("test -e") for a in argv):
-                return subprocess.CompletedProcess(argv, 1, "", "")
+            if broker_op(argv)[0] == "cgroup-create":            # the broker reports exit 3
+                run.calls.append((list(argv), kw))
+                return subprocess.CompletedProcess(argv, 3, "", "cgroup.kill / cgroup.freeze missing")
             return real(argv, **kw)
         with self.assertRaises(ConfinementError):
             with self.make(old_kernel).session("203.0.113.7", 443):
@@ -1318,8 +1336,8 @@ class TestASessionStoppedBeforeItExistsIsNeverCreated(unittest.TestCase):
         with self.assertRaises(ConfinementError):
             with s:
                 self.fail("created after a stop")
-        self.assertEqual(run.ran("mkdir"), [])            # no cgroup was made
-        self.assertEqual(run.ran("nft", "-f"), [])         # and no rules
+        self.assertEqual(run.ran("cgroup-create"), [])    # no cgroup was made
+        self.assertEqual(run.ran("nft-apply"), [])         # and no rules
 
     def test_kill_while_the_cgroup_is_being_created_cancels(self):
         run = _FakeRun()
@@ -1329,19 +1347,19 @@ class TestASessionStoppedBeforeItExistsIsNeverCreated(unittest.TestCase):
 
         def mkdir_then_stop(argv, **kw):
             out = real(argv, **kw)
-            if any(str(a).startswith("mkdir") for a in argv):
+            if broker_op(argv)[0] == "cgroup-create":
                 s.kill()                                 # the stop lands right here
             return out
         s._o._run = mkdir_then_stop
         with self.assertRaises(ConfinementError):
             with s:
                 self.fail("probe ran after a stop")
-        self.assertEqual(run.ran("nft", "-f"), [])
+        self.assertEqual(run.ran("nft-apply"), [])
 
 
 class TestAStopAnywhereDuringApplyIsNeverFollowedByAProbe(TestASessionStoppedBeforeItExistsIsNeverCreated):
     def test_every_step_before_the_probe(self):
-        for step in ("mkdir", "test -e", "nft -f", "nft list"):
+        for step in ("cgroup-create", "nft-apply", "nft-list"):
             with self.subTest(step):
                 run = _FakeRun()
                 conf = self.make(run)
@@ -1374,7 +1392,7 @@ class TestApplyNeverHangsForever(TestASessionStoppedBeforeItExistsIsNeverCreated
             pass
         for argv, kw in run.calls:
             joined = " ".join(str(a) for a in argv)
-            if any(k in joined for k in ("mkdir", "test -e", "nft -f", "nft list")):
+            if broker_op(argv)[0] is not None:                  # every broker call
                 self.assertIn("timeout", kw, joined)
 
     def test_a_hung_call_ends_the_apply_and_clears_busy(self):
@@ -1382,7 +1400,7 @@ class TestApplyNeverHangsForever(TestASessionStoppedBeforeItExistsIsNeverCreated
         real = run.__call__
 
         def hang(argv, **kw):
-            if "-f" in argv and any(str(a).endswith("nft") for a in argv):
+            if broker_op(argv)[0] == "nft-apply":
                 raise subprocess.TimeoutExpired(argv, kw.get("timeout", 0))
             return real(argv, **kw)
         s = self.make(hang).session("203.0.113.7", 443)

@@ -97,7 +97,7 @@ def ruleset_for(pinned_ip: str, pinned_port: int) -> str:
 
 
 def verify_linux_netns_enforcement(*, pinned_ip: str = "127.0.0.1", pinned_port: int = 18081) -> dict:
-    """On Linux with root/sudo + `ip` + `nft`, create an isolated network namespace,
+    """On Linux with root (or the privilege broker) + `ip` + `nft`, create an isolated network namespace,
     apply the nftables egress ruleset to the live kernel, and verify that:
       1. The kernel table `inet aegis_egress` is active with `policy drop`;
       2. Loopback traffic to the pinned port succeeds;
@@ -131,23 +131,25 @@ def verify_linux_netns_enforcement(*, pinned_ip: str = "127.0.0.1", pinned_port:
 
     prefix: list[str] = []
     if hasattr(os, "geteuid") and os.geteuid() != 0:
-        sudo_bin = shutil.which("sudo")
-        if not sudo_bin:
-            return {
-                "supported_os": True,
-                "kernel_enforced": False,
-                "reason": "requires root or passwordless sudo",
-                "elapsed_ms": round((time.monotonic() - t0) * 1000, 2),
-            }
-        chk = subprocess.run([sudo_bin, "-n", "true"], capture_output=True, text=True)
-        if chk.returncode != 0:
-            return {
-                "supported_os": True,
-                "kernel_enforced": False,
-                "reason": "sudo requires password",
-                "elapsed_ms": round((time.monotonic() - t0) * 1000, 2),
-            }
-        prefix = [sudo_bin, "-n"]
+        # not root: the privilege broker runs this same self-test (fixed parameters) as
+        # root; the service itself never runs ip / nft / a probe as root
+        from .confinement import KernelConfinement
+        conf = KernelConfinement()
+        if not shutil.which("sudo") and not conf._broker_path:
+            return {"supported_os": True, "kernel_enforced": False,
+                    "reason": "requires root or the privilege broker through passwordless sudo",
+                    "elapsed_ms": round((time.monotonic() - t0) * 1000, 2)}
+        try:
+            r = subprocess.run([*conf.broker_argv(), "netns-selftest"], capture_output=True, text=True,
+                               timeout=60)
+            report = json.loads(r.stdout.strip().splitlines()[-1]) if r.returncode == 0 else None
+        except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+            report = None
+        if not isinstance(report, dict):
+            return {"supported_os": True, "kernel_enforced": False,
+                    "reason": "the privilege broker could not run the self-test",
+                    "elapsed_ms": round((time.monotonic() - t0) * 1000, 2)}
+        return {**report, "via_broker": True, "elapsed_ms": round((time.monotonic() - t0) * 1000, 2)}
 
     ns = f"aegis_ns_{secrets.token_hex(4)}"
     try:

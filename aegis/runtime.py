@@ -120,6 +120,7 @@ class WorkerPool:
                 proc_env.update({str(k): str(v) for k, v in extra_env.items() if v is not None})
             if session is not None:
                 argv = session.wrap(argv, env_keys=tuple(proc_env), cpu_seconds=cpu)
+                proc_env = session.launch_env(proc_env) if hasattr(session, "launch_env") else proc_env
                 # Wrapping can stage code and take time. A rule removed during
                 # that preparation must stop the process before any traffic.
                 if not session.still_enforced():
